@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/as/internal/config"
-	"github.com/jfinlinson/as/internal/model"
-	"github.com/jfinlinson/as/internal/parse"
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/parse"
 )
 
 // Store manages items on disk.
