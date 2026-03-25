@@ -63,8 +63,12 @@ type PathsConfig struct {
 }
 
 type TypeConfig struct {
-	Statuses     []string          // allowed statuses
-	DirectoryMap map[string]string // status -> directory
+	IDPrefix         string            // e.g., "T" for tasks
+	Statuses         []string          // allowed statuses
+	DirectoryMap     map[string]string // status -> directory
+	StartStatus      string            // status items are created with
+	ActiveStatus     string            // status that means "in progress"
+	TerminalStatuses []string          // these can't transition further
 }
 
 type FieldsConfig struct {
@@ -182,7 +186,11 @@ func Defaults() *Config {
 		},
 		Types: map[string]TypeConfig{
 			"task": {
-				Statuses: []string{"queued", "active", "completed", "abandoned"},
+				IDPrefix:         "T",
+				Statuses:         []string{"queued", "active", "completed", "abandoned"},
+				StartStatus:      "queued",
+				ActiveStatus:     "active",
+				TerminalStatuses: []string{"completed", "abandoned"},
 				DirectoryMap: map[string]string{
 					"queued":    "tasks",
 					"active":    "tasks",
@@ -191,7 +199,11 @@ func Defaults() *Config {
 				},
 			},
 			"issue": {
-				Statuses: []string{"open", "resolved", "wontfix"},
+				IDPrefix:         "I",
+				Statuses:         []string{"open", "resolved", "wontfix"},
+				StartStatus:      "open",
+				ActiveStatus:     "active",
+				TerminalStatuses: []string{"resolved", "wontfix"},
 				DirectoryMap: map[string]string{
 					"open":     "issues",
 					"resolved": "archive",
@@ -199,7 +211,10 @@ func Defaults() *Config {
 				},
 			},
 			"idea": {
-				Statuses: []string{"captured", "promoted", "declined"},
+				IDPrefix:         "D",
+				Statuses:         []string{"captured", "promoted", "declined"},
+				StartStatus:      "captured",
+				TerminalStatuses: []string{"promoted", "declined"},
 				DirectoryMap: map[string]string{
 					"captured": "ideas",
 					"promoted": "ideas",
