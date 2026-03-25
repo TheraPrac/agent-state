@@ -187,10 +187,10 @@ func Defaults() *Config {
 		Types: map[string]TypeConfig{
 			"task": {
 				IDPrefix:         "T",
-				Statuses:         []string{"queued", "active", "completed", "abandoned"},
+				Statuses:         []string{"queued", "active", "completed", "abandoned", "archived"},
 				StartStatus:      "queued",
 				ActiveStatus:     "active",
-				TerminalStatuses: []string{"completed", "abandoned"},
+				TerminalStatuses: []string{"completed", "abandoned", "archived"},
 				DirectoryMap: map[string]string{
 					"queued":    "tasks",
 					"active":    "tasks",
@@ -200,10 +200,10 @@ func Defaults() *Config {
 			},
 			"issue": {
 				IDPrefix:         "I",
-				Statuses:         []string{"open", "resolved", "wontfix"},
+				Statuses:         []string{"open", "active", "resolved", "wontfix", "archived"},
 				StartStatus:      "open",
 				ActiveStatus:     "active",
-				TerminalStatuses: []string{"resolved", "wontfix"},
+				TerminalStatuses: []string{"resolved", "wontfix", "archived"},
 				DirectoryMap: map[string]string{
 					"open":     "issues",
 					"resolved": "archive",

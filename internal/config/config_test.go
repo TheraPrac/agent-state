@@ -18,7 +18,7 @@ func TestDefaults(t *testing.T) {
 	if !ok {
 		t.Fatal("default config missing 'task' type")
 	}
-	wantStatuses := []string{"queued", "active", "completed", "abandoned"}
+	wantStatuses := []string{"queued", "active", "completed", "abandoned", "archived"}
 	if len(taskType.Statuses) != len(wantStatuses) {
 		t.Fatalf("task statuses = %v, want %v", taskType.Statuses, wantStatuses)
 	}
@@ -62,8 +62,8 @@ func TestValidStatuses(t *testing.T) {
 		itemType string
 		want     int
 	}{
-		{"task", 4},
-		{"issue", 3},
+		{"task", 5},
+		{"issue", 5},
 		{"idea", 3},
 		{"nonexistent", 0},
 	}
