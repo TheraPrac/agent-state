@@ -63,15 +63,18 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	showCmd := &cobra.Command{
 		Use:   "show <id>",
 		Short: "Display item details",
+		Long:  "Display item details. Use --raw to see the full markdown file.",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			brief, _ := cmd.Flags().GetBool("brief")
 			field, _ := cmd.Flags().GetString("field")
-			exitCode = command.Show(appStore, args[0], command.ShowOpts{Brief: brief, Field: field})
+			raw, _ := cmd.Flags().GetBool("raw")
+			exitCode = command.Show(appStore, args[0], command.ShowOpts{Brief: brief, Field: field, Raw: raw})
 		},
 	}
 	showCmd.Flags().BoolP("brief", "b", false, "compact one-line output")
 	showCmd.Flags().StringP("field", "f", "", "show single field value")
+	showCmd.Flags().BoolP("raw", "r", false, "print the raw markdown file")
 	root.AddCommand(showCmd)
 
 	listCmd := &cobra.Command{

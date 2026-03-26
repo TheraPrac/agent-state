@@ -11,6 +11,7 @@ import (
 type ShowOpts struct {
 	Brief bool
 	Field string
+	Raw   bool
 }
 
 func Show(s *store.Store, id string, opts ShowOpts) int {
@@ -18,6 +19,21 @@ func Show(s *store.Store, id string, opts ShowOpts) int {
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
 		return 1
+	}
+
+	if opts.Raw {
+		path, ok := s.Path(id)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "no file path for %s\n", id)
+			return 1
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reading %s: %v\n", path, err)
+			return 1
+		}
+		fmt.Print(string(content))
+		return 0
 	}
 
 	if opts.Field != "" {
