@@ -345,8 +345,15 @@ func (b *builder) emitList(key string, items []string) {
 }
 
 func (b *builder) emitListIfPresent(key string, items []string) {
-	if _, ok := b.sections[key]; !ok && len(items) == 0 {
+	s, inSource := b.sections[key]
+	if !inSource && len(items) == 0 {
 		return // Not in source and no data — skip
+	}
+	// If typed data is empty but raw section has real content (e.g., list-of-maps),
+	// preserve the raw section to avoid data loss.
+	if len(items) == 0 && inSource && !isEmptyListSection(s) {
+		b.emitRaw(key)
+		return
 	}
 	b.emitList(key, items)
 }
