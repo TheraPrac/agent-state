@@ -5,6 +5,7 @@ package parse
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -331,9 +332,12 @@ func storeScalar(item *model.Item, key, val string) {
 			item.Completed = &t
 		}
 	case "priority":
-		// Keep as string in priority field — will be parsed by validator
 		if val != "" {
-			item.Category = val // temporarily store string priority here
+			if n, err := strconv.Atoi(val); err == nil {
+				item.Priority = &n
+			}
+			// String values (alpha-critical, etc.) are left unparsed in Priority;
+			// migration reads them from Doc.GetField("priority") for conversion.
 		}
 	case "severity":
 		item.Severity = val
@@ -345,6 +349,10 @@ func storeScalar(item *model.Item, key, val string) {
 		item.AssignedTo = val
 	case "last_touched_by":
 		item.LastTouchedBy = val
+	case "epic":
+		item.Epic = val
+	case "sprint":
+		item.Sprint = val
 	case "parallel_group":
 		// Legacy field — store but don't surface
 	}
@@ -422,6 +430,8 @@ func storeList(item *model.Item, key, nestKey string, list []string) {
 		item.Invariants = list
 	case "doc_changes":
 		item.DocChanges = list
+	case "sessions":
+		item.Sessions = list
 	case "linked_plans":
 		item.LinkedPlans = list
 	case "tests_written":

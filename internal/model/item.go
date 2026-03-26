@@ -24,9 +24,12 @@ type Item struct {
 	Summary        string
 	AssignedTo     string // agent ID
 	LastTouchedBy  string // agent ID
+	Epic           string // epic ID (adjective-verb-noun)
+	Sprint         string // sprint ID (adjective-verb-noun)
 
 	// List fields
 	Tags               []string
+	Sessions           []string // Claude Code session UUIDs
 	DependsOn          []string
 	Blocks             []string // NOTE: in current format this is stored; after migration it's computed
 	RelatedIssues      []string

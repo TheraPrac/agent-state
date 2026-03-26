@@ -6,12 +6,29 @@ package migrate
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 )
+
+// priorityMap converts legacy string priority values to numeric 0-4.
+var priorityMap = map[string]int{
+	"alpha-critical":      0,
+	"blocking":            0,
+	"production-critical": 1,
+	"high":                1,
+	"normal":              2,
+	"medium":              2,
+	"med":                 2,
+	"important":           2,
+	"post-alpha":          3,
+	"post-mvp":            3,
+	"nice-to-have":        4,
+	"low":                 4,
+}
 
 // rawSection groups the raw lines belonging to a single top-level field.
 type rawSection struct {
@@ -87,6 +104,37 @@ func detectChanges(item *model.Item, cfg *config.Config) []Change {
 		}
 	}
 
+	// String priority needs conversion to numeric
+	if s, ok := sections["priority"]; ok && len(s.lines) > 0 {
+		val := extractScalarValue(s.lines[0])
+		if val != "" && val != "null" && val != "~" {
+			if _, err := strconv.Atoi(val); err != nil {
+				if _, mapped := priorityMap[val]; mapped {
+					changes = append(changes, Change{
+						Type:   "convert_priority",
+						Detail: fmt.Sprintf("convert priority %q to numeric", val),
+					})
+				} else {
+					changes = append(changes, Change{
+						Type:   "convert_priority",
+						Detail: fmt.Sprintf("unknown priority %q (will preserve as-is)", val),
+					})
+				}
+			}
+		}
+	}
+
+	// Category value should be added to tags
+	if s, ok := sections["category"]; ok && len(s.lines) > 0 {
+		val := extractScalarValue(s.lines[0])
+		if val != "" && val != "null" && val != "~" {
+			changes = append(changes, Change{
+				Type:   "category_to_tags",
+				Detail: fmt.Sprintf("add category %q to tags", val),
+			})
+		}
+	}
+
 	// Missing modern fields
 	if _, ok := sections["delivery"]; !ok && cfg.Delivery != nil {
 		changes = append(changes, Change{Type: "add_field", Detail: "add delivery: section"})
@@ -127,7 +175,7 @@ var conditionalDrops = map[string]bool{
 }
 
 // canonicalOrder defines the field emission order.
-// Fields not in this list are emitted as "extras" before next_actions.
+// Fields not in this list are emitted as "extras" after the canonical fields.
 var canonicalOrder = []string{
 	"id", "type", "status", "created", "last_touched",
 	"_blank_1",
@@ -149,6 +197,9 @@ var canonicalOrder = []string{
 	"priority", "severity", "category", "repo", "source",
 	"approach_decision",
 	"assigned_to", "last_touched_by",
+	"tags", "epic", "sprint",
+	"_blank_taxonomy",
+	"sessions",
 	"parallel_group",
 	"_blank_9",
 	"depends_on",
@@ -304,14 +355,82 @@ func (b *builder) emitField(field string) {
 		b.emitListIfPresent("next_actions", b.item.NextActions)
 	case "invariants":
 		b.emitListIfPresent("invariants", b.item.Invariants)
+	case "priority":
+		b.emitPriority()
 	case "tags":
-		b.emitListIfPresent("tags", b.item.Tags)
+		b.emitTags()
+	case "epic":
+		b.emitScalarIfPresent("epic", b.item.Epic)
+	case "sprint":
+		b.emitScalarIfPresent("sprint", b.item.Sprint)
+	case "sessions":
+		b.emitListIfPresent("sessions", b.item.Sessions)
 	default:
 		// Use raw section for fields not explicitly handled
 		b.emitRaw(field)
 	}
 
 	b.emitted[field] = true
+}
+
+func (b *builder) emitPriority() {
+	s, ok := b.sections["priority"]
+	if !ok || len(s.lines) == 0 {
+		return
+	}
+	rawVal := extractScalarValue(s.lines[0])
+	if rawVal == "" || rawVal == "null" || rawVal == "~" {
+		b.add("priority: null")
+		return
+	}
+	// Already numeric?
+	if _, err := strconv.Atoi(rawVal); err == nil {
+		b.add("priority: " + rawVal)
+		return
+	}
+	// Map string to int
+	if n, ok := priorityMap[rawVal]; ok {
+		b.add(fmt.Sprintf("priority: %d", n))
+		return
+	}
+	// Unknown string — preserve as-is
+	b.add("priority: " + rawVal)
+}
+
+func (b *builder) emitTags() {
+	tags := b.item.Tags
+
+	// Category-to-tags: if category has a value, ensure it's in tags
+	if s, ok := b.sections["category"]; ok && len(s.lines) > 0 {
+		catVal := extractScalarValue(s.lines[0])
+		if catVal != "" && catVal != "null" && catVal != "~" {
+			if !stringSliceContains(tags, catVal) {
+				tags = append([]string{catVal}, tags...)
+			}
+		}
+	}
+
+	if len(tags) == 0 {
+		// Check if raw section has tags content
+		if s, inSource := b.sections["tags"]; inSource && !isEmptyListSection(s) {
+			b.emitRaw("tags")
+			return
+		}
+		return // No tags — skip entirely
+	}
+	b.emitList("tags", tags)
+}
+
+func (b *builder) emitScalarIfPresent(key, val string) {
+	_, inSource := b.sections[key]
+	if !inSource && val == "" {
+		return // Not in source and no data — skip
+	}
+	if val == "" {
+		b.add(key + ": null")
+	} else {
+		b.add(key + ": " + val)
+	}
 }
 
 func (b *builder) emitTitle() {
@@ -687,6 +806,15 @@ func suiteValue(te map[string]interface{}, name string) string {
 		return v
 	}
 	return "null"
+}
+
+func stringSliceContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func maxKeyLen(keys []string) int {

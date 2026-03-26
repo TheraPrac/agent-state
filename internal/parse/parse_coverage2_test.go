@@ -178,9 +178,16 @@ priority: 1
 	if err != nil {
 		t.Fatalf("File: %v", err)
 	}
-	// Priority is stored in Category as string (per storeScalar)
-	if item.Category != "1" {
-		t.Errorf("priority stored in Category = %q, want '1'", item.Category)
+	// Priority is parsed as numeric int
+	if item.Priority == nil {
+		t.Fatal("Priority is nil, want 1")
+	}
+	if *item.Priority != 1 {
+		t.Errorf("Priority = %d, want 1", *item.Priority)
+	}
+	// Category should be unaffected
+	if item.Category != "" {
+		t.Errorf("Category = %q, want empty (priority should not leak)", item.Category)
 	}
 }
 

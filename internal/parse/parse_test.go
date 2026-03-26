@@ -267,6 +267,87 @@ next_actions:
 	}
 }
 
+func TestParseNumericPriority(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+priority: 2
+category: security
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+
+	if item.Priority == nil {
+		t.Fatal("Priority is nil, want 2")
+	}
+	if *item.Priority != 2 {
+		t.Errorf("Priority = %d, want 2", *item.Priority)
+	}
+	if item.Category != "security" {
+		t.Errorf("Category = %q, want %q", item.Category, "security")
+	}
+}
+
+func TestParseStringPriorityDoesNotPollute(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+priority: alpha-critical
+category: security
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+
+	// String priority should NOT be parsed into Priority field
+	if item.Priority != nil {
+		t.Errorf("Priority = %d, want nil (string priority should not parse)", *item.Priority)
+	}
+	// Category must NOT be overwritten by priority string
+	if item.Category != "security" {
+		t.Errorf("Category = %q, want %q (priority leaked into category)", item.Category, "security")
+	}
+	// Raw document should still have the string value for migration
+	val, ok := item.Doc.GetField("priority")
+	if !ok || val != "alpha-critical" {
+		t.Errorf("Doc.GetField(priority) = %q/%v, want alpha-critical/true", val, ok)
+	}
+}
+
+func TestParsePriorityZero(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+priority: 0
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+
+	if item.Priority == nil {
+		t.Fatal("Priority is nil, want 0")
+	}
+	if *item.Priority != 0 {
+		t.Errorf("Priority = %d, want 0", *item.Priority)
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

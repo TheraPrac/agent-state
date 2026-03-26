@@ -50,6 +50,9 @@ type Config struct {
 	// Multi-agent support (optional)
 	Agents *AgentsConfig
 
+	// Session guidance text (optional, shown in prime output)
+	Guidance string
+
 	// Root directory (where .as/ lives, or CWD)
 	root string
 }
@@ -165,6 +168,21 @@ func (c *Config) IndexPath() string {
 // AgentID returns the current agent identity from $AS_AGENT_ID.
 func (c *Config) AgentID() string {
 	return os.Getenv("AS_AGENT_ID")
+}
+
+// EpicsPath returns the path to the epics/sprints registry file.
+func (c *Config) EpicsPath() string {
+	return filepath.Join(c.root, ".as", "epics.yaml")
+}
+
+// NotesPath returns the path to the notes registry file.
+func (c *Config) NotesPath() string {
+	return filepath.Join(c.root, ".as", "notes.yaml")
+}
+
+// SessionID returns the current Claude Code session ID from $AS_SESSION_ID.
+func (c *Config) SessionID() string {
+	return os.Getenv("AS_SESSION_ID")
 }
 
 // ValidStatuses returns the allowed statuses for a given item type.
@@ -396,6 +414,9 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 		cfg.Project.Name = val
 	case "description":
 		cfg.Project.Description = val
+
+	case "guidance":
+		cfg.Guidance = val
 
 	case "project":
 		switch key {

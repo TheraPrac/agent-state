@@ -78,6 +78,15 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	item.Doc.SetField("completed", nowStr)
 	item.Doc.SetField("last_touched", nowStr)
 
+	// Record completion time tracking
+	setNestedField(item, "time_tracking", "completed_at", nowStr)
+	if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
+		if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
+			hours := now.Sub(t).Hours()
+			setNestedField(item, "time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", hours))
+		}
+	}
+
 	if opts.Reason != "" {
 		item.Doc.SetField("resolution", opts.Reason)
 	}

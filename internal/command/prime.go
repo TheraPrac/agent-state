@@ -14,15 +14,18 @@ import (
 
 // PrimeOpts holds flags for the prime command.
 type PrimeOpts struct {
-	Format string // "markdown" (default) or "json"
+	Format  string // "markdown" (default) or "json"
+	Compact bool   // compact output for hook injection (~50 lines)
 }
 
 type primeData struct {
-	Active  []primeItem `json:"active"`
-	Ready   []primeItem `json:"ready"`
-	Issues  int         `json:"open_issues"`
-	Queued  int         `json:"queued_tasks"`
-	Archive int         `json:"archived"`
+	Active           []primeItem    `json:"active"`
+	Ready            []primeItem    `json:"ready"`
+	Issues           int            `json:"open_issues"`
+	IssuesBySeverity map[string]int `json:"issues_by_severity"`
+	Queued           int            `json:"queued_tasks"`
+	Archive          int            `json:"archived"`
+	Guidance         string         `json:"guidance,omitempty"`
 }
 
 type primeItem struct {
@@ -66,36 +69,62 @@ func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	}
 	b.WriteString("\n")
 
-	// Ready queue (top 5)
-	b.WriteString("## Ready (top 5)\n")
-	if len(data.Ready) == 0 {
+	// Ready queue
+	readyLimit := 5
+	if opts.Compact {
+		readyLimit = 3
+	}
+	readyLabel := fmt.Sprintf("## Ready (top %d)\n", readyLimit)
+	b.WriteString(readyLabel)
+	shown := data.Ready
+	if len(shown) > readyLimit {
+		shown = shown[:readyLimit]
+	}
+	if len(shown) == 0 {
 		b.WriteString("  (none)\n")
 	} else {
-		for _, item := range data.Ready {
+		for _, item := range shown {
 			b.WriteString(fmt.Sprintf("  %-8s p%d  %s\n", item.ID, item.Priority, item.Title))
 		}
 	}
 	b.WriteString("\n")
 
+	// Open issues by severity
+	b.WriteString("## Open Issues\n")
+	blocking := data.IssuesBySeverity["critical"] + data.IssuesBySeverity["high"]
+	important := data.IssuesBySeverity["medium"]
+	techDebt := data.IssuesBySeverity["low"]
+	b.WriteString(fmt.Sprintf("  %d blocking  %d important  %d tech-debt\n\n", blocking, important, techDebt))
+
 	// Summary
 	b.WriteString("## Summary\n")
 	b.WriteString(fmt.Sprintf("  %d open issues  %d queued tasks  %d archived\n\n", data.Issues, data.Queued, data.Archive))
 
-	// Command reference
-	b.WriteString("## Commands\n")
-	b.WriteString("  as show <id>     — item detail\n")
-	b.WriteString("  as start <id>    — claim and activate\n")
-	b.WriteString("  as close <id> <resolution> — close with gates\n")
-	b.WriteString("  as status        — dashboard\n")
-	b.WriteString("  as ready         — unblocked items\n")
-	b.WriteString("  as check         — validate all files\n")
+	// Guidance
+	if data.Guidance != "" {
+		b.WriteString("## Guidance\n")
+		b.WriteString(fmt.Sprintf("  %s\n\n", data.Guidance))
+	}
+
+	// Command reference (omit in compact mode)
+	if !opts.Compact {
+		b.WriteString("## Commands\n")
+		b.WriteString("  as show <id>     — item detail\n")
+		b.WriteString("  as start <id>    — claim and activate\n")
+		b.WriteString("  as close <id> <resolution> — close with gates\n")
+		b.WriteString("  as status        — dashboard\n")
+		b.WriteString("  as ready         — unblocked items\n")
+		b.WriteString("  as check         — validate all files\n")
+	}
 
 	fmt.Print(b.String())
 	return 0
 }
 
 func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData {
-	data := primeData{}
+	data := primeData{
+		IssuesBySeverity: make(map[string]int),
+	}
 
 	// Active work
 	active := s.List(store.StatusFilter("active"))
@@ -109,13 +138,9 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 		})
 	}
 
-	// Ready queue (top 5)
+	// Ready queue (all of them — caller trims for display)
 	ready := g.Ready()
-	limit := 5
-	if len(ready) < limit {
-		limit = len(ready)
-	}
-	for _, item := range ready[:limit] {
+	for _, item := range ready {
 		p := 2
 		if item.Priority != nil {
 			p = *item.Priority
@@ -127,10 +152,15 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 		})
 	}
 
-	// Counts
+	// Counts and issue severity
 	for _, item := range s.All() {
 		if item.Type == "issue" && item.Status == "open" {
 			data.Issues++
+			sev := item.Severity
+			if sev == "" {
+				sev = "medium"
+			}
+			data.IssuesBySeverity[sev]++
 		}
 		if isStartStatus(item, cfg) {
 			data.Queued++
@@ -139,6 +169,9 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 			data.Archive++
 		}
 	}
+
+	// Guidance from config
+	data.Guidance = cfg.Guidance
 
 	return data
 }

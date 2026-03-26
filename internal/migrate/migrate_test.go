@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -453,9 +454,9 @@ func TestCanonical_LegacyFormat(t *testing.T) {
 		t.Error("expected pr: [] in work_tracking")
 	}
 
-	// Should preserve priority as raw section
-	if !strings.Contains(canonical, "priority: post-mvp") {
-		t.Error("expected priority: post-mvp to be preserved")
+	// Should convert string priority to numeric
+	if !strings.Contains(canonical, "priority: 3") {
+		t.Error("expected priority: 3 (converted from post-mvp)")
 	}
 
 	// Should preserve invariants
@@ -862,4 +863,185 @@ func TestCanonical_RoundtripStability(t *testing.T) {
 		}
 		t.Error("canonical output should be stable across roundtrips")
 	}
+}
+
+func TestPriorityConversion(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"alpha-critical", "priority: alpha-critical", "priority: 0"},
+		{"blocking", "priority: blocking", "priority: 0"},
+		{"production-critical", "priority: production-critical", "priority: 1"},
+		{"high", "priority: high", "priority: 1"},
+		{"normal", "priority: normal", "priority: 2"},
+		{"medium", "priority: medium", "priority: 2"},
+		{"med", "priority: med", "priority: 2"},
+		{"post-alpha", "priority: post-alpha", "priority: 3"},
+		{"post-mvp", "priority: post-mvp", "priority: 3"},
+		{"low", "priority: low", "priority: 4"},
+		{"numeric-passthrough", "priority: 2", "priority: 2"},
+		{"null-passthrough", "priority: null", "priority: null"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := fmt.Sprintf("id: T-999\ntype: task\nstatus: queued\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\ntitle: test\n%s\n", tt.raw)
+			dir := t.TempDir()
+			path := writeTestFile(t, dir, "T-999.md", content)
+			item, err := parse.File(path)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			cfg := testConfigNoTesting()
+			canonical := Canonical(item, cfg)
+			if !strings.Contains(canonical, tt.want) {
+				t.Errorf("canonical does not contain %q:\n%s", tt.want, canonical)
+			}
+		})
+	}
+}
+
+func TestCategoryToTags(t *testing.T) {
+	content := `id: T-999
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+category: security
+`
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "T-999.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg := testConfigNoTesting()
+	canonical := Canonical(item, cfg)
+
+	// Should have tags with category value
+	if !strings.Contains(canonical, "tags:\n- security") {
+		t.Errorf("expected tags with security, got:\n%s", canonical)
+	}
+	// Should still have category field
+	if !strings.Contains(canonical, "category: security") {
+		t.Errorf("expected category: security preserved, got:\n%s", canonical)
+	}
+}
+
+func TestCategoryToTagsNoDuplicate(t *testing.T) {
+	content := `id: T-999
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+category: security
+tags:
+- security
+- hardening
+`
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "T-999.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg := testConfigNoTesting()
+	canonical := Canonical(item, cfg)
+
+	// Should not duplicate security in tags
+	count := strings.Count(canonical, "- security")
+	if count != 1 {
+		t.Errorf("expected 1 occurrence of '- security', got %d:\n%s", count, canonical)
+	}
+}
+
+func TestCategoryToTagsRoundtripStable(t *testing.T) {
+	content := `id: T-999
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+category: agent-tooling
+`
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "T-999.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg := testConfigNoTesting()
+
+	first := Canonical(item, cfg)
+
+	// Re-parse and re-canonicalize
+	path2 := writeTestFile(t, dir, "T-999-c.md", first)
+	item2, err := parse.File(path2)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	second := Canonical(item2, cfg)
+
+	if first != second {
+		t.Errorf("category-to-tags not idempotent:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestCanonicalOrderIncludesTaxonomy(t *testing.T) {
+	content := `id: T-999
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+category: api
+epic: brightly-dancing-fox
+sprint: calmly-running-bear
+tags:
+- api
+- billing
+sessions:
+- abc-123
+`
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "T-999.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg := testConfigNoTesting()
+	canonical := Canonical(item, cfg)
+
+	// Verify field ordering: tags, epic, sprint should appear after category
+	catIdx := strings.Index(canonical, "category:")
+	tagsIdx := strings.Index(canonical, "tags:")
+	epicIdx := strings.Index(canonical, "epic:")
+	sprintIdx := strings.Index(canonical, "sprint:")
+	sessionsIdx := strings.Index(canonical, "sessions:")
+	depsIdx := strings.Index(canonical, "depends_on:")
+
+	if tagsIdx < catIdx {
+		t.Error("tags should appear after category")
+	}
+	if epicIdx < tagsIdx {
+		t.Error("epic should appear after tags")
+	}
+	if sprintIdx < epicIdx {
+		t.Error("sprint should appear after epic")
+	}
+	if sessionsIdx < sprintIdx {
+		t.Error("sessions should appear after sprint")
+	}
+	if depsIdx > 0 && sessionsIdx > depsIdx {
+		t.Error("sessions should appear before depends_on")
+	}
+}
+
+// testConfigNoTesting returns a config without testing/delivery for simpler tests.
+func testConfigNoTesting() *config.Config {
+	cfg := config.Defaults()
+	return cfg
 }

@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/migrate"
@@ -12,6 +13,7 @@ import (
 // MigrateOpts configures the migrate command.
 type MigrateOpts struct {
 	DryRun bool
+	Scope  string // "archive", "active", or "" (all)
 }
 
 // Migrate normalizes all item files to canonical schema.
@@ -21,6 +23,14 @@ func Migrate(s *store.Store, cfg *config.Config, opts MigrateOpts) int {
 	for id, item := range s.All() {
 		path, ok := s.Path(id)
 		if !ok {
+			continue
+		}
+
+		// Scope filter
+		if opts.Scope == "archive" && !strings.Contains(path, "/archive/") {
+			continue
+		}
+		if opts.Scope == "active" && strings.Contains(path, "/archive/") {
 			continue
 		}
 

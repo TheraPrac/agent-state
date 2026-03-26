@@ -77,6 +77,20 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		item.AssignedTo = agentID
 	}
 
+	// Record session ID if present
+	sessionID := os.Getenv("AS_SESSION_ID")
+	if sessionID != "" {
+		item.Sessions = append(item.Sessions, sessionID)
+		updateListInDoc(item, "sessions", item.Sessions)
+	}
+
+	// Record started_at in time_tracking
+	if item.TimeTracking == nil {
+		item.TimeTracking = make(map[string]interface{})
+	}
+	item.TimeTracking["started_at"] = now
+	setNestedField(item, "time_tracking", "started_at", now)
+
 	if err := s.Write(item); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
