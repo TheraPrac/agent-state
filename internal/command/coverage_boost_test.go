@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1018,4 +1019,107 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// --- I-100: Untagged/un-epicked items must render under "Unassigned" header ---
+
+func TestStatusQueuedUnassignedHeader(t *testing.T) {
+	// Setup: epic task (has epic + tag) AND orphan tasks (no epic, no tags).
+	// The orphan tasks must appear under a "◆ Unassigned" header, not bleed
+	// into the epic's tag section.
+	_, cfg := setupTestEnv(t)
+	root := cfg.Root()
+
+	// Create an epic
+	r := &registry.Registry{}
+	e := r.AddEpic("Infra Epic")
+	r.Save(cfg.EpicsPath())
+
+	// Epic task with tag
+	writeFile(t, filepath.Join(root, "tasks", "T-010-epic.md"), `id: T-010
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Epic task with tag
+epic: `+e.ID+`
+tags: [agent-tooling]
+depends_on:
+- []
+next_actions:
+- []
+`)
+
+	// Orphan task — no epic, no tags
+	writeFile(t, filepath.Join(root, "tasks", "T-011-orphan.md"), `id: T-011
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Orphan task no epic no tags
+depends_on:
+- []
+next_actions:
+- []
+`)
+
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	// Capture stdout
+	old := os.Stdout
+	rd, w, _ := os.Pipe()
+	os.Stdout = w
+	Status(s, cfg, "", StatusOpts{Tasks: true})
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := rd.Read(buf)
+	output := string(buf[:n])
+
+	// Strip ANSI codes for easier assertions
+	stripped := stripANSI(output)
+
+	if !strings.Contains(stripped, "Unassigned") {
+		t.Errorf("expected 'Unassigned' header for orphan tasks, got:\n%s", stripped)
+	}
+
+	// Orphan task should appear after the Unassigned header, not under the epic
+	unassignedIdx := strings.Index(stripped, "Unassigned")
+	orphanIdx := strings.Index(stripped, "T-011")
+	epicTaskIdx := strings.Index(stripped, "T-010")
+
+	if unassignedIdx < 0 || orphanIdx < 0 {
+		t.Fatalf("missing expected content: Unassigned=%d, T-011=%d", unassignedIdx, orphanIdx)
+	}
+	if epicTaskIdx >= 0 && epicTaskIdx > unassignedIdx {
+		t.Error("epic task should appear before Unassigned section")
+	}
+	if orphanIdx < unassignedIdx {
+		t.Error("orphan task should appear after Unassigned header")
+	}
+}
+
+func stripANSI(s string) string {
+	// Simple ANSI stripper — removes ESC[...m sequences
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
 }

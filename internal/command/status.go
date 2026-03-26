@@ -315,8 +315,15 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 	fmt.Printf("%s━━━ QUEUED TASKS ━━━%s\n", cBoldW, cReset)
 	fmt.Printf("  %s%d queued%s\n\n", cBold, len(queuedTasks), cReset)
 
-	currentEpic := ""
+	currentEpic := "\x00" // sentinel — forces header on first group
 	currentSprint := ""
+	hasEpicItems := false
+	for _, k := range keys {
+		if k.epic != "" {
+			hasEpicItems = true
+			break
+		}
+	}
 	for _, k := range keys {
 		grp := groupMap[k]
 
@@ -326,6 +333,10 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			currentSprint = ""
 			if grp.epic != "" {
 				fmt.Printf("\n  %s◆ %s — %s%s\n", cBoldM, grp.epic, grp.eTitle, cReset)
+			} else if hasEpicItems {
+				// Only print "Unassigned" when there are also epic items,
+				// so orphan items are visually separated from epic groups.
+				fmt.Printf("\n  %s◆ Unassigned%s\n", cBoldM, cReset)
 			}
 		}
 
@@ -338,7 +349,7 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 		}
 
 		// Tag subheader (blue with icon)
-		if grp.tag != "uncategorized" || grp.epic != "" {
+		if grp.tag != "uncategorized" {
 			fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
 		}
 
