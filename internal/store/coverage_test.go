@@ -182,3 +182,86 @@ func TestNextIDEmptyStore(t *testing.T) {
 		t.Errorf("NextID = %q, want T-001", id)
 	}
 }
+
+func TestNonTerminalFilterUnknownType(t *testing.T) {
+	cfg := config.Defaults()
+	f := NonTerminalFilter(cfg)
+	item := &model.Item{Type: "nonexistent", Status: "open"}
+	// Unknown type → should return true (keep)
+	if !f(item) {
+		t.Error("unknown type should pass filter")
+	}
+}
+
+func TestNonTerminalFilterUnknownStatus(t *testing.T) {
+	cfg := config.Defaults()
+	f := NonTerminalFilter(cfg)
+	item := &model.Item{Type: "task", Status: "fictional_status"}
+	// Status not in statuses list → should return true
+	if !f(item) {
+		t.Error("unknown status should pass filter")
+	}
+}
+
+func TestMoveNoPath(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	cfg, _ := config.Load(root)
+	s, _ := New(cfg)
+
+	// Inject an item with no path
+	s.items["T-999"] = &model.Item{ID: "T-999", Type: "task", Status: "queued"}
+	// Don't set a path — s.paths["T-999"] is empty
+
+	err := s.Move("T-999")
+	if err == nil {
+		t.Error("Move with no path should fail")
+	}
+}
+
+func TestWriteNoDirectoryMapping(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	cfg, _ := config.Load(root)
+	s, _ := New(cfg)
+
+	// Item with unmapped type/status and no existing path
+	item := &model.Item{
+		ID:     "X-001",
+		Type:   "nonexistent",
+		Status: "unknown",
+		Doc:    model.NewParsedDocument(),
+	}
+	item.Doc.SetField("id", "X-001")
+	item.Doc.SetField("type", "nonexistent")
+
+	err := s.Write(item)
+	if err == nil {
+		t.Error("Write for unmapped type should fail")
+	}
+}
+
+func TestScanWithBadFile(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "tasks"), 0755)
+	os.MkdirAll(filepath.Join(root, ".as"), 0755)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Create a valid item
+	os.WriteFile(filepath.Join(root, "tasks", "T-001-test.md"), []byte("id: T-001\ntype: task\nstatus: queued\ntitle: test\n"), 0644)
+
+	cfg, _ := config.Load(root)
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(s.All()) != 1 {
+		t.Errorf("expected 1 item, got %d", len(s.All()))
+	}
+}

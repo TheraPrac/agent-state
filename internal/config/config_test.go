@@ -207,6 +207,110 @@ func TestAgentID(t *testing.T) {
 	}
 }
 
+func TestEpicsPath(t *testing.T) {
+	root := t.TempDir()
+	cfg, _ := Load(root)
+	got := cfg.EpicsPath()
+	want := filepath.Join(root, ".as", "epics.yaml")
+	if got != want {
+		t.Errorf("EpicsPath() = %q, want %q", got, want)
+	}
+}
+
+func TestNotesPath(t *testing.T) {
+	root := t.TempDir()
+	cfg, _ := Load(root)
+	got := cfg.NotesPath()
+	want := filepath.Join(root, ".as", "notes.yaml")
+	if got != want {
+		t.Errorf("NotesPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSessionID(t *testing.T) {
+	cfg := Defaults()
+	os.Unsetenv("AS_SESSION_ID")
+	if id := cfg.SessionID(); id != "" {
+		t.Errorf("SessionID() = %q, want empty", id)
+	}
+	os.Setenv("AS_SESSION_ID", "test-session-123")
+	defer os.Unsetenv("AS_SESSION_ID")
+	if id := cfg.SessionID(); id != "test-session-123" {
+		t.Errorf("SessionID() = %q, want %q", id, "test-session-123")
+	}
+}
+
+func TestSplitKVNoColon(t *testing.T) {
+	key, val := splitKV("no-colon-here")
+	if key != "no-colon-here" || val != "" {
+		t.Errorf("splitKV(no colon) = %q, %q", key, val)
+	}
+}
+
+func TestSplitKVWithComment(t *testing.T) {
+	key, val := splitKV("name: value # comment")
+	if key != "name" || val != "value" {
+		t.Errorf("splitKV(with comment) = %q, %q", key, val)
+	}
+}
+
+func TestSplitKVWithQuotes(t *testing.T) {
+	key, val := splitKV(`title: "quoted value"`)
+	if key != "title" || val != "quoted value" {
+		t.Errorf("splitKV(quoted) = %q, %q", key, val)
+	}
+}
+
+func TestLoadConfigWithListItems(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	// Config with list items and inline lists to exercise applyListItem + applyInlineList
+	configContent := `project:
+  name: list-test
+fields:
+  required: [id, type, status, title]
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Project.Name != "list-test" {
+		t.Errorf("project.name = %q", cfg.Project.Name)
+	}
+	if len(cfg.Fields.Required) < 4 {
+		t.Errorf("fields.required = %v, want at least 4", cfg.Fields.Required)
+	}
+}
+
+func TestLoadConfigWithDashListItems(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	// Config with dash-prefixed list items
+	configContent := `project:
+  name: dash-test
+fields:
+  required:
+    - id
+    - type
+    - status
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Project.Name != "dash-test" {
+		t.Errorf("project.name = %q", cfg.Project.Name)
+	}
+}
+
 func TestItemDir(t *testing.T) {
 	root := t.TempDir()
 	asDir := filepath.Join(root, ".as")

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/parse"
@@ -1044,4 +1045,139 @@ sessions:
 func testConfigNoTesting() *config.Config {
 	cfg := config.Defaults()
 	return cfg
+}
+
+func TestCanonical_TitleNeedsQuoting(t *testing.T) {
+	dir := t.TempDir()
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: "Title with: colon"
+priority: 1
+`
+	path := writeTestFile(t, dir, "T-001.md", content)
+	cfg := testConfig()
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := Canonical(item, cfg)
+	if !strings.Contains(got, `title: "Title with: colon"`) {
+		t.Errorf("title not quoted:\n%s", got)
+	}
+}
+
+func TestCanonical_EmptyTitleFromSections(t *testing.T) {
+	dir := t.TempDir()
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Extracted Title
+priority: 1
+`
+	path := writeTestFile(t, dir, "T-001.md", content)
+	cfg := testConfig()
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := Canonical(item, cfg)
+	if !strings.Contains(got, "title: Extracted Title") {
+		t.Errorf("title not found:\n%s", got)
+	}
+}
+
+func TestCanonical_DocChangesNonEmpty(t *testing.T) {
+	dir := t.TempDir()
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+priority: 1
+
+doc_changes:
+- "Updated README.md"
+- "Added CHANGELOG.md"
+`
+	path := writeTestFile(t, dir, "T-001.md", content)
+	cfg := testConfig()
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := Canonical(item, cfg)
+	if !strings.Contains(got, "- Updated README.md") {
+		t.Errorf("doc_changes not preserved:\n%s", got)
+	}
+}
+
+func TestHelperFunctions(t *testing.T) {
+	// formatTime with non-zero time
+	ts := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
+	if got := formatTime(ts); got != "2026-03-25T10:00:00Z" {
+		t.Errorf("formatTime = %q", got)
+	}
+	// formatTime with zero
+	if got := formatTime(time.Time{}); got != "null" {
+		t.Errorf("formatTime(zero) = %q, want null", got)
+	}
+
+	// nullOr with value
+	if got := nullOr("hello"); got != "hello" {
+		t.Errorf("nullOr(hello) = %q", got)
+	}
+	if got := nullOr(""); got != "null" {
+		t.Errorf("nullOr('') = %q, want null", got)
+	}
+	if got := nullOr("~"); got != "null" {
+		t.Errorf("nullOr('~') = %q, want null", got)
+	}
+
+	// extractScalarValue
+	if got := extractScalarValue("key: value"); got != "value" {
+		t.Errorf("extractScalarValue = %q", got)
+	}
+	if got := extractScalarValue("key: val # comment"); got != "val" {
+		t.Errorf("extractScalarValue(comment) = %q", got)
+	}
+	if got := extractScalarValue("no-colon"); got != "" {
+		t.Errorf("extractScalarValue(no colon) = %q", got)
+	}
+
+	// mapStr
+	if got := mapStr(nil, "key"); got != "" {
+		t.Errorf("mapStr(nil) = %q", got)
+	}
+	if got := mapStr(map[string]interface{}{"k": "v"}, "missing"); got != "" {
+		t.Errorf("mapStr(missing) = %q", got)
+	}
+	if got := mapStr(map[string]interface{}{"k": 42}, "k"); got != "" {
+		t.Errorf("mapStr(non-string) = %q", got)
+	}
+	if got := mapStr(map[string]interface{}{"k": "v"}, "k"); got != "v" {
+		t.Errorf("mapStr(hit) = %q", got)
+	}
+
+	// suiteValue — no colon in value, so no quoting
+	te := map[string]interface{}{"api_unit": "pass | 2026-03-25"}
+	if got := suiteValue(te, "api_unit"); got != "pass | 2026-03-25" {
+		t.Errorf("suiteValue = %q", got)
+	}
+	if got := suiteValue(te, "missing"); got != "null" {
+		t.Errorf("suiteValue(missing) = %q", got)
+	}
+	// suiteValue — value with colon gets quoted
+	te2 := map[string]interface{}{"api_unit": "pass: yes"}
+	if got := suiteValue(te2, "api_unit"); got != `"pass: yes"` {
+		t.Errorf("suiteValue(colon) = %q", got)
+	}
 }

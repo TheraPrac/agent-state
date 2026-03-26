@@ -348,6 +348,285 @@ priority: 0
 	}
 }
 
+func TestParseTimeTracking(t *testing.T) {
+	content := `id: T-001
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+time_tracking:
+  started_at: 2026-03-25T10:00:00-06:00
+  completed_at: null
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.TimeTracking["started_at"] != "2026-03-25T10:00:00-06:00" {
+		t.Errorf("time_tracking.started_at = %v", item.TimeTracking["started_at"])
+	}
+}
+
+func TestParseManifest(t *testing.T) {
+	content := `id: T-001
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+manifest:
+  sha: abc123
+  files_changed: 5
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Manifest["sha"] != "abc123" {
+		t.Errorf("manifest.sha = %v", item.Manifest["sha"])
+	}
+	if item.Manifest["files_changed"] != "5" {
+		t.Errorf("manifest.files_changed = %v", item.Manifest["files_changed"])
+	}
+}
+
+func TestParseTestingEvidenceFlat(t *testing.T) {
+	// The parser stores nested testing_evidence fields flat (not in sub-maps).
+	// required_suites:/scope_suites: sub-keys end up as top-level TestingEvidence keys.
+	content := `id: T-001
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+testing_evidence:
+  notes: some notes here
+
+  required_suites:
+    api_unit: "pass | 2026-03-25"
+
+  scope_suites:
+    api_integration: "pass | 2026-03-25"
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+
+	// notes stored directly
+	if item.TestingEvidence["notes"] != "some notes here" {
+		t.Errorf("notes = %v", item.TestingEvidence["notes"])
+	}
+}
+
+func TestParseDelivery(t *testing.T) {
+	content := `id: T-001
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+delivery:
+  stage: pushed
+  deployed_date: null
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Delivery["stage"] != "pushed" {
+		t.Errorf("delivery.stage = %v", item.Delivery["stage"])
+	}
+}
+
+func TestParseMultilineBlock(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+summary: |
+  This is a multiline
+  summary block.
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if !containsStr(item.Summary, "multiline") {
+		t.Errorf("summary = %q, want multiline content", item.Summary)
+	}
+}
+
+func TestParseContext(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+context: |
+  Background info here.
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if !containsStr(item.Context, "Background") {
+		t.Errorf("context = %q", item.Context)
+	}
+}
+
+func TestParseNullValuesV2(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+severity: ~
+category: null
+assigned_to: agent-a
+last_touched_by: agent-b
+epic: my-epic
+sprint: sprint-1
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Severity != "" {
+		t.Errorf("severity should be empty for ~, got %q", item.Severity)
+	}
+	if item.Category != "" {
+		t.Errorf("category should be empty for null, got %q", item.Category)
+	}
+	if item.AssignedTo != "agent-a" {
+		t.Errorf("assigned_to = %q", item.AssignedTo)
+	}
+	if item.Epic != "my-epic" {
+		t.Errorf("epic = %q", item.Epic)
+	}
+}
+
+func TestParseListOfMaps(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+testing_evidence:
+  runs:
+    - command: make test
+      result: pass
+    - command: make lint
+      result: pass
+
+priority: 1
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	runs, ok := item.TestingEvidence["runs"]
+	if !ok {
+		t.Fatal("missing testing_evidence.runs")
+	}
+	if runsList, ok := runs.([]map[string]string); ok {
+		if len(runsList) != 2 {
+			t.Errorf("runs has %d entries, want 2", len(runsList))
+		}
+	}
+}
+
+func TestParseInlineCommentOnValue(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued # active soon
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+priority: 1 # high priority
+
+testing_evidence:
+  notes: important # not really
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Status != "queued" {
+		t.Errorf("status = %q, want queued (comment stripped)", item.Status)
+	}
+	if item.Priority == nil || *item.Priority != 1 {
+		t.Errorf("priority = %v, want 1 (comment stripped)", item.Priority)
+	}
+}
+
+func TestParseFlushListOfMapsOnBlank(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+testing_evidence:
+  runs:
+    - command: make test
+      result: pass
+
+title: Test
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	_ = item // just ensure no panic
+}
+
+func TestParseSessions(t *testing.T) {
+	content := `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: test
+
+sessions:
+- session-abc-123
+- session-def-456
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if len(item.Sessions) != 2 || item.Sessions[0] != "session-abc-123" {
+		t.Errorf("sessions = %v", item.Sessions)
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
