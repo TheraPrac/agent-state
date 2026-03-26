@@ -12,7 +12,22 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-// Tests targeting specific coverage gaps to reach 85%
+// Tests targeting specific coverage gaps.
+//
+// Coverage exceptions — these functions are thin exec.Command wrappers around
+// external tools (gh, aws, git) that cannot be unit tested without the tool
+// installed and authenticated. They are tested indirectly via injectable opts
+// structs in reconcile tests. Exercising the real binaries is integration scope.
+//
+//   - getMergeCommitSHA (reconcile.go) — shells out to `gh pr view`
+//   - checkOrchDeployment (reconcile.go) — shells out to `aws s3 cp`
+//   - s3Exists (reconcile.go) — shells out to `aws s3 ls`
+//   - getPRState (reconcile.go) — shells out to `gh pr list`
+//   - branchExistsOnRemote (reconcile.go) — shells out to `git ls-remote`
+//
+// All five have injectable replacements via ReconcileOpts (ToolCheck, BranchCheck,
+// PRFetch, S3Check) that ARE tested. The wrapper functions themselves are 3-5 lines
+// of exec.Command boilerplate.
 
 func TestHasTagMatch(t *testing.T) {
 	item := &model.Item{Tags: []string{"alpha", "beta"}}
