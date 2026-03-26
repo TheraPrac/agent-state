@@ -1,0 +1,423 @@
+package command
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/changelog"
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
+)
+
+// Tests for session 3.5 patch: release, commit, edit, start with worktrees.
+
+// === Release ===
+
+func TestReleaseHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	// T-003 is assigned to agent-a
+	code := Release(s, cfg, "T-003")
+	if code != 0 {
+		t.Errorf("Release returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-003")
+	if item.AssignedTo != "" {
+		t.Errorf("assigned_to = %q, want empty", item.AssignedTo)
+	}
+
+	// Verify changelog
+	entries, _ := changelog.Read(cfg, "T-003")
+	found := false
+	for _, e := range entries {
+		if e.Op == "release" && e.OldValue == "agent-a" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for release")
+	}
+}
+
+func TestReleaseNotAssigned(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// T-001 is not assigned
+	code := Release(s, cfg, "T-001")
+	if code != 1 {
+		t.Errorf("Release unassigned returned %d, want 1", code)
+	}
+}
+
+func TestReleaseNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Release(s, cfg, "T-999")
+	if code != 1 {
+		t.Errorf("Release not found returned %d, want 1", code)
+	}
+}
+
+// === Commit ===
+
+func TestCommitHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Commit(s, cfg, "T-001", "Fix the login bug")
+	if code != 0 {
+		t.Errorf("Commit returned %d, want 0", code)
+	}
+
+	// Verify changelog
+	entries, _ := changelog.Read(cfg, "T-001")
+	found := false
+	for _, e := range entries {
+		if e.Op == "commit" && e.NewValue == "Fix the login bug" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for commit")
+	}
+}
+
+func TestCommitMultiple(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Commit(s, cfg, "T-001", "First commit")
+	code := Commit(s, cfg, "T-001", "Second commit")
+	if code != 0 {
+		t.Errorf("Second commit returned %d, want 0", code)
+	}
+}
+
+func TestCommitNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Commit(s, cfg, "T-999", "msg")
+	if code != 1 {
+		t.Errorf("Commit not found returned %d, want 1", code)
+	}
+}
+
+func TestCommitNoDoc(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	item, _ := s.Get("T-001")
+	item.Doc = nil
+	code := Commit(s, cfg, "T-001", "msg")
+	if code != 1 {
+		t.Errorf("Commit no doc returned %d, want 1", code)
+	}
+}
+
+// Test appendToNestedList when parent section already has commits
+func TestCommitWithExistingWorkTracking(t *testing.T) {
+	root := setupTestEnvRoot(t)
+	writeFile(t, filepath.Join(root, "tasks", "T-010-wt.md"), `id: T-010
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Has work tracking
+
+work_tracking:
+  branch: feat/T-010-test
+  commits:
+  - []
+  pr: []
+`)
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	code := Commit(s, cfg, "T-010", "Initial commit")
+	if code != 0 {
+		t.Errorf("Commit with existing WT returned %d, want 0", code)
+	}
+
+	// Second commit should append
+	code = Commit(s, cfg, "T-010", "Follow-up fix")
+	if code != 0 {
+		t.Errorf("Second commit returned %d, want 0", code)
+	}
+}
+
+// === Edit ===
+
+func TestEditNoEditor(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	os.Unsetenv("EDITOR")
+	os.Unsetenv("VISUAL")
+
+	code := Edit(s, cfg, "T-001", "title")
+	if code != 1 {
+		t.Errorf("Edit without $EDITOR returned %d, want 1", code)
+	}
+}
+
+func TestEditNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Edit(s, cfg, "T-999", "title")
+	if code != 1 {
+		t.Errorf("Edit not found returned %d, want 1", code)
+	}
+}
+
+func TestEditNoDoc(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	item, _ := s.Get("T-001")
+	item.Doc = nil
+	code := Edit(s, cfg, "T-001", "title")
+	if code != 1 {
+		t.Errorf("Edit no doc returned %d, want 1", code)
+	}
+}
+
+func TestEditNoChanges(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// Use 'true' as editor — it doesn't modify the file
+	os.Setenv("EDITOR", "true")
+	defer os.Unsetenv("EDITOR")
+
+	code := Edit(s, cfg, "T-001", "title")
+	if code != 0 {
+		t.Errorf("Edit no-change returned %d, want 0", code)
+	}
+}
+
+// === Start with worktrees ===
+
+func TestStartRequiresSlugWithWorktrees(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"api"},
+		RepoMap: map[string]string{"api": "repo-a"},
+	}
+
+	code := Start(s, cfg, "T-001", StartOpts{})
+	if code != 2 {
+		t.Errorf("Start without slug returned %d, want 2", code)
+	}
+}
+
+func TestStartWithoutWorktreeConfig(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// No worktree config — should work without slug
+	code := Start(s, cfg, "T-001", StartOpts{})
+	if code != 0 {
+		t.Errorf("Start without worktree config returned %d, want 0", code)
+	}
+}
+
+// === Start: worktree creation helpers ===
+
+func TestBranchNaming(t *testing.T) {
+	// Verify the branch prefix logic indirectly through the error path
+	// (can't easily test actual git worktree creation without a real repo)
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled:   true,
+		BaseDir:   "worktrees",
+		ParentDir: "/nonexistent",
+		Repos:     []string{"api"},
+		RepoMap:   map[string]string{"api": "repo-a"},
+	}
+
+	// Task → feat/ prefix (will fail because repo doesn't exist, but tests the path)
+	code := Start(s, cfg, "T-001", StartOpts{Slug: "test-slug"})
+	if code != 1 {
+		t.Errorf("Start with bad repo returned %d, want 1", code)
+	}
+}
+
+func TestStartIssuePrefix(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled:   true,
+		BaseDir:   "worktrees",
+		ParentDir: "/nonexistent",
+		Repos:     []string{"api"},
+		RepoMap:   map[string]string{"api": "repo-a"},
+	}
+
+	// Issue → fix/ prefix
+	code := Start(s, cfg, "I-001", StartOpts{Slug: "bug-fix"})
+	if code != 1 {
+		t.Errorf("Start issue with bad repo returned %d, want 1", code)
+	}
+}
+
+func TestStartNoReposConfigured(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   nil,
+		RepoMap: nil,
+	}
+
+	code := Start(s, cfg, "T-001", StartOpts{Slug: "test"})
+	if code != 1 {
+		t.Errorf("Start with no repos returned %d, want 1", code)
+	}
+}
+
+// === Coverage: writeWorkinfo ===
+
+func TestWriteWorkinfo(t *testing.T) {
+	dir := t.TempDir()
+	writeWorkinfo(dir, "T-001", "feat/T-001-test", []string{"api", "web"})
+
+	path := filepath.Join(dir, ".workinfo")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read .workinfo: %v", err)
+	}
+	content := string(data)
+	if !containsStr(content, "name: T-001") {
+		t.Error("missing name")
+	}
+	if !containsStr(content, "branch: feat/T-001-test") {
+		t.Error("missing branch")
+	}
+	if !containsStr(content, "- api") {
+		t.Error("missing api repo")
+	}
+}
+
+// === Coverage: appendToNestedList edge cases ===
+
+func TestCommitCreatesWorkTracking(t *testing.T) {
+	// Item with no work_tracking section at all
+	root := setupTestEnvRoot(t)
+	writeFile(t, filepath.Join(root, "tasks", "T-010-bare.md"), `id: T-010
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Bare task
+`)
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	code := Commit(s, cfg, "T-010", "Fresh commit on bare item")
+	if code != 0 {
+		t.Errorf("Commit on bare item returned %d, want 0", code)
+	}
+}
+
+// === Coverage: DepRm missing doc path ===
+
+func TestDepRmDepNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepRm(s, cfg, "T-001", "T-999")
+	if code != 1 {
+		t.Errorf("DepRm dep not found returned %d, want 1", code)
+	}
+}
+
+// === Coverage: Edit with $VISUAL fallback ===
+
+func TestEditUsesVisual(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	os.Unsetenv("EDITOR")
+	os.Setenv("VISUAL", "true")
+	defer os.Unsetenv("VISUAL")
+
+	code := Edit(s, cfg, "T-001", "title")
+	if code != 0 {
+		t.Errorf("Edit with VISUAL returned %d, want 0", code)
+	}
+}
+
+// === Start with real git repo worktree creation ===
+
+func TestStartCreatesWorktreeWithGitRepo(t *testing.T) {
+	root := setupTestEnvRoot(t)
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	// Create a real git repo as a sibling directory (simulating monorepo layout)
+	parentDir := t.TempDir()
+	repoDir := filepath.Join(parentDir, "test-repo")
+	os.MkdirAll(repoDir, 0755)
+	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test"), 0644)
+	initTestGitRepo(t, repoDir)
+
+	// Use a relative BaseDir under the config root
+	os.MkdirAll(filepath.Join(root, "worktrees"), 0755)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled:   true,
+		BaseDir:   "worktrees",
+		ParentDir: parentDir,
+		Repos:     []string{"test"},
+		RepoMap:   map[string]string{"test": "test-repo"},
+	}
+
+	code := Start(s, cfg, "T-001", StartOpts{Slug: "my-feature"})
+	if code != 0 {
+		t.Errorf("Start with worktree returned %d, want 0", code)
+	}
+
+	// Verify worktree was created
+	expectedWtPath := filepath.Join(root, "worktrees", "T-001", "test-repo")
+	if _, err := os.Stat(expectedWtPath); err != nil {
+		t.Errorf("worktree not created at %s: %v", expectedWtPath, err)
+	}
+
+	// Verify .workinfo was created
+	workinfoPath := filepath.Join(root, "worktrees", "T-001", ".workinfo")
+	data, err := os.ReadFile(workinfoPath)
+	if err != nil {
+		t.Fatalf("reading .workinfo: %v", err)
+	}
+	if !containsStr(string(data), "feat/T-001-my-feature") {
+		t.Errorf(".workinfo missing branch name")
+	}
+}
+
+func initTestGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"add", "-A"},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// === Coverage: symlinkEnvFiles ===
+
+func TestSymlinkEnvFiles(t *testing.T) {
+	mainDir := t.TempDir()
+	wtDir := t.TempDir()
+
+	// Create .env files in main
+	os.WriteFile(filepath.Join(mainDir, ".env"), []byte("SECRET=1"), 0644)
+	os.WriteFile(filepath.Join(mainDir, ".env.local"), []byte("LOCAL=1"), 0644)
+	os.WriteFile(filepath.Join(mainDir, ".env.example"), []byte("EXAMPLE=1"), 0644)
+
+	symlinkEnvFiles(mainDir, wtDir)
+
+	// .env and .env.local should be symlinked
+	if _, err := os.Lstat(filepath.Join(wtDir, ".env")); err != nil {
+		t.Error(".env should be symlinked")
+	}
+	if _, err := os.Lstat(filepath.Join(wtDir, ".env.local")); err != nil {
+		t.Error(".env.local should be symlinked")
+	}
+	// .env.example should NOT be symlinked
+	if _, err := os.Lstat(filepath.Join(wtDir, ".env.example")); err == nil {
+		t.Error(".env.example should not be symlinked")
+	}
+}

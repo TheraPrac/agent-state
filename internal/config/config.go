@@ -116,9 +116,11 @@ type GitConfig struct {
 }
 
 type WorktreeConfig struct {
-	Enabled bool
-	BaseDir string
-	Repos   []string
+	Enabled   bool
+	BaseDir   string              // worktree root relative to config root (e.g. "worktrees")
+	ParentDir string              // parent of all repos (e.g. "/Users/x/Dev/project")
+	Repos     []string            // short repo names in default order (e.g. ["api", "web"])
+	RepoMap   map[string]string   // short name → directory name (e.g. "api" → "theraprac-api")
 }
 
 type AgentsConfig struct {

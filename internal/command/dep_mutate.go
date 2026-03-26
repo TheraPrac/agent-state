@@ -3,7 +3,6 @@ package command
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -204,10 +203,3 @@ func updateListInDoc(item *model.Item, key string, values []string) {
 	}
 }
 
-// formatList formats a list of values as a YAML-like inline or multiline string.
-func formatList(values []string) string {
-	if len(values) == 0 {
-		return "[]"
-	}
-	return "[" + strings.Join(values, ", ") + "]"
-}

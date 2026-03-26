@@ -102,13 +102,13 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 5: Try to start T-005 (should be blocked) ===
-	code = Start(s, cfg, "T-005")
+	code = Start(s, cfg, "T-005", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start blocked item returned %d, want 1", code)
 	}
 
 	// === Step 6: Start T-006 (dependency target) ===
-	code = Start(s, cfg, "T-006")
+	code = Start(s, cfg, "T-006", StartOpts{})
 	if code != 0 {
 		t.Fatalf("Start T-006 returned %d", code)
 	}
@@ -130,7 +130,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 8: Now start T-005 (should succeed, dep resolved) ===
-	code = Start(s, cfg, "T-005")
+	code = Start(s, cfg, "T-005", StartOpts{})
 	if code != 0 {
 		t.Fatalf("Start T-005 returned %d", code)
 	}
@@ -256,7 +256,7 @@ func TestLifecycleIssueWithSeverity(t *testing.T) {
 	}
 
 	// Start it
-	code = Start(s, cfg, "I-002")
+	code = Start(s, cfg, "I-002", StartOpts{})
 	if code != 0 {
 		t.Fatalf("Start issue returned %d", code)
 	}
@@ -282,7 +282,7 @@ func TestLifecycleAbandon(t *testing.T) {
 
 	// Create and start
 	Create(s, cfg, "task", "Will abandon", CreateOpts{Priority: 2})
-	Start(s, cfg, "T-005")
+	Start(s, cfg, "T-005", StartOpts{})
 
 	// Abandon with reason
 	code := Close(s, cfg, "T-005", "abandoned", CloseOpts{Reason: "no longer needed"})

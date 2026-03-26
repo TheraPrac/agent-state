@@ -63,6 +63,9 @@ func init() {
 	rootCmd.AddCommand(closeCmd)
 	rootCmd.AddCommand(readyCmd)
 	rootCmd.AddCommand(finishCmd)
+	rootCmd.AddCommand(releaseCmd)
+	rootCmd.AddCommand(commitCmd)
+	rootCmd.AddCommand(editCmd)
 
 	// Read/query commands
 	rootCmd.AddCommand(statusCmd)
@@ -125,6 +128,10 @@ func init() {
 
 	// Flags: check
 	checkCmd.Flags().BoolP("quiet", "q", false, "exit code only, no output")
+
+	// Flags: start
+	startCmd.Flags().String("slug", "", "branch slug (e.g. 'uat-database-reset')")
+	startCmd.Flags().StringSlice("repos", nil, "repos to create worktrees for (overrides config)")
 
 	// Flags: close
 	closeCmd.Flags().String("reason", "", "reason for abandonment/wontfix")
@@ -221,10 +228,14 @@ var checkCmd = &cobra.Command{
 
 var startCmd = &cobra.Command{
 	Use:   "start <id>",
-	Short: "Claim and activate an item",
+	Short: "Claim and activate an item (creates worktrees if configured)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		os.Exit(command.Start(s, cfg, args[0]))
+		slug, _ := cmd.Flags().GetString("slug")
+		reposFlag, _ := cmd.Flags().GetStringSlice("repos")
+		os.Exit(command.Start(s, cfg, args[0], command.StartOpts{
+			Slug: slug, Repos: reposFlag,
+		}))
 	},
 }
 
@@ -407,5 +418,32 @@ var logCmd = &cobra.Command{
 		}
 		limit, _ := cmd.Flags().GetInt("limit")
 		os.Exit(command.Log(s, cfg, id, command.LogOpts{Limit: limit}))
+	},
+}
+
+var releaseCmd = &cobra.Command{
+	Use:   "release <id>",
+	Short: "Clear agent assignment on an item",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.Release(s, cfg, args[0]))
+	},
+}
+
+var commitCmd = &cobra.Command{
+	Use:   "commit <id> <message>",
+	Short: "Record a commit message on an item",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.Commit(s, cfg, args[0], args[1]))
+	},
+}
+
+var editCmd = &cobra.Command{
+	Use:   "edit <id> <field>",
+	Short: "Edit a field interactively with $EDITOR",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.Edit(s, cfg, args[0], args[1]))
 	},
 }

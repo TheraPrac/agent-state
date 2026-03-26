@@ -396,7 +396,7 @@ func TestFinishNoIDWithWorktree(t *testing.T) {
 
 func TestStartRecordsChangelog(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
-	Start(s, cfg, "T-001")
+	Start(s, cfg, "T-001", StartOpts{})
 
 	entries, _ := changelog.Read(cfg, "T-001")
 	found := false

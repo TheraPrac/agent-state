@@ -277,7 +277,7 @@ func TestCreateWithTag(t *testing.T) {
 
 func TestStartHappy(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Start(s, cfg, "T-001")
+	code := Start(s, cfg, "T-001", StartOpts{})
 	if code != 0 {
 		t.Errorf("Start T-001 returned %d, want 0", code)
 	}
@@ -291,7 +291,7 @@ func TestStartHappy(t *testing.T) {
 func TestStartBlocked(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// T-002 depends on T-001 which is queued — should block
-	code := Start(s, cfg, "T-002")
+	code := Start(s, cfg, "T-002", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start blocked item returned %d, want 1", code)
 	}
@@ -299,7 +299,7 @@ func TestStartBlocked(t *testing.T) {
 
 func TestStartAlreadyActive(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Start(s, cfg, "T-003")
+	code := Start(s, cfg, "T-003", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start already-active returned %d, want 1", code)
 	}
@@ -315,7 +315,7 @@ func TestStartAssignedToOther(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.AssignedTo = "agent-a"
 
-	code := Start(s, cfg, "T-001")
+	code := Start(s, cfg, "T-001", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start assigned-to-other returned %d, want 1", code)
 	}
@@ -323,7 +323,7 @@ func TestStartAssignedToOther(t *testing.T) {
 
 func TestStartNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Start(s, cfg, "T-999")
+	code := Start(s, cfg, "T-999", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start not found returned %d, want 1", code)
 	}
@@ -683,7 +683,7 @@ func TestUpdateNoDoc(t *testing.T) {
 func TestCloseWontfixRequiresReason(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// First start the issue so it's active
-	Start(s, cfg, "I-001")
+	Start(s, cfg, "I-001", StartOpts{})
 	code := Close(s, cfg, "I-001", "wontfix", CloseOpts{})
 	if code != 2 {
 		t.Errorf("Close wontfix without reason returned %d, want 2", code)
@@ -692,7 +692,7 @@ func TestCloseWontfixRequiresReason(t *testing.T) {
 
 func TestCloseWontfixWithReason(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	Start(s, cfg, "I-001")
+	Start(s, cfg, "I-001", StartOpts{})
 	code := Close(s, cfg, "I-001", "wontfix", CloseOpts{Reason: "not a real bug"})
 	if code != 0 {
 		t.Errorf("Close wontfix with reason returned %d, want 0", code)
