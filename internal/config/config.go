@@ -317,12 +317,19 @@ func Defaults() *Config {
 	}
 }
 
-// Load discovers and loads configuration. It walks up from startDir
-// looking for .as/config.yaml. If not found, returns defaults rooted at startDir.
+// Load discovers and loads configuration.
+// Search order: walk up from startDir → $ST_ROOT env var → defaults rooted at startDir.
 func Load(startDir string) (*Config, error) {
 	cfg := Defaults()
 
 	configPath, found := discover(startDir)
+	if !found {
+		// Fallback: check ST_ROOT env var
+		if root := os.Getenv("ST_ROOT"); root != "" {
+			configPath, found = discover(root)
+		}
+	}
+
 	if found {
 		if err := parseConfigFile(cfg, configPath); err != nil {
 			return nil, fmt.Errorf("loading %s: %w", configPath, err)
