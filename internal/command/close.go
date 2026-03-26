@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -58,6 +59,7 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// For now, lightweight close — full gates come with the gate system
 
 	// Transition
+	oldStatus := item.Status
 	now := time.Now()
 	nowStr := now.Format(time.RFC3339)
 
@@ -80,6 +82,12 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
+
+	changelog.Append(cfg, id, changelog.Entry{
+		Op: "close", Field: "status",
+		OldValue: oldStatus, NewValue: resolution,
+		Reason: opts.Reason,
+	})
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)
 	return 0

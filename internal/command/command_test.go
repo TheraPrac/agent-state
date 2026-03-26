@@ -379,16 +379,16 @@ func TestCloseNotFound(t *testing.T) {
 // --- Update ---
 
 func TestUpdateHappy(t *testing.T) {
-	s, _ := setupTestEnv(t)
-	code := Update(s, "T-001", "title", "Updated title")
+	s, cfg := setupTestEnv(t)
+	code := Update(s, cfg, "T-001", "title", "Updated title")
 	if code != 0 {
 		t.Errorf("Update returned %d, want 0", code)
 	}
 }
 
 func TestUpdateNotFound(t *testing.T) {
-	s, _ := setupTestEnv(t)
-	code := Update(s, "T-999", "title", "nope")
+	s, cfg := setupTestEnv(t)
+	code := Update(s, cfg, "T-999", "title", "nope")
 	if code != 1 {
 		t.Errorf("Update nonexistent returned %d, want 1", code)
 	}
@@ -669,11 +669,11 @@ func TestReadyWithTag(t *testing.T) {
 // --- Coverage boost: Update ---
 
 func TestUpdateNoDoc(t *testing.T) {
-	s, _ := setupTestEnv(t)
+	s, cfg := setupTestEnv(t)
 	// Get item and nil out doc to test error path
 	item, _ := s.Get("T-001")
 	item.Doc = nil
-	code := Update(s, "T-001", "title", "test")
+	code := Update(s, cfg, "T-001", "title", "test")
 	// Will succeed because store re-reads — just exercises the path
 	_ = code
 }

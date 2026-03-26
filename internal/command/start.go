@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -59,6 +60,11 @@ func Start(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}
+
+	changelog.Append(cfg, id, changelog.Entry{
+		Op: "start", Field: "status",
+		OldValue: tc.StartStatus, NewValue: tc.ActiveStatus,
+	})
 
 	fmt.Printf("Started %s — %s\n", id, item.Title)
 	if agentID != "" {

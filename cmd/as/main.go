@@ -56,6 +56,7 @@ func init() {
 	rootCmd.AddCommand(createCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(tagCmd)
 
 	// Workflow commands
 	rootCmd.AddCommand(startCmd)
@@ -69,7 +70,10 @@ func init() {
 	rootCmd.AddCommand(depCmd)
 	depCmd.AddCommand(depTreeCmd)
 	depCmd.AddCommand(depGraphCmd)
+	depCmd.AddCommand(depAddCmd)
+	depCmd.AddCommand(depRmCmd)
 	rootCmd.AddCommand(primeCmd)
+	rootCmd.AddCommand(logCmd)
 
 	// Maintenance commands
 	rootCmd.AddCommand(syncCmd)
@@ -109,8 +113,12 @@ func init() {
 
 	// Flags: create
 	createCmd.Flags().IntP("priority", "p", 2, "priority (0=highest, 4=lowest)")
+	createCmd.Flags().String("severity", "", "severity for issues (critical, high, medium, low)")
 	createCmd.Flags().String("tag", "", "tag to add")
 	createCmd.Flags().String("depends", "", "depends on item ID")
+
+	// Flags: log
+	logCmd.Flags().IntP("limit", "n", 0, "max entries to show per item")
 
 	// Flags: update
 	updateCmd.Flags().Bool("stdin", false, "read value from stdin (for multiline)")
@@ -167,10 +175,11 @@ var createCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		priority, _ := cmd.Flags().GetInt("priority")
+		severity, _ := cmd.Flags().GetString("severity")
 		tag, _ := cmd.Flags().GetString("tag")
 		depends, _ := cmd.Flags().GetString("depends")
 		os.Exit(command.Create(s, cfg, args[0], args[1], command.CreateOpts{
-			Priority: priority, Tag: tag, Depends: depends,
+			Priority: priority, Severity: severity, Tag: tag, Depends: depends,
 		}))
 	},
 }
@@ -195,7 +204,7 @@ var updateCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, "usage: as update <id> <field> <value> or --stdin")
 			os.Exit(2)
 		}
-		os.Exit(command.Update(s, args[0], args[1], value))
+		os.Exit(command.Update(s, cfg, args[0], args[1], value))
 	},
 }
 
@@ -289,7 +298,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("as 0.2.0")
+		fmt.Println("as 0.3.0")
 	},
 }
 
@@ -357,5 +366,46 @@ var primeCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		format, _ := cmd.Flags().GetString("format")
 		os.Exit(command.Prime(s, cfg, command.PrimeOpts{Format: format}))
+	},
+}
+
+var tagCmd = &cobra.Command{
+	Use:   "tag <id> <add|rm> <tag>",
+	Short: "Add or remove a tag on an item",
+	Args:  cobra.ExactArgs(3),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.Tag(s, cfg, args[0], args[1], args[2]))
+	},
+}
+
+var depAddCmd = &cobra.Command{
+	Use:   "add <id> <dep-id>",
+	Short: "Add dependency (id depends on dep-id, reciprocal blocks added)",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.DepAdd(s, cfg, args[0], args[1]))
+	},
+}
+
+var depRmCmd = &cobra.Command{
+	Use:   "rm <id> <dep-id>",
+	Short: "Remove dependency (reciprocal blocks removed)",
+	Args:  cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		os.Exit(command.DepRm(s, cfg, args[0], args[1]))
+	},
+}
+
+var logCmd = &cobra.Command{
+	Use:   "log [id]",
+	Short: "Show changelog entries",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		id := ""
+		if len(args) > 0 {
+			id = args[0]
+		}
+		limit, _ := cmd.Flags().GetInt("limit")
+		os.Exit(command.Log(s, cfg, id, command.LogOpts{Limit: limit}))
 	},
 }

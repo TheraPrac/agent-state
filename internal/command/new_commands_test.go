@@ -1,0 +1,490 @@
+package command
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/changelog"
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
+)
+
+// setupTestEnvWithChangelog creates a standard test env with a .changelog directory.
+func setupTestEnvWithChangelog(t *testing.T) (*store.Store, *config.Config) {
+	t.Helper()
+	s, cfg := setupTestEnv(t)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+	return s, cfg
+}
+
+// === Tag ===
+
+func TestTagAddHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Tag(s, cfg, "T-001", "add", "security")
+	if code != 0 {
+		t.Errorf("Tag add returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if len(item.Tags) != 1 || item.Tags[0] != "security" {
+		t.Errorf("Tags = %v, want [security]", item.Tags)
+	}
+
+	// Verify changelog
+	entries, _ := changelog.Read(cfg, "T-001")
+	found := false
+	for _, e := range entries {
+		if e.Op == "tag_add" && e.NewValue == "security" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for tag_add")
+	}
+}
+
+func TestTagAddDuplicate(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Tag(s, cfg, "T-001", "add", "alpha")
+	code := Tag(s, cfg, "T-001", "add", "alpha")
+	if code != 1 {
+		t.Errorf("Tag add duplicate returned %d, want 1", code)
+	}
+}
+
+func TestTagRmHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Tag(s, cfg, "T-001", "add", "alpha")
+	Tag(s, cfg, "T-001", "add", "beta")
+
+	code := Tag(s, cfg, "T-001", "rm", "alpha")
+	if code != 0 {
+		t.Errorf("Tag rm returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if len(item.Tags) != 1 || item.Tags[0] != "beta" {
+		t.Errorf("Tags = %v, want [beta]", item.Tags)
+	}
+}
+
+func TestTagRmNotPresent(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Tag(s, cfg, "T-001", "rm", "nonexistent")
+	if code != 1 {
+		t.Errorf("Tag rm nonexistent returned %d, want 1", code)
+	}
+}
+
+func TestTagRmLastTag(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Tag(s, cfg, "T-001", "add", "only-tag")
+
+	code := Tag(s, cfg, "T-001", "rm", "only-tag")
+	if code != 0 {
+		t.Errorf("Tag rm last returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if len(item.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", item.Tags)
+	}
+}
+
+func TestTagNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Tag(s, cfg, "T-999", "add", "foo")
+	if code != 1 {
+		t.Errorf("Tag not found returned %d, want 1", code)
+	}
+}
+
+func TestTagBadAction(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Tag(s, cfg, "T-001", "flip", "foo")
+	if code != 2 {
+		t.Errorf("Tag bad action returned %d, want 2", code)
+	}
+}
+
+// === Dep Add/Rm ===
+
+func TestDepAddHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepAdd(s, cfg, "T-001", "T-003")
+	if code != 0 {
+		t.Errorf("DepAdd returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	found := false
+	for _, d := range item.DependsOn {
+		if d == "T-003" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("T-001 DependsOn = %v, want to contain T-003", item.DependsOn)
+	}
+
+	dep, _ := s.Get("T-003")
+	found = false
+	for _, b := range dep.Blocks {
+		if b == "T-001" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("T-003 Blocks = %v, want to contain T-001", dep.Blocks)
+	}
+}
+
+func TestDepAddDuplicate(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	DepAdd(s, cfg, "T-001", "T-003")
+	code := DepAdd(s, cfg, "T-001", "T-003")
+	if code != 1 {
+		t.Errorf("DepAdd duplicate returned %d, want 1", code)
+	}
+}
+
+func TestDepAddSelf(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepAdd(s, cfg, "T-001", "T-001")
+	if code != 2 {
+		t.Errorf("DepAdd self returned %d, want 2", code)
+	}
+}
+
+func TestDepAddNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepAdd(s, cfg, "T-999", "T-001")
+	if code != 1 {
+		t.Errorf("DepAdd missing id returned %d, want 1", code)
+	}
+	code = DepAdd(s, cfg, "T-001", "T-999")
+	if code != 1 {
+		t.Errorf("DepAdd missing dep returned %d, want 1", code)
+	}
+}
+
+func TestDepRmHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// First add the dependency
+	DepAdd(s, cfg, "T-001", "T-003")
+
+	// Then remove it
+	code := DepRm(s, cfg, "T-001", "T-003")
+	if code != 0 {
+		t.Errorf("DepRm returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	for _, d := range item.DependsOn {
+		if d == "T-003" {
+			t.Error("T-003 should be removed from depends_on")
+		}
+	}
+
+	dep, _ := s.Get("T-003")
+	for _, b := range dep.Blocks {
+		if b == "T-001" {
+			t.Error("T-001 should be removed from blocks")
+		}
+	}
+}
+
+func TestDepRmNotDependency(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepRm(s, cfg, "T-001", "T-003")
+	if code != 1 {
+		t.Errorf("DepRm non-dependency returned %d, want 1", code)
+	}
+}
+
+func TestDepRmNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := DepRm(s, cfg, "T-999", "T-001")
+	if code != 1 {
+		t.Errorf("DepRm missing id returned %d, want 1", code)
+	}
+}
+
+// === Log ===
+
+func TestLogSingleHappy(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// Create some changelog entries
+	changelog.Append(cfg, "T-001", changelog.Entry{
+		Timestamp: "2026-03-25T10:00:00-06:00", Op: "create", NewValue: "queued",
+	})
+	changelog.Append(cfg, "T-001", changelog.Entry{
+		Timestamp: "2026-03-25T11:00:00-06:00", Op: "start", OldValue: "queued", NewValue: "active",
+	})
+
+	code := Log(s, cfg, "T-001", LogOpts{})
+	if code != 0 {
+		t.Errorf("Log T-001 returned %d, want 0", code)
+	}
+}
+
+func TestLogSingleNoEntries(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Log(s, cfg, "T-001", LogOpts{})
+	if code != 0 {
+		t.Errorf("Log empty returned %d, want 0", code)
+	}
+}
+
+func TestLogSingleNotFound(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Log(s, cfg, "T-999", LogOpts{})
+	if code != 1 {
+		t.Errorf("Log not found returned %d, want 1", code)
+	}
+}
+
+func TestLogAll(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	changelog.Append(cfg, "T-001", changelog.Entry{Op: "create", Timestamp: "2026-03-25T10:00:00-06:00"})
+	changelog.Append(cfg, "T-002", changelog.Entry{Op: "create", Timestamp: "2026-03-25T10:00:00-06:00"})
+
+	code := Log(s, cfg, "", LogOpts{})
+	if code != 0 {
+		t.Errorf("Log all returned %d, want 0", code)
+	}
+}
+
+func TestLogAllEmpty(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Log(s, cfg, "", LogOpts{})
+	if code != 0 {
+		t.Errorf("Log all empty returned %d, want 0", code)
+	}
+}
+
+func TestLogWithLimit(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	for i := 0; i < 10; i++ {
+		changelog.Append(cfg, "T-001", changelog.Entry{Op: "update", Timestamp: "2026-03-25T10:00:00-06:00"})
+	}
+
+	code := Log(s, cfg, "T-001", LogOpts{Limit: 3})
+	if code != 0 {
+		t.Errorf("Log with limit returned %d, want 0", code)
+	}
+}
+
+// === Create with severity ===
+
+func TestCreateIssueSeverity(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Create(s, cfg, "issue", "Critical bug", CreateOpts{Priority: 0, Severity: "critical"})
+	if code != 0 {
+		t.Errorf("Create issue with severity returned %d, want 0", code)
+	}
+
+	item, ok := s.Get("I-002")
+	if !ok {
+		t.Fatal("I-002 should exist after create")
+	}
+	if item.Severity != "critical" {
+		t.Errorf("severity = %q, want critical", item.Severity)
+	}
+
+	// Verify file on disk
+	path, _ := s.Path("I-002")
+	content, _ := os.ReadFile(path)
+	if !containsStr(string(content), "severity: critical") {
+		t.Error("file should contain 'severity: critical'")
+	}
+}
+
+func TestCreateRecordsChangelog(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Create(s, cfg, "task", "Changelog test", CreateOpts{Priority: 2})
+
+	entries, _ := changelog.Read(cfg, "T-005")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 changelog entry, got %d", len(entries))
+	}
+	if entries[0].Op != "create" {
+		t.Errorf("op = %q, want create", entries[0].Op)
+	}
+}
+
+// === Finish with worktree ===
+
+func TestFinishWithWorktreeConfig(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"repo-a"},
+	}
+
+	// Create a worktree directory structure
+	wtDir := filepath.Join(cfg.Root(), "worktrees", "T-001")
+	repoDir := filepath.Join(wtDir, "repo-a")
+	os.MkdirAll(repoDir, 0755)
+
+	// Dry run
+	code := Finish(s, cfg, "T-001", FinishOpts{DryRun: true})
+	if code != 0 {
+		t.Errorf("Finish dry-run returned %d, want 0", code)
+	}
+}
+
+func TestFinishListEmpty(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+	}
+	// Create the base dir but empty
+	os.MkdirAll(filepath.Join(cfg.Root(), "worktrees"), 0755)
+
+	code := Finish(s, cfg, "", FinishOpts{ListAll: true})
+	if code != 0 {
+		t.Errorf("Finish --list returned %d, want 0", code)
+	}
+}
+
+func TestFinishListNonexistent(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "nonexistent",
+	}
+
+	code := Finish(s, cfg, "", FinishOpts{ListAll: true})
+	if code != 0 {
+		t.Errorf("Finish --list nonexistent returned %d, want 0", code)
+	}
+}
+
+func TestFinishWorktreeNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+	}
+	os.MkdirAll(filepath.Join(cfg.Root(), "worktrees"), 0755)
+
+	code := Finish(s, cfg, "T-999", FinishOpts{})
+	if code != 1 {
+		t.Errorf("Finish not found returned %d, want 1", code)
+	}
+}
+
+func TestFinishNoIDWithWorktree(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+	}
+
+	code := Finish(s, cfg, "", FinishOpts{})
+	if code != 2 {
+		t.Errorf("Finish no ID returned %d, want 2", code)
+	}
+}
+
+// === Coverage: Start records changelog ===
+
+func TestStartRecordsChangelog(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Start(s, cfg, "T-001")
+
+	entries, _ := changelog.Read(cfg, "T-001")
+	found := false
+	for _, e := range entries {
+		if e.Op == "start" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for start")
+	}
+}
+
+// === Coverage: Close records changelog ===
+
+func TestCloseRecordsChangelog(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Close(s, cfg, "T-003", "completed", CloseOpts{})
+
+	entries, _ := changelog.Read(cfg, "T-003")
+	found := false
+	for _, e := range entries {
+		if e.Op == "close" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for close")
+	}
+}
+
+// === Coverage: Update records changelog ===
+
+func TestUpdateRecordsChangelog(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	Update(s, cfg, "T-001", "title", "New title")
+
+	entries, _ := changelog.Read(cfg, "T-001")
+	found := false
+	for _, e := range entries {
+		if e.Op == "update" && e.Field == "title" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected changelog entry for update")
+	}
+}
+
+// === Coverage: DepAdd/Rm record changelog ===
+
+func TestDepAddRecordsChangelog(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	DepAdd(s, cfg, "T-001", "T-003")
+
+	// Check both items got entries
+	entries1, _ := changelog.Read(cfg, "T-001")
+	entries3, _ := changelog.Read(cfg, "T-003")
+
+	if len(entries1) == 0 {
+		t.Error("T-001 should have changelog entries")
+	}
+	if len(entries3) == 0 {
+		t.Error("T-003 should have changelog entries")
+	}
+}
+
+func TestFinishListWithEntries(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+	}
+	baseDir := filepath.Join(cfg.Root(), "worktrees")
+	os.MkdirAll(filepath.Join(baseDir, "T-001", "repo-a"), 0755)
+	os.MkdirAll(filepath.Join(baseDir, "T-002", "repo-b"), 0755)
+
+	code := Finish(s, cfg, "", FinishOpts{ListAll: true})
+	if code != 0 {
+		t.Errorf("Finish --list returned %d, want 0", code)
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

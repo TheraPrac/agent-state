@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -14,6 +15,7 @@ import (
 // CreateOpts holds flags for the create command.
 type CreateOpts struct {
 	Priority int
+	Severity string // issues only: critical, high, medium, low
 	Tag      string
 	Depends  string
 }
@@ -60,6 +62,13 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		Raw: fmt.Sprintf("priority: %d", opts.Priority), Key: "priority", Value: fmt.Sprintf("%d", opts.Priority),
 	})
 
+	// Severity (issues only)
+	if opts.Severity != "" {
+		lines = append(lines, model.Line{
+			Raw: "severity: " + opts.Severity, Key: "severity", Value: opts.Severity,
+		})
+	}
+
 	// Tags
 	if opts.Tag != "" {
 		lines = append(lines, model.Line{Raw: fmt.Sprintf("tags: [%s]", opts.Tag)})
@@ -93,6 +102,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		Doc:         doc,
 	}
 
+	if opts.Severity != "" {
+		item.Severity = opts.Severity
+	}
 	if opts.Depends != "" {
 		item.DependsOn = []string{opts.Depends}
 	}
@@ -110,6 +122,12 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}
+
+	// Record in changelog
+	changelog.Append(cfg, id, changelog.Entry{
+		Op: "create", Field: "status", NewValue: tc.StartStatus,
+		Reason: title,
+	})
 
 	fmt.Printf("Created %s — %s\n", id, title)
 	return 0
