@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -300,6 +301,7 @@ func discover(dir string) (string, bool) {
 
 // parseConfigFile reads a simple YAML-like config file and applies values to cfg.
 // We use a simple line-based parser to maintain zero external dependencies.
+// Supports up to 4 levels of nesting via indent tracking.
 func parseConfigFile(cfg *Config, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -308,38 +310,66 @@ func parseConfigFile(cfg *Config, path string) error {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	var section string // tracks current top-level key
+	var levels [4]string // section hierarchy: [section, subsection, subkey, prop]
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
-		// Skip empty lines and comments
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 
-		// Detect indentation level
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		level := indent / 2
+		if level > 3 {
+			level = 3
+		}
 
-		// Top-level key
-		if indent == 0 && strings.Contains(trimmed, ":") {
-			key, val := splitKV(trimmed)
-			section = key
-			if val != "" {
-				applyTopLevel(cfg, key, val)
-			}
+		// Clear deeper levels when moving to a shallower level
+		for i := level + 1; i < 4; i++ {
+			levels[i] = ""
+		}
+
+		// Handle list items (- value)
+		if strings.HasPrefix(trimmed, "- ") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			val = strings.Trim(val, `"'`)
+			applyListItem(cfg, levels, val)
 			continue
 		}
 
-		// Nested key under a section
-		if indent > 0 && section != "" {
-			key, val := splitKV(trimmed)
-			applyNested(cfg, section, key, val)
+		key, val := splitKV(trimmed)
+		levels[level] = key
+
+		// Handle inline lists: [a, b, c]
+		if strings.HasPrefix(val, "[") && strings.HasSuffix(val, "]") {
+			items := parseInlineList(val)
+			applyInlineList(cfg, levels, key, items)
+			continue
+		}
+
+		if val != "" {
+			applyValue(cfg, levels, key, val)
 		}
 	}
 
 	return scanner.Err()
+}
+
+// parseInlineList parses [a, b, c] into a string slice.
+func parseInlineList(val string) []string {
+	inner := val[1 : len(val)-1]
+	parts := strings.Split(inner, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.Trim(p, `"'`)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func splitKV(line string) (string, string) {
@@ -358,18 +388,15 @@ func splitKV(line string) (string, string) {
 	return key, val
 }
 
-func applyTopLevel(cfg *Config, key, val string) {
-	// Simple top-level scalar overrides
-	switch key {
+// applyValue routes a scalar value to the appropriate config field based on nesting level.
+func applyValue(cfg *Config, levels [4]string, key, val string) {
+	switch levels[0] {
+	// Top-level scalars (backward compat: name: val at indent 0)
 	case "name":
 		cfg.Project.Name = val
 	case "description":
 		cfg.Project.Description = val
-	}
-}
 
-func applyNested(cfg *Config, section, key, val string) {
-	switch section {
 	case "project":
 		switch key {
 		case "name":
@@ -377,6 +404,7 @@ func applyNested(cfg *Config, section, key, val string) {
 		case "description":
 			cfg.Project.Description = val
 		}
+
 	case "paths":
 		switch key {
 		case "root":
@@ -388,6 +416,7 @@ func applyNested(cfg *Config, section, key, val string) {
 		case "index":
 			cfg.Paths.Index = val
 		}
+
 	case "git":
 		if cfg.Git == nil {
 			cfg.Git = &GitConfig{}
@@ -400,5 +429,90 @@ func applyNested(cfg *Config, section, key, val string) {
 		case "lock_file":
 			cfg.Git.LockFile = val
 		}
+
+	case "testing":
+		ensureTesting(cfg)
+		switch levels[1] {
+		case "required_suites":
+			cfg.Testing.RequiredSuites[key] = SuiteConfig{Command: val}
+		case "scope_suites":
+			cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
+		}
+
+	case "delivery":
+		if cfg.Delivery == nil {
+			cfg.Delivery = &DeliveryConfig{}
+		}
+		switch key {
+		case "archive_gate":
+			cfg.Delivery.ArchiveGate = val
+		}
+
+	case "worktree":
+		if cfg.Worktree == nil {
+			cfg.Worktree = &WorktreeConfig{RepoMap: make(map[string]string)}
+		}
+		switch key {
+		case "enabled":
+			cfg.Worktree.Enabled = val == "true"
+		case "base_dir":
+			cfg.Worktree.BaseDir = val
+		case "parent_dir":
+			cfg.Worktree.ParentDir = val
+		}
 	}
+}
+
+// applyInlineList routes an inline list [a, b, c] to the appropriate config field.
+func applyInlineList(cfg *Config, levels [4]string, key string, items []string) {
+	switch levels[0] {
+	case "delivery":
+		if key == "stages" {
+			if cfg.Delivery == nil {
+				cfg.Delivery = &DeliveryConfig{}
+			}
+			cfg.Delivery.Stages = items
+		}
+	case "worktree":
+		if key == "repos" {
+			if cfg.Worktree == nil {
+				cfg.Worktree = &WorktreeConfig{RepoMap: make(map[string]string)}
+			}
+			cfg.Worktree.Repos = items
+		}
+	}
+}
+
+// applyListItem routes a dash-prefixed list item to the appropriate config field.
+func applyListItem(cfg *Config, levels [4]string, val string) {
+	// Currently unused — gates list items would be handled here in the future.
+}
+
+func ensureTesting(cfg *Config) {
+	if cfg.Testing == nil {
+		cfg.Testing = &TestingConfig{
+			RequiredSuites: make(map[string]SuiteConfig),
+			ScopeSuites:    make(map[string]ScopeSuiteConfig),
+		}
+	}
+}
+
+// RequiredSuiteNames returns required suite names in sorted order.
+func (t *TestingConfig) RequiredSuiteNames() []string {
+	names := make([]string, 0, len(t.RequiredSuites))
+	for name := range t.RequiredSuites {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ScopeSuiteNames returns scope suite names in sorted order.
+func (t *TestingConfig) ScopeSuiteNames() []string {
+	names := make([]string, 0, len(t.ScopeSuites))
+	for name := range t.ScopeSuites {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

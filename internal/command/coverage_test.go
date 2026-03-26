@@ -281,3 +281,21 @@ title: Done task
 
 	return root
 }
+
+// --- Migrate ---
+
+func TestMigrateDryRun(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Migrate(s, cfg, MigrateOpts{DryRun: true})
+	if code != 0 {
+		t.Errorf("Migrate --dry-run returned %d, want 0", code)
+	}
+}
+
+func TestMigrateApply(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Migrate(s, cfg, MigrateOpts{DryRun: false})
+	if code != 0 {
+		t.Errorf("Migrate returned %d, want 0", code)
+	}
+}

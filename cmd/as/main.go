@@ -81,6 +81,7 @@ func init() {
 	// Maintenance commands
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(indexCmd)
+	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	// Flags: status
@@ -128,6 +129,9 @@ func init() {
 
 	// Flags: check
 	checkCmd.Flags().BoolP("quiet", "q", false, "exit code only, no output")
+
+	// Flags: migrate
+	migrateCmd.Flags().Bool("dry-run", false, "report changes without writing")
 
 	// Flags: start
 	startCmd.Flags().String("slug", "", "branch slug (e.g. 'uat-database-reset')")
@@ -304,6 +308,15 @@ var indexCmd = &cobra.Command{
 	Short: "Regenerate index.md from item state",
 	Run: func(cmd *cobra.Command, args []string) {
 		os.Exit(command.Index(s, cfg))
+	},
+}
+
+var migrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Normalize all files to canonical schema",
+	Run: func(cmd *cobra.Command, args []string) {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		os.Exit(command.Migrate(s, cfg, command.MigrateOpts{DryRun: dryRun}))
 	},
 }
 
