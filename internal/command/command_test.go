@@ -589,7 +589,7 @@ func TestSeverityRank(t *testing.T) {
 		sev  string
 		want int
 	}{
-		{"critical", 0}, {"high", 1}, {"medium", 2}, {"low", 3}, {"unknown", 4},
+		{"critical", 0}, {"high", 1}, {"medium", 2}, {"normal", 3}, {"low", 4}, {"unknown", 5},
 	}
 	for _, tt := range tests {
 		got := severityRank(tt.sev)
