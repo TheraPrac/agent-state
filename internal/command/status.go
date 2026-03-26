@@ -345,8 +345,9 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 		for _, item := range grp.items {
 			p := priorityOf(item)
 			blocksItems := g.BlocksItems(item.ID)
+			blocked := g.IsBlocked(item.ID)
 			blockedBy := ""
-			if g.IsBlocked(item.ID) {
+			if blocked {
 				unresolved := g.UnresolvedDeps(item.ID)
 				blockedBy = fmt.Sprintf("  %s⊘ blocked by %s%s", cRed, strings.Join(unresolved, ", "), cReset)
 			}
@@ -354,8 +355,12 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			if len(blocksItems) > 0 {
 				blocksStr = fmt.Sprintf(" %s▶ blocks %s%s", cYellow, strings.Join(blocksItems, ", "), cReset)
 			}
+			idColor := cGreen
+			if blocked {
+				idColor = cRed
+			}
 			fmt.Printf("    %s%-8s%s %s (p%d)%s%s\n",
-				cGreen, item.ID, cReset, truncate(item.Title, 55), p, blocksStr, blockedBy)
+				idColor, item.ID, cReset, truncate(item.Title, 55), p, blocksStr, blockedBy)
 		}
 	}
 	fmt.Println()
