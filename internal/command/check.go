@@ -15,13 +15,12 @@ import (
 )
 
 func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
-	// If --fix, apply auto-repairs first
-	if fix {
+	// Auto-fix by default unless quiet mode (read-only for CI/hooks)
+	// --fix flag is now redundant but kept for explicitness
+	if !quiet {
 		fixed := Fix(s, cfg)
 		if fixed > 0 {
 			fmt.Printf("\n\033[32m%d fix(es) applied\033[0m\n\n", fixed)
-		} else {
-			fmt.Println("\033[32mNo fixable issues found\033[0m")
 		}
 	}
 
@@ -102,15 +101,6 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 			fmt.Println("\033[32m✓\033[0m All checks passed")
 		} else {
 			fmt.Printf("\n\033[31m%d issue(s) found\033[0m\n", issues)
-
-			// If not in fix mode, check for fixable issues and suggest --fix
-			if !fix {
-				fixableCount, descs := FixableSummary(s, cfg)
-				if fixableCount > 0 {
-					fmt.Printf("\n\033[33m%d auto-fixable:\033[0m %s\n", fixableCount, strings.Join(descs, ", "))
-					fmt.Println("Run \033[1mas check --fix\033[0m to repair")
-				}
-			}
 		}
 	}
 
