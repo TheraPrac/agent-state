@@ -193,14 +193,14 @@ func TestListByAssigned(t *testing.T) {
 
 func TestCheckClean(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Check(s, cfg, true)
+	code := Check(s, cfg, true, false)
 	// May have reciprocal dep issues — just verify it doesn't crash
 	_ = code
 }
 
 func TestCheckVerbose(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Check(s, cfg, false)
+	code := Check(s, cfg, false, false)
 	_ = code
 }
 

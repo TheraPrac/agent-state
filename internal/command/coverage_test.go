@@ -131,13 +131,13 @@ title: Wrong dir
 	cfg, _ := config.Load(root)
 	s, _ := store.New(cfg)
 
-	code := Check(s, cfg, false)
+	code := Check(s, cfg, false, false)
 	if code != 1 {
 		t.Errorf("Check with issues returned %d, want 1", code)
 	}
 
 	// Quiet mode
-	code = Check(s, cfg, true)
+	code = Check(s, cfg, true, false)
 	if code != 1 {
 		t.Errorf("Check quiet with issues returned %d, want 1", code)
 	}

@@ -65,7 +65,7 @@ func Item(item *model.Item, cfg *config.Config) *Result {
 
 	// ID format
 	if item.ID != "" && !isValidID(item.ID) {
-		r.add(item.ID, "id", fmt.Sprintf("invalid format %q — expected T-NNN, I-NNN, or D-NNN", item.ID))
+		r.add(item.ID, "id", fmt.Sprintf("invalid format %q — expected X-NNN (uppercase letter, dash, 3+ digits)", item.ID))
 	}
 
 	// Type must be known
@@ -85,6 +85,18 @@ func Item(item *model.Item, cfg *config.Config) *Result {
 		if len(validStatuses) > 0 && !contains(validStatuses, item.Status) {
 			r.add(item.ID, "status", fmt.Sprintf("invalid status %q for type %q — valid: %s",
 				item.Status, item.Type, strings.Join(validStatuses, ", ")))
+		}
+	}
+
+	// Type-specific required fields (check field key exists in document).
+	// Only checked for non-terminal items (archived items may predate field requirements).
+	if item.Type != "" && item.Doc != nil && !cfg.IsTerminalStatus(item.Type, item.Status) {
+		if tc, ok := cfg.Types[item.Type]; ok {
+			for _, field := range tc.RequiredFields {
+				if !HasField(item.Doc, field) {
+					r.add(item.ID, field, fmt.Sprintf("required for type %q", item.Type))
+				}
+			}
 		}
 	}
 
@@ -161,6 +173,60 @@ func ReciprocalDeps(items map[string]*model.Item) []Error {
 	return errs
 }
 
+// IndexCoverage checks that all non-archived items appear in the index content.
+func IndexCoverage(items map[string]*model.Item, indexContent string, cfg *config.Config) []Error {
+	var errs []Error
+	for id, item := range items {
+		// Only check items in non-terminal (active) statuses
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			continue
+		}
+		if !strings.Contains(indexContent, id) {
+			errs = append(errs, Error{
+				ItemID:  id,
+				Field:   "index",
+				Message: "not listed in index.md",
+			})
+		}
+	}
+	return errs
+}
+
+// DeliveryGate checks that items in terminal status have reached the required delivery stage.
+func DeliveryGate(item *model.Item, cfg *config.Config) *Result {
+	r := &Result{}
+
+	if cfg.Delivery == nil || cfg.Delivery.ArchiveGate == "" {
+		return r
+	}
+
+	// Only check items in terminal status
+	if !cfg.IsTerminalStatus(item.Type, item.Status) {
+		return r
+	}
+
+	// Skip items without delivery data (predates delivery tracking)
+	if item.Delivery == nil || len(item.Delivery) == 0 {
+		return r
+	}
+
+	// Skip non-task/issue types (e.g., deprecated promotions)
+	if item.Type != "task" && item.Type != "issue" {
+		return r
+	}
+
+	stage, _ := item.Delivery["stage"].(string)
+	if !cfg.StageReached(stage, cfg.Delivery.ArchiveGate) {
+		if stage == "" {
+			stage = "null"
+		}
+		r.add(item.ID, "delivery", fmt.Sprintf("archived without reaching %s (delivery_stage: %s)",
+			cfg.Delivery.ArchiveGate, stage))
+	}
+
+	return r
+}
+
 var idPattern = regexp.MustCompile(`^[A-Z]-\d{3,}$`)
 
 func isValidID(id string) bool {
@@ -179,6 +245,16 @@ func contains(ss []string, s string) bool {
 func containsStr(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// HasField checks if a field key exists in the parsed document (top-level only).
+func HasField(doc *model.ParsedDocument, key string) bool {
+	for _, line := range doc.Lines {
+		if line.Key == key && line.Indent == 0 {
 			return true
 		}
 	}

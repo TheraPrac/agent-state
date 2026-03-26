@@ -195,6 +195,12 @@ func TestInProcess_CheckQuiet(t *testing.T) {
 	}
 }
 
+func TestInProcess_CheckFix(t *testing.T) {
+	ws := setupInProcessWorkspace(t)
+	_, code := runInProcess(t, ws, "check", "--fix")
+	_ = code // just verify it runs without crashing
+}
+
 func TestInProcess_Prime(t *testing.T) {
 	ws := setupInProcessWorkspace(t)
 	stdout, code := runInProcess(t, ws, "prime")

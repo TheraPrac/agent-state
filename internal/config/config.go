@@ -76,6 +76,7 @@ type TypeConfig struct {
 	StartStatus      string            // status items are created with
 	ActiveStatus     string            // status that means "in progress"
 	TerminalStatuses []string          // these can't transition further
+	RequiredFields   []string          // fields that must be present for this type
 }
 
 type FieldsConfig struct {
@@ -203,6 +204,38 @@ func (c *Config) DirectoryForStatus(itemType, status string) string {
 	return ""
 }
 
+// IsTerminalStatus returns true if the status is terminal for the given type.
+func (c *Config) IsTerminalStatus(itemType, status string) bool {
+	tc, ok := c.Types[itemType]
+	if !ok {
+		return false
+	}
+	for _, ts := range tc.TerminalStatuses {
+		if ts == status {
+			return true
+		}
+	}
+	return false
+}
+
+// StageReached returns true if current delivery stage is at or past the required stage.
+func (c *Config) StageReached(current, required string) bool {
+	if c.Delivery == nil || current == "" {
+		return false
+	}
+	currentIdx := -1
+	requiredIdx := -1
+	for i, s := range c.Delivery.Stages {
+		if s == current {
+			currentIdx = i
+		}
+		if s == required {
+			requiredIdx = i
+		}
+	}
+	return currentIdx >= 0 && requiredIdx >= 0 && currentIdx >= requiredIdx
+}
+
 // Defaults returns a Config with sensible defaults that work out of the box.
 func Defaults() *Config {
 	return &Config{
@@ -222,6 +255,7 @@ func Defaults() *Config {
 				StartStatus:      "queued",
 				ActiveStatus:     "active",
 				TerminalStatuses: []string{"completed", "abandoned", "archived"},
+				RequiredFields:   []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
 					"queued":    "tasks",
 					"active":    "tasks",
@@ -235,6 +269,7 @@ func Defaults() *Config {
 				StartStatus:      "open",
 				ActiveStatus:     "active",
 				TerminalStatuses: []string{"resolved", "wontfix", "archived"},
+				RequiredFields:   []string{"severity", "depends_on", "blocks"},
 				DirectoryMap: map[string]string{
 					"open":     "issues",
 					"active":   "issues",
@@ -253,11 +288,20 @@ func Defaults() *Config {
 					"declined": "archive",
 				},
 			},
+			"promotion": {
+				IDPrefix:         "P",
+				Statuses:         []string{"archived"},
+				TerminalStatuses: []string{"archived"},
+				DirectoryMap: map[string]string{
+					"archived": "archive",
+				},
+			},
 		},
 		IDPatterns: map[string]string{
-			"task":  "T-{seq}",
-			"issue": "I-{seq}",
-			"idea":  "D-{seq}",
+			"task":      "T-{seq}",
+			"issue":     "I-{seq}",
+			"idea":      "D-{seq}",
+			"promotion": "P-{seq}",
 		},
 		Fields: FieldsConfig{
 			Required: []string{"id", "type", "status", "title", "created", "last_touched"},

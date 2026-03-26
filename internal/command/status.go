@@ -32,7 +32,7 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 
 	// Check mode
 	if opts.Check {
-		return Check(s, cfg, false)
+		return Check(s, cfg, false, false)
 	}
 
 	// Expand all sections if --all

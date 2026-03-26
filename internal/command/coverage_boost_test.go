@@ -209,7 +209,7 @@ func TestStatsWithTime(t *testing.T) {
 
 func TestCheckQuiet(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Check(s, cfg, true)
+	code := Check(s, cfg, true, false)
 	_ = code // may find issues — just exercise quiet path
 }
 
@@ -799,7 +799,7 @@ func TestCloseAlreadyCompleted(t *testing.T) {
 
 func TestCheckVerboseV2(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Check(s, cfg, false)
+	code := Check(s, cfg, false, false)
 	_ = code // exercise verbose path
 }
 

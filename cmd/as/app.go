@@ -128,10 +128,12 @@ func newApp(cwd string) *cobra.Command {
 		Use: "check",
 		Run: func(cmd *cobra.Command, args []string) {
 			quiet, _ := cmd.Flags().GetBool("quiet")
-			exitCode = command.Check(appStore, appCfg, quiet)
+			fix, _ := cmd.Flags().GetBool("fix")
+			exitCode = command.Check(appStore, appCfg, quiet, fix)
 		},
 	}
 	checkCmd.Flags().BoolP("quiet", "q", false, "exit code only")
+	checkCmd.Flags().Bool("fix", false, "auto-repair fixable issues")
 	root.AddCommand(checkCmd)
 
 	tagCmd := &cobra.Command{
