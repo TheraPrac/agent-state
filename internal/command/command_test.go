@@ -415,3 +415,138 @@ func TestIndex(t *testing.T) {
 		t.Errorf("Index returned %d, want 0", code)
 	}
 }
+
+// --- Status ---
+
+func TestStatusDashboard(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{})
+	if code != 0 {
+		t.Errorf("Status dashboard returned %d, want 0", code)
+	}
+}
+
+func TestStatusWithIssues(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{Issues: true})
+	if code != 0 {
+		t.Errorf("Status -i returned %d, want 0", code)
+	}
+}
+
+func TestStatusWithTasks(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{Tasks: true})
+	if code != 0 {
+		t.Errorf("Status -t returned %d, want 0", code)
+	}
+}
+
+func TestStatusWithRecent(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{Recent: true})
+	if code != 0 {
+		t.Errorf("Status -r returned %d, want 0", code)
+	}
+}
+
+func TestStatusAll(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{All: true})
+	if code != 0 {
+		t.Errorf("Status -a returned %d, want 0", code)
+	}
+}
+
+func TestStatusCheck(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "", StatusOpts{Check: true})
+	// May have issues — just verify it doesn't crash
+	_ = code
+}
+
+func TestStatusSingleEntity(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "T-001", StatusOpts{})
+	if code != 0 {
+		t.Errorf("Status T-001 returned %d, want 0", code)
+	}
+}
+
+func TestStatusSingleNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "T-999", StatusOpts{})
+	if code != 1 {
+		t.Errorf("Status T-999 returned %d, want 1", code)
+	}
+}
+
+// --- Stats ---
+
+func TestStats(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Stats(s, cfg, StatsOpts{})
+	if code != 0 {
+		t.Errorf("Stats returned %d, want 0", code)
+	}
+}
+
+func TestStatsJSON(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Stats(s, cfg, StatsOpts{JSON: true})
+	if code != 0 {
+		t.Errorf("Stats --json returned %d, want 0", code)
+	}
+}
+
+// --- Dep ---
+
+func TestDepTree(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := DepTree(s, cfg, "T-002", DepTreeOpts{Depth: 5})
+	if code != 0 {
+		t.Errorf("DepTree T-002 returned %d, want 0", code)
+	}
+}
+
+func TestDepTreeNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := DepTree(s, cfg, "T-999", DepTreeOpts{Depth: 5})
+	if code != 1 {
+		t.Errorf("DepTree T-999 returned %d, want 1", code)
+	}
+}
+
+func TestDepGraph(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := DepGraph(s, cfg, DepGraphOpts{})
+	if code != 0 {
+		t.Errorf("DepGraph returned %d, want 0", code)
+	}
+}
+
+func TestDepGraphJSON(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := DepGraph(s, cfg, DepGraphOpts{JSON: true})
+	if code != 0 {
+		t.Errorf("DepGraph --json returned %d, want 0", code)
+	}
+}
+
+// --- Prime ---
+
+func TestPrime(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Prime(s, cfg, PrimeOpts{})
+	if code != 0 {
+		t.Errorf("Prime returned %d, want 0", code)
+	}
+}
+
+func TestPrimeJSON(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Prime(s, cfg, PrimeOpts{Format: "json"})
+	if code != 0 {
+		t.Errorf("Prime --json returned %d, want 0", code)
+	}
+}

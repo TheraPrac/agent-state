@@ -63,10 +63,39 @@ func init() {
 	rootCmd.AddCommand(readyCmd)
 	rootCmd.AddCommand(finishCmd)
 
+	// Read/query commands
+	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(statsCmd)
+	rootCmd.AddCommand(depCmd)
+	depCmd.AddCommand(depTreeCmd)
+	depCmd.AddCommand(depGraphCmd)
+	rootCmd.AddCommand(primeCmd)
+
 	// Maintenance commands
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(indexCmd)
 	rootCmd.AddCommand(versionCmd)
+
+	// Flags: status
+	statusCmd.Flags().BoolP("issues", "i", false, "show open issues detail")
+	statusCmd.Flags().BoolP("tasks", "t", false, "show queued tasks detail")
+	statusCmd.Flags().BoolP("recent", "r", false, "show recently closed (7 days)")
+	statusCmd.Flags().BoolP("all", "a", false, "expand all sections")
+	statusCmd.Flags().BoolP("completed", "d", false, "show completed/archived items")
+	statusCmd.Flags().BoolP("check", "c", false, "run validation checks")
+
+	// Flags: stats
+	statsCmd.Flags().Bool("json", false, "output as JSON")
+	statsCmd.Flags().Bool("time", false, "include time tracking summaries")
+
+	// Flags: dep tree
+	depTreeCmd.Flags().IntP("depth", "d", 10, "max tree depth")
+
+	// Flags: dep graph
+	depGraphCmd.Flags().Bool("json", false, "output as JSON")
+
+	// Flags: prime
+	primeCmd.Flags().String("format", "markdown", "output format (markdown, json)")
 
 	// Flags: show
 	showCmd.Flags().BoolP("brief", "b", false, "compact one-line output")
@@ -261,5 +290,72 @@ var versionCmd = &cobra.Command{
 	Short: "Print version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("as 0.2.0")
+	},
+}
+
+// --- Read/Query ---
+
+var statusCmd = &cobra.Command{
+	Use:   "status [id]",
+	Short: "Show dashboard or item detail",
+	Args:  cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		id := ""
+		if len(args) > 0 {
+			id = args[0]
+		}
+		issues, _ := cmd.Flags().GetBool("issues")
+		tasks, _ := cmd.Flags().GetBool("tasks")
+		recent, _ := cmd.Flags().GetBool("recent")
+		all, _ := cmd.Flags().GetBool("all")
+		completed, _ := cmd.Flags().GetBool("completed")
+		check, _ := cmd.Flags().GetBool("check")
+		os.Exit(command.Status(s, cfg, id, command.StatusOpts{
+			Issues: issues, Tasks: tasks, Recent: recent,
+			All: all, Completed: completed, Check: check,
+		}))
+	},
+}
+
+var statsCmd = &cobra.Command{
+	Use:   "stats",
+	Short: "Show summary statistics",
+	Run: func(cmd *cobra.Command, args []string) {
+		jsonF, _ := cmd.Flags().GetBool("json")
+		timeF, _ := cmd.Flags().GetBool("time")
+		os.Exit(command.Stats(s, cfg, command.StatsOpts{JSON: jsonF, Time: timeF}))
+	},
+}
+
+var depCmd = &cobra.Command{
+	Use:   "dep",
+	Short: "Dependency operations",
+}
+
+var depTreeCmd = &cobra.Command{
+	Use:   "tree <id>",
+	Short: "Show dependency tree for an item",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		depth, _ := cmd.Flags().GetInt("depth")
+		os.Exit(command.DepTree(s, cfg, args[0], command.DepTreeOpts{Depth: depth}))
+	},
+}
+
+var depGraphCmd = &cobra.Command{
+	Use:   "graph",
+	Short: "Show full dependency graph",
+	Run: func(cmd *cobra.Command, args []string) {
+		jsonF, _ := cmd.Flags().GetBool("json")
+		os.Exit(command.DepGraph(s, cfg, command.DepGraphOpts{JSON: jsonF}))
+	},
+}
+
+var primeCmd = &cobra.Command{
+	Use:   "prime",
+	Short: "Output session context for hooks",
+	Run: func(cmd *cobra.Command, args []string) {
+		format, _ := cmd.Flags().GetString("format")
+		os.Exit(command.Prime(s, cfg, command.PrimeOpts{Format: format}))
 	},
 }
