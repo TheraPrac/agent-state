@@ -43,6 +43,9 @@ type Config struct {
 	// Worktree integration (optional)
 	Worktree *WorktreeConfig
 
+	// Gate definitions per transition (optional)
+	Gates map[string][]GateConfig // keyed by transition name (e.g. "close", "start")
+
 	// Multi-agent support (optional)
 	Agents *AgentsConfig
 
@@ -121,6 +124,12 @@ type WorktreeConfig struct {
 	ParentDir string              // parent of all repos (e.g. "/Users/x/Dev/project")
 	Repos     []string            // short repo names in default order (e.g. ["api", "web"])
 	RepoMap   map[string]string   // short name → directory name (e.g. "api" → "theraprac-api")
+}
+
+type GateConfig struct {
+	Type   string   // deps_resolved, testing_complete, field_nonempty, stage_reached, agent_assigned, manifest_exists
+	Fields []string // for field_nonempty
+	Stage  string   // for stage_reached
 }
 
 type AgentsConfig struct {

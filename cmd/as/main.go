@@ -135,6 +135,7 @@ func init() {
 
 	// Flags: close
 	closeCmd.Flags().String("reason", "", "reason for abandonment/wontfix")
+	closeCmd.Flags().Bool("force", false, "bypass gate enforcement")
 
 	// Flags: ready
 	readyCmd.Flags().StringP("type", "T", "", "filter by type")
@@ -245,7 +246,8 @@ var closeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		reason, _ := cmd.Flags().GetString("reason")
-		os.Exit(command.Close(s, cfg, args[0], args[1], command.CloseOpts{Reason: reason}))
+		force, _ := cmd.Flags().GetBool("force")
+		os.Exit(command.Close(s, cfg, args[0], args[1], command.CloseOpts{Reason: reason, Force: force}))
 	},
 }
 

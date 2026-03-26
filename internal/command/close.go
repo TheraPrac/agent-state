@@ -8,11 +8,13 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/jfinlinson/agent-state/internal/validate"
 )
 
 // CloseOpts holds flags for the close command.
 type CloseOpts struct {
 	Reason string
+	Force  bool // bypass gate enforcement
 }
 
 func Close(s *store.Store, cfg *config.Config, id, resolution string, opts CloseOpts) int {
@@ -55,8 +57,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		}
 	}
 
-	// TODO: gate enforcement (testing_complete, stage_reached, etc.)
-	// For now, lightweight close — full gates come with the gate system
+	// Gate enforcement (skip for abandon/wontfix — those bypass gates by design)
+	if !opts.Force && resolution != "abandoned" && resolution != "wontfix" && resolution != "declined" {
+		results := validate.EvaluateGates(item, "close", cfg, s.All())
+		if !validate.GatesPassed(results) {
+			failure := validate.FirstFailure(results)
+			fmt.Fprintf(os.Stderr, "gate %q failed: %s\n", failure.Gate, failure.Message)
+			fmt.Fprintln(os.Stderr, "use --force to bypass gates")
+			return 1
+		}
+	}
 
 	// Transition
 	oldStatus := item.Status
