@@ -104,6 +104,82 @@ func TestParsedDocumentStringEmpty(t *testing.T) {
 	}
 }
 
+func TestParsedDocumentSetListReplacesExisting(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+			{Raw: "tags:", Key: "tags", Value: ""},
+			{Raw: "- alpha", IsList: true},
+			{Raw: "- beta", IsList: true},
+			{Raw: "", IsEmpty: true},
+			{Raw: "title: Test", Key: "title", Value: "Test"},
+		},
+	}
+
+	found := doc.SetList("tags", []string{"alpha", "beta", "gamma"})
+	if !found {
+		t.Error("SetList should find existing 'tags' field")
+	}
+
+	got := doc.String()
+	want := "id: T-001\ntags:\n- alpha\n- beta\n- gamma\n\ntitle: Test"
+	if got != want {
+		t.Errorf("SetList result =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestParsedDocumentSetListEmptyWritesMarker(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "tags:", Key: "tags", Value: ""},
+			{Raw: "- old", IsList: true},
+		},
+	}
+
+	doc.SetList("tags", nil)
+	got := doc.String()
+	want := "tags:\n- []"
+	if got != want {
+		t.Errorf("empty SetList =\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestParsedDocumentSetListAppendsNew(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+		},
+	}
+
+	found := doc.SetList("tags", []string{"new-tag"})
+	if found {
+		t.Error("SetList should return false for new field")
+	}
+	got := doc.String()
+	want := "id: T-001\ntags:\n- new-tag"
+	if got != want {
+		t.Errorf("new SetList =\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestParsedDocumentSetListClearsInlineValue(t *testing.T) {
+	// Simulates the bug: tags written as inline "tags: [alpha, beta]"
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "tags: [alpha, beta]", Key: "tags", Value: "[alpha, beta]"},
+			{Raw: "", IsEmpty: true},
+			{Raw: "title: Test", Key: "title", Value: "Test"},
+		},
+	}
+
+	doc.SetList("tags", []string{"alpha", "beta", "gamma"})
+	got := doc.String()
+	want := "tags:\n- alpha\n- beta\n- gamma\n\ntitle: Test"
+	if got != want {
+		t.Errorf("inline fix =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestParsedDocumentSetFieldIgnoresNested(t *testing.T) {
 	doc := &ParsedDocument{
 		Lines: []Line{

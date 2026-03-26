@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -220,4 +222,374 @@ func TestStatusCompletedFlag(t *testing.T) {
 	if code != 0 {
 		t.Errorf("status -d exit %d", code)
 	}
+}
+
+// --- Additional coverage tests ---
+
+func TestStatusSingleWithAllFields(t *testing.T) {
+	s, cfg := setupTestEnvWithDelivery(t)
+	// Enrich T-003 with more fields for statusSingle coverage
+	item, _ := s.Get("T-003")
+	item.Tags = []string{"alpha", "beta"}
+	item.Summary = "A detailed summary of the task"
+	item.AcceptanceCriteria = []string{"criteria one", "criteria two"}
+	item.NextActions = []string{"do this", "then that"}
+	p := 1
+	item.Priority = &p
+	item.Delivery["stage"] = "pushed"
+	item.WorkTracking["branch"] = "T-003/active-task"
+	item.WorkTracking["pr"] = "https://github.com/org/repo/pull/1"
+	s.Write(item)
+
+	code := Status(s, cfg, "T-003", StatusOpts{})
+	if code != 0 {
+		t.Errorf("status T-003 with all fields exit %d", code)
+	}
+}
+
+func TestStatusSingleNotFoundV2(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "T-999", StatusOpts{})
+	if code != 1 {
+		t.Errorf("status T-999 should exit 1, got %d", code)
+	}
+}
+
+func TestStatusSingleIssue(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "I-001", StatusOpts{})
+	if code != 0 {
+		t.Errorf("status I-001 exit %d", code)
+	}
+}
+
+func TestStatusSingleCompletedItem(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Status(s, cfg, "T-004", StatusOpts{})
+	if code != 0 {
+		t.Errorf("status T-004 exit %d", code)
+	}
+}
+
+func TestGetPRURLsFromItemMultiple(t *testing.T) {
+	item := &model.Item{
+		Doc: &model.ParsedDocument{
+			Lines: []model.Line{
+				{Raw: "work_tracking:", Key: "work_tracking", Indent: 0},
+				{Raw: "  branch: main", Key: "branch", Indent: 2, BlockKey: "work_tracking"},
+				{Raw: "  pr:", Key: "pr", Indent: 2, BlockKey: "work_tracking"},
+				{Raw: "  - https://github.com/org/repo/pull/1", IsList: true, Indent: 2},
+				{Raw: "  - https://github.com/org/repo/pull/2", IsList: true, Indent: 2},
+				{Raw: "", IsEmpty: true},
+				{Raw: "title: Test", Key: "title", Indent: 0},
+			},
+		},
+	}
+
+	urls := getPRURLsFromItem(item)
+	if len(urls) != 2 {
+		t.Fatalf("getPRURLsFromItem = %v, want 2 URLs", urls)
+	}
+	if urls[0] != "https://github.com/org/repo/pull/1" {
+		t.Errorf("url[0] = %q", urls[0])
+	}
+}
+
+func TestGetPRURLsFromItemNilDocV2(t *testing.T) {
+	item := &model.Item{}
+	urls := getPRURLsFromItem(item)
+	if urls != nil {
+		t.Errorf("expected nil for nil doc, got %v", urls)
+	}
+}
+
+func TestGetPRURLsFromItemNoWorkTracking(t *testing.T) {
+	item := &model.Item{
+		Doc: &model.ParsedDocument{
+			Lines: []model.Line{
+				{Raw: "title: Test", Key: "title", Indent: 0},
+			},
+		},
+	}
+	urls := getPRURLsFromItem(item)
+	if len(urls) != 0 {
+		t.Errorf("expected empty, got %v", urls)
+	}
+}
+
+func TestStorePRURLsReplace(t *testing.T) {
+	item := &model.Item{
+		WorkTracking: map[string]interface{}{},
+		Doc: &model.ParsedDocument{
+			Lines: []model.Line{
+				{Raw: "id: T-001", Key: "id", Indent: 0},
+				{Raw: "work_tracking:", Key: "work_tracking", Indent: 0},
+				{Raw: "  branch: main", Key: "branch", Indent: 2, BlockKey: "work_tracking"},
+				{Raw: "  pr: []", Key: "pr", Indent: 2, BlockKey: "work_tracking"},
+				{Raw: "", IsEmpty: true},
+				{Raw: "title: Test", Key: "title", Indent: 0},
+			},
+		},
+	}
+
+	storePRURLs(item, []string{"https://github.com/org/repo/pull/99"})
+
+	got := item.Doc.String()
+	if !containsStr(got, "- https://github.com/org/repo/pull/99") {
+		t.Errorf("storePRURLs didn't insert URL:\n%s", got)
+	}
+}
+
+func TestStorePRURLsClear(t *testing.T) {
+	item := &model.Item{
+		Doc: &model.ParsedDocument{
+			Lines: []model.Line{
+				{Raw: "work_tracking:", Key: "work_tracking", Indent: 0},
+				{Raw: "  pr:", Key: "pr", Indent: 2, BlockKey: "work_tracking"},
+				{Raw: "  - https://old", IsList: true, Indent: 2, BlockKey: "work_tracking"},
+			},
+		},
+	}
+
+	storePRURLs(item, nil)
+
+	got := item.Doc.String()
+	if !containsStr(got, "pr: []") {
+		t.Errorf("storePRURLs didn't clear to empty:\n%s", got)
+	}
+}
+
+func TestStorePRURLsNilDocV2(t *testing.T) {
+	item := &model.Item{}
+	storePRURLs(item, []string{"https://x"}) // should not panic
+}
+
+func TestStorePRURLsNoWorkTrackingV2(t *testing.T) {
+	item := &model.Item{
+		Doc: &model.ParsedDocument{
+			Lines: []model.Line{
+				{Raw: "title: Test", Key: "title", Indent: 0},
+			},
+		},
+	}
+	storePRURLs(item, []string{"https://x"}) // should not panic
+}
+
+func TestAppendToNestedListNewParent(t *testing.T) {
+	doc := &model.ParsedDocument{
+		Lines: []model.Line{
+			{Raw: "id: T-001", Key: "id"},
+		},
+	}
+
+	appendToNestedList(doc, "work_tracking", "commits", "abc123 fix bug")
+
+	got := doc.String()
+	if !containsStr(got, "work_tracking:") || !containsStr(got, "commits:") || !containsStr(got, "- abc123 fix bug") {
+		t.Errorf("appendToNestedList new parent:\n%s", got)
+	}
+}
+
+func TestAppendToNestedListExistingParentNewKey(t *testing.T) {
+	doc := &model.ParsedDocument{
+		Lines: []model.Line{
+			{Raw: "work_tracking:", Key: "work_tracking"},
+			{Raw: "  branch: main", Key: "branch", Indent: 2, BlockKey: "work_tracking"},
+			{Raw: "", IsEmpty: true},
+			{Raw: "title: Test", Key: "title"},
+		},
+	}
+
+	appendToNestedList(doc, "work_tracking", "commits", "abc123")
+
+	got := doc.String()
+	if !containsStr(got, "  commits:") || !containsStr(got, "  - abc123") {
+		t.Errorf("appendToNestedList existing parent new key:\n%s", got)
+	}
+}
+
+func TestAppendToNestedListReplaceEmptyMarker(t *testing.T) {
+	doc := &model.ParsedDocument{
+		Lines: []model.Line{
+			{Raw: "work_tracking:", Key: "work_tracking"},
+			{Raw: "  commits:", Key: "commits", Indent: 2, BlockKey: "work_tracking"},
+			{Raw: "  - []", IsList: true, Indent: 2, BlockKey: "work_tracking"},
+		},
+	}
+
+	appendToNestedList(doc, "work_tracking", "commits", "def456")
+
+	got := doc.String()
+	if containsStr(got, "- []") {
+		t.Errorf("should have replaced empty marker:\n%s", got)
+	}
+	if !containsStr(got, "- def456") {
+		t.Errorf("should contain new value:\n%s", got)
+	}
+}
+
+func TestAppendToNestedListAppend(t *testing.T) {
+	doc := &model.ParsedDocument{
+		Lines: []model.Line{
+			{Raw: "work_tracking:", Key: "work_tracking"},
+			{Raw: "  commits:", Key: "commits", Indent: 2, BlockKey: "work_tracking"},
+			{Raw: "  - first", IsList: true, Indent: 2, BlockKey: "work_tracking"},
+		},
+	}
+
+	appendToNestedList(doc, "work_tracking", "commits", "second")
+
+	got := doc.String()
+	if !containsStr(got, "- first") || !containsStr(got, "- second") {
+		t.Errorf("appendToNestedList append:\n%s", got)
+	}
+}
+
+func TestCloseWithTimeTracking(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	// Set started_at on T-003 (active task)
+	item, _ := s.Get("T-003")
+	started := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
+	setNestedField(item, "time_tracking", "started_at", started)
+	s.Write(item)
+
+	code := Close(s, cfg, "T-003", "completed", CloseOpts{Force: true})
+	if code != 0 {
+		t.Errorf("close with time tracking exit %d", code)
+	}
+
+	// Reload and verify wall_time was computed
+	s2, _ := store.New(cfg)
+	item2, _ := s2.Get("T-003")
+	wt, ok := getNestedField(item2, "time_tracking", "wall_time_hours")
+	if !ok || wt == "" {
+		t.Error("wall_time_hours not set after close with started_at")
+	}
+}
+
+func TestCloseAbandonedWithReasonV2(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	code := Close(s, cfg, "T-001", "abandoned", CloseOpts{Reason: "no longer needed"})
+	if code != 0 {
+		t.Errorf("abandoned with reason exit %d", code)
+	}
+}
+
+func TestCloseInvalidResolutionV2(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Close(s, cfg, "T-001", "invalid_status", CloseOpts{})
+	if code != 2 {
+		t.Errorf("invalid resolution should exit 2, got %d", code)
+	}
+}
+
+func TestCloseAlreadyClosed(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := Close(s, cfg, "T-004", "completed", CloseOpts{})
+	if code != 1 {
+		t.Errorf("closing already-closed should exit 1, got %d", code)
+	}
+}
+
+func TestNoteEditHappy(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	os.MkdirAll(filepath.Dir(cfg.NotesPath()), 0755)
+
+	NoteAdd(cfg, "original message")
+
+	// Load registry to find the generated note ID
+	r, err := registry.Load(cfg.NotesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Notes) == 0 {
+		t.Fatal("no notes found after NoteAdd")
+	}
+	noteID := r.Notes[0].ID
+
+	code := NoteEdit(cfg, noteID, "updated message")
+	if code != 0 {
+		t.Errorf("note edit exit %d", code)
+	}
+}
+
+func TestNoteEditNotFoundV2(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	os.MkdirAll(filepath.Dir(cfg.NotesPath()), 0755)
+	NoteAdd(cfg, "something")
+
+	code := NoteEdit(cfg, "nonexistent-id", "updated")
+	if code != 1 {
+		t.Errorf("note edit not found should exit 1, got %d", code)
+	}
+}
+
+func TestNoteRmHappy(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	os.MkdirAll(filepath.Dir(cfg.NotesPath()), 0755)
+	NoteAdd(cfg, "to be removed")
+
+	// Load registry to find the generated note ID
+	r, err := registry.Load(cfg.NotesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Notes) == 0 {
+		t.Fatal("no notes found after NoteAdd")
+	}
+	noteID := r.Notes[0].ID
+
+	code := NoteRm(cfg, noteID)
+	if code != 0 {
+		t.Errorf("note rm exit %d", code)
+	}
+}
+
+func TestNoteRmNotFoundV2(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	os.MkdirAll(filepath.Dir(cfg.NotesPath()), 0755)
+	NoteAdd(cfg, "something")
+
+	code := NoteRm(cfg, "nonexistent-id")
+	if code != 1 {
+		t.Errorf("note rm not found should exit 1, got %d", code)
+	}
+}
+
+func TestReconcileOptWrappers(t *testing.T) {
+	// Exercise the nil-check wrapper methods
+	opts := &ReconcileOpts{}
+
+	tc := opts.toolCheck()
+	if tc == nil {
+		t.Error("toolCheck should return default when nil")
+	}
+
+	bc := opts.branchCheck()
+	if bc == nil {
+		t.Error("branchCheck should return default when nil")
+	}
+
+	pf := opts.prFetch()
+	if pf == nil {
+		t.Error("prFetch should return default when nil")
+	}
+
+	sc := opts.s3Check()
+	if sc == nil {
+		t.Error("s3Check should return default when nil")
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

@@ -116,6 +116,72 @@ func (d *ParsedDocument) GetField(key string) (string, bool) {
 	return "", false
 }
 
+// SetList replaces a top-level list field's items in the document.
+// It finds the key line, clears any inline value, removes old list items,
+// and inserts new "- item" lines. Returns true if the key was found.
+func (d *ParsedDocument) SetList(key string, items []string) bool {
+	// Find the key line
+	keyIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == key && line.Indent == 0 {
+			keyIdx = i
+			break
+		}
+	}
+	if keyIdx < 0 {
+		// Key not found — append key + list
+		d.Lines = append(d.Lines, Line{Raw: key + ":", Key: key})
+		for _, item := range items {
+			d.Lines = append(d.Lines, Line{Raw: "- " + item, IsList: true})
+		}
+		return false
+	}
+
+	// Update key line to have no inline value
+	d.Lines[keyIdx].Raw = key + ":"
+	d.Lines[keyIdx].Value = ""
+
+	// Find the range of old list items following the key
+	end := keyIdx + 1
+	for end < len(d.Lines) {
+		l := d.Lines[end]
+		if l.IsList && l.Indent == 0 {
+			end++
+			continue
+		}
+		// Skip "- []" empty markers that weren't flagged as IsList
+		if l.Indent == 0 && !l.IsEmpty && l.Key == "" && !l.IsList {
+			// Could be an orphaned "- []" line — check raw
+			trimmed := l.Raw
+			for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\t') {
+				trimmed = trimmed[1:]
+			}
+			if len(trimmed) >= 2 && trimmed[0] == '-' && trimmed[1] == ' ' {
+				end++
+				continue
+			}
+			break
+		}
+		break
+	}
+
+	// Build new list lines
+	var newLines []Line
+	if len(items) == 0 {
+		newLines = append(newLines, Line{Raw: "- []", IsList: true})
+	} else {
+		for _, item := range items {
+			newLines = append(newLines, Line{Raw: "- " + item, IsList: true})
+		}
+	}
+
+	// Replace old list items with new ones
+	tail := make([]Line, len(d.Lines[end:]))
+	copy(tail, d.Lines[end:])
+	d.Lines = append(d.Lines[:keyIdx+1], append(newLines, tail...)...)
+	return true
+}
+
 // String serializes the document back to its original text.
 func (d *ParsedDocument) String() string {
 	if len(d.Lines) == 0 {

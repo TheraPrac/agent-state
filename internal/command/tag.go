@@ -3,7 +3,6 @@ package command
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -75,11 +74,7 @@ func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 	return 0
 }
 
-// updateTagsInDoc rewrites the tags line in the document.
+// updateTagsInDoc rewrites the tags list in the document using multi-line format.
 func updateTagsInDoc(item *model.Item) {
-	if len(item.Tags) == 0 {
-		item.Doc.SetField("tags", "[]")
-	} else {
-		item.Doc.SetField("tags", "["+strings.Join(item.Tags, ", ")+"]")
-	}
+	item.Doc.SetList("tags", item.Tags)
 }

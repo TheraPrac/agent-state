@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
@@ -106,6 +107,44 @@ func TestTagBadAction(t *testing.T) {
 	code := Tag(s, cfg, "T-001", "flip", "foo")
 	if code != 2 {
 		t.Errorf("Tag bad action returned %d, want 2", code)
+	}
+}
+
+func TestTagAddRoundtrip(t *testing.T) {
+	// Regression test: tag add must survive write→re-parse cycle.
+	// Previously, updateTagsInDoc wrote inline "[x, y]" format that the
+	// parser couldn't read back, silently dropping tags.
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	Tag(s, cfg, "T-001", "add", "security")
+	Tag(s, cfg, "T-001", "add", "billing")
+
+	// Force re-parse by creating a new store from the same directory
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+
+	item, ok := s2.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found after re-parse")
+	}
+	if len(item.Tags) != 2 {
+		t.Fatalf("Tags after roundtrip = %v, want [security billing]", item.Tags)
+	}
+	if item.Tags[0] != "security" || item.Tags[1] != "billing" {
+		t.Errorf("Tags = %v, want [security billing]", item.Tags)
+	}
+
+	// Verify the file content uses multi-line format
+	path, _ := s2.Path("T-001")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "- security") || !strings.Contains(content, "- billing") {
+		t.Errorf("file should use multi-line format, got:\n%s", content)
 	}
 }
 
@@ -480,11 +519,3 @@ func TestFinishListWithEntries(t *testing.T) {
 	}
 }
 
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
