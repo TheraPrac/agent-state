@@ -210,6 +210,11 @@ func (c *Config) ManifestDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".manifest")
 }
 
+// QueuePath returns the path to the work queue file.
+func (c *Config) QueuePath() string {
+	return filepath.Join(c.root, ".as", "queue.yaml")
+}
+
 // EvidenceDir returns the default local evidence directory.
 func (c *Config) EvidenceDir() string {
 	if c.Evidence != nil && c.Evidence.LocalDir != "" {

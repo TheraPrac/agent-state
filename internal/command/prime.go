@@ -69,6 +69,66 @@ func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	}
 	b.WriteString("\n")
 
+	// Work queue
+	queueEntries := LoadQueue(cfg)
+	if len(queueEntries) > 0 {
+		b.WriteString("## Queue\n")
+		limit := 5
+		if opts.Compact {
+			limit = 3
+		}
+		shown := queueEntries
+		if len(shown) > limit {
+			shown = shown[:limit]
+		}
+		for i, e := range shown {
+			item, ok := s.Get(e.ID)
+			title := "(not found)"
+			marker := ""
+			if ok {
+				title = truncate(item.Title, 45)
+				if item.Status == "active" {
+					marker = " ← ACTIVE"
+				}
+			}
+			if !e.Approved {
+				marker += " (pending approval)"
+			}
+			b.WriteString(fmt.Sprintf("  %d. %-8s %s%s\n", i+1, e.ID, title, marker))
+		}
+		if len(queueEntries) > limit {
+			b.WriteString(fmt.Sprintf("  ... +%d more\n", len(queueEntries)-limit))
+		}
+		b.WriteString("\n")
+	}
+
+	// Next action directive
+	if len(data.Active) > 0 {
+		activeID := data.Active[0].ID
+		action := NextAction(s, cfg, activeID)
+		if action != "" {
+			b.WriteString("## Next Action\n")
+			b.WriteString(fmt.Sprintf("  Current: %s\n", activeID))
+			b.WriteString(fmt.Sprintf("  → %s\n", action))
+			b.WriteString("\n")
+		}
+	} else if len(queueEntries) > 0 {
+		// No active work — suggest starting the first queue item
+		nextID := ""
+		for _, e := range queueEntries {
+			if e.Approved {
+				nextID = e.ID
+				break
+			}
+		}
+		if nextID != "" {
+			b.WriteString("## Next Action\n")
+			b.WriteString(fmt.Sprintf("  No active work. Next in queue: %s\n", nextID))
+			b.WriteString(fmt.Sprintf("  → st start %s\n", nextID))
+			b.WriteString("\n")
+		}
+	}
+
 	// Ready queue
 	readyLimit := 5
 	if opts.Compact {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/command"
@@ -463,6 +464,68 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	sprintListCmd.Flags().String("epic", "", "filter by epic ID")
 	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd)
 	root.AddCommand(sprintCmd)
+
+	queueCmd := &cobra.Command{
+		Use:   "queue",
+		Short: "Manage the user-controlled work queue",
+	}
+	queueCmd.AddCommand(&cobra.Command{
+		Use:   "add <id>",
+		Short: "Add an item to the queue",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.QueueAdd(appStore, appCfg, args[0], command.QueueOpts{Reason: reason})
+		},
+	})
+	queueCmd.Commands()[0].Flags().String("reason", "", "why this item is in the queue")
+	queueCmd.AddCommand(&cobra.Command{
+		Use:     "show",
+		Short:   "Display the ordered work queue",
+		Aliases: []string{"ls"},
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.QueueShow(appStore, appCfg)
+		},
+	})
+	queueCmd.AddCommand(&cobra.Command{
+		Use:   "next",
+		Short: "Print the next approved, unblocked item",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.QueueNext(appStore, appCfg)
+		},
+	})
+	queueCmd.AddCommand(&cobra.Command{
+		Use:   "rm <id>",
+		Short: "Remove an item from the queue",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.QueueRm(appCfg, args[0])
+		},
+	})
+	queueMoveCmd := &cobra.Command{
+		Use:   "move <id> <position>",
+		Short: "Move an item to a specific position (1-indexed)",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			pos, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "position must be a number")
+				exitCode = 2
+				return
+			}
+			exitCode = command.QueueMove(appCfg, args[0], pos)
+		},
+	}
+	queueCmd.AddCommand(queueMoveCmd)
+	queueCmd.AddCommand(&cobra.Command{
+		Use:   "approve <id>",
+		Short: "Approve an agent-proposed queue item",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.QueueApprove(appCfg, args[0])
+		},
+	})
+	root.AddCommand(queueCmd)
 
 	noteCmd := &cobra.Command{
 		Use:   "note",
