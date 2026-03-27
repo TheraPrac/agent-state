@@ -147,7 +147,7 @@ func TestEditNoEditor(t *testing.T) {
 	os.Unsetenv("EDITOR")
 	os.Unsetenv("VISUAL")
 
-	code := Edit(s, cfg, "T-001", "title")
+	code := Edit(s, cfg, "T-001", "title", false)
 	if code != 1 {
 		t.Errorf("Edit without $EDITOR returned %d, want 1", code)
 	}
@@ -155,7 +155,7 @@ func TestEditNoEditor(t *testing.T) {
 
 func TestEditNotFound(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
-	code := Edit(s, cfg, "T-999", "title")
+	code := Edit(s, cfg, "T-999", "title", false)
 	if code != 1 {
 		t.Errorf("Edit not found returned %d, want 1", code)
 	}
@@ -165,7 +165,7 @@ func TestEditNoDoc(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 	item, _ := s.Get("T-001")
 	item.Doc = nil
-	code := Edit(s, cfg, "T-001", "title")
+	code := Edit(s, cfg, "T-001", "title", false)
 	if code != 1 {
 		t.Errorf("Edit no doc returned %d, want 1", code)
 	}
@@ -177,9 +177,48 @@ func TestEditNoChanges(t *testing.T) {
 	os.Setenv("EDITOR", "true")
 	defer os.Unsetenv("EDITOR")
 
-	code := Edit(s, cfg, "T-001", "title")
+	code := Edit(s, cfg, "T-001", "title", false)
 	if code != 0 {
 		t.Errorf("Edit no-change returned %d, want 0", code)
+	}
+}
+
+func TestEditFromStdinFlag(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	// Swap os.Stdin with a pipe containing the new value
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	w.WriteString("new title from stdin\n")
+	w.Close()
+	defer func() { os.Stdin = oldStdin }()
+
+	code := Edit(s, cfg, "T-001", "title", true)
+	if code != 0 {
+		t.Errorf("Edit --stdin returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	val, _ := item.Doc.GetField("title")
+	if val != "new title from stdin" {
+		t.Errorf("title = %q, want %q", val, "new title from stdin")
+	}
+}
+
+func TestEditFromStdinEmpty(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	w.WriteString("")
+	w.Close()
+	defer func() { os.Stdin = oldStdin }()
+
+	code := Edit(s, cfg, "T-001", "title", true)
+	if code != 1 {
+		t.Errorf("Edit --stdin with empty input returned %d, want 1", code)
 	}
 }
 
@@ -325,7 +364,7 @@ func TestEditUsesVisual(t *testing.T) {
 	os.Setenv("VISUAL", "true")
 	defer os.Unsetenv("VISUAL")
 
-	code := Edit(s, cfg, "T-001", "title")
+	code := Edit(s, cfg, "T-001", "title", false)
 	if code != 0 {
 		t.Errorf("Edit with VISUAL returned %d, want 0", code)
 	}

@@ -287,12 +287,14 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 
 	editCmd := &cobra.Command{
 		Use:   "edit <id> <field>",
-		Short: "Edit a field interactively in $EDITOR",
+		Short: "Edit a field in $EDITOR, or read from stdin when piped",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.Edit(appStore, appCfg, args[0], args[1])
+			stdinFlag, _ := cmd.Flags().GetBool("stdin")
+			exitCode = command.Edit(appStore, appCfg, args[0], args[1], stdinFlag)
 		},
 	}
+	editCmd.Flags().Bool("stdin", false, "read new value from stdin instead of opening $EDITOR")
 	root.AddCommand(editCmd)
 
 	// --- Read/query commands ---
