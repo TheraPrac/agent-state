@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -274,6 +275,75 @@ func TestConfigWorktreeSection(t *testing.T) {
 	}
 	if len(cfg.Worktree.Repos) != 3 {
 		t.Errorf("repos: got %d, want 3", len(cfg.Worktree.Repos))
+	}
+}
+
+func TestConfigEvidenceSection(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `evidence:
+  backend: s3
+  local_dir: /tmp/evidence
+  s3_bucket: my-test-evidence
+  s3_region: us-west-2
+  s3_prefix: project/evidence
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Evidence == nil {
+		t.Fatal("evidence config should not be nil")
+	}
+	if cfg.Evidence.Backend != "s3" {
+		t.Errorf("backend = %q, want s3", cfg.Evidence.Backend)
+	}
+	if cfg.Evidence.LocalDir != "/tmp/evidence" {
+		t.Errorf("local_dir = %q", cfg.Evidence.LocalDir)
+	}
+	if cfg.Evidence.S3Bucket != "my-test-evidence" {
+		t.Errorf("s3_bucket = %q", cfg.Evidence.S3Bucket)
+	}
+	if cfg.Evidence.S3Region != "us-west-2" {
+		t.Errorf("s3_region = %q", cfg.Evidence.S3Region)
+	}
+	if cfg.Evidence.S3Prefix != "project/evidence" {
+		t.Errorf("s3_prefix = %q", cfg.Evidence.S3Prefix)
+	}
+}
+
+func TestConfigEvidenceDir(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Default: .evidence under paths.root
+	dir := cfg.EvidenceDir()
+	if !strings.HasSuffix(dir, ".evidence") {
+		t.Errorf("default EvidenceDir = %q", dir)
+	}
+
+	// With explicit local_dir (absolute)
+	cfg.Evidence = &EvidenceConfig{LocalDir: "/custom/evidence"}
+	if cfg.EvidenceDir() != "/custom/evidence" {
+		t.Errorf("absolute EvidenceDir = %q", cfg.EvidenceDir())
+	}
+
+	// With explicit local_dir (relative)
+	cfg.Evidence = &EvidenceConfig{LocalDir: "my-evidence"}
+	dir = cfg.EvidenceDir()
+	if !strings.HasSuffix(dir, "my-evidence") {
+		t.Errorf("relative EvidenceDir = %q", dir)
 	}
 }
 

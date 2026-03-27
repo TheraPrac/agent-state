@@ -50,6 +50,9 @@ type Config struct {
 	// Multi-agent support (optional)
 	Agents *AgentsConfig
 
+	// Evidence storage (optional)
+	Evidence *EvidenceConfig
+
 	// Session guidance text (optional, shown in prime output)
 	Guidance string
 
@@ -113,6 +116,14 @@ type SuiteConfig struct {
 type ScopeSuiteConfig struct {
 	Command  string
 	Triggers []string // file glob patterns
+}
+
+type EvidenceConfig struct {
+	Backend  string // "local" (default) or "s3"
+	LocalDir string // for local: directory path (default: .evidence)
+	S3Bucket string // for s3: bucket name
+	S3Region string // for s3: AWS region
+	S3Prefix string // for s3: key prefix
 }
 
 type DeliveryConfig struct {
@@ -187,6 +198,17 @@ func (c *Config) NotesPath() string {
 // ManifestDir returns the absolute path to manifest sidecar files.
 func (c *Config) ManifestDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".manifest")
+}
+
+// EvidenceDir returns the default local evidence directory.
+func (c *Config) EvidenceDir() string {
+	if c.Evidence != nil && c.Evidence.LocalDir != "" {
+		if filepath.IsAbs(c.Evidence.LocalDir) {
+			return c.Evidence.LocalDir
+		}
+		return filepath.Join(c.root, c.Evidence.LocalDir)
+	}
+	return filepath.Join(c.root, c.Paths.Root, ".evidence")
 }
 
 // SessionID returns the current Claude Code session ID from $AS_SESSION_ID.
@@ -518,6 +540,23 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			cfg.Testing.RequiredSuites[key] = SuiteConfig{Command: val}
 		case "scope_suites":
 			cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
+		}
+
+	case "evidence":
+		if cfg.Evidence == nil {
+			cfg.Evidence = &EvidenceConfig{}
+		}
+		switch key {
+		case "backend":
+			cfg.Evidence.Backend = val
+		case "local_dir":
+			cfg.Evidence.LocalDir = val
+		case "s3_bucket":
+			cfg.Evidence.S3Bucket = val
+		case "s3_region":
+			cfg.Evidence.S3Region = val
+		case "s3_prefix":
+			cfg.Evidence.S3Prefix = val
 		}
 
 	case "delivery":
