@@ -118,12 +118,14 @@ type CoverageThresholds struct {
 }
 
 type SuiteConfig struct {
-	Command string
+	Command   string
+	Artifacts []string // glob patterns for artifacts to upload after execution
 }
 
 type ScopeSuiteConfig struct {
-	Command  string
-	Triggers []string // file glob patterns
+	Command   string
+	Triggers  []string // file glob patterns that activate this suite
+	Artifacts []string // glob patterns for artifacts to upload after execution
 }
 
 type EvidenceConfig struct {
@@ -545,9 +547,32 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 		ensureTesting(cfg)
 		switch levels[1] {
 		case "required_suites":
-			cfg.Testing.RequiredSuites[key] = SuiteConfig{Command: val}
+			if val != "" && key != "command" && key != "artifacts" {
+				// Simple format: suite_name: command_string
+				cfg.Testing.RequiredSuites[key] = SuiteConfig{Command: val}
+			} else if val != "" {
+				// Nested format field: command or artifacts under suite_name
+				suiteName := levels[2]
+				sc := cfg.Testing.RequiredSuites[suiteName]
+				if key == "command" {
+					sc.Command = val
+				}
+				cfg.Testing.RequiredSuites[suiteName] = sc
+			}
+			// val == "" means this is a section header (suite name), levels tracks it
 		case "scope_suites":
-			cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
+			if val != "" && key != "command" && key != "artifacts" {
+				// Simple format
+				cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
+			} else if val != "" {
+				// Nested format field
+				suiteName := levels[2]
+				sc := cfg.Testing.ScopeSuites[suiteName]
+				if key == "command" {
+					sc.Command = val
+				}
+				cfg.Testing.ScopeSuites[suiteName] = sc
+			}
 		case "coverage_thresholds":
 			if cfg.Testing.CoverageThresholds == nil {
 				cfg.Testing.CoverageThresholds = &CoverageThresholds{Lines: 90, Branches: 80, Functions: 100}
@@ -621,6 +646,21 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 				cfg.Worktree = &WorktreeConfig{RepoMap: make(map[string]string)}
 			}
 			cfg.Worktree.Repos = items
+		}
+	case "testing":
+		ensureTesting(cfg)
+		if key == "artifacts" && levels[2] != "" {
+			suiteName := levels[2]
+			switch levels[1] {
+			case "required_suites":
+				sc := cfg.Testing.RequiredSuites[suiteName]
+				sc.Artifacts = items
+				cfg.Testing.RequiredSuites[suiteName] = sc
+			case "scope_suites":
+				sc := cfg.Testing.ScopeSuites[suiteName]
+				sc.Artifacts = items
+				cfg.Testing.ScopeSuites[suiteName] = sc
+			}
 		}
 	}
 }

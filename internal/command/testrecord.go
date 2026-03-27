@@ -1,11 +1,15 @@
 package command
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -197,6 +201,14 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		return 1
 	}
 
+	// Upload artifacts (if configured)
+	_, isReq := cfg.Testing.RequiredSuites[suite]
+	_, isScp := cfg.Testing.ScopeSuites[suite]
+	artifactCount := uploadArtifacts(cfg, suite, keyPrefix, isReq, isScp, backend)
+	if artifactCount > 0 {
+		fmt.Printf("  uploaded %d artifact(s)\n", artifactCount)
+	}
+
 	// Coverage enforcement (only when --coverage and test passed)
 	if opts.Coverage {
 		if code := enforceCoverage(cfg, id, suite, sha, keyPrefix, item, opts, backend); code != 0 {
@@ -354,6 +366,113 @@ func defaultRunCmd(command string) ([]byte, int, error) {
 		}
 	}
 	return output, exitCode, nil
+}
+
+// uploadArtifacts globs artifact patterns from the suite config, bundles matches
+// into a tar.gz, and uploads it. Returns the number of files bundled.
+func uploadArtifacts(cfg *config.Config, suite, keyPrefix string, isRequired, isScope bool, backend evidence.Backend) int {
+	if cfg.Testing == nil {
+		return 0
+	}
+
+	var patterns []string
+	if isRequired {
+		if sc, ok := cfg.Testing.RequiredSuites[suite]; ok {
+			patterns = sc.Artifacts
+		}
+	}
+	if isScope {
+		if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
+			patterns = sc.Artifacts
+		}
+	}
+	if len(patterns) == 0 {
+		return 0
+	}
+
+	// Glob all patterns and collect matching files
+	var files []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		// Glob doesn't recurse into ** — handle manually
+		if strings.Contains(pattern, "**") {
+			dir := strings.Split(pattern, "**")[0]
+			if dir == "" {
+				dir = "."
+			}
+			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				files = append(files, path)
+				return nil
+			})
+		} else {
+			for _, m := range matches {
+				info, err := os.Stat(m)
+				if err != nil || info.IsDir() {
+					continue
+				}
+				files = append(files, m)
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		return 0
+	}
+
+	// Bundle into tar.gz
+	var buf bytes.Buffer
+	if err := createTarGz(&buf, files); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to bundle artifacts: %v\n", err)
+		return 0
+	}
+
+	// Upload
+	key := keyPrefix + "/artifacts.tar.gz"
+	if _, err := backend.Upload(key, &buf); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to upload artifacts: %v\n", err)
+		return 0
+	}
+
+	return len(files)
+}
+
+// createTarGz creates a tar.gz archive from a list of file paths.
+func createTarGz(w io.Writer, files []string) error {
+	gw := gzip.NewWriter(w)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			continue
+		}
+		header.Name = path // preserve relative path
+
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		io.Copy(tw, f)
+		f.Close()
+	}
+	return nil
 }
 
 func evidenceConfigFromCfg(cfg *config.Config) evidence.Config {

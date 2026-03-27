@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -448,9 +449,96 @@ func TestEvidenceConfigFromCfgDefault(t *testing.T) {
 	}
 }
 
+func TestTestRunWithArtifacts(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+
+	// Create some fake artifact files
+	artDir := t.TempDir()
+	os.MkdirAll(filepath.Join(artDir, "test-results"), 0755)
+	os.WriteFile(filepath.Join(artDir, "test-results", "screenshot.png"), []byte("fake-png"), 0644)
+	os.WriteFile(filepath.Join(artDir, "test-results", "video.webm"), []byte("fake-video"), 0644)
+
+	// Configure suite with artifacts
+	cfg.Testing.ScopeSuites["web_e2e"] = config.ScopeSuiteConfig{
+		Command:   "make e2e",
+		Artifacts: []string{filepath.Join(artDir, "test-results") + "/**"},
+	}
+
+	opts := TestRecordOpts{
+		Run: true,
+		GitHeadSHA: func(dir string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(command string) ([]byte, int, error) {
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "web_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+
+	// Verify artifacts.tar.gz was uploaded
+	keys, _ := opts.Backend.List("T-003/web_e2e/")
+	foundTarGz := false
+	for _, k := range keys {
+		if strings.HasSuffix(k, "artifacts.tar.gz") {
+			foundTarGz = true
+		}
+	}
+	if !foundTarGz {
+		t.Errorf("artifacts.tar.gz not uploaded, got keys: %v", keys)
+	}
+}
+
+func TestCreateTarGz(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("world"), 0644)
+
+	var buf bytes.Buffer
+	err := createTarGz(&buf, []string{
+		filepath.Join(dir, "a.txt"),
+		filepath.Join(dir, "b.txt"),
+	})
+	if err != nil {
+		t.Fatalf("createTarGz: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("empty tar.gz")
+	}
+}
+
+func TestConfigArtifacts(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  scope_suites:
+    web_e2e:
+      command: make e2e
+      artifacts: [test-results/**, playwright-report/**]
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sc := cfg.Testing.ScopeSuites["web_e2e"]
+	if sc.Command != "make e2e" {
+		t.Errorf("command = %q", sc.Command)
+	}
+	if len(sc.Artifacts) != 2 {
+		t.Errorf("artifacts = %v, want 2", sc.Artifacts)
+	}
+}
+
 // Ensure imports are used
 var _ = filepath.Join
 var _ = os.ErrNotExist
 var _ = fmt.Errorf
-var _ config.SuiteConfig
 var _ manifest.PRRecord
