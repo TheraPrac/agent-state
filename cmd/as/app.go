@@ -315,18 +315,23 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			all, _ := cmd.Flags().GetBool("all")
 			completed, _ := cmd.Flags().GetBool("completed")
 			check, _ := cmd.Flags().GetBool("check")
+			tag, _ := cmd.Flags().GetString("tag")
+			epic, _ := cmd.Flags().GetString("epic")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
+				Tag: tag, Epic: epic,
 			})
 		},
 	}
 	statusCmd.Flags().BoolP("issues", "i", false, "show open issues")
 	statusCmd.Flags().BoolP("tasks", "t", false, "show queued tasks")
 	statusCmd.Flags().BoolP("recent", "r", false, "show recently closed")
-	statusCmd.Flags().BoolP("all", "a", false, "show all sections")
+	statusCmd.Flags().BoolP("all", "a", false, "show all sections (excludes completed)")
 	statusCmd.Flags().BoolP("completed", "d", false, "show completed items")
 	statusCmd.Flags().BoolP("check", "c", false, "run validation checks")
+	statusCmd.Flags().String("tag", "", "filter queued tasks by tag")
+	statusCmd.Flags().String("epic", "", "filter queued tasks by epic ID")
 	root.AddCommand(statusCmd)
 
 	statsCmd := &cobra.Command{

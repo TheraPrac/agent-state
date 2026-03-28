@@ -41,6 +41,8 @@ type StatusOpts struct {
 	All       bool
 	Completed bool
 	Check     bool
+	Tag       string // filter queued tasks by tag
+	Epic      string // filter queued tasks by epic ID
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
@@ -54,7 +56,7 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 		opts.Issues = true
 		opts.Tasks = true
 		opts.Recent = true
-		opts.Completed = true
+		// Completed is NOT included in -a; use -d explicitly
 	}
 	return statusDashboard(s, cfg, opts)
 }
@@ -136,7 +138,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 
 	// Tasks section
 	if opts.Tasks {
-		printQueuedTasks(s, cfg, g)
+		printQueuedTasks(s, cfg, g, opts.Tag, opts.Epic)
 	}
 
 	// Recent closures
@@ -227,10 +229,37 @@ func printIssues(s *store.Store) {
 	fmt.Println()
 }
 
-func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
+func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterTag, filterEpic string) {
 	queuedTasks := s.List(store.TypeFilter("task"), store.StatusFilter("queued"))
 	if len(queuedTasks) == 0 {
 		return
+	}
+
+	// Apply tag/epic filters
+	if filterTag != "" || filterEpic != "" {
+		var filtered []*model.Item
+		for _, item := range queuedTasks {
+			if filterEpic != "" && item.Epic != filterEpic {
+				continue
+			}
+			if filterTag != "" {
+				found := false
+				for _, t := range item.Tags {
+					if t == filterTag {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		queuedTasks = filtered
+		if len(queuedTasks) == 0 {
+			return
+		}
 	}
 
 	// Try to load epics registry for grouping
@@ -313,7 +342,14 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 	}
 
 	fmt.Printf("%s━━━ QUEUED TASKS ━━━%s\n", cBoldW, cReset)
-	fmt.Printf("  %s%d queued%s\n\n", cBold, len(queuedTasks), cReset)
+	fmt.Printf("  %s%d queued%s", cBold, len(queuedTasks), cReset)
+	if filterTag != "" {
+		fmt.Printf("  %s(tag: %s)%s", cDim, filterTag, cReset)
+	}
+	if filterEpic != "" {
+		fmt.Printf("  %s(epic: %s)%s", cDim, filterEpic, cReset)
+	}
+	fmt.Print("\n\n")
 
 	currentEpic := "\x00" // sentinel — forces header on first group
 	currentSprint := ""
@@ -334,8 +370,6 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			if grp.epic != "" {
 				fmt.Printf("\n  %s◆ %s — %s%s\n", cBoldM, grp.epic, grp.eTitle, cReset)
 			} else if hasEpicItems {
-				// Only print "Unassigned" when there are also epic items,
-				// so orphan items are visually separated from epic groups.
 				fmt.Printf("\n  %s◆ Unassigned%s\n", cBoldM, cReset)
 			}
 		}
@@ -348,30 +382,44 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			}
 		}
 
-		// Tag subheader (blue with icon)
-		if grp.tag != "uncategorized" {
-			fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
-		}
+		// Tag subheader (blue with icon) — always show, even "uncategorized"
+		fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
 
 		for _, item := range grp.items {
 			p := priorityOf(item)
-			blocksItems := g.BlocksItems(item.ID)
 			blocked := g.IsBlocked(item.ID)
-			blockedBy := ""
-			if blocked {
-				unresolved := g.UnresolvedDeps(item.ID)
-				blockedBy = fmt.Sprintf("  %s⊘ blocked by %s%s", cRed, strings.Join(unresolved, ", "), cReset)
+
+			// Priority color: p0=red, p1=yellow, p2=default, p3+=dim
+			pColor := ""
+			switch p {
+			case 0:
+				pColor = cRed
+			case 1:
+				pColor = cYellow
+			case 3, 4:
+				pColor = cDim
 			}
-			blocksStr := ""
-			if len(blocksItems) > 0 {
-				blocksStr = fmt.Sprintf(" %s▶ blocks %s%s", cYellow, strings.Join(blocksItems, ", "), cReset)
-			}
+
 			idColor := cGreen
 			if blocked {
 				idColor = cRed
 			}
-			fmt.Printf("    %s%-8s%s %s (p%d)%s%s\n",
-				idColor, item.ID, cReset, truncate(item.Title, 55), p, blocksStr, blockedBy)
+
+			// Item line: ID + title + colored priority
+			fmt.Printf("    %s%-8s%s %s %s(p%d)%s\n",
+				idColor, item.ID, cReset, truncate(item.Title, 55), pColor, p, cReset)
+
+			// Blocks line (separate, indented)
+			blocksItems := g.BlocksItems(item.ID)
+			if len(blocksItems) > 0 {
+				fmt.Printf("              %s▶ blocks %s%s\n", cYellow, strings.Join(blocksItems, ", "), cReset)
+			}
+
+			// Blocked-by line (separate, indented)
+			if blocked {
+				unresolved := g.UnresolvedDeps(item.ID)
+				fmt.Printf("              %s⊘ blocked by %s%s\n", cRed, strings.Join(unresolved, ", "), cReset)
+			}
 		}
 	}
 	fmt.Println()
@@ -421,7 +469,11 @@ func printCompleted(s *store.Store, cfg *config.Config) {
 	sort.Slice(completed, func(i, j int) bool { return completed[i].ID < completed[j].ID })
 
 	for _, item := range completed {
-		fmt.Printf("  %-8s  %-10s  %s\n", item.ID, item.Status, item.Title)
+		date := ""
+		if item.Completed != nil {
+			date = item.Completed.Format("2006-01-02")
+		}
+		fmt.Printf("  %-8s  %-10s  %s  %s\n", item.ID, item.Status, date, item.Title)
 	}
 	fmt.Printf("\n  %d items\n\n", len(completed))
 }
