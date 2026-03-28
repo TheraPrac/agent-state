@@ -260,13 +260,11 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			repo, _ := cmd.Flags().GetString("repo")
 			prNum, _ := cmd.Flags().GetInt("pr")
-			skipTestGate, _ := cmd.Flags().GetBool("skip-test-gate")
-			exitCode = command.PR(appStore, appCfg, args[0], command.PROpts{Repo: repo, PRNumber: prNum, SkipTestGate: skipTestGate})
+			exitCode = command.PR(appStore, appCfg, args[0], command.PROpts{Repo: repo, PRNumber: prNum})
 		},
 	}
 	prCmd.Flags().String("repo", "", "short repo name (e.g. api, web)")
 	prCmd.Flags().Int("pr", 0, "PR number")
-	prCmd.Flags().Bool("skip-test-gate", false, "skip test-file-existence check")
 	_ = prCmd.MarkFlagRequired("repo")
 	_ = prCmd.MarkFlagRequired("pr")
 	root.AddCommand(prCmd)

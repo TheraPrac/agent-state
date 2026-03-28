@@ -120,10 +120,10 @@ func TestPRBasicFlow(t *testing.T) {
 	}
 }
 
-func TestPRTestFileMissing(t *testing.T) {
+func TestPRTestFileMissingWarns(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 
-	// App file with NO corresponding test file
+	// App file with NO corresponding test file — should warn but not block
 	opts := mockGitOpts(
 		"M\tinternal/db/billing.go",
 		"10\t5\tinternal/db/billing.go",
@@ -133,8 +133,8 @@ func TestPRTestFileMissing(t *testing.T) {
 	)
 
 	code := PR(s, cfg, "T-003", opts)
-	if code != 1 {
-		t.Errorf("PR returned %d, want 1 (test file missing gate)", code)
+	if code != 0 {
+		t.Errorf("PR returned %d, want 0 (warning not block)", code)
 	}
 }
 

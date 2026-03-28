@@ -17,9 +17,8 @@ import (
 
 // PROpts holds flags and injectable functions for the pr command.
 type PROpts struct {
-	Repo          string
-	PRNumber      int
-	SkipTestGate  bool // skip the test-file-existence check
+	Repo     string
+	PRNumber int
 	// Injectable for testing (nil = use real git)
 	GitNameStatus func(repoDir string) (string, error)
 	GitNumstat    func(repoDir string) (string, error)
@@ -135,34 +134,27 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 		stats.Deletions += files[i].LinesDeleted
 	}
 
-	// Test-file-existence gate: for app files, check test file exists
-	// Skip with --skip-test-gate for files that legitimately don't need tests
+	// Test-file-existence warning: note missing test files but don't block.
+	// Real enforcement is per-file coverage at st close/st test --coverage.
 	var missing []string
-	if opts.SkipTestGate {
-		fmt.Println("  test-file gate: skipped (--skip-test-gate)")
-	}
 	for _, f := range files {
-		if opts.SkipTestGate {
-			break
-		}
 		if f.Type != "app" || f.Action == "D" {
 			continue
 		}
 		testPath := testFileFor(f.Path)
 		if testPath == "" {
-			continue // no convention for this file type
+			continue
 		}
 		if !opts.FileExists(filepath.Join(repoDir, testPath)) {
 			missing = append(missing, fmt.Sprintf("  %s → %s", f.Path, testPath))
 		}
 	}
 	if len(missing) > 0 {
-		fmt.Fprintln(os.Stderr, "test file(s) missing for changed app files:")
+		fmt.Fprintf(os.Stderr, "warning: %d app file(s) missing dedicated test files:\n", len(missing))
 		for _, m := range missing {
 			fmt.Fprintln(os.Stderr, m)
 		}
-		fmt.Fprintln(os.Stderr, "\ncreate the test files or reclassify the source files")
-		return 1
+		fmt.Fprintln(os.Stderr, "  (per-file coverage will be enforced at test time)")
 	}
 
 	// Compute scope suites
