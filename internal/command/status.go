@@ -506,7 +506,7 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 			p := priorityOf(item)
 			blocked := g.IsBlocked(item.ID)
 
-			// Priority color: p0=red, p1=orange, p2=yellow, p3+=gray
+			// Priority color: p0=red, p1=orange, p2=yellow, p3=green, p4+=gray
 			pColor := ""
 			switch p {
 			case 0:
@@ -515,6 +515,8 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 				pColor = cOrange
 			case 2:
 				pColor = cYellow
+			case 3:
+				pColor = cGreen
 			default:
 				pColor = cDim
 			}
@@ -776,7 +778,7 @@ func sevLabel(sev string) string {
 	case "medium":
 		return fmt.Sprintf("%sMED%s", cYellow, cReset)
 	case "normal":
-		return fmt.Sprintf("%sNRM%s", cYellow, cReset)
+		return fmt.Sprintf("%sNRM%s", cGreen, cReset)
 	case "low":
 		return fmt.Sprintf("%sLOW%s", cDim, cReset)
 	default:
