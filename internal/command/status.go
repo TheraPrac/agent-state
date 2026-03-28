@@ -330,8 +330,8 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			}
 
 			touched := item.LastTouched.Format("2006-01-02")
-			fmt.Printf("    %s%-8s%s %-45s  %s%s%s  %s\n",
-				idColor, item.ID, cReset, truncate(item.Title, 45), cDim, touched, cReset, sevLabel(sev))
+			fmt.Printf("    %s%-8s%s %s  %s%s%s  %s\n",
+				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, sevLabel(sev))
 
 			blocksItems := g.BlocksItems(item.ID)
 			if len(blocksItems) > 0 {
@@ -528,8 +528,8 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 
 			// Item line: ID + fixed-width title + last touched + colored priority
 			touched := item.LastTouched.Format("2006-01-02")
-			fmt.Printf("    %s%-8s%s %-45s  %s%s%s  %s(p%d)%s\n",
-				idColor, item.ID, cReset, truncate(item.Title, 45), cDim, touched, cReset, pColor, p, cReset)
+			fmt.Printf("    %s%-8s%s %s  %s%s%s  %s(p%d)%s\n",
+				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, pColor, p, cReset)
 
 			// Blocks line (separate, indented)
 			blocksItems := g.BlocksItems(item.ID)
@@ -812,8 +812,18 @@ func severityColor(sev string) string {
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
+}
+
+// padRight pads s with spaces to the given display width (rune-based).
+func padRight(s string, width int) string {
+	runes := []rune(s)
+	if len(runes) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(runes))
 }
