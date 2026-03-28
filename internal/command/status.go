@@ -223,7 +223,7 @@ func printIssues(s *store.Store) {
 		}
 		label := sevLabel(sev)
 		work := workStatus(item)
-		fmt.Printf("  %s  %s%-8s%s %s  %s\n",
+		fmt.Printf("  %s  %s%-8s%s %-65s  %s\n",
 			label, cBold, item.ID, cReset, truncate(item.Title, 65), work)
 	}
 	fmt.Println()
@@ -282,7 +282,7 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 	for _, item := range queuedTasks {
 		epic := item.Epic
 		sprint := item.Sprint
-		tag := "uncategorized"
+		tag := "not tagged"
 		if len(item.Tags) > 0 {
 			tag = item.Tags[0]
 		}
@@ -306,7 +306,7 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 		groupMap[k].items = append(groupMap[k].items, item)
 	}
 
-	// Sort groups: epic first, then sprint, then tag; "uncategorized" last
+	// Sort groups: epic first, then sprint, then tag; "not tagged" last
 	sort.SliceStable(keys, func(i, j int) bool {
 		gi, gj := groupMap[keys[i]], groupMap[keys[j]]
 		if (gi.epic != "") != (gj.epic != "") {
@@ -321,10 +321,10 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 		if gi.sTitle != gj.sTitle {
 			return gi.sTitle < gj.sTitle
 		}
-		if gi.tag == "uncategorized" {
+		if gi.tag == "not tagged" {
 			return false
 		}
-		if gj.tag == "uncategorized" {
+		if gj.tag == "not tagged" {
 			return true
 		}
 		return gi.tag < gj.tag
@@ -382,7 +382,7 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 			}
 		}
 
-		// Tag subheader (blue with icon) — always show, even "uncategorized"
+		// Tag subheader (blue with icon) — always show, even "not tagged"
 		fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
 
 		for _, item := range grp.items {
@@ -405,8 +405,8 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 				idColor = cRed
 			}
 
-			// Item line: ID + title + colored priority
-			fmt.Printf("    %s%-8s%s %s %s(p%d)%s\n",
+			// Item line: ID + fixed-width title + colored priority
+			fmt.Printf("    %s%-8s%s %-55s %s(p%d)%s\n",
 				idColor, item.ID, cReset, truncate(item.Title, 55), pColor, p, cReset)
 
 			// Blocks line (separate, indented)
