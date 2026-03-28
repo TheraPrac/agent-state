@@ -175,6 +175,7 @@ git:
 }
 
 func TestLoadWithoutConfig(t *testing.T) {
+	t.Setenv("ST_ROOT", "")
 	dir := t.TempDir()
 	cfg, err := Load(dir)
 	if err != nil {
@@ -208,6 +209,7 @@ func TestAgentID(t *testing.T) {
 }
 
 func TestEpicsPath(t *testing.T) {
+	t.Setenv("ST_ROOT", "")
 	root := t.TempDir()
 	cfg, _ := Load(root)
 	got := cfg.EpicsPath()
@@ -218,6 +220,7 @@ func TestEpicsPath(t *testing.T) {
 }
 
 func TestNotesPath(t *testing.T) {
+	t.Setenv("ST_ROOT", "")
 	root := t.TempDir()
 	cfg, _ := Load(root)
 	got := cfg.NotesPath()
