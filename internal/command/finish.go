@@ -76,8 +76,8 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 		branch, _ := gitOutputDir(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 		branch = strings.TrimSpace(branch)
 
-		// Remove the worktree
-		mainRepoDir := filepath.Join(cfg.Root(), repo)
+		// Remove the worktree — resolve main repo via config
+		mainRepoDir := resolveRepoDir(cfg, repo)
 		if err := gitCmdDir(mainRepoDir, "worktree", "remove", repoDir); err != nil {
 			fmt.Fprintf(os.Stderr, "removing worktree %s: %v\n", repoDir, err)
 			// Try force remove
@@ -86,9 +86,14 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 			}
 		}
 
-		// Delete local branch
+		// Delete local branch (use main repo, not worktree)
 		if branch != "" && branch != "main" && branch != "master" {
 			gitCmdDir(mainRepoDir, "branch", "-d", branch)
+		}
+
+		// Force remove if worktree dir still exists
+		if _, err := os.Stat(repoDir); err == nil {
+			gitCmdDir(mainRepoDir, "worktree", "remove", "--force", repoDir)
 		}
 
 		fmt.Printf("Removed worktree: %s/%s (branch: %s)\n", id, repo, branch)

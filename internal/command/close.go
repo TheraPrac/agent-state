@@ -109,5 +109,31 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	})
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)
+
+	// Auto-pop stack if this item is on top
+	stack := LoadStack(cfg)
+	if len(stack) > 0 && stack[len(stack)-1].ID == id {
+		stack = stack[:len(stack)-1]
+		// Skip any resolved items below
+		for len(stack) > 0 {
+			top := stack[len(stack)-1]
+			if topItem, ok := s.Get(top.ID); ok && cfg.IsTerminalStatus(topItem.Type, topItem.Status) {
+				fmt.Printf("  %s also resolved — skipping\n", top.ID)
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			break
+		}
+		SaveStack(cfg, stack)
+		if len(stack) > 0 {
+			top := stack[len(stack)-1]
+			if topItem, ok := s.Get(top.ID); ok {
+				fmt.Printf("Returning to %s — %s\n", top.ID, topItem.Title)
+			}
+		} else {
+			fmt.Println("Stack is now empty")
+		}
+	}
+
 	return 0
 }

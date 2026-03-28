@@ -86,7 +86,8 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 		}
 	}
 
-	sha := getSHA(opts)
+	// Get SHA from the repo this suite targets, not cwd
+	sha := getSHAForSuite(cfg, id, suite, opts)
 
 	if opts.Run {
 		return testRunMode(s, cfg, id, suite, suiteCmd, sha, item, opts)
@@ -333,6 +334,32 @@ func enforceCoverage(cfg *config.Config, id, suite, sha, keyPrefix string, item 
 
 	fmt.Printf("  coverage: %d changed files meet thresholds\n", len(appFiles))
 	return 0
+}
+
+// getSHAForSuite gets the HEAD SHA from the repo targeted by the suite.
+func getSHAForSuite(cfg *config.Config, itemID, suite string, opts TestRecordOpts) string {
+	if opts.GitHeadSHA != nil {
+		return getSHA(opts)
+	}
+	// Determine repo from suite prefix (api_unit → api repo, web_e2e → web repo)
+	repo := strings.Split(suite, "_")[0]
+	// Find matching repo name in worktree config
+	if cfg.Worktree != nil {
+		for _, r := range cfg.Worktree.Repos {
+			if strings.Contains(r, repo) {
+				dir := resolveRepoDirForItem(cfg, itemID, r)
+				out, err := runGit(dir, "rev-parse", "HEAD")
+				if err == nil {
+					sha := strings.TrimSpace(out)
+					if len(sha) > 7 {
+						sha = sha[:7]
+					}
+					return sha
+				}
+			}
+		}
+	}
+	return getSHA(opts)
 }
 
 func getSHA(opts TestRecordOpts) string {
