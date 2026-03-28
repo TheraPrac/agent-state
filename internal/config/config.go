@@ -215,6 +215,15 @@ func (c *Config) QueuePath() string {
 	return filepath.Join(c.root, ".as", "queue.yaml")
 }
 
+// StackPath returns the path to the per-agent work stack file.
+func (c *Config) StackPath() string {
+	agentID := c.AgentID()
+	if agentID != "" {
+		return filepath.Join(c.root, ".as", "stacks", agentID+".yaml")
+	}
+	return filepath.Join(c.root, ".as", "stack.yaml")
+}
+
 // EvidenceDir returns the default local evidence directory.
 func (c *Config) EvidenceDir() string {
 	if c.Evidence != nil && c.Evidence.LocalDir != "" {

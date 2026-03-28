@@ -69,6 +69,30 @@ func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	}
 	b.WriteString("\n")
 
+	// Work stack
+	stackEntries := LoadStack(cfg)
+	if len(stackEntries) > 0 {
+		b.WriteString("## Stack\n")
+		for i := len(stackEntries) - 1; i >= 0; i-- {
+			e := stackEntries[i]
+			item, ok := s.Get(e.ID)
+			title := "(not found)"
+			if ok {
+				title = truncate(item.Title, 45)
+			}
+			resolved := ""
+			if ok && cfg.IsTerminalStatus(item.Type, item.Status) {
+				resolved = " ✓ resolved"
+			}
+			marker := ""
+			if i == len(stackEntries)-1 {
+				marker = " ← current"
+			}
+			b.WriteString(fmt.Sprintf("  %d: %-8s %s%s%s\n", i, e.ID, title, resolved, marker))
+		}
+		b.WriteString("\n")
+	}
+
 	// Work queue
 	queueEntries := LoadQueue(cfg)
 	if len(queueEntries) > 0 {

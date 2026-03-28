@@ -465,6 +465,36 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd)
 	root.AddCommand(sprintCmd)
 
+	stackCmd := &cobra.Command{
+		Use:   "stack",
+		Short: "Show the current work stack",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.StackShow(appStore, appCfg)
+		},
+	}
+	root.AddCommand(stackCmd)
+
+	pushCmd := &cobra.Command{
+		Use:   "push <id>",
+		Short: "Push an item onto the work stack",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.StackPush(appStore, appCfg, args[0], reason)
+		},
+	}
+	pushCmd.Flags().String("reason", "", "why this item is being pushed (what blocked the parent)")
+	root.AddCommand(pushCmd)
+
+	popCmd := &cobra.Command{
+		Use:   "pop",
+		Short: "Pop the top item from the work stack",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.StackPop(appStore, appCfg)
+		},
+	}
+	root.AddCommand(popCmd)
+
 	queueCmd := &cobra.Command{
 		Use:   "queue",
 		Short: "Manage the user-controlled work queue",
