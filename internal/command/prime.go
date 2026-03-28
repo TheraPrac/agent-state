@@ -102,9 +102,18 @@ func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 		b.WriteString("\n")
 	}
 
-	// Next action directive
-	if len(data.Active) > 0 {
-		activeID := data.Active[0].ID
+	// Next action directive — prefer queue item if active, else first active
+	activeID := ""
+	for _, e := range queueEntries {
+		if item, ok := s.Get(e.ID); ok && item.Status == "active" {
+			activeID = e.ID
+			break
+		}
+	}
+	if activeID == "" && len(data.Active) > 0 {
+		activeID = data.Active[0].ID
+	}
+	if activeID != "" {
 		action := NextAction(s, cfg, activeID)
 		if action != "" {
 			b.WriteString("## Next Action\n")
@@ -112,7 +121,7 @@ func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 			b.WriteString(fmt.Sprintf("  → %s\n", action))
 			b.WriteString("\n")
 		}
-	} else if len(queueEntries) > 0 {
+	} else if activeID == "" && len(queueEntries) > 0 {
 		// No active work — suggest starting the first queue item
 		nextID := ""
 		for _, e := range queueEntries {
