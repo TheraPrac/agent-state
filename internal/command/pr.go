@@ -17,8 +17,9 @@ import (
 
 // PROpts holds flags and injectable functions for the pr command.
 type PROpts struct {
-	Repo     string
-	PRNumber int
+	Repo          string
+	PRNumber      int
+	SkipTestGate  bool // skip the test-file-existence check
 	// Injectable for testing (nil = use real git)
 	GitNameStatus func(repoDir string) (string, error)
 	GitNumstat    func(repoDir string) (string, error)
@@ -135,8 +136,15 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	}
 
 	// Test-file-existence gate: for app files, check test file exists
+	// Skip with --skip-test-gate for files that legitimately don't need tests
 	var missing []string
+	if opts.SkipTestGate {
+		fmt.Println("  test-file gate: skipped (--skip-test-gate)")
+	}
 	for _, f := range files {
+		if opts.SkipTestGate {
+			break
+		}
 		if f.Type != "app" || f.Action == "D" {
 			continue
 		}
