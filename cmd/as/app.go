@@ -465,6 +465,16 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd)
 	root.AddCommand(sprintCmd)
 
+	uatCmd := &cobra.Command{
+		Use:   "uat <id>",
+		Short: "Run automated UAT verification and produce evidence report",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.UAT(appStore, appCfg, args[0], command.UATOpts{})
+		},
+	}
+	root.AddCommand(uatCmd)
+
 	mergeCmd := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Verify gates and merge PR",
