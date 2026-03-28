@@ -185,7 +185,7 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	ts := now.Format("20060102T150405")
 	keyPrefix := fmt.Sprintf("%s/%s/%s/%s", id, stepName, sha, ts)
 
-	backend.Upload(keyPrefix+"/log.txt", bytes.NewReader(output))
+	logURI, _ := evidence.GzipUpload(backend, keyPrefix+"/log.txt", output)
 
 	status := "pass"
 	if exitCode != 0 {
@@ -200,7 +200,7 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 		"recorded_at": now.Format(time.RFC3339),
 	}
 	summaryJSON, _ := json.MarshalIndent(summary, "", "  ")
-	backend.Upload(keyPrefix+"/summary.json", bytes.NewReader(summaryJSON))
+	evidence.GzipUpload(backend, keyPrefix+"/summary.json", summaryJSON)
 
 	// Collect artifacts
 	if len(stepCfg.Artifacts) > 0 {
@@ -212,6 +212,8 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	}
 
 	if exitCode != 0 {
+		setNestedField(item, "delivery", stepName+"_evidence", logURI)
+		s.Write(item)
 		fmt.Fprintf(os.Stderr, "FAIL %s on %s (exit %d, %dms)\n", stepName, id, exitCode, duration.Milliseconds())
 		return 1
 	}
@@ -225,7 +227,8 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 		}
 	}
 
-	// Advance delivery stage
+	// Record evidence URI and advance delivery stage
+	setNestedField(item, "delivery", stepName+"_evidence", logURI)
 	setNestedField(item, "delivery", "stage", nextStage)
 	if stepName == "deploy_check" || nextStage == "deployed_dev" {
 		setNestedField(item, "delivery", "deployed_date", now.Format("2006-01-02"))

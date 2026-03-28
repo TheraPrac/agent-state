@@ -5,6 +5,8 @@
 package evidence
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -58,6 +60,21 @@ func New(cfg Config) (Backend, error) {
 	default:
 		return nil, fmt.Errorf("unknown evidence backend: %q (supported: local, s3)", cfg.Backend)
 	}
+}
+
+// GzipUpload compresses data with gzip and uploads it with a .gz suffix.
+// Use this for log files, JSON, and other compressible content.
+func GzipUpload(b Backend, key string, data []byte) (string, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(data); err != nil {
+		return "", fmt.Errorf("gzip write: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return "", fmt.Errorf("gzip close: %w", err)
+	}
+	gzKey := key + ".gz"
+	return b.Upload(gzKey, &buf)
 }
 
 // EvidenceKey builds the standard key for an evidence artifact.
