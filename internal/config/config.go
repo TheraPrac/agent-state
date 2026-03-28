@@ -51,6 +51,9 @@ type Config struct {
 	// Multi-agent support (optional)
 	Agents *AgentsConfig
 
+	// Pipeline steps (optional)
+	Pipeline *PipelineConfig
+
 	// Evidence storage (optional)
 	Evidence *EvidenceConfig
 
@@ -126,6 +129,21 @@ type ScopeSuiteConfig struct {
 	Command   string
 	Triggers  []string // file glob patterns that activate this suite
 	Artifacts []string // glob patterns for artifacts to upload after execution
+}
+
+type PipelineConfig struct {
+	Merge       *PipelineStepConfig
+	DeployCheck *PipelineStepConfig
+	Smoke       *PipelineStepConfig
+}
+
+type PipelineStepConfig struct {
+	Command    string
+	PreChecks  []string
+	PostRecord string
+	HealthURL  string
+	Timeout    int // seconds, 0 = default 300
+	Artifacts  []string
 }
 
 type EvidenceConfig struct {
@@ -603,6 +621,37 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			}
 		}
 
+	case "pipeline":
+		if cfg.Pipeline == nil {
+			cfg.Pipeline = &PipelineConfig{}
+		}
+		var step **PipelineStepConfig
+		switch levels[1] {
+		case "merge":
+			step = &cfg.Pipeline.Merge
+		case "deploy_check":
+			step = &cfg.Pipeline.DeployCheck
+		case "smoke":
+			step = &cfg.Pipeline.Smoke
+		}
+		if step != nil {
+			if *step == nil {
+				*step = &PipelineStepConfig{}
+			}
+			switch key {
+			case "command":
+				(*step).Command = val
+			case "post_record":
+				(*step).PostRecord = val
+			case "health_url":
+				(*step).HealthURL = val
+			case "timeout":
+				if v, err := strconv.Atoi(val); err == nil {
+					(*step).Timeout = v
+				}
+			}
+		}
+
 	case "evidence":
 		if cfg.Evidence == nil {
 			cfg.Evidence = &EvidenceConfig{}
@@ -660,6 +709,26 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 				cfg.Worktree = &WorktreeConfig{RepoMap: make(map[string]string)}
 			}
 			cfg.Worktree.Repos = items
+		}
+	case "pipeline":
+		if cfg.Pipeline != nil {
+			var step *PipelineStepConfig
+			switch levels[1] {
+			case "merge":
+				step = cfg.Pipeline.Merge
+			case "deploy_check":
+				step = cfg.Pipeline.DeployCheck
+			case "smoke":
+				step = cfg.Pipeline.Smoke
+			}
+			if step != nil {
+				switch key {
+				case "pre_checks":
+					step.PreChecks = items
+				case "artifacts":
+					step.Artifacts = items
+				}
+			}
 		}
 	case "testing":
 		ensureTesting(cfg)

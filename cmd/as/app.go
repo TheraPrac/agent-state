@@ -465,6 +465,36 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd)
 	root.AddCommand(sprintCmd)
 
+	mergeCmd := &cobra.Command{
+		Use:   "merge <id>",
+		Short: "Verify gates and merge PR",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Merge(appStore, appCfg, args[0], command.PipelineOpts{})
+		},
+	}
+	root.AddCommand(mergeCmd)
+
+	deployCheckCmd := &cobra.Command{
+		Use:   "deploy-check <id>",
+		Short: "Verify deployment succeeded",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.DeployCheck(appStore, appCfg, args[0], command.PipelineOpts{})
+		},
+	}
+	root.AddCommand(deployCheckCmd)
+
+	smokeCmd := &cobra.Command{
+		Use:   "smoke <id>",
+		Short: "Run smoke tests on deployed environment",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Smoke(appStore, appCfg, args[0], command.PipelineOpts{})
+		},
+	}
+	root.AddCommand(smokeCmd)
+
 	stackCmd := &cobra.Command{
 		Use:   "stack",
 		Short: "Show the current work stack",
