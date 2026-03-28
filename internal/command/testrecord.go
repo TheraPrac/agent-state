@@ -125,14 +125,14 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	fmt.Printf("Running %s: %s\n", suite, suiteCmd)
 	start := time.Now()
 
-	// Execute suite command
+	// Execute suite command (always from workspace root so relative paths work)
 	var output []byte
 	var exitCode int
 	var runErr error
 	if opts.RunCmd != nil {
 		output, exitCode, runErr = opts.RunCmd(suiteCmd)
 	} else {
-		output, exitCode, runErr = defaultRunCmd(suiteCmd)
+		output, exitCode, runErr = runCmdInDir(cfg.Root(), suiteCmd)
 	}
 	duration := time.Since(start)
 
@@ -355,14 +355,23 @@ func getSHA(opts TestRecordOpts) string {
 }
 
 func defaultRunCmd(command string) ([]byte, int, error) {
+	return runCmdInDir("", command)
+}
+
+// runCmdInDir executes a shell command in a specific directory.
+// If dir is empty, uses the current working directory.
+func runCmdInDir(dir, command string) ([]byte, int, error) {
 	cmd := exec.Command("sh", "-c", command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	output, err := cmd.CombinedOutput()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return output, 0, err // non-exit error (e.g., command not found)
+			return output, 0, err
 		}
 	}
 	return output, exitCode, nil

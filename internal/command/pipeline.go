@@ -136,7 +136,11 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	item, _ := s.Get(id)
 	runCmd := opts.RunCmd
 	if runCmd == nil {
-		runCmd = defaultRunCmd
+		// Always execute from workspace root so relative paths in config work
+		root := cfg.Root()
+		runCmd = func(command string) ([]byte, int, error) {
+			return runCmdInDir(root, command)
+		}
 	}
 
 	// Pre-checks
