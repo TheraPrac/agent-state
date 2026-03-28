@@ -49,8 +49,8 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 		return 2
 	}
 
-	// Resolve repo directory
-	repoDir := resolveRepoDir(cfg, opts.Repo)
+	// Resolve repo directory — prefer worktree if it exists for this item
+	repoDir := resolveRepoDirForItem(cfg, id, opts.Repo)
 
 	// Default git functions
 	if opts.GitNameStatus == nil {
@@ -214,12 +214,57 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 
 func resolveRepoDir(cfg *config.Config, repo string) string {
 	if cfg.Worktree != nil && cfg.Worktree.ParentDir != "" {
-		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
-			return filepath.Join(cfg.Worktree.ParentDir, mapped)
+		parentDir := cfg.Worktree.ParentDir
+		if !filepath.IsAbs(parentDir) {
+			parentDir = filepath.Join(cfg.Root(), parentDir)
 		}
-		return filepath.Join(cfg.Worktree.ParentDir, repo)
+		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+			return filepath.Join(parentDir, mapped)
+		}
+		return filepath.Join(parentDir, repo)
 	}
 	return repo
+}
+
+// resolveRepoDirForItem checks for a worktree first, falls back to main repo.
+func resolveRepoDirForItem(cfg *config.Config, itemID, repo string) string {
+	if cfg.Worktree != nil && cfg.Worktree.BaseDir != "" {
+		// Check if worktree exists: <root>/<base_dir>/<item-id>/<repo>
+		// Also check with just the repo dir name under the item worktree
+		wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+		// Try exact repo name
+		candidate := filepath.Join(wtBase, repo)
+		if isGitDir(candidate) {
+			return candidate
+		}
+		// Try with repo map
+		if cfg.Worktree.RepoMap != nil {
+			if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+				candidate = filepath.Join(wtBase, mapped)
+				if isGitDir(candidate) {
+					return candidate
+				}
+			}
+		}
+		// Try scanning the worktree dir for any git repo
+		entries, err := os.ReadDir(wtBase)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() && strings.Contains(e.Name(), repo) {
+					candidate = filepath.Join(wtBase, e.Name())
+					if isGitDir(candidate) {
+						return candidate
+					}
+				}
+			}
+		}
+	}
+	return resolveRepoDir(cfg, repo)
+}
+
+func isGitDir(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 func runGit(dir string, args ...string) (string, error) {
