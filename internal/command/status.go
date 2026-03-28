@@ -134,7 +134,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 
 	// Issues section
 	if opts.Issues {
-		printIssues(s)
+		printIssues(s, g)
 	}
 
 	// Tasks section
@@ -187,7 +187,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 	return 0
 }
 
-func printIssues(s *store.Store) {
+func printIssues(s *store.Store, g *deps.Graph) {
 	openIssues := s.List(store.TypeFilter("issue"), store.StatusFilter("open"))
 	sort.Slice(openIssues, func(i, j int) bool {
 		ri, rj := severityRank(openIssues[i].Severity), severityRank(openIssues[j].Severity)
@@ -223,9 +223,20 @@ func printIssues(s *store.Store) {
 			sev = "medium"
 		}
 		label := sevLabel(sev)
-		work := workStatus(item)
-		fmt.Printf("  %s  %s%-8s%s %-65s  %s\n",
-			label, cBold, item.ID, cReset, truncate(item.Title, 65), work)
+		fmt.Printf("  %s  %s%-8s%s %s\n",
+			label, cBold, item.ID, cReset, truncate(item.Title, 65))
+
+		// Blocks line
+		blocksItems := g.BlocksItems(item.ID)
+		if len(blocksItems) > 0 {
+			fmt.Printf("              %s▶ blocks %s%s\n", cYellow, strings.Join(blocksItems, ", "), cReset)
+		}
+
+		// Blocked-by line
+		if g.IsBlocked(item.ID) {
+			unresolved := g.UnresolvedDeps(item.ID)
+			fmt.Printf("              %s⊘ blocked by %s%s\n", cRed, strings.Join(unresolved, ", "), cReset)
+		}
 	}
 	fmt.Println()
 }
@@ -656,7 +667,7 @@ func sevLabel(sev string) string {
 	case "critical":
 		return fmt.Sprintf("%sCRIT%s", cRed, cReset)
 	case "high":
-		return fmt.Sprintf("%sHIG %s", cYellow, cReset)
+		return fmt.Sprintf("%sHIG %s", cOrange, cReset)
 	case "medium":
 		return fmt.Sprintf("%sMED %s", cYellow, cReset)
 	case "normal":
