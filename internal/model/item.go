@@ -126,6 +126,96 @@ func (d *ParsedDocument) GetField(key string) (string, bool) {
 	return "", false
 }
 
+// SetNestedField updates a nested field using dotted-path syntax (e.g. "work_tracking.branch").
+// Returns true if the field was found and updated.
+func (d *ParsedDocument) SetNestedField(path, value string) bool {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) != 2 {
+		return d.SetField(path, value)
+	}
+	parent, child := parts[0], parts[1]
+
+	// Find the parent key line
+	parentIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+			break
+		}
+	}
+
+	if parentIdx < 0 {
+		// Parent not found — insert parent + child before body separator
+		parentLine := Line{Raw: parent + ":", Key: parent}
+		childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+		if idx := d.bodySeparatorIndex(); idx >= 0 {
+			tail := make([]Line, len(d.Lines[idx:]))
+			copy(tail, d.Lines[idx:])
+			d.Lines = append(d.Lines[:idx], append([]Line{parentLine, childLine}, tail...)...)
+		} else {
+			d.Lines = append(d.Lines, parentLine, childLine)
+		}
+		return false
+	}
+
+	// Search nested lines under parent
+	for i := parentIdx + 1; i < len(d.Lines); i++ {
+		line := d.Lines[i]
+		if line.Indent == 0 && !line.IsEmpty {
+			break // left the parent block
+		}
+		if line.Key == child && line.Indent > 0 {
+			newRaw := strings.Repeat(" ", line.Indent) + child + ": " + value
+			if line.Comment != "" {
+				newRaw += "  # " + line.Comment
+			}
+			d.Lines[i].Raw = newRaw
+			d.Lines[i].Value = value
+			return true
+		}
+	}
+
+	// Child not found under parent — insert after last nested line of parent
+	insertIdx := parentIdx + 1
+	for insertIdx < len(d.Lines) {
+		if d.Lines[insertIdx].Indent == 0 && !d.Lines[insertIdx].IsEmpty {
+			break
+		}
+		insertIdx++
+	}
+	childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+	tail := make([]Line, len(d.Lines[insertIdx:]))
+	copy(tail, d.Lines[insertIdx:])
+	d.Lines = append(d.Lines[:insertIdx], append([]Line{childLine}, tail...)...)
+	return false
+}
+
+// GetNestedField returns the value for a dotted-path field (e.g. "work_tracking.branch").
+func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) != 2 {
+		return d.GetField(path)
+	}
+	parent, child := parts[0], parts[1]
+
+	inParent := false
+	for _, line := range d.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			inParent = true
+			continue
+		}
+		if inParent {
+			if line.Indent == 0 && !line.IsEmpty {
+				return "", false // left parent block
+			}
+			if line.Key == child && line.Indent > 0 {
+				return line.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
 // SetList replaces a top-level list field's items in the document.
 // It finds the key line, clears any inline value, removes old list items,
 // and inserts new "- item" lines. Returns true if the key was found.

@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -22,9 +23,14 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 	}
 
 	// Capture old value for changelog
-	oldValue, _ := item.Doc.GetField(field)
-
-	item.Doc.SetField(field, value)
+	var oldValue string
+	if strings.Contains(field, ".") {
+		oldValue, _ = item.Doc.GetNestedField(field)
+		item.Doc.SetNestedField(field, value)
+	} else {
+		oldValue, _ = item.Doc.GetField(field)
+		item.Doc.SetField(field, value)
+	}
 
 	if err := s.Write(item); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)

@@ -514,11 +514,12 @@ func createTarGz(w io.Writer, files []string) error {
 func evidenceConfigFromCfg(cfg *config.Config) evidence.Config {
 	if cfg.Evidence != nil {
 		return evidence.Config{
-			Backend:  cfg.Evidence.Backend,
-			LocalDir: cfg.EvidenceDir(),
-			S3Bucket: cfg.Evidence.S3Bucket,
-			S3Region: cfg.Evidence.S3Region,
-			S3Prefix: cfg.Evidence.S3Prefix,
+			Backend:   cfg.Evidence.Backend,
+			LocalDir:  cfg.EvidenceDir(),
+			S3Bucket:  cfg.Evidence.S3Bucket,
+			S3Region:  cfg.Evidence.S3Region,
+			S3Prefix:  cfg.Evidence.S3Prefix,
+			S3Profile: cfg.Evidence.S3Profile,
 		}
 	}
 	return evidence.Config{

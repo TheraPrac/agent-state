@@ -437,6 +437,110 @@ func (r *Registry) ListNotes(limit int) []Note {
 	return r.Notes[len(r.Notes)-limit:]
 }
 
+// ArchiveSprint sets a sprint's status to "archived".
+// Requires that the sprint has items and all items resolve to a done status.
+func (r *Registry) ArchiveSprint(sprintID string, isItemDone func(id string) bool) error {
+	sp, err := r.SprintByID(sprintID)
+	if err != nil {
+		return err
+	}
+	if len(sp.Items) == 0 {
+		return fmt.Errorf("sprint %s has no items — use delete instead", sprintID)
+	}
+	for _, id := range sp.Items {
+		if !isItemDone(id) {
+			return fmt.Errorf("item %s is not done — cannot archive sprint %s", id, sprintID)
+		}
+	}
+	sp.Status = "archived"
+	return nil
+}
+
+// DeleteSprint removes an empty sprint from the registry and its parent epic's SprintOrder.
+func (r *Registry) DeleteSprint(sprintID string) error {
+	sp, err := r.SprintByID(sprintID)
+	if err != nil {
+		return err
+	}
+	if len(sp.Items) > 0 {
+		return fmt.Errorf("sprint %s has %d items — use archive instead", sprintID, len(sp.Items))
+	}
+
+	epicID := sp.Epic
+
+	// Remove from sprints slice
+	for i, s := range r.Sprints {
+		if s.ID == sprintID {
+			r.Sprints = append(r.Sprints[:i], r.Sprints[i+1:]...)
+			break
+		}
+	}
+
+	// Remove from parent epic's SprintOrder
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			var newOrder []string
+			for _, sid := range e.SprintOrder {
+				if sid != sprintID {
+					newOrder = append(newOrder, sid)
+				}
+			}
+			r.Epics[i].SprintOrder = newOrder
+			break
+		}
+	}
+	return nil
+}
+
+// ArchiveEpic sets an epic's status to "archived".
+// Requires that all sprints under the epic are archived or the epic has no sprints.
+func (r *Registry) ArchiveEpic(epicID string, isItemDone func(id string) bool) error {
+	epicIdx := -1
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			epicIdx = i
+			break
+		}
+	}
+	if epicIdx < 0 {
+		return fmt.Errorf("epic not found: %s", epicID)
+	}
+
+	sprints := r.SprintsForEpic(epicID)
+	if len(sprints) == 0 {
+		return fmt.Errorf("epic %s has no sprints — use delete instead", epicID)
+	}
+	for _, sp := range sprints {
+		if sp.Status != "archived" && sp.Status != "completed" {
+			return fmt.Errorf("sprint %s is %s — archive all sprints first", sp.ID, sp.Status)
+		}
+	}
+	r.Epics[epicIdx].Status = "archived"
+	return nil
+}
+
+// DeleteEpic removes an epic with no sprints from the registry.
+func (r *Registry) DeleteEpic(epicID string) error {
+	epicIdx := -1
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			epicIdx = i
+			break
+		}
+	}
+	if epicIdx < 0 {
+		return fmt.Errorf("epic not found: %s", epicID)
+	}
+
+	sprints := r.SprintsForEpic(epicID)
+	if len(sprints) > 0 {
+		return fmt.Errorf("epic %s has %d sprints — archive or delete them first", epicID, len(sprints))
+	}
+
+	r.Epics = append(r.Epics[:epicIdx], r.Epics[epicIdx+1:]...)
+	return nil
+}
+
 func (r *Registry) allIDs() []string {
 	var ids []string
 	for _, e := range r.Epics {

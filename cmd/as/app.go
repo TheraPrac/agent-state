@@ -455,6 +455,22 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			exitCode = command.EpicList(appStore, appCfg)
 		},
 	})
+	epicCmd.AddCommand(&cobra.Command{
+		Use:   "archive <epic-id>",
+		Short: "Archive an epic (all sprints must be archived/completed)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.EpicArchive(appStore, appCfg, args[0])
+		},
+	})
+	epicCmd.AddCommand(&cobra.Command{
+		Use:   "delete <epic-id>",
+		Short: "Delete an epic with no sprints",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.EpicDelete(appCfg, args[0])
+		},
+	})
 	root.AddCommand(epicCmd)
 
 	sprintCmd := &cobra.Command{
@@ -522,7 +538,23 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			exitCode = command.SprintRecover(appStore, appCfg, args[0])
 		},
 	}
-	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintPlanCmd, sprintRecoverCmd)
+	sprintArchiveCmd := &cobra.Command{
+		Use:   "archive <sprint-id>",
+		Short: "Archive a sprint (all items must be done)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SprintArchive(appStore, appCfg, args[0])
+		},
+	}
+	sprintDeleteCmd := &cobra.Command{
+		Use:   "delete <sprint-id>",
+		Short: "Delete an empty sprint",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SprintDelete(appCfg, args[0])
+		},
+	}
+	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd)
 	root.AddCommand(sprintCmd)
 
 	uatCmd := &cobra.Command{

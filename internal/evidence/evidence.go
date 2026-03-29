@@ -37,6 +37,7 @@ type Config struct {
 	S3Bucket  string // for S3 backend: bucket name
 	S3Region  string // for S3 backend: AWS region
 	S3Prefix  string // for S3 backend: key prefix (optional)
+	S3Profile string // for S3 backend: AWS CLI profile name (optional)
 }
 
 // New creates a Backend from configuration.
@@ -53,9 +54,10 @@ func New(cfg Config) (Backend, error) {
 			return nil, fmt.Errorf("evidence.s3_bucket is required when backend is s3")
 		}
 		return &S3Backend{
-			Bucket: cfg.S3Bucket,
-			Region: cfg.S3Region,
-			Prefix: cfg.S3Prefix,
+			Bucket:  cfg.S3Bucket,
+			Region:  cfg.S3Region,
+			Prefix:  cfg.S3Prefix,
+			Profile: cfg.S3Profile,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown evidence backend: %q (supported: local, s3)", cfg.Backend)
@@ -158,9 +160,10 @@ func (b *LocalBackend) URI(key string) string {
 // S3Backend stores evidence in an S3 bucket via the aws CLI.
 // This avoids adding the AWS SDK as a dependency.
 type S3Backend struct {
-	Bucket string
-	Region string
-	Prefix string
+	Bucket  string
+	Region  string
+	Prefix  string
+	Profile string // AWS CLI profile name (optional, passed as --profile)
 	// RunCmd is injectable for testing. If nil, uses exec.Command.
 	RunCmd func(args ...string) (string, error)
 }
@@ -191,9 +194,7 @@ func (b *S3Backend) Upload(key string, r io.Reader) (string, error) {
 	tmp.Close()
 
 	args := []string{"s3", "cp", tmp.Name(), b.s3URI(key)}
-	if b.Region != "" {
-		args = append(args, "--region", b.Region)
-	}
+	b.appendCommonFlags(&args)
 
 	if _, err := b.run(args...); err != nil {
 		return "", fmt.Errorf("aws s3 cp: %w", err)
@@ -210,9 +211,7 @@ func (b *S3Backend) Download(key string, w io.Writer) error {
 	tmp.Close()
 
 	args := []string{"s3", "cp", b.s3URI(key), tmp.Name()}
-	if b.Region != "" {
-		args = append(args, "--region", b.Region)
-	}
+	b.appendCommonFlags(&args)
 
 	if _, err := b.run(args...); err != nil {
 		return fmt.Errorf("aws s3 cp: %w", err)
@@ -234,9 +233,7 @@ func (b *S3Backend) List(prefix string) ([]string, error) {
 		"--query", "Contents[].Key",
 		"--output", "text",
 	}
-	if b.Region != "" {
-		args = append(args, "--region", b.Region)
-	}
+	b.appendCommonFlags(&args)
 
 	out, err := b.run(args...)
 	if err != nil {
@@ -260,6 +257,15 @@ func (b *S3Backend) List(prefix string) ([]string, error) {
 
 func (b *S3Backend) URI(key string) string {
 	return b.s3URI(key)
+}
+
+func (b *S3Backend) appendCommonFlags(args *[]string) {
+	if b.Region != "" {
+		*args = append(*args, "--region", b.Region)
+	}
+	if b.Profile != "" {
+		*args = append(*args, "--profile", b.Profile)
+	}
 }
 
 func (b *S3Backend) run(args ...string) (string, error) {

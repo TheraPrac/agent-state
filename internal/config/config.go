@@ -150,11 +150,12 @@ type PipelineStepConfig struct {
 }
 
 type EvidenceConfig struct {
-	Backend  string // "local" (default) or "s3"
-	LocalDir string // for local: directory path (default: .evidence)
-	S3Bucket string // for s3: bucket name
-	S3Region string // for s3: AWS region
-	S3Prefix string // for s3: key prefix
+	Backend   string // "local" (default) or "s3"
+	LocalDir  string // for local: directory path (default: .evidence)
+	S3Bucket  string // for s3: bucket name
+	S3Region  string // for s3: AWS region
+	S3Prefix  string // for s3: key prefix
+	S3Profile string // for s3: AWS CLI profile name (optional)
 }
 
 type DeliveryConfig struct {
@@ -688,6 +689,8 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			cfg.Evidence.S3Region = val
 		case "s3_prefix":
 			cfg.Evidence.S3Prefix = val
+		case "s3_profile":
+			cfg.Evidence.S3Profile = val
 		}
 
 	case "delivery":

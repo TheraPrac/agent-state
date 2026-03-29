@@ -98,6 +98,110 @@ func SprintList(cfg *config.Config, epicID string) int {
 	return 0
 }
 
+// SprintArchive archives a sprint (all items must be done).
+func SprintArchive(s *store.Store, cfg *config.Config, sprintID string) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	isItemDone := func(id string) bool {
+		item, ok := s.Get(id)
+		if !ok {
+			return false
+		}
+		return cfg.IsTerminalStatus(item.Type, item.Status)
+	}
+
+	if err := r.ArchiveSprint(sprintID, isItemDone); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Archived sprint %s\n", sprintID)
+	return 0
+}
+
+// SprintDelete removes an empty sprint.
+func SprintDelete(cfg *config.Config, sprintID string) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	if err := r.DeleteSprint(sprintID); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Deleted sprint %s\n", sprintID)
+	return 0
+}
+
+// EpicArchive archives an epic (all sprints must be archived/completed).
+func EpicArchive(s *store.Store, cfg *config.Config, epicID string) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	isItemDone := func(id string) bool {
+		item, ok := s.Get(id)
+		if !ok {
+			return false
+		}
+		return cfg.IsTerminalStatus(item.Type, item.Status)
+	}
+
+	if err := r.ArchiveEpic(epicID, isItemDone); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Archived epic %s\n", epicID)
+	return 0
+}
+
+// EpicDelete removes an epic with no sprints.
+func EpicDelete(cfg *config.Config, epicID string) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	if err := r.DeleteEpic(epicID); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Deleted epic %s\n", epicID)
+	return 0
+}
+
 // NoteAdd creates a new note.
 func NoteAdd(cfg *config.Config, message string) int {
 	r, err := registry.Load(cfg.NotesPath())
