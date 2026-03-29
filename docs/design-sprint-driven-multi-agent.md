@@ -350,24 +350,223 @@ The distinction: **creating an item = autonomous. Changing the plan = gate.**
 - Items without `claimed_by`/`sprint` fields work exactly as before
 - `$AS_AGENT_ID` continues to work for agent identification (independent of sessions)
 
-## What About `st advance` / `st run` (T-157)?
+## `st run` + `st advance` — Configurable Pipeline Sprint Runner (T-157)
 
-T-157 was designed as "the orchestration capstone." With the sprint-driven model, it evolves:
+**Status:** Design approved — 2026-03-29
+**Substrate:** Claude Code `claude -p` in headless mode
 
-- `st advance <sprint>` becomes: "look at the sprint, figure out the next step for the current item, execute it." It's the autonomous inner loop that `st prime` informs.
-- `st run <sprint>` becomes: "run the full sprint autonomously" — join sprint, prime, claim, start, execute, test, pr, merge, UAT, close, next item, repeat.
+### Key Design Decision
 
-This is still the capstone, but now it's sprint-scoped rather than item-scoped. It depends on all the sprint infrastructure being in place first.
+Use `st start` for worktree setup (handles multi-repo: api + web + infra), NOT Claude's `--worktree` flag (single-repo only). Launch `claude -p` with CWD set to the worktree directory.
 
-## Open Design Questions
+Validated via smoke test (2026-03-28):
+- `claude -p --dangerously-skip-permissions` works from inside a git repo
+- `--output-format json` returns structured results
+- Base context cost ~$0.06 per invocation (CLAUDE.md cache)
+- `--max-budget-usd` is optional per-item cost cap
 
-1. **Session ID env var persistence**: Claude Code's startup hook can generate a UUID, but can it persist across tool calls in the same session? If not, we need to write it to a file and read it back.
+### Configurable Step Pipeline
 
-2. **Sprint plan storage**: Sprint items list in `epics.yaml` (current design) vs. separate file per sprint (`.as/sprint-plans/{id}.yaml`). The registry is simpler; separate files allow richer plan metadata (rationale, approval history).
+`st run` is a generic pipeline engine. Each project defines its pipeline as a list of named steps in config. The engine iterates steps per item, stopping on failure.
 
-3. **Queue fate**: Does the global queue become purely "backlog" (items awaiting sprint assignment)? Or does it coexist with sprints (some agents use sprints, some use queue)?
+**Step types:**
 
-4. **Agent ID vs. Session ID**: Currently `$AS_AGENT_ID` is for named agents, `$AS_SESSION_ID` is for sessions. Do we still need agent IDs? Use case: "all sessions working as agent 'theraprac'" for aggregate reporting. Probably keep both — agent ID is optional grouping, session ID is required for claims.
+| Type | Calls | Purpose |
+|------|-------|---------|
+| `claude` | `exec.Command("claude", "-p", ...)` | AI work: coding, code review, bugbot fixes |
+| `test` | `TestRecord()` with `--run [--coverage]` | Test execution → S3 evidence → SHA + URI → coverage |
+| `pr` | `PR()` | Git diff → file classification → blob hashes → scope suites |
+| `merge` | `Merge()` | Close gates → merge → evidence → merge SHA capture |
+| `merge_precheck` | Pre-checks only from `Merge()` | CI watch without merging (e.g., `gh pr checks --watch`) |
+| `deploy` | `DeployCheck()` | Health URL polling + deploy verification |
+| `smoke` | `Smoke()` | Smoke test execution + evidence |
+| `uat` | `UAT()` | Cross-cutting checks + AC evaluation + evidence report |
+| `gate` | stdin prompt | User approval — hard stop, no bypass |
+| `close` | `Close()` | Full gate enforcement: deps, testing, manifest, stage |
+| `command` | `runCmdInDir()` | Raw shell command (escape hatch) |
+
+Typed steps preserve quality infrastructure. Raw `command` would bypass coverage enforcement, blob hash provenance, evidence upload, and gate validation.
+
+### Example Pipeline (TheraPrac)
+
+```yaml
+run:
+  permission_mode: "dangerously-skip-permissions"
+  default_model: "sonnet"
+  max_parallelism: 1
+  default_budget_usd: 5.0
+
+  pipeline:
+    # Phase A: Implement (claude -p)
+    - step: implement
+      type: claude
+      # Default prompt includes: item context, required test suites,
+      # "tests must pass BEFORE commit", self-review, create PR, st pr
+
+    # Phase B: Post-PR quality gates
+    - step: ci_pr
+      type: merge_precheck    # gh pr checks --watch
+
+    - step: code_review
+      type: claude
+      prompt: |
+        Review the open PR for {id}. Run /code-review and fix ALL findings.
+        Check for cursor bugbot comments and resolve all open issues.
+        Push any fixes. Do NOT merge.
+
+    - step: ci_post_review
+      type: merge_precheck    # CI again after review fixes
+
+    # Phase C: Merge + Deploy
+    - step: merge
+      type: merge
+
+    - step: deploy_watch
+      type: deploy
+
+    - step: smoke
+      type: smoke
+
+    # Phase D: UAT + Approval
+    - step: uat
+      type: uat
+
+    - step: approval
+      type: gate
+
+    - step: close
+      type: close
+      resolution: completed
+```
+
+### Execution Flow Per Item
+
+```
+st run <sprint>
+  For each unblocked item (up to --parallelism concurrent):
+
+  1. st start <id> → create worktrees + claim
+
+  2. [implement] claude -p in worktree (CWD = primary repo worktree)
+     ├── Reads CLAUDE.md automatically
+     ├── Prompt includes: summary, ACs, required test suites
+     ├── Codes the fix/feature
+     ├── Runs st test {id} <suite> --run for each required suite
+     │   └── Each: execute → S3 evidence → SHA + URI → coverage thresholds
+     ├── Self-reviews: git diff
+     ├── Commits + pushes
+     ├── Creates PR: gh pr create
+     ├── Records PR: st pr {id} --repo <repo> --pr <N>
+     │   └── File analysis → blob hashes → scope suite triggering
+     └── STOPS (does not merge)
+
+  3. [ci_pr] gh pr checks --watch (pre-merge CI)
+
+  4. [code_review] claude -p (fresh subprocess)
+     ├── Runs /code-review, fixes findings
+     ├── Resolves cursor bugbot issues
+     └── Pushes fixes
+
+  5. [ci_post_review] gh pr checks --watch (post-review CI)
+
+  6. [merge] Merge()
+     ├── Pre-merge gate evaluation
+     ├── gh pr merge --squash --delete-branch
+     ├── Merge SHA capture
+     └── Evidence → S3
+
+  7. [deploy_watch] DeployCheck()
+     ├── Health URL polling until 200
+     └── Records deployed_dev stage
+
+  8. [smoke] Smoke()
+
+  9. [uat] UAT()
+     ├── Test suites pass? Manifest exists? Evidence URIs?
+     ├── AC evaluation (auto/cmd/manual)
+     └── UAT report → S3
+
+  10. [approval] Prompt: "Approve {id}? [y/N]" — hard stop
+
+  11. [close] Close()
+      └── Gates: deps_resolved, testing_complete, stage_reached, manifest_exists
+```
+
+### Claude Subprocess Details
+
+Each `claude` step launches a separate `claude -p` process:
+
+```
+claude -p <prompt>
+  --dangerously-skip-permissions     (or --permission-mode auto)
+  --output-format json               (structured result)
+  --add-dir <agent-state-root>       (access to st commands)
+  --max-budget-usd N                 (per-item cost cap)
+  --model <model>                    (configurable)
+  --no-session-persistence           (ephemeral)
+```
+
+- CWD = primary repo worktree (e.g., `worktrees/T-xxx/theraprac-api/`)
+- Environment: `AS_SESSION_ID=<unique-per-invocation>`, `AS_AGENT_ID=<from-config>`
+- Template variables in prompts: `{id}`, `{sprint}`, `{branch}`, `{worktree}`
+
+### Default `implement` Prompt
+
+Includes:
+- Item ID, title, summary, acceptance criteria
+- Required test suites from `testing.required_suites` config
+- "ALL required test suites must pass BEFORE committing"
+- "Self-review: run `git diff` and review all changes"
+- `st pr {id} --repo <repo> --pr <N>` instructions
+- "Do NOT merge — stop after PR is created and recorded"
+
+### Parallelism
+
+- Parallel groups (from `computeParallelGroups()`) run sequentially
+- Items within a group run concurrently up to `--parallelism`
+- Bounded via semaphore channel + `sync.WaitGroup`
+- Each goroutine reloads its own `store.Store` (thread safety)
+- Gates serialized via `sync.Mutex` (one approval prompt at a time)
+
+### Commands
+
+```
+st run <sprint>     [--dry-run] [--max-budget-usd N] [--parallelism N] [--item ID] [--model M] [--permission-mode M]
+st advance <sprint> [--dry-run] [--max-budget-usd N] [--model M] [--permission-mode M] [--step <name>]
+```
+
+- `st run` — full autonomous sprint loop
+- `st advance` — single item advancement (all steps, or up to `--step <name>`)
+- `--dry-run` — show step-by-step plan without executing
+
+### Config
+
+```go
+type RunConfig struct {
+    PermissionMode   string           // "dangerously-skip-permissions" or "auto"
+    DefaultModel     string           // "sonnet", "opus"
+    MaxParallelism   int
+    DefaultBudgetUSD float64
+    Pipeline         []PipelineStepDef
+}
+
+type PipelineStepDef struct {
+    Step       string // unique name
+    Type       string // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
+    Command    string // for command type
+    Prompt     string // for claude type (optional)
+    Resolution string // for close type
+    Timeout    int    // for watch/deploy (seconds)
+    Coverage   bool   // for test type
+}
+```
+
+## Resolved Design Questions
+
+1. **Session ID persistence**: Solved — file-based session ID in `.as/sessions/`. Each `st` command reads from env or file.
+2. **Sprint plan storage**: Registry (`epics.yaml`) — simpler, proven in Sprint 1-2 implementation.
+3. **Queue fate**: Coexists — queue is backlog for unsprinted items. Sprint items managed via sprint commands.
+4. **Agent ID vs Session ID**: Both kept. Agent ID = optional grouping, Session ID = required for claims.
 
 ## Task Breakdown
 
