@@ -52,6 +52,9 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			if !appCfg.Discovered {
 				return fmt.Errorf("no st project found (looked up from %s)\n\n  Run `st init` to create one, add a .st-root file, or set $ST_ROOT", dir)
 			}
+			// Auto-pull latest changes before scanning items
+			_ = store.GitPull(appCfg)
+
 			appStore, err = store.New(appCfg)
 			if err != nil {
 				return fmt.Errorf("loading items: %w", err)

@@ -5,7 +5,18 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/jfinlinson/agent-state/internal/config"
 )
+
+// GitPull pulls latest changes from remote before reading items.
+// Best-effort: returns nil on failure so commands still work offline.
+func GitPull(cfg *config.Config) error {
+	if cfg.Git == nil || !cfg.Git.AutoPush {
+		return nil
+	}
+	return gitCmdQuiet(cfg.ItemDir(), "pull", "--ff-only")
+}
 
 // GitSync stages, commits, and pushes changes in the item root directory.
 // Message is the commit message. Pre-pulls with --ff-only before committing
