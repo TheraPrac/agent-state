@@ -138,6 +138,90 @@ func TestRunDryRun(t *testing.T) {
 	}
 }
 
+func TestRunInteractiveShowsSprints(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Mock engine that selects sprint 1 then approves
+	callCount := 0
+	engine := RunEngine{
+		RunClaude: mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) {
+			callCount++
+			return "1\n", nil
+		},
+	}
+
+	// dry-run so we don't actually execute
+	code := RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+	if code != 0 {
+		t.Errorf("interactive dry-run returned %d, want 0", code)
+	}
+}
+
+func TestRunInteractiveNoSprints(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+run:
+  step_order: [implement]
+  steps:
+    implement:
+      type: claude
+`), 0644)
+	// Empty registry
+	reg := &registry.Registry{}
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	code := RunInteractive(s, cfg, RunOpts{}, mockRunEngine(true))
+	if code != 0 {
+		t.Errorf("expected 0 for no sprints, got %d", code)
+	}
+}
+
+func TestRunInteractivePlanApproval(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Create unapproved sprint
+	reg, _ := registry.Load(cfg.EpicsPath())
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "needs-approval", Title: "Needs Approval", Epic: "test-epic",
+		Status: "active", Items: []string{"T-001"},
+		PlanApproved: false,
+	})
+	reg.Save(cfg.EpicsPath())
+
+	// Mock: select sprint 2 (needs-approval), then approve plan
+	callCount := 0
+	engine := RunEngine{
+		RunClaude: mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) {
+			callCount++
+			if callCount == 1 {
+				return "2\n", nil // select second sprint
+			}
+			return "y\n", nil // approve plan
+		},
+	}
+
+	code := RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+	if code != 0 {
+		t.Errorf("interactive with approval returned %d, want 0", code)
+	}
+
+	// Verify plan was approved
+	reg2, _ := registry.Load(cfg.EpicsPath())
+	sp, _ := reg2.SprintByID("needs-approval")
+	if !sp.PlanApproved {
+		t.Error("expected plan to be approved after interactive flow")
+	}
+}
+
 func TestRunSprintNotFound(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 	code := Run(s, cfg, "nonexistent", RunOpts{}, mockRunEngine(true))

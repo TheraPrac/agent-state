@@ -76,6 +76,122 @@ func DefaultRunEngine() RunEngine {
 	}
 }
 
+// RunInteractive shows available sprints and lets the user pick one to run.
+func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine RunEngine) int {
+	pipeline := cfg.RunPipeline()
+	if len(pipeline) == 0 {
+		fmt.Fprintln(os.Stderr, "no run.pipeline configured — define run.step_order and run.steps in config")
+		return 1
+	}
+
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	// Find sprints with remaining work
+	type candidate struct {
+		sprint   *registry.Sprint
+		epic     string
+		total    int
+		complete int
+	}
+	var candidates []candidate
+
+	for i := range reg.Sprints {
+		sp := &reg.Sprints[i]
+		if sp.Status != "active" || len(sp.Items) == 0 {
+			continue
+		}
+		total, complete := 0, 0
+		for _, itemID := range sp.Items {
+			total++
+			item, ok := s.Get(itemID)
+			if ok && cfg.IsTerminalStatus(item.Type, item.Status) {
+				complete++
+			}
+		}
+		if complete < total {
+			epicTitle := sp.Epic
+			for _, e := range reg.Epics {
+				if e.ID == sp.Epic {
+					epicTitle = e.Title
+					break
+				}
+			}
+			candidates = append(candidates, candidate{
+				sprint: sp, epic: epicTitle, total: total, complete: complete,
+			})
+		}
+	}
+
+	if len(candidates) == 0 {
+		fmt.Println("No active sprints with remaining work")
+		return 0
+	}
+
+	// Display
+	fmt.Println("Sprints with remaining work:")
+	for i, c := range candidates {
+		approved := ""
+		if c.sprint.PlanApproved {
+			approved = " [plan approved]"
+		}
+		fmt.Printf("  %d. %s — %s\n", i+1, c.sprint.ID, c.sprint.Title)
+		fmt.Printf("     Epic: %s  Progress: %d/%d%s\n\n", c.epic, c.complete, c.total, approved)
+	}
+
+	// Prompt for selection
+	fmt.Printf("Which sprint? [1-%d]: ", len(candidates))
+	response, err := engine.PromptUser("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "prompt error: %v\n", err)
+		return 1
+	}
+	choice := 0
+	fmt.Sscanf(strings.TrimSpace(response), "%d", &choice)
+	if choice < 1 || choice > len(candidates) {
+		fmt.Fprintln(os.Stderr, "invalid selection")
+		return 1
+	}
+
+	selected := candidates[choice-1]
+	sp := selected.sprint
+
+	// Plan validation + approval
+	if !sp.PlanApproved {
+		fmt.Printf("\nSprint %s plan not yet approved. Showing plan:\n\n", sp.ID)
+		SprintPlan(s, cfg, sp.ID)
+		fmt.Printf("\nPipeline (%d steps):\n", len(pipeline))
+		for i, step := range pipeline {
+			fmt.Printf("  %d. [%s] %s\n", i+1, step.Type, step.Name())
+		}
+		fmt.Printf("\nApprove this plan? [y/N]: ")
+		resp, err := engine.PromptUser("")
+		if err != nil {
+			return 1
+		}
+		answer := strings.TrimSpace(strings.ToLower(resp))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Plan not approved. Exiting.")
+			return 0
+		}
+
+		// Approve the plan
+		sp.PlanApproved = true
+		sp.PlanApprovedAt = time.Now().Format(time.RFC3339)
+		sp.PlanApprovedBy = "user"
+		if err := reg.Save(cfg.EpicsPath()); err != nil {
+			fmt.Fprintf(os.Stderr, "saving plan approval: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Plan approved for %s\n\n", sp.ID)
+	}
+
+	return Run(s, cfg, sp.ID, opts, engine)
+}
+
 // Run executes a full autonomous sprint loop.
 func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engine RunEngine) int {
 	// Load sprint and validate
@@ -91,7 +207,7 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 	}
 
 	if !sp.PlanApproved {
-		fmt.Fprintf(os.Stderr, "sprint %s plan not approved\n", sprintID)
+		fmt.Fprintf(os.Stderr, "sprint %s plan not approved — use `st run` (no args) for interactive approval\n", sprintID)
 		return 1
 	}
 

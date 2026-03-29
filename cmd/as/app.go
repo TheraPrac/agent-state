@@ -632,12 +632,14 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	// --- Run / Advance ---
 
 	runCmd := &cobra.Command{
-		Use:   "run <sprint>",
+		Use:   "run [sprint]",
 		Short: "Autonomously execute a sprint using claude -p subprocesses",
 		Long: `Run launches Claude Code (claude -p) subprocesses to autonomously work sprint items.
 Each item walks a configurable pipeline of typed steps (claude, merge, deploy, uat, etc.).
-Requires: sprint plan approved, run.pipeline configured.`,
-		Args: cobra.ExactArgs(1),
+
+Without arguments, enters interactive mode: shows sprints with work remaining,
+lets you pick one, validates the plan, and starts execution.`,
+		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			budget, _ := cmd.Flags().GetFloat64("max-budget-usd")
@@ -645,14 +647,20 @@ Requires: sprint plan approved, run.pipeline configured.`,
 			item, _ := cmd.Flags().GetString("item")
 			model, _ := cmd.Flags().GetString("model")
 			permMode, _ := cmd.Flags().GetString("permission-mode")
-			exitCode = command.Run(appStore, appCfg, args[0], command.RunOpts{
+			opts := command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
 				Parallelism:    parallelism,
 				ItemFilter:     item,
 				Model:          model,
 				PermissionMode: permMode,
-			}, command.DefaultRunEngine())
+			}
+			engine := command.DefaultRunEngine()
+			if len(args) == 0 {
+				exitCode = command.RunInteractive(appStore, appCfg, opts, engine)
+			} else {
+				exitCode = command.Run(appStore, appCfg, args[0], opts, engine)
+			}
 		},
 	}
 	runCmd.Flags().Bool("dry-run", false, "show execution plan without running")
