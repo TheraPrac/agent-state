@@ -1,13 +1,13 @@
 .PHONY: build test clean install
 
 build:
-	go build -o bin/as ./cmd/as
+	go build -o bin/st ./cmd/as
 
 test:
 	go test ./... -cover
 
 clean:
-	rm -f bin/as
+	rm -f bin/st
 
 install: build
-	cp bin/as /usr/local/bin/as
+	cp bin/st /usr/local/bin/st
