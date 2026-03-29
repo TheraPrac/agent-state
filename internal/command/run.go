@@ -1097,13 +1097,56 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 	if resolution == "" {
 		resolution = "completed"
 	}
+
+	item, _ := s.Get(itemID)
+	if item != nil && item.Type == "issue" && resolution == "completed" {
+		resolution = "resolved"
+	}
+
 	code := Close(s, cfg, itemID, resolution, CloseOpts{})
 	if code != 0 {
 		sr.Error = fmt.Sprintf("st close exited %d", code)
 		return sr
 	}
+
+	// Clean up worktree and pull main
+	cleanupWorktree(cfg, itemID)
+
 	sr.Passed = true
 	return sr
+}
+
+// cleanupWorktree removes the item's worktree and pulls main on all repos.
+func cleanupWorktree(cfg *config.Config, itemID string) {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return
+	}
+
+	// Remove worktree via st finish
+	fmt.Printf("[%s] Cleaning up worktree...\n", itemID)
+	s, _ := store.New(cfg)
+	Finish(s, cfg, itemID, FinishOpts{})
+
+	// Pull main on all repos so next item starts from latest
+	parentDir := cfg.Worktree.ParentDir
+	if !filepath.IsAbs(parentDir) {
+		parentDir = filepath.Join(cfg.Root(), parentDir)
+	}
+	for _, repo := range cfg.Worktree.Repos {
+		repoDir := repo
+		if cfg.Worktree.RepoMap != nil {
+			if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+				repoDir = mapped
+			}
+		}
+		mainRepo := filepath.Join(parentDir, repoDir)
+		fmt.Printf("[%s] Pulling main on %s...\n", itemID, repoDir)
+		cmd := exec.Command("git", "pull", "--ff-only")
+		cmd.Dir = mainRepo
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		cmd.Run() // best-effort
+	}
 }
 
 func executeCommand(cfg *config.Config, itemID, sprintID string, step config.RunStepDef, worktreeDir string) StepResult {
