@@ -83,9 +83,24 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	setNestedField(item, "time_tracking", "completed_at", nowStr)
 	if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
 		if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
-			hours := now.Sub(t).Hours()
-			setNestedField(item, "time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", hours))
+			wallDur := now.Sub(t)
+			setNestedField(item, "time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
+			setNestedField(item, "time_tracking", "total_wall_time", formatDuration(wallDur))
 		}
+	}
+
+	// Total AI time from st run metrics (ai_duration_seconds)
+	if aiSec, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); ok && aiSec != "" {
+		var secs int
+		fmt.Sscanf(aiSec, "%d", &secs)
+		if secs > 0 {
+			setNestedField(item, "time_tracking", "total_ai_time", formatDuration(time.Duration(secs)*time.Second))
+		}
+	}
+
+	// AI cost summary
+	if aiCost, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok && aiCost != "" {
+		setNestedField(item, "time_tracking", "total_ai_cost_usd", aiCost)
 	}
 
 	if opts.Reason != "" {

@@ -1,6 +1,9 @@
 package command
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/jfinlinson/agent-state/internal/model"
 )
 
@@ -93,4 +96,37 @@ func nestedMap(item *model.Item, parent string) map[string]interface{} {
 	default:
 		return nil
 	}
+}
+
+// formatDuration formats a duration as "Xd Xh Xm Xs", omitting zero components.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+	if len(parts) == 0 {
+		return "0s"
+	}
+	result := parts[0]
+	for _, p := range parts[1:] {
+		result += " " + p
+	}
+	return result
 }

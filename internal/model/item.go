@@ -31,6 +31,7 @@ type Item struct {
 	Sprint         string // sprint ID (adjective-verb-noun)
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
+	PlanApproved   bool   // design/plan gate passed
 
 	// List fields
 	Tags               []string

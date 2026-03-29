@@ -417,16 +417,60 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	result.Success = true
 	result.Duration = time.Since(start)
+
+	// Write time tracking + cost back to item
+	recordRunMetrics(cfg, itemID, result)
+
 	return result
+}
+
+// recordRunMetrics writes AI cost, AI duration, and session data back to the item.
+func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
+	localStore, err := store.New(cfg)
+	if err != nil {
+		return
+	}
+	item, ok := localStore.Get(itemID)
+	if !ok {
+		return
+	}
+
+	// AI cost
+	if result.TotalCost > 0 {
+		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.2f", result.TotalCost))
+	}
+
+	// AI duration (sum of claude step durations)
+	var aiDuration time.Duration
+	for _, sr := range result.Steps {
+		if sr.Type == "claude" {
+			aiDuration += sr.Duration
+		}
+	}
+	if aiDuration > 0 {
+		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", int(aiDuration.Seconds())))
+	}
+
+	// Wall time for the full run
+	if result.Duration > 0 {
+		setNestedField(item, "time_tracking", "run_wall_seconds", fmt.Sprintf("%d", int(result.Duration.Seconds())))
+	}
+
+	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	localStore.Write(item)
 }
 
 // executeStep dispatches to the appropriate step executor.
 func executeStep(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir string) StepResult {
 	switch step.Type {
+	case "plan":
+		return executePlan(s, cfg, itemID, engine)
 	case "claude":
 		return executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir)
 	case "test":
 		return executeTest(s, cfg, itemID, step, worktreeDir)
+	case "verify_tests":
+		return executeVerifyTests(s, cfg, itemID)
 	case "pr":
 		return executePR(s, cfg, itemID, step, worktreeDir)
 	case "merge":
@@ -466,7 +510,7 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// Build args
 	args := buildClaudeArgs(cfg, prompt, opts, worktreeDir)
 
-	// Build env
+	// Build env with unique session ID
 	sessionID := generateSessionID()
 	env := []string{
 		"AS_SESSION_ID=" + sessionID,
@@ -474,6 +518,9 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	if agentID := cfg.AgentID(); agentID != "" {
 		env = append(env, "AS_AGENT_ID="+agentID)
 	}
+
+	// Record session on item
+	recordSession(s, cfg, itemID, sessionID, step.Name())
 
 	// Launch
 	output, exitCode, err := engine.RunClaude(worktreeDir, args, env)
@@ -689,6 +736,124 @@ func executeCommand(cfg *config.Config, itemID, sprintID string, step config.Run
 	sr.Passed = true
 	sr.Output = truncate(string(output), 200)
 	return sr
+}
+
+func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepResult {
+	sr := StepResult{Step: "verify_tests", Type: "verify_tests"}
+	if cfg.Testing == nil {
+		sr.Passed = true
+		return sr
+	}
+
+	item, ok := s.Get(itemID)
+	if !ok {
+		sr.Error = "item not found"
+		return sr
+	}
+
+	// Check required suites
+	var missing []string
+	for name := range cfg.Testing.RequiredSuites {
+		val := ""
+		if v, ok := item.TestingEvidence[name]; ok {
+			if s, ok := v.(string); ok {
+				val = s
+			}
+		}
+		if !strings.HasPrefix(val, "pass") {
+			missing = append(missing, name)
+		}
+	}
+
+	// Check triggered scope suites
+	for name := range cfg.Testing.ScopeSuites {
+		val := ""
+		if v, ok := item.TestingEvidence[name]; ok {
+			if s, ok := v.(string); ok {
+				val = s
+			}
+		}
+		if val == "required" {
+			missing = append(missing, name+" (triggered, not run)")
+		}
+	}
+
+	if len(missing) > 0 {
+		sr.Error = fmt.Sprintf("missing test evidence: %s", strings.Join(missing, ", "))
+		return sr
+	}
+
+	sr.Passed = true
+	return sr
+}
+
+func executePlan(s *store.Store, cfg *config.Config, itemID string, engine RunEngine) StepResult {
+	sr := StepResult{Step: "plan", Type: "plan"}
+
+	item, ok := s.Get(itemID)
+	if !ok {
+		sr.Error = "item not found"
+		return sr
+	}
+
+	// Check if item already has a linked plan that was approved
+	if item.PlanApproved {
+		sr.Passed = true
+		return sr
+	}
+
+	// Present item for design review
+	fmt.Printf("\n=== Design Gate: %s ===\n", itemID)
+	fmt.Printf("Title: %s\n", item.Title)
+	if item.Summary != "" {
+		fmt.Printf("\nSummary:\n%s\n", item.Summary)
+	}
+	if len(item.AcceptanceCriteria) > 0 {
+		fmt.Printf("\nAcceptance Criteria:\n")
+		for i, ac := range item.AcceptanceCriteria {
+			fmt.Printf("  %d. %s\n", i+1, ac)
+		}
+	}
+
+	fmt.Printf("\nApprove design for %s? [y/N]: ", itemID)
+	response, err := engine.PromptUser("")
+	if err != nil {
+		sr.Error = fmt.Sprintf("prompt error: %v", err)
+		return sr
+	}
+	answer := strings.TrimSpace(strings.ToLower(response))
+	if answer != "y" && answer != "yes" {
+		sr.Error = "design not approved"
+		return sr
+	}
+
+	// Record approval on item
+	item.PlanApproved = true
+	item.Doc.SetField("plan_approved", "true")
+	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	s.Write(item)
+
+	sr.Passed = true
+	return sr
+}
+
+// recordSession appends a session ID to the item's sessions list.
+func recordSession(s *store.Store, cfg *config.Config, itemID, sessionID, stepName string) {
+	item, ok := s.Get(itemID)
+	if !ok {
+		return
+	}
+
+	// Append to sessions list
+	item.Sessions = append(item.Sessions, sessionID)
+	updateListInDoc(item, "sessions", item.Sessions)
+
+	// Record in time_tracking which step used this session
+	setNestedField(item, "time_tracking", "last_session", sessionID)
+	setNestedField(item, "time_tracking", "last_step", stepName)
+
+	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	s.Write(item)
 }
 
 // --- Prompt and args ---
