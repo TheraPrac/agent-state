@@ -774,10 +774,12 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// Build args
 	args := buildClaudeArgs(cfg, prompt, opts, worktreeDir)
 
-	// Build env with unique session ID
+	// Build env with unique session ID + context for status display
 	sessionID := generateSessionID()
 	env := []string{
 		"AS_SESSION_ID=" + sessionID,
+		"ST_RUN_ITEM=" + itemID,
+		"ST_RUN_STEP=" + step.Name(),
 	}
 	if agentID := cfg.AgentID(); agentID != "" {
 		env = append(env, "AS_AGENT_ID="+agentID)
@@ -1595,10 +1597,27 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	}
 
 	// Activity watchdog — kills process if no output for idleTimeout
+	// Extract item ID from env for status display
+	label := "claude"
+	for _, e := range env {
+		if strings.HasPrefix(e, "ST_RUN_ITEM=") {
+			label = strings.TrimPrefix(e, "ST_RUN_ITEM=")
+		}
+	}
+	stepName := "claude"
+	for _, e := range env {
+		if strings.HasPrefix(e, "ST_RUN_STEP=") {
+			stepName = strings.TrimPrefix(e, "ST_RUN_STEP=")
+		}
+	}
+
 	activity := &activityTracker{
 		lastSeen:    time.Now(),
+		startTime:   time.Now(),
 		idleTimeout: defaultClaudeIdleTimeout,
 		cancel:      cancel,
+		label:       label,
+		step:        stepName,
 	}
 	go activity.watch()
 
@@ -1663,10 +1682,14 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 
 // activityTracker monitors a subprocess for idle timeout.
 // It kills the process (via context cancel) if no ping() is received within idleTimeout.
+// Also prints periodic status ticks so the user knows it's alive.
 type activityTracker struct {
 	lastSeen    time.Time
+	startTime   time.Time
 	idleTimeout time.Duration
 	cancel      context.CancelFunc
+	label       string // item ID for display
+	step        string // step name for display
 	mu          sync.Mutex
 	stopped     bool
 }
@@ -1686,6 +1709,7 @@ func (a *activityTracker) stop() {
 func (a *activityTracker) watch() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	statusCount := 0
 	for range ticker.C {
 		a.mu.Lock()
 		if a.stopped {
@@ -1693,12 +1717,23 @@ func (a *activityTracker) watch() {
 			return
 		}
 		idle := time.Since(a.lastSeen)
+		elapsed := time.Since(a.startTime)
 		a.mu.Unlock()
 
 		if idle >= a.idleTimeout {
 			fmt.Fprintf(os.Stderr, "\n[st run] No activity for %s — killing process\n", idle.Round(time.Second))
 			a.cancel()
 			return
+		}
+
+		// Status tick every 30s so user knows it's alive
+		statusCount++
+		if statusCount%3 == 0 {
+			if idle < 5*time.Second {
+				fmt.Fprintf(os.Stderr, "\r[%s] %s — processing (%s elapsed)   ", a.label, a.step, elapsed.Round(time.Second))
+			} else {
+				fmt.Fprintf(os.Stderr, "\r[%s] %s — waiting (%s elapsed, last output %s ago)   ", a.label, a.step, elapsed.Round(time.Second), idle.Round(time.Second))
+			}
 		}
 	}
 }
@@ -1728,8 +1763,11 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 
 	activity := &activityTracker{
 		lastSeen:    time.Now(),
+		startTime:   time.Now(),
 		idleTimeout: idleTimeout,
 		cancel:      cancel,
+		label:       "cmd",
+		step:        truncate(command, 30),
 	}
 	go activity.watch()
 
