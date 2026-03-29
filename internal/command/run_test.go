@@ -112,10 +112,10 @@ func mockRunEngine(approved bool) RunEngine {
 	return RunEngine{
 		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
 			result := ClaudeResult{
-				Type:    "result",
-				Subtype: "success",
-				CostUSD: 0.05,
-				Result:  "Implementation complete",
+				Type:         "result",
+				Subtype:      "success",
+				TotalCostUSD: 0.05,
+				Result:       "Implementation complete",
 			}
 			data, _ := json.Marshal(result)
 			return data, 0, nil
@@ -346,10 +346,10 @@ func TestBuildClaudeArgsOverrides(t *testing.T) {
 
 func TestParseClaudeOutput(t *testing.T) {
 	result := ClaudeResult{
-		Type:    "result",
-		Subtype: "success",
-		CostUSD: 0.12,
-		Result:  "Done",
+		Type:         "result",
+		Subtype:      "success",
+		TotalCostUSD: 0.12,
+		Result:       "Done",
 	}
 	data, _ := json.Marshal(result)
 
@@ -360,8 +360,8 @@ func TestParseClaudeOutput(t *testing.T) {
 	if parsed.Subtype != "success" {
 		t.Errorf("subtype = %q, want success", parsed.Subtype)
 	}
-	if parsed.CostUSD != 0.12 {
-		t.Errorf("cost = %f, want 0.12", parsed.CostUSD)
+	if parsed.TotalCostUSD != 0.12 {
+		t.Errorf("cost = %f, want 0.12", parsed.TotalCostUSD)
 	}
 }
 

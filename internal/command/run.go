@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -38,13 +39,14 @@ type RunEngine struct {
 
 // ClaudeResult represents parsed JSON output from claude -p --output-format json.
 type ClaudeResult struct {
-	Type      string  `json:"type"`
-	Subtype   string  `json:"subtype"`
-	CostUSD   float64 `json:"cost_usd"`
-	Duration  int64   `json:"duration_ms"`
-	SessionID string  `json:"session_id"`
-	NumTurns  int     `json:"num_turns"`
-	Result    string  `json:"result"`
+	Type         string  `json:"type"`
+	Subtype      string  `json:"subtype"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	DurationMs   int64   `json:"duration_ms"`
+	SessionID    string  `json:"session_id"`
+	NumTurns     int     `json:"num_turns"`
+	Result       string  `json:"result"`
+	IsError      bool    `json:"is_error"`
 }
 
 // StepResult captures the outcome of a single pipeline step.
@@ -424,7 +426,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	return result
 }
 
-// recordRunMetrics writes AI cost, AI duration, and session data back to the item.
+// recordRunMetrics accumulates AI cost, AI duration, and run wall time on the item.
+// Each st run / st advance invocation adds to the running totals.
 func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 	localStore, err := store.New(cfg)
 	if err != nil {
@@ -435,12 +438,13 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		return
 	}
 
-	// AI cost
+	// Accumulate AI cost
 	if result.TotalCost > 0 {
-		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.2f", result.TotalCost))
+		prev := readFloatField(item, "time_tracking", "ai_cost_usd")
+		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.4f", prev+result.TotalCost))
 	}
 
-	// AI duration (sum of claude step durations)
+	// Accumulate AI duration (sum of claude step durations from this run)
 	var aiDuration time.Duration
 	for _, sr := range result.Steps {
 		if sr.Type == "claude" {
@@ -448,16 +452,142 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		}
 	}
 	if aiDuration > 0 {
-		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", int(aiDuration.Seconds())))
+		prev := readIntField(item, "time_tracking", "ai_duration_seconds")
+		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", prev+int(aiDuration.Seconds())))
 	}
 
-	// Wall time for the full run
+	// Accumulate total run wall time
 	if result.Duration > 0 {
-		setNestedField(item, "time_tracking", "run_wall_seconds", fmt.Sprintf("%d", int(result.Duration.Seconds())))
+		prev := readIntField(item, "time_tracking", "run_wall_seconds")
+		setNestedField(item, "time_tracking", "run_wall_seconds", fmt.Sprintf("%d", prev+int(result.Duration.Seconds())))
 	}
+
+	// Track number of st run invocations
+	prevRuns := readIntField(item, "time_tracking", "run_count")
+	setNestedField(item, "time_tracking", "run_count", fmt.Sprintf("%d", prevRuns+1))
+
+	// Append per-run stats to ai_sessions array (detailed provenance)
+	appendAISessionRecord(item, result)
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 	localStore.Write(item)
+}
+
+// appendAISessionRecord adds a line to the work_tracking.ai_sessions list
+// with per-invocation stats: session ID, step, cost, duration, timestamp.
+func appendAISessionRecord(item *model.Item, result ItemResult) {
+	for _, sr := range result.Steps {
+		if sr.Type != "claude" || sr.CostUSD == 0 {
+			continue
+		}
+		// Format: "session:<id> step:<name> cost:$X.XXXX duration:Xs at:<timestamp>"
+		record := fmt.Sprintf("cost:$%.4f duration:%s step:%s at:%s",
+			sr.CostUSD, sr.Duration.Round(time.Second), sr.Step,
+			time.Now().Format(time.RFC3339))
+
+		if item.WorkTracking == nil {
+			item.WorkTracking = make(map[string]interface{})
+		}
+
+		// Append to ai_sessions list in document
+		appendListField(item, "work_tracking", "ai_sessions", record)
+	}
+}
+
+// appendListField appends a value to a list field under a parent block in the document.
+func appendListField(item *model.Item, parent, key, val string) {
+	if item.Doc == nil {
+		return
+	}
+
+	// Find or create the parent block, then find or create the key as a list
+	parentIdx := -1
+	keyIdx := -1
+	lastInBlock := -1
+	for i, line := range item.Doc.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+		}
+		if parentIdx >= 0 && i > parentIdx {
+			if line.Indent == 0 && !line.IsEmpty && line.Key != "" {
+				break // left the parent block
+			}
+			if line.Key == key && line.Indent > 0 {
+				keyIdx = i
+			}
+			lastInBlock = i
+		}
+	}
+
+	newLine := model.Line{
+		Raw:      fmt.Sprintf("  - %s", val),
+		Indent:   2,
+		BlockKey: parent,
+	}
+
+	if parentIdx < 0 {
+		// Create parent + key + value
+		item.Doc.Lines = append(item.Doc.Lines,
+			model.Line{Raw: "", IsEmpty: true},
+			model.Line{Raw: parent + ":", Key: parent},
+			model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent},
+			newLine,
+		)
+		return
+	}
+
+	if keyIdx < 0 {
+		// Parent exists but key doesn't — insert at end of parent block
+		insertAt := lastInBlock + 1
+		if insertAt <= parentIdx {
+			insertAt = parentIdx + 1
+		}
+		lines := make([]model.Line, 0, len(item.Doc.Lines)+2)
+		lines = append(lines, item.Doc.Lines[:insertAt]...)
+		lines = append(lines, model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent})
+		lines = append(lines, newLine)
+		lines = append(lines, item.Doc.Lines[insertAt:]...)
+		item.Doc.Lines = lines
+		return
+	}
+
+	// Key exists — find the end of the list and append
+	insertAt := keyIdx + 1
+	for insertAt < len(item.Doc.Lines) {
+		line := item.Doc.Lines[insertAt]
+		if line.Indent < 2 || (line.Key != "" && !strings.HasPrefix(line.Raw, "  -")) {
+			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line.Raw), "- ") {
+			insertAt++
+			continue
+		}
+		break
+	}
+
+	lines := make([]model.Line, 0, len(item.Doc.Lines)+1)
+	lines = append(lines, item.Doc.Lines[:insertAt]...)
+	lines = append(lines, newLine)
+	lines = append(lines, item.Doc.Lines[insertAt:]...)
+	item.Doc.Lines = lines
+}
+
+func readFloatField(item *model.Item, parent, key string) float64 {
+	if val, exists := getNestedField(item, parent, key); exists {
+		var f float64
+		fmt.Sscanf(val, "%f", &f)
+		return f
+	}
+	return 0
+}
+
+func readIntField(item *model.Item, parent, key string) int {
+	if val, exists := getNestedField(item, parent, key); exists {
+		var i int
+		fmt.Sscanf(val, "%d", &i)
+		return i
+	}
+	return 0
 }
 
 // executeStep dispatches to the appropriate step executor.
@@ -544,7 +674,7 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		return sr
 	}
 
-	sr.CostUSD = claudeResult.CostUSD
+	sr.CostUSD = claudeResult.TotalCostUSD
 	sr.Output = truncate(claudeResult.Result, 500)
 
 	if exitCode != 0 || (claudeResult.Subtype != "" && claudeResult.Subtype != "success") {
