@@ -128,11 +128,10 @@ func Advance(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, 
 		return 1
 	}
 
-	groups, sp, code := loadSprintGroups(s, cfg, sprintID)
+	groups, _, code := loadSprintGroups(s, cfg, sprintID)
 	if code != 0 {
 		return code
 	}
-	_ = sp
 
 	// Find first eligible item across all groups
 	itemID := ""
@@ -310,6 +309,10 @@ func executeStep(s *store.Store, cfg *config.Config, itemID, sprintID string, st
 	switch step.Type {
 	case "claude":
 		return executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir)
+	case "test":
+		return executeTest(s, cfg, itemID, step, worktreeDir)
+	case "pr":
+		return executePR(s, cfg, itemID, step, worktreeDir)
 	case "merge":
 		return executeMerge(s, cfg, itemID, worktreeDir)
 	case "merge_precheck":
@@ -386,6 +389,56 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		return sr
 	}
 
+	sr.Passed = true
+	return sr
+}
+
+func executeTest(s *store.Store, cfg *config.Config, itemID string, step config.RunStepDef, worktreeDir string) StepResult {
+	sr := StepResult{Step: step.Name(), Type: "test"}
+	suite := step.Command // command field carries the suite name
+	if suite == "" {
+		sr.Error = "test step requires command field set to suite name"
+		return sr
+	}
+	code := TestRecord(s, cfg, itemID, suite, TestRecordOpts{
+		Run:      true,
+		Coverage: step.Coverage,
+		RunCmd: func(cmd string) ([]byte, int, error) {
+			return runCmdInDir(worktreeDir, cmd)
+		},
+	})
+	if code != 0 {
+		sr.Error = fmt.Sprintf("st test %s exited %d", suite, code)
+		return sr
+	}
+	sr.Passed = true
+	return sr
+}
+
+func executePR(s *store.Store, cfg *config.Config, itemID string, step config.RunStepDef, worktreeDir string) StepResult {
+	sr := StepResult{Step: step.Name(), Type: "pr"}
+	repo := step.Command // command field carries the repo name
+	if repo == "" {
+		sr.Error = "pr step requires command field set to repo name"
+		return sr
+	}
+	// Detect PR number from current branch
+	out, exitCode, err := runCmdInDir(worktreeDir, "gh pr view --json number -q .number")
+	if err != nil || exitCode != 0 || len(out) == 0 {
+		sr.Error = "could not detect PR number (is there an open PR on this branch?)"
+		return sr
+	}
+	prNum := 0
+	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &prNum)
+	if prNum == 0 {
+		sr.Error = fmt.Sprintf("invalid PR number from gh pr view: %s", string(out))
+		return sr
+	}
+	code := PR(s, cfg, itemID, PROpts{Repo: repo, PRNumber: prNum})
+	if code != 0 {
+		sr.Error = fmt.Sprintf("st pr exited %d", code)
+		return sr
+	}
 	sr.Passed = true
 	return sr
 }
