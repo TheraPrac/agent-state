@@ -629,6 +629,70 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	}
 	root.AddCommand(smokeCmd)
 
+	// --- Run / Advance ---
+
+	runCmd := &cobra.Command{
+		Use:   "run <sprint>",
+		Short: "Autonomously execute a sprint using claude -p subprocesses",
+		Long: `Run launches Claude Code (claude -p) subprocesses to autonomously work sprint items.
+Each item walks a configurable pipeline of typed steps (claude, merge, deploy, uat, etc.).
+Requires: sprint plan approved, run.pipeline configured.`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			budget, _ := cmd.Flags().GetFloat64("max-budget-usd")
+			parallelism, _ := cmd.Flags().GetInt("parallelism")
+			item, _ := cmd.Flags().GetString("item")
+			model, _ := cmd.Flags().GetString("model")
+			permMode, _ := cmd.Flags().GetString("permission-mode")
+			exitCode = command.Run(appStore, appCfg, args[0], command.RunOpts{
+				DryRun:         dryRun,
+				MaxBudgetUSD:   budget,
+				Parallelism:    parallelism,
+				ItemFilter:     item,
+				Model:          model,
+				PermissionMode: permMode,
+			}, command.DefaultRunEngine())
+		},
+	}
+	runCmd.Flags().Bool("dry-run", false, "show execution plan without running")
+	runCmd.Flags().Float64("max-budget-usd", 0, "per-item cost cap (0 = use config default)")
+	runCmd.Flags().Int("parallelism", 0, "max concurrent claude processes (0 = use config default)")
+	runCmd.Flags().String("item", "", "run only this item ID")
+	runCmd.Flags().String("model", "", "model to use (overrides config)")
+	runCmd.Flags().String("permission-mode", "", "claude permission mode (overrides config)")
+	root.AddCommand(runCmd)
+
+	advanceCmd := &cobra.Command{
+		Use:   "advance <sprint>",
+		Short: "Execute pipeline steps for the next unblocked sprint item",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			budget, _ := cmd.Flags().GetFloat64("max-budget-usd")
+			item, _ := cmd.Flags().GetString("item")
+			model, _ := cmd.Flags().GetString("model")
+			permMode, _ := cmd.Flags().GetString("permission-mode")
+			step, _ := cmd.Flags().GetString("step")
+			exitCode = command.Advance(appStore, appCfg, args[0], command.RunOpts{
+				DryRun:         dryRun,
+				MaxBudgetUSD:   budget,
+				Parallelism:    1,
+				ItemFilter:     item,
+				Model:          model,
+				PermissionMode: permMode,
+				StepFilter:     step,
+			}, command.DefaultRunEngine())
+		},
+	}
+	advanceCmd.Flags().Bool("dry-run", false, "show what would be executed")
+	advanceCmd.Flags().Float64("max-budget-usd", 0, "cost cap")
+	advanceCmd.Flags().String("item", "", "advance this specific item")
+	advanceCmd.Flags().String("model", "", "model to use")
+	advanceCmd.Flags().String("permission-mode", "", "claude permission mode")
+	advanceCmd.Flags().String("step", "", "stop after this step name")
+	root.AddCommand(advanceCmd)
+
 	stackCmd := &cobra.Command{
 		Use:   "stack",
 		Short: "Show the current work stack",

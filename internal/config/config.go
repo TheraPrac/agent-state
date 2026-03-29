@@ -55,6 +55,9 @@ type Config struct {
 	// Sprint configuration (optional)
 	Sprints *SprintsConfig
 
+	// Run configuration for st run/advance (optional)
+	Run *RunConfig
+
 	// Pipeline steps (optional)
 	Pipeline *PipelineConfig
 
@@ -192,6 +195,30 @@ type SprintsConfig struct {
 	StaleClaimTTL int // seconds before a claim is stale (default 7200)
 }
 
+// RunConfig holds settings for st run / st advance.
+type RunConfig struct {
+	PermissionMode   string // "dangerously-skip-permissions" (default) or "auto"
+	DefaultModel     string // e.g. "sonnet", "opus"
+	MaxParallelism   int    // max concurrent claude processes (default 1)
+	DefaultBudgetUSD float64
+	StepOrder        []string              // ordered step names
+	Steps            map[string]RunStepDef // step name → definition
+}
+
+// RunStepDef defines a single pipeline step for st run.
+type RunStepDef struct {
+	Type       string // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
+	Command    string // for command type
+	Prompt     string // for claude type (optional, uses default)
+	Resolution string // for close type (e.g. "completed")
+	Timeout    int    // for watch/deploy (seconds, default 600)
+	Coverage   bool   // for test type
+	name       string // set by RunPipeline(), not from config
+}
+
+// Name returns the step's name (set when building the pipeline from config).
+func (s RunStepDef) Name() string { return s.name }
+
 // Root returns the root directory for this config.
 func (c *Config) Root() string {
 	return c.root
@@ -235,6 +262,32 @@ func (c *Config) NotesPath() string {
 // ManifestDir returns the absolute path to manifest sidecar files.
 func (c *Config) ManifestDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".manifest")
+}
+
+// RunPermissionMode returns the configured claude permission mode for st run.
+func (c *Config) RunPermissionMode() string {
+	if c.Run != nil && c.Run.PermissionMode != "" {
+		return c.Run.PermissionMode
+	}
+	return "dangerously-skip-permissions"
+}
+
+// RunPipeline returns the ordered pipeline steps for st run.
+func (c *Config) RunPipeline() []RunStepDef {
+	if c.Run == nil || len(c.Run.StepOrder) == 0 {
+		return nil
+	}
+	var steps []RunStepDef
+	for _, name := range c.Run.StepOrder {
+		step, ok := c.Run.Steps[name]
+		if !ok {
+			continue
+		}
+		// Carry the step name into the struct
+		step.name = name
+		steps = append(steps, step)
+	}
+	return steps
 }
 
 // QueuePath returns the path to the work queue file.
@@ -766,6 +819,50 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 				cfg.Sprints.StaleClaimTTL = v
 			}
 		}
+
+	case "run":
+		ensureRun(cfg)
+		switch levels[1] {
+		case "":
+			// Top-level run scalars
+			switch key {
+			case "permission_mode":
+				cfg.Run.PermissionMode = val
+			case "default_model":
+				cfg.Run.DefaultModel = val
+			case "max_parallelism":
+				if v, err := strconv.Atoi(val); err == nil {
+					cfg.Run.MaxParallelism = v
+				}
+			case "default_budget_usd":
+				if v, err := strconv.ParseFloat(val, 64); err == nil {
+					cfg.Run.DefaultBudgetUSD = v
+				}
+			}
+		case "steps":
+			// levels[2] = step name, key = field name
+			stepName := levels[2]
+			if stepName != "" && val != "" {
+				step := cfg.Run.Steps[stepName]
+				switch key {
+				case "type":
+					step.Type = val
+				case "command":
+					step.Command = val
+				case "prompt":
+					step.Prompt = val
+				case "resolution":
+					step.Resolution = val
+				case "timeout":
+					if v, err := strconv.Atoi(val); err == nil {
+						step.Timeout = v
+					}
+				case "coverage":
+					step.Coverage = val == "true"
+				}
+				cfg.Run.Steps[stepName] = step
+			}
+		}
 	}
 }
 
@@ -806,6 +903,12 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 				}
 			}
 		}
+	case "run":
+		if key == "step_order" {
+			ensureRun(cfg)
+			cfg.Run.StepOrder = items
+		}
+
 	case "testing":
 		ensureTesting(cfg)
 		if key == "artifacts" && levels[2] != "" {
@@ -827,6 +930,14 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 // applyListItem routes a dash-prefixed list item to the appropriate config field.
 func applyListItem(cfg *Config, levels [4]string, val string) {
 	// Currently unused — gates list items would be handled here in the future.
+}
+
+func ensureRun(cfg *Config) {
+	if cfg.Run == nil {
+		cfg.Run = &RunConfig{
+			Steps: make(map[string]RunStepDef),
+		}
+	}
 }
 
 func ensureTesting(cfg *Config) {
