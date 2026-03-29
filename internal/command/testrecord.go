@@ -159,32 +159,32 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		RecordedAt: now.Format(time.RFC3339),
 	}
 
-	// Upload evidence
+	// Upload evidence (best-effort — don't fail the test recording if upload fails)
 	backend := opts.Backend
 	if backend == nil {
-		var err error
-		backend, err = evidence.New(evidenceConfigFromCfg(cfg))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "creating evidence backend: %v\n", err)
-			return 1
+		var berr error
+		backend, berr = evidence.New(evidenceConfigFromCfg(cfg))
+		if berr != nil {
+			fmt.Fprintf(os.Stderr, "warning: evidence backend unavailable: %v\n", berr)
 		}
 	}
 
 	ts := now.Format("20060102T150405")
 	keyPrefix := fmt.Sprintf("%s/%s/%s/%s", id, suite, sha, ts)
+	logURI := ""
 
-	// Upload log.txt (gzipped)
-	logURI, err := evidence.GzipUpload(backend, keyPrefix+"/log.txt", output)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "uploading log.txt: %v\n", err)
-		return 1
-	}
+	if backend != nil {
+		// Upload log.txt (gzipped)
+		uri, err := evidence.GzipUpload(backend, keyPrefix+"/log.txt", output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: evidence upload failed: %v\n", err)
+		} else {
+			logURI = uri
+		}
 
-	// Upload summary.json (gzipped)
-	summaryJSON, _ := json.MarshalIndent(summary, "", "  ")
-	if _, err := evidence.GzipUpload(backend, keyPrefix+"/summary.json", summaryJSON); err != nil {
-		fmt.Fprintf(os.Stderr, "uploading summary.json: %v\n", err)
-		return 1
+		// Upload summary.json (gzipped)
+		summaryJSON, _ := json.MarshalIndent(summary, "", "  ")
+		evidence.GzipUpload(backend, keyPrefix+"/summary.json", summaryJSON)
 	}
 
 	// If test failed, record failure and stop

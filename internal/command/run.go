@@ -1490,9 +1490,8 @@ func releaseItem(cfg *config.Config, itemID string) {
 		item.Doc.SetField("claimed_at", "")
 	}
 
-	// Clear plan_approved so the plan step runs again on retry
-	item.PlanApproved = false
-	item.Doc.SetField("plan_approved", "false")
+	// Keep plan_approved if it was set — the user already approved the design.
+	// Only the plan step itself should set/clear this flag.
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 	localStore.Write(item)
