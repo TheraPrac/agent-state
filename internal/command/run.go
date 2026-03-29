@@ -320,29 +320,36 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 		return printDryRun(s, cfg, sp, groups, pipeline, opts)
 	}
 
+	// Ensure AWS credentials are valid (for evidence uploads)
+	ensureAWSCredentials(cfg)
+
 	// Recover items left in broken state from previous failed runs
 	recoverStaleItems(s, cfg, sp.Items)
 	// Reload store after recovery
 	s, _ = store.New(cfg)
 
-	// Set up Ctrl+C handler to clean up active items
+	// Set up Ctrl+C handler — one press kills everything
+	runCtx, runCancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
-	interrupted := false
+	go func() {
+		<-sigChan
+		fmt.Fprintf(os.Stderr, "\n[st run] Interrupted — killing subprocesses and cleaning up...\n")
+		runCancel()
+		// Second Ctrl+C = hard exit
+		<-sigChan
+		os.Exit(1)
+	}()
+
+	// Store the cancel context for subprocess use
+	activeRunCtx = runCtx
 
 	// Execute groups sequentially, items within groups up to parallelism
 	start := time.Now()
 	var allResults []ItemResult
 
 	for i, group := range groups {
-		// Check for interrupt between groups
-		select {
-		case <-sigChan:
-			interrupted = true
-			fmt.Fprintf(os.Stderr, "\n[st run] Interrupted — cleaning up...\n")
-		default:
-		}
-		if interrupted {
+		if runCtx.Err() != nil {
 			break
 		}
 
@@ -351,6 +358,7 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 		allResults = append(allResults, results...)
 	}
 	signal.Stop(sigChan)
+	activeRunCtx = nil
 
 	// Clean up any items that were started but didn't complete
 	for _, r := range allResults {
@@ -488,6 +496,9 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 
 // gateMu serializes gate prompts when parallelism > 1.
 var gateMu sync.Mutex
+
+// activeRunCtx is the cancel context for the current st run — Ctrl+C cancels it.
+var activeRunCtx context.Context
 
 func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, pipeline []config.RunStepDef, opts RunOpts, engine RunEngine) ItemResult {
 	start := time.Now()
@@ -1579,6 +1590,37 @@ func autoCloseItem(s *store.Store, cfg *config.Config, itemID string, item *mode
 	})
 }
 
+// ensureAWSCredentials checks if AWS credentials are valid and runs SSO login if needed.
+func ensureAWSCredentials(cfg *config.Config) {
+	if cfg.Evidence == nil || cfg.Evidence.Backend != "s3" {
+		return
+	}
+
+	profile := cfg.Evidence.S3Profile
+	if profile == "" {
+		return
+	}
+
+	// Test credentials with a lightweight STS call
+	args := []string{"sts", "get-caller-identity", "--profile", profile}
+	cmd := exec.Command("aws", args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Run(); err == nil {
+		return // credentials are valid
+	}
+
+	// Credentials expired or missing — run SSO login
+	fmt.Printf("[st run] AWS credentials expired for profile %s — logging in...\n", profile)
+	loginCmd := exec.Command("aws", "sso", "login", "--profile", profile)
+	loginCmd.Stdin = os.Stdin
+	loginCmd.Stdout = os.Stdout
+	loginCmd.Stderr = os.Stderr
+	if err := loginCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[st run] AWS SSO login failed: %v (evidence uploads will be skipped)\n", err)
+	}
+}
+
 func isEligible(s *store.Store, cfg *config.Config, itemID string) bool {
 	item, ok := s.Get(itemID)
 	if !ok {
@@ -1635,7 +1677,12 @@ const defaultCIIdleTimeout = 10 * time.Minute
 const maxWallTimeout = 2 * time.Hour
 
 func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), maxWallTimeout)
+	// Use the run context if available (Ctrl+C cancels it), with wall timeout as safety
+	parentCtx := context.Background()
+	if activeRunCtx != nil {
+		parentCtx = activeRunCtx
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, maxWallTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
@@ -1812,7 +1859,11 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 		idleTimeout = defaultCommandIdleTimeout
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), maxWallTimeout)
+	parentCtx := context.Background()
+	if activeRunCtx != nil {
+		parentCtx = activeRunCtx
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, maxWallTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
