@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -93,15 +94,13 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 		return 1
 	}
 
-	// Find sprints with remaining work
-	type candidate struct {
+	// Build sprint progress map
+	type sprintProgress struct {
 		sprint   *registry.Sprint
-		epic     string
 		total    int
 		complete int
 	}
-	var candidates []candidate
-
+	sprintMap := make(map[string]*sprintProgress)
 	for i := range reg.Sprints {
 		sp := &reg.Sprints[i]
 		if sp.Status != "active" || len(sp.Items) == 0 {
@@ -116,37 +115,136 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 			}
 		}
 		if complete < total {
-			epicTitle := sp.Epic
-			for _, e := range reg.Epics {
-				if e.ID == sp.Epic {
-					epicTitle = e.Title
-					break
+			sprintMap[sp.ID] = &sprintProgress{sprint: sp, total: total, complete: complete}
+		}
+	}
+
+	// Track which sprints are in an epic (for "loose sprints" section)
+	sprintInEpic := make(map[string]bool)
+
+	// Build numbered selection list
+	type candidate struct {
+		sprint   *registry.Sprint
+		total    int
+		complete int
+	}
+	var candidates []candidate
+	num := 0
+
+	// --- Section 1: Epics with ordered sprints ---
+	hasEpicOutput := false
+	for _, epic := range reg.Epics {
+		if epic.Status != "active" {
+			continue
+		}
+		// Collect this epic's sprints that have remaining work
+		var epicSprints []*sprintProgress
+		if len(epic.SprintOrder) > 0 {
+			for _, sid := range epic.SprintOrder {
+				if sp, ok := sprintMap[sid]; ok {
+					epicSprints = append(epicSprints, sp)
+					sprintInEpic[sid] = true
 				}
 			}
-			candidates = append(candidates, candidate{
-				sprint: sp, epic: epicTitle, total: total, complete: complete,
-			})
+		} else {
+			// No explicit order — find sprints that reference this epic
+			for _, sp := range sprintMap {
+				if sp.sprint.Epic == epic.ID {
+					epicSprints = append(epicSprints, sp)
+					sprintInEpic[sp.sprint.ID] = true
+				}
+			}
+		}
+		if len(epicSprints) == 0 {
+			continue
+		}
+
+		if !hasEpicOutput {
+			fmt.Println("Epics:")
+			hasEpicOutput = true
+		}
+		fmt.Printf("\n  %s\n", epic.Title)
+		for _, sp := range epicSprints {
+			num++
+			approved := ""
+			if sp.sprint.PlanApproved {
+				approved = " [approved]"
+			}
+			fmt.Printf("    %d. %s  %d/%d%s\n", num, sp.sprint.Title, sp.complete, sp.total, approved)
+			candidates = append(candidates, candidate{sprint: sp.sprint, total: sp.total, complete: sp.complete})
+		}
+	}
+
+	// --- Section 2: Loose sprints (not in any epic) ---
+	var looseSprints []*sprintProgress
+	for _, sp := range sprintMap {
+		if !sprintInEpic[sp.sprint.ID] {
+			looseSprints = append(looseSprints, sp)
+		}
+	}
+	if len(looseSprints) > 0 {
+		fmt.Printf("\nSprints (no epic):\n")
+		for _, sp := range looseSprints {
+			num++
+			approved := ""
+			if sp.sprint.PlanApproved {
+				approved = " [approved]"
+			}
+			fmt.Printf("    %d. %s  %d/%d%s\n", num, sp.sprint.Title, sp.complete, sp.total, approved)
+			candidates = append(candidates, candidate{sprint: sp.sprint, total: sp.total, complete: sp.complete})
+		}
+	}
+
+	// --- Section 3: Queue items not in any sprint, grouped by tag ---
+	queueEntries := LoadQueue(cfg)
+	var unsprintedItems []struct {
+		id, title string
+		tags      []string
+	}
+	for _, e := range queueEntries {
+		item, ok := s.Get(e.ID)
+		if !ok || item.Sprint != "" {
+			continue
+		}
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			continue
+		}
+		unsprintedItems = append(unsprintedItems, struct {
+			id, title string
+			tags      []string
+		}{item.ID, item.Title, item.Tags})
+	}
+	if len(unsprintedItems) > 0 {
+		fmt.Printf("\nQueue (not in a sprint):\n")
+		// Group by first tag
+		tagGroups := make(map[string][]string)
+		var tagOrder []string
+		for _, it := range unsprintedItems {
+			tag := "(untagged)"
+			if len(it.tags) > 0 {
+				tag = it.tags[0]
+			}
+			if _, exists := tagGroups[tag]; !exists {
+				tagOrder = append(tagOrder, tag)
+			}
+			tagGroups[tag] = append(tagGroups[tag], fmt.Sprintf("%-8s %s", it.id, it.title))
+		}
+		sort.Strings(tagOrder)
+		for _, tag := range tagOrder {
+			fmt.Printf("  [%s]\n", tag)
+			for _, line := range tagGroups[tag] {
+				fmt.Printf("    %s\n", line)
+			}
 		}
 	}
 
 	if len(candidates) == 0 {
-		fmt.Println("No active sprints with remaining work")
+		fmt.Println("\nNo active sprints with remaining work")
 		return 0
 	}
 
-	// Display
-	fmt.Println("Sprints with remaining work:")
-	for i, c := range candidates {
-		approved := ""
-		if c.sprint.PlanApproved {
-			approved = " [plan approved]"
-		}
-		fmt.Printf("  %d. %s — %s\n", i+1, c.sprint.ID, c.sprint.Title)
-		fmt.Printf("     Epic: %s  Progress: %d/%d%s\n\n", c.epic, c.complete, c.total, approved)
-	}
-
 	// Prompt for selection
-	fmt.Printf("Which sprint? [1-%d]: ", len(candidates))
+	fmt.Printf("\nWhich sprint? [1-%d]: ", len(candidates))
 	response, err := engine.PromptUser("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "prompt error: %v\n", err)
