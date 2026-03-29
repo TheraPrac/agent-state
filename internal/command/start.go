@@ -166,6 +166,9 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) er
 	if parentDir == "" {
 		parentDir = cfg.Root()
 	}
+	if !filepath.IsAbs(parentDir) {
+		parentDir = filepath.Join(cfg.Root(), parentDir)
+	}
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return fmt.Errorf("creating worktree dir: %w", err)
