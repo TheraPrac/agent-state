@@ -524,10 +524,23 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// Resolve worktree directory
 	worktreeDir := resolveWorktreeDir(cfg, itemID)
 
+	// Generate a shared claude session ID for this item.
+	// First claude step creates the session, subsequent steps resume it.
+	claudeSessionID := generateSessionID()
+	claudeStepCount := 0
+
 	// Execute each pipeline step
 	for _, step := range pipeline {
 		stepStart := time.Now()
-		sr := executeStep(localStore, cfg, itemID, sprintID, step, opts, engine, worktreeDir)
+		// Track which claude invocation this is for session reuse
+		isResume := false
+		if step.Type == "claude" {
+			claudeStepCount++
+			if claudeStepCount > 1 {
+				isResume = true
+			}
+		}
+		sr := executeStepWithSession(localStore, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID, isResume)
 		sr.Duration = time.Since(stepStart)
 		result.Steps = append(result.Steps, sr)
 		result.TotalCost += sr.CostUSD
@@ -724,13 +737,13 @@ func readIntField(item *model.Item, parent, key string) int {
 	return 0
 }
 
-// executeStep dispatches to the appropriate step executor.
-func executeStep(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir string) StepResult {
+// executeStepWithSession dispatches to the appropriate step executor, with claude session reuse.
+func executeStepWithSession(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir, claudeSessionID string, isResume bool) StepResult {
 	switch step.Type {
 	case "plan":
 		return executePlanWithOpts(s, cfg, itemID, engine, opts, worktreeDir)
 	case "claude":
-		return executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir)
+		return executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID, isResume)
 	case "test":
 		return executeTest(s, cfg, itemID, step, worktreeDir)
 	case "verify_tests":
@@ -760,7 +773,7 @@ func executeStep(s *store.Store, cfg *config.Config, itemID, sprintID string, st
 
 // --- Step executors ---
 
-func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir string) StepResult {
+func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir, claudeSessionID string, isResume bool) StepResult {
 	sr := StepResult{Step: step.Name(), Type: "claude"}
 
 	// Build prompt
@@ -771,8 +784,13 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		prompt = expandTemplate(prompt, itemID, sprintID, worktreeDir, cfg)
 	}
 
-	// Build args
+	// Build args — resume existing session for 2nd+ claude step
 	args := buildClaudeArgs(cfg, prompt, opts, worktreeDir)
+	if isResume {
+		args = append(args, "--resume", claudeSessionID)
+	} else {
+		args = append(args, "--session-id", claudeSessionID)
+	}
 
 	// Build env with unique session ID + context for status display
 	sessionID := generateSessionID()
@@ -1171,19 +1189,24 @@ func proposePlan(cfg *config.Config, itemID string, item *model.Item, engine Run
 		}
 	}
 
-	b.WriteString("\nYour task:\n")
+	b.WriteString("\nIMPORTANT: You MUST set the fields using the st CLI. Do NOT ask for permission. Just do it.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. Read the codebase to understand the context\n")
 	if needsSummary {
-		b.WriteString(fmt.Sprintf("1. Write a clear summary and set it: st update %s summary --stdin\n", itemID))
+		b.WriteString(fmt.Sprintf("2. Write a clear technical summary and set it by running:\n"))
+		b.WriteString(fmt.Sprintf("   echo 'your summary text here' | st update %s summary --stdin\n", itemID))
 	}
 	if needsACs {
-		b.WriteString(fmt.Sprintf("2. Write specific, testable acceptance criteria and set them: st update %s acceptance_criteria --stdin\n", itemID))
+		b.WriteString(fmt.Sprintf("3. Write specific, testable acceptance criteria and set them by running:\n"))
+		b.WriteString(fmt.Sprintf("   printf '- criterion 1\\n- criterion 2\\n' | st update %s acceptance_criteria --stdin\n", itemID))
 	}
-	b.WriteString("\nAcceptance criteria must be:\n")
+	b.WriteString(fmt.Sprintf("4. Print your analysis and what you set to stdout\n\n"))
+	b.WriteString("Acceptance criteria rules:\n")
 	b.WriteString("- Specific and testable (not vague)\n")
 	b.WriteString("- Verifiable by automated tests or code inspection\n")
 	b.WriteString("- Complete — cover the full scope of the work\n")
-	b.WriteString("\nRead the codebase to understand the context before proposing.\n")
-	b.WriteString("Print your proposed summary and acceptance criteria to stdout so the user can review them.\n")
+	b.WriteString("- Include integration test requirements\n")
+	b.WriteString("\nDo NOT ask 'shall I go ahead' — just set the fields and report what you did.\n")
 
 	// Use the worktree dir if available, otherwise the config root
 	cwd := worktreeDir
@@ -1340,9 +1363,6 @@ func buildClaudeArgs(cfg *config.Config, prompt string, opts RunOpts, worktreeDi
 	if budget > 0 {
 		args = append(args, "--max-budget-usd", fmt.Sprintf("%.2f", budget))
 	}
-
-	// No session persistence
-	args = append(args, "--no-session-persistence")
 
 	return args
 }
