@@ -1524,6 +1524,13 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 			continue
 		}
 
+		// Check if this item's PR was already merged — if so, close it
+		if detectMergedPR(cfg, itemID, item) {
+			fmt.Printf("[%s] PR already merged — closing as done\n", itemID)
+			autoCloseItem(s, cfg, itemID, item)
+			continue
+		}
+
 		// Active item not claimed by us — recover it
 		reason := "unclaimed"
 		if item.ClaimedBy != "" {
@@ -1532,6 +1539,45 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 		fmt.Printf("[%s] Recovering: %s\n", itemID, reason)
 		releaseItem(cfg, itemID)
 	}
+}
+
+// detectMergedPR checks if the item has a PR that's already been merged.
+func detectMergedPR(cfg *config.Config, itemID string, item *model.Item) bool {
+	// Check if manifest has PR info
+	if item.Manifest == nil {
+		return false
+	}
+	prs, ok := item.Manifest["prs"].(string)
+	if !ok || prs == "" {
+		return false
+	}
+
+	// Try to check PR state via gh
+	worktreeDir := resolveWorktreeDir(cfg, itemID)
+	out, exitCode, _ := runCmdInDir(worktreeDir, "gh pr view --json state -q .state 2>/dev/null")
+	if exitCode == 0 {
+		state := strings.TrimSpace(string(out))
+		return state == "MERGED"
+	}
+	return false
+}
+
+// autoCloseItem closes an item that was completed by a previous st run.
+func autoCloseItem(s *store.Store, cfg *config.Config, itemID string, item *model.Item) {
+	resolution := "completed"
+	if item.Type == "issue" {
+		resolution = "resolved"
+	}
+
+	// Set delivery stage
+	setNestedField(item, "delivery", "stage", "merged")
+	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	s.Write(item)
+
+	Close(s, cfg, itemID, resolution, CloseOpts{
+		Reason: "auto-closed: PR merged by previous st run",
+		Force:  true,
+	})
 }
 
 func isEligible(s *store.Store, cfg *config.Config, itemID string) bool {
@@ -1982,5 +2028,24 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		fmt.Printf("  Rejected:  %d\n", rejected)
 	}
 	fmt.Printf("  Cost:      $%.2f\n", totalCost)
-	fmt.Printf("  Duration:  %s\n", totalDuration.Round(time.Second))
+	fmt.Printf("  Wall time: %s\n", formatDuration(totalDuration))
+
+	// Per-item summary
+	for _, r := range results {
+		status := "DONE"
+		if !r.Success {
+			status = "FAIL"
+			for _, sr := range r.Steps {
+				if !sr.Passed {
+					status = fmt.Sprintf("FAIL at %s", sr.Step)
+					break
+				}
+			}
+		}
+		cost := ""
+		if r.TotalCost > 0 {
+			cost = fmt.Sprintf(" ($%.2f)", r.TotalCost)
+		}
+		fmt.Printf("  %-8s %s %s%s\n", r.ItemID, status, formatDuration(r.Duration), cost)
+	}
 }
