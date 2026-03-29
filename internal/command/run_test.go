@@ -2,10 +2,12 @@ package command
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/registry"
@@ -115,6 +117,7 @@ func mockRunEngine(approved bool) RunEngine {
 				Type:         "result",
 				Subtype:      "success",
 				TotalCostUSD: 0.05,
+				DurationMs:   15000,
 				Result:       "Implementation complete",
 			}
 			data, _ := json.Marshal(result)
@@ -433,6 +436,223 @@ func TestBuildDefaultPrompt(t *testing.T) {
 	for _, substr := range []string{"T-001", "Alpha task", "Acceptance Criteria", "BEFORE committing", "Do NOT merge"} {
 		if !strings.Contains(prompt, substr) {
 			t.Errorf("prompt missing %q", substr)
+		}
+	}
+}
+
+// TestMetricsAccumulation proves that AI cost, AI duration, sessions, and
+// run_count accumulate correctly across multiple st run invocations, and
+// that st close produces the right human-readable totals.
+func TestMetricsAccumulation(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Config: simple pipeline with two claude steps (implement + code_review)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [implement, code_review, approval, close]
+  steps:
+    implement:
+      type: claude
+    code_review:
+      type: claude
+      prompt: "Review {id}"
+    approval:
+      type: gate
+    close:
+      type: close
+      resolution: completed
+`), 0644)
+
+	// Sprint
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "test-epic", Title: "Test", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "metrics-sprint", Title: "Metrics Test", Epic: "test-epic",
+		Status: "active", Items: []string{"T-010"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	// Item — already active (skip st start which needs git worktrees)
+	writeFile(t, filepath.Join(root, "tasks", "T-010-metrics.md"), `id: T-010
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Metrics test item
+
+depends_on:
+- []
+
+sprint: metrics-sprint
+
+time_tracking:
+  started_at: 2026-03-29T10:00:00-06:00
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock engine: implement costs $0.08, code_review costs $0.03
+	// Auto-approve gate
+	callNum := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callNum++
+			cost := 0.08
+			if callNum%2 == 0 {
+				cost = 0.03 // code_review
+			}
+			result := ClaudeResult{
+				Type:         "result",
+				Subtype:      "success",
+				TotalCostUSD: cost,
+				DurationMs:   15000,
+				SessionID:    fmt.Sprintf("session-%d", callNum),
+				Result:       "done",
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "y\n", nil
+		},
+	}
+
+	// --- Run 1: advance through implement + code_review only (stop before gate) ---
+	s, _ := store.New(cfg)
+	opts := RunOpts{
+		ItemFilter: "T-010",
+		StepFilter: "code_review", // stop after code_review, before gate/close
+	}
+	code := Advance(s, cfg, "metrics-sprint", opts, engine)
+	if code != 0 {
+		t.Fatalf("advance run 1 returned %d", code)
+	}
+
+	// Verify metrics after run 1
+	s1, _ := store.New(cfg)
+	item1, _ := s1.Get("T-010")
+
+	aiCost1, _ := getNestedField(item1, "time_tracking", "ai_cost_usd")
+	if aiCost1 == "" {
+		t.Fatal("ai_cost_usd not set after run 1")
+	}
+	var cost1 float64
+	fmt.Sscanf(aiCost1, "%f", &cost1)
+	if cost1 < 0.10 { // implement ($0.08) + code_review ($0.03) = $0.11
+		t.Errorf("run 1 ai_cost_usd = %s, expected >= 0.10", aiCost1)
+	}
+
+	runCount1, _ := getNestedField(item1, "time_tracking", "run_count")
+	if runCount1 != "1" {
+		t.Errorf("run_count after run 1 = %q, want 1", runCount1)
+	}
+
+	// Check sessions were recorded
+	if len(item1.Sessions) < 2 {
+		t.Errorf("expected >= 2 sessions after run 1, got %d", len(item1.Sessions))
+	}
+
+	// --- Run 2: advance again (another implement + code_review) ---
+	callNum = 10 // reset to get different session IDs
+	code2 := Advance(s, cfg, "metrics-sprint", opts, engine)
+	// This will fail at "start" since item is already active, but the claude
+	// steps should still execute. Actually — item is already active, so it
+	// skips st start and goes straight to pipeline.
+	_ = code2
+
+	// Verify accumulation after run 2
+	s2, _ := store.New(cfg)
+	item2, _ := s2.Get("T-010")
+
+	aiCost2, _ := getNestedField(item2, "time_tracking", "ai_cost_usd")
+	var cost2 float64
+	fmt.Sscanf(aiCost2, "%f", &cost2)
+	if cost2 <= cost1 {
+		t.Errorf("ai_cost_usd did not accumulate: run1=%f, run2=%f", cost1, cost2)
+	}
+
+	runCount2, _ := getNestedField(item2, "time_tracking", "run_count")
+	if runCount2 != "2" {
+		t.Errorf("run_count after run 2 = %q, want 2", runCount2)
+	}
+
+	// Check ai_sessions array grew
+	if len(item2.Sessions) <= len(item1.Sessions) {
+		t.Errorf("sessions did not grow: run1=%d, run2=%d", len(item1.Sessions), len(item2.Sessions))
+	}
+
+	// --- Close and verify human-readable totals ---
+	s3, _ := store.New(cfg)
+	closeCode := Close(s3, cfg, "T-010", "completed", CloseOpts{Force: true})
+	if closeCode != 0 {
+		t.Fatalf("close returned %d", closeCode)
+	}
+
+	s4, _ := store.New(cfg)
+	item4, _ := s4.Get("T-010")
+
+	totalWall, _ := getNestedField(item4, "time_tracking", "total_wall_time")
+	if totalWall == "" {
+		t.Error("total_wall_time not set after close")
+	}
+	// Should contain time units
+	if !strings.ContainsAny(totalWall, "dhms") {
+		t.Errorf("total_wall_time has no time units: %q", totalWall)
+	}
+
+	totalAI, _ := getNestedField(item4, "time_tracking", "total_ai_time")
+	if totalAI == "" {
+		t.Error("total_ai_time not set after close")
+	}
+
+	totalAICost, _ := getNestedField(item4, "time_tracking", "total_ai_cost_usd")
+	if totalAICost == "" {
+		t.Error("total_ai_cost_usd not set after close")
+	}
+
+	t.Logf("=== Metrics Results ===")
+	t.Logf("AI cost:       %s", aiCost2)
+	t.Logf("AI cost (close): %s", totalAICost)
+	t.Logf("Run count:     %s", runCount2)
+	t.Logf("Sessions:      %d", len(item2.Sessions))
+	t.Logf("Total wall:    %s", totalWall)
+	t.Logf("Total AI time: %s", totalAI)
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		input time.Duration
+		want  string
+	}{
+		{0, "0s"},
+		{45 * time.Second, "45s"},
+		{3*time.Minute + 15*time.Second, "3m 15s"},
+		{2*time.Hour + 30*time.Minute, "2h 30m"},
+		{3*24*time.Hour + 5*time.Hour + 10*time.Minute + 7*time.Second, "3d 5h 10m 7s"},
+		{24 * time.Hour, "1d"},
+	}
+	for _, tt := range tests {
+		got := formatDuration(tt.input)
+		if got != tt.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

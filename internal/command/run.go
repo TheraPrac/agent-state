@@ -51,13 +51,14 @@ type ClaudeResult struct {
 
 // StepResult captures the outcome of a single pipeline step.
 type StepResult struct {
-	Step     string        `json:"step"`
-	Type     string        `json:"type"`
-	Passed   bool          `json:"passed"`
-	Output   string        `json:"output,omitempty"`
-	Error    string        `json:"error,omitempty"`
-	Duration time.Duration `json:"duration"`
-	CostUSD  float64       `json:"cost_usd,omitempty"`
+	Step         string        `json:"step"`
+	Type         string        `json:"type"`
+	Passed       bool          `json:"passed"`
+	Output       string        `json:"output,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	Duration     time.Duration `json:"duration"`
+	CostUSD      float64       `json:"cost_usd,omitempty"`
+	AIDurationMs int64         `json:"ai_duration_ms,omitempty"` // from claude's reported duration_ms
 }
 
 // ItemResult captures the outcome of running one sprint item.
@@ -444,16 +445,16 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.4f", prev+result.TotalCost))
 	}
 
-	// Accumulate AI duration (sum of claude step durations from this run)
-	var aiDuration time.Duration
+	// Accumulate AI duration from claude's reported duration_ms (not wall clock)
+	var aiDurationMs int64
 	for _, sr := range result.Steps {
 		if sr.Type == "claude" {
-			aiDuration += sr.Duration
+			aiDurationMs += sr.AIDurationMs
 		}
 	}
-	if aiDuration > 0 {
+	if aiDurationMs > 0 {
 		prev := readIntField(item, "time_tracking", "ai_duration_seconds")
-		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", prev+int(aiDuration.Seconds())))
+		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", prev+int(aiDurationMs/1000)))
 	}
 
 	// Accumulate total run wall time
@@ -480,9 +481,10 @@ func appendAISessionRecord(item *model.Item, result ItemResult) {
 		if sr.Type != "claude" || sr.CostUSD == 0 {
 			continue
 		}
-		// Format: "session:<id> step:<name> cost:$X.XXXX duration:Xs at:<timestamp>"
+		// Format: "cost:$X.XXXX duration:Xs step:<name> at:<timestamp>"
+		aiDur := time.Duration(sr.AIDurationMs) * time.Millisecond
 		record := fmt.Sprintf("cost:$%.4f duration:%s step:%s at:%s",
-			sr.CostUSD, sr.Duration.Round(time.Second), sr.Step,
+			sr.CostUSD, aiDur.Round(time.Second), sr.Step,
 			time.Now().Format(time.RFC3339))
 
 		if item.WorkTracking == nil {
@@ -675,6 +677,7 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	}
 
 	sr.CostUSD = claudeResult.TotalCostUSD
+	sr.AIDurationMs = claudeResult.DurationMs
 	sr.Output = truncate(claudeResult.Result, 500)
 
 	if exitCode != 0 || (claudeResult.Subtype != "" && claudeResult.Subtype != "success") {
