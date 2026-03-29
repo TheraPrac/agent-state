@@ -657,6 +657,126 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+func TestPlanStepRejectsMissingAC(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Item with summary but NO acceptance criteria
+	writeFile(t, filepath.Join(root, "tasks", "T-050-no-ac.md"), `id: T-050
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Task without ACs
+summary: Has a summary but no acceptance criteria
+`)
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	engine := mockRunEngine(true) // would approve if asked
+	sr := executePlan(s, cfg, "T-050", engine)
+	if sr.Passed {
+		t.Error("plan step should reject item without acceptance_criteria")
+	}
+	if !strings.Contains(sr.Error, "acceptance_criteria") {
+		t.Errorf("error should mention acceptance_criteria, got: %s", sr.Error)
+	}
+}
+
+func TestPlanStepRejectsMissingSummary(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Item with ACs but NO summary
+	writeFile(t, filepath.Join(root, "tasks", "T-051-no-summary.md"), `id: T-051
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Task without summary
+acceptance_criteria:
+- Something works
+`)
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	sr := executePlan(s, cfg, "T-051", mockRunEngine(true))
+	if sr.Passed {
+		t.Error("plan step should reject item without summary")
+	}
+	if !strings.Contains(sr.Error, "summary") {
+		t.Errorf("error should mention summary, got: %s", sr.Error)
+	}
+}
+
+func TestPlanStepPassesWithRequiredFields(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Item with all required fields (summary must be on its own line after header)
+	writeFile(t, filepath.Join(root, "tasks", "T-052-complete.md"), `id: T-052
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Complete task
+acceptance_criteria:
+- Feature works
+- Tests pass
+summary: |
+  Has everything needed for the plan gate.
+`)
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	sr := executePlan(s, cfg, "T-052", mockRunEngine(true))
+	if !sr.Passed {
+		t.Errorf("plan step should pass with all fields, got error: %s", sr.Error)
+	}
+}
+
+func TestPlanStepSkipsIfAlreadyApproved(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Item already approved — even without ACs, should pass (already approved)
+	writeFile(t, filepath.Join(root, "tasks", "T-053-approved.md"), `id: T-053
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+completed: null
+title: Already approved
+plan_approved: true
+`)
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	sr := executePlan(s, cfg, "T-053", mockRunEngine(false)) // wouldn't approve if asked
+	if !sr.Passed {
+		t.Errorf("plan step should skip for already-approved item, got error: %s", sr.Error)
+	}
+}
+
 func TestIsEligible(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 

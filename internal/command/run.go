@@ -935,17 +935,34 @@ func executePlan(s *store.Store, cfg *config.Config, itemID string, engine RunEn
 		return sr
 	}
 
+	// --- Enforce required fields before plan approval ---
+	var missing []string
+	if item.Summary == "" {
+		missing = append(missing, "summary")
+	}
+	if len(item.AcceptanceCriteria) == 0 {
+		missing = append(missing, "acceptance_criteria")
+	}
+	if item.Title == "" {
+		missing = append(missing, "title")
+	}
+
+	if len(missing) > 0 {
+		sr.Error = fmt.Sprintf("item %s cannot be planned — missing required fields: %s. "+
+			"Set them with: st edit %s <field>", itemID, strings.Join(missing, ", "), itemID)
+		return sr
+	}
+
 	// Present item for design review
 	fmt.Printf("\n=== Design Gate: %s ===\n", itemID)
 	fmt.Printf("Title: %s\n", item.Title)
-	if item.Summary != "" {
-		fmt.Printf("\nSummary:\n%s\n", item.Summary)
+	fmt.Printf("\nSummary:\n%s\n", item.Summary)
+	fmt.Printf("\nAcceptance Criteria:\n")
+	for i, ac := range item.AcceptanceCriteria {
+		fmt.Printf("  %d. %s\n", i+1, ac)
 	}
-	if len(item.AcceptanceCriteria) > 0 {
-		fmt.Printf("\nAcceptance Criteria:\n")
-		for i, ac := range item.AcceptanceCriteria {
-			fmt.Printf("  %d. %s\n", i+1, ac)
-		}
+	if len(item.DependsOn) > 0 {
+		fmt.Printf("\nDepends on: %s\n", strings.Join(item.DependsOn, ", "))
 	}
 
 	fmt.Printf("\nApprove design for %s? [y/N]: ", itemID)
