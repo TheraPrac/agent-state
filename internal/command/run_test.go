@@ -313,7 +313,7 @@ func TestBuildClaudeArgs(t *testing.T) {
 		if a == "--dangerously-skip-permissions" {
 			found["perms"] = true
 		}
-		if a == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
+		if a == "--output-format" && i+1 < len(args) && args[i+1] == "stream-json" {
 			found["json"] = true
 		}
 		if a == "--model" && i+1 < len(args) && args[i+1] == "sonnet" {

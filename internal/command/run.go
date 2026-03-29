@@ -1283,8 +1283,8 @@ func buildClaudeArgs(cfg *config.Config, prompt string, opts RunOpts, worktreeDi
 		args = append(args, "--permission-mode", permMode)
 	}
 
-	// Output format
-	args = append(args, "--output-format", "json")
+	// Output format — stream-json for real-time visibility (requires --verbose)
+	args = append(args, "--output-format", "stream-json", "--verbose")
 
 	// Add agent-state directory
 	args = append(args, "--add-dir", cfg.Root())
@@ -1464,14 +1464,6 @@ const defaultCIIdleTimeout = 10 * time.Minute
 const maxWallTimeout = 2 * time.Hour
 
 func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, error) {
-	// Use stream-json for real-time visibility + structured result at the end
-	for i, a := range args {
-		if a == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
-			args[i+1] = "stream-json"
-			break
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), maxWallTimeout)
 	defer cancel()
 
