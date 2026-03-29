@@ -1998,54 +1998,114 @@ func printDryRun(s *store.Store, cfg *config.Config, sp *registry.Sprint, groups
 }
 
 func printCompletionReport(results []ItemResult, sprintID string, totalDuration time.Duration) {
+	// Load sprint + epic info for the report header
+	epicTitle := ""
+	sprintTitle := sprintID
+	// Try to resolve names (best-effort, don't fail if registry unavailable)
+	if cfg, err := config.Load("."); err == nil && cfg.Discovered {
+		if reg, err := registry.Load(cfg.EpicsPath()); err == nil {
+			if sp, err := reg.SprintByID(sprintID); err == nil {
+				sprintTitle = sp.Title
+				for _, e := range reg.Epics {
+					if e.ID == sp.Epic {
+						epicTitle = e.Title
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Tally
 	completed, failed, rejected := 0, 0, 0
 	var totalCost float64
+	var totalAIDuration time.Duration
 
 	for _, r := range results {
 		totalCost += r.TotalCost
+		for _, sr := range r.Steps {
+			if sr.Type == "claude" {
+				totalAIDuration += sr.Duration
+			}
+		}
 		if r.Success {
 			completed++
 		} else {
-			// Check if failed due to gate rejection
+			isRejected := false
 			for _, sr := range r.Steps {
 				if sr.Type == "gate" && !sr.Passed {
-					rejected++
+					isRejected = true
 					break
 				}
 			}
-			if rejected == 0 || failed+rejected < len(results)-completed {
+			if isRejected {
+				rejected++
+			} else {
 				failed++
 			}
 		}
 	}
 
-	fmt.Printf("\n=== Sprint %s Complete ===\n", sprintID)
-	fmt.Printf("  Completed: %d\n", completed)
-	if failed > 0 {
-		fmt.Printf("  Failed:    %d\n", failed)
+	// Header
+	fmt.Println()
+	sep := "──────────────────────────────────────────────────────────────────"
+	if epicTitle != "" {
+		fmt.Printf("  Epic: %s\n", epicTitle)
 	}
-	if rejected > 0 {
-		fmt.Printf("  Rejected:  %d\n", rejected)
-	}
-	fmt.Printf("  Cost:      $%.2f\n", totalCost)
-	fmt.Printf("  Wall time: %s\n", formatDuration(totalDuration))
+	fmt.Printf("  Sprint: %s\n", sprintTitle)
+	fmt.Println()
 
-	// Per-item summary
+	// Item table
+	fmt.Printf("  %-10s %-20s %12s %12s %10s\n", "Item", "Status", "Wall Time", "AI Time", "Cost")
+	fmt.Printf("  %s\n", sep)
+
 	for _, r := range results {
 		status := "DONE"
 		if !r.Success {
-			status = "FAIL"
 			for _, sr := range r.Steps {
 				if !sr.Passed {
-					status = fmt.Sprintf("FAIL at %s", sr.Step)
+					status = fmt.Sprintf("FAIL@%s", sr.Step)
 					break
 				}
 			}
 		}
-		cost := ""
-		if r.TotalCost > 0 {
-			cost = fmt.Sprintf(" ($%.2f)", r.TotalCost)
+
+		wallTime := formatDuration(r.Duration)
+		var itemAI time.Duration
+		for _, sr := range r.Steps {
+			if sr.Type == "claude" {
+				itemAI += sr.Duration
+			}
 		}
-		fmt.Printf("  %-8s %s %s%s\n", r.ItemID, status, formatDuration(r.Duration), cost)
+		aiTime := formatDuration(itemAI)
+		cost := fmt.Sprintf("$%.2f", r.TotalCost)
+		if r.TotalCost == 0 {
+			cost = "—"
+		}
+
+		fmt.Printf("  %-10s %-20s %12s %12s %10s\n", r.ItemID, truncate(status, 20), wallTime, aiTime, cost)
 	}
+
+	// Sprint totals
+	fmt.Printf("  %s\n", sep)
+	fmt.Printf("  %-10s %-20s %12s %12s %10s\n",
+		"Sprint", fmt.Sprintf("%d done %d fail", completed, failed+rejected),
+		formatDuration(totalDuration), formatDuration(totalAIDuration),
+		fmt.Sprintf("$%.2f", totalCost))
+
+	if epicTitle != "" {
+		fmt.Printf("  %-10s %-20s %12s %12s %10s\n",
+			"Epic", epicTitle[:min(20, len(epicTitle))],
+			formatDuration(totalDuration), formatDuration(totalAIDuration),
+			fmt.Sprintf("$%.2f", totalCost))
+	}
+	fmt.Printf("  %s\n", sep)
+	fmt.Println()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
