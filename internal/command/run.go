@@ -1643,10 +1643,21 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 			if msg, ok := event["message"].(map[string]interface{}); ok {
 				if content, ok := msg["content"].([]interface{}); ok {
 					for _, c := range content {
-						if block, ok := c.(map[string]interface{}); ok {
+						block, ok := c.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						blockType, _ := block["type"].(string)
+						switch blockType {
+						case "text":
 							if text, ok := block["text"].(string); ok && text != "" {
 								fmt.Fprint(os.Stderr, text)
 							}
+						case "tool_use":
+							name, _ := block["name"].(string)
+							input, _ := block["input"].(map[string]interface{})
+							summary := formatToolCall(name, input)
+							fmt.Fprintf(os.Stderr, "\n  -> %s\n", summary)
 						}
 					}
 				}
@@ -1803,6 +1814,50 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 		}
 	}
 	return captured.Bytes(), exitCode, err
+}
+
+// formatToolCall returns a concise summary of a claude tool invocation.
+func formatToolCall(name string, input map[string]interface{}) string {
+	switch name {
+	case "Read":
+		if p, ok := input["file_path"].(string); ok {
+			return fmt.Sprintf("Read %s", shortenPath(p))
+		}
+	case "Glob":
+		if p, ok := input["pattern"].(string); ok {
+			return fmt.Sprintf("Glob %s", p)
+		}
+	case "Grep":
+		pat, _ := input["pattern"].(string)
+		path, _ := input["path"].(string)
+		return fmt.Sprintf("Grep %q in %s", truncate(pat, 30), shortenPath(path))
+	case "Edit":
+		if p, ok := input["file_path"].(string); ok {
+			return fmt.Sprintf("Edit %s", shortenPath(p))
+		}
+	case "Write":
+		if p, ok := input["file_path"].(string); ok {
+			return fmt.Sprintf("Write %s", shortenPath(p))
+		}
+	case "Bash":
+		if c, ok := input["command"].(string); ok {
+			return fmt.Sprintf("$ %s", truncate(c, 60))
+		}
+	case "Agent":
+		if d, ok := input["description"].(string); ok {
+			return fmt.Sprintf("Agent: %s", d)
+		}
+	}
+	return name
+}
+
+func shortenPath(p string) string {
+	// Show last 3 path components
+	parts := strings.Split(p, "/")
+	if len(parts) > 3 {
+		return ".../" + strings.Join(parts[len(parts)-3:], "/")
+	}
+	return p
 }
 
 func defaultPromptUser(_ string) (string, error) {
