@@ -657,7 +657,7 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
-func TestPlanStepRejectsMissingAC(t *testing.T) {
+func TestPlanStepLaunchesClaude_MissingAC(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"tasks", ".as"} {
 		os.MkdirAll(filepath.Join(root, dir), 0755)
@@ -678,17 +678,34 @@ summary: Has a summary but no acceptance criteria
 	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	s, _ := store.New(cfg)
 
-	engine := mockRunEngine(true) // would approve if asked
+	// Mock claude was called, user approves, but claude didn't actually
+	// set the fields → plan step should fail with a clear message
+	claudeCalled := false
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			claudeCalled = true
+			result := ClaudeResult{Type: "result", Subtype: "success", TotalCostUSD: 0.02, DurationMs: 5000, Result: "Proposed plan"}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) { return "y\n", nil },
+	}
+
 	sr := executePlan(s, cfg, "T-050", engine)
+	if !claudeCalled {
+		t.Error("expected claude to be launched for missing fields")
+	}
+	// User approved the proposal, but claude didn't actually write the fields
+	// so the post-check should fail
 	if sr.Passed {
-		t.Error("plan step should reject item without acceptance_criteria")
+		t.Error("plan step should fail when claude doesn't set the required fields")
 	}
 	if !strings.Contains(sr.Error, "acceptance_criteria") {
-		t.Errorf("error should mention acceptance_criteria, got: %s", sr.Error)
+		t.Errorf("error should mention missing field, got: %s", sr.Error)
 	}
 }
 
-func TestPlanStepRejectsMissingSummary(t *testing.T) {
+func TestPlanStepLaunchesClaude_MissingSummary(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"tasks", ".as"} {
 		os.MkdirAll(filepath.Join(root, dir), 0755)
@@ -710,9 +727,23 @@ acceptance_criteria:
 	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	s, _ := store.New(cfg)
 
-	sr := executePlan(s, cfg, "T-051", mockRunEngine(true))
+	claudeCalled := false
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			claudeCalled = true
+			result := ClaudeResult{Type: "result", Subtype: "success", TotalCostUSD: 0.02, DurationMs: 5000, Result: "Proposed summary"}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) { return "y\n", nil },
+	}
+
+	sr := executePlan(s, cfg, "T-051", engine)
+	if !claudeCalled {
+		t.Error("expected claude to be launched for missing summary")
+	}
 	if sr.Passed {
-		t.Error("plan step should reject item without summary")
+		t.Error("plan step should fail when claude doesn't set summary")
 	}
 	if !strings.Contains(sr.Error, "summary") {
 		t.Errorf("error should mention summary, got: %s", sr.Error)

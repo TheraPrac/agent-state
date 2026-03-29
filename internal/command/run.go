@@ -596,7 +596,7 @@ func readIntField(item *model.Item, parent, key string) int {
 func executeStep(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir string) StepResult {
 	switch step.Type {
 	case "plan":
-		return executePlan(s, cfg, itemID, engine)
+		return executePlanWithOpts(s, cfg, itemID, engine, opts, worktreeDir)
 	case "claude":
 		return executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir)
 	case "test":
@@ -921,6 +921,10 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 }
 
 func executePlan(s *store.Store, cfg *config.Config, itemID string, engine RunEngine) StepResult {
+	return executePlanWithOpts(s, cfg, itemID, engine, RunOpts{}, "")
+}
+
+func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engine RunEngine, opts RunOpts, worktreeDir string) StepResult {
 	sr := StepResult{Step: "plan", Type: "plan"}
 
 	item, ok := s.Get(itemID)
@@ -929,62 +933,165 @@ func executePlan(s *store.Store, cfg *config.Config, itemID string, engine RunEn
 		return sr
 	}
 
-	// Check if item already has a linked plan that was approved
+	// Already approved — skip
 	if item.PlanApproved {
 		sr.Passed = true
 		return sr
 	}
 
-	// --- Enforce required fields before plan approval ---
-	var missing []string
-	if item.Summary == "" {
-		missing = append(missing, "summary")
-	}
-	if len(item.AcceptanceCriteria) == 0 {
-		missing = append(missing, "acceptance_criteria")
-	}
-	if item.Title == "" {
-		missing = append(missing, "title")
+	// Check what's missing
+	needsSummary := item.Summary == ""
+	needsACs := len(item.AcceptanceCriteria) == 0
+
+	// If fields are missing, ask claude to propose a plan
+	if needsSummary || needsACs {
+		fmt.Printf("\n[%s] Item missing %s — asking Claude to propose a plan...\n",
+			itemID, planMissingFields(needsSummary, needsACs))
+
+		proposal, err := proposePlan(cfg, itemID, item, engine, opts, worktreeDir, needsSummary, needsACs)
+		if err != nil {
+			sr.Error = fmt.Sprintf("plan proposal failed: %v", err)
+			return sr
+		}
+
+		fmt.Printf("\n=== Proposed Plan: %s ===\n", itemID)
+		fmt.Printf("Title: %s\n", item.Title)
+		fmt.Println(proposal)
+
+		fmt.Printf("\nAccept this plan for %s? [y/N]: ", itemID)
+		response, err := engine.PromptUser("")
+		if err != nil {
+			sr.Error = fmt.Sprintf("prompt error: %v", err)
+			return sr
+		}
+		answer := strings.TrimSpace(strings.ToLower(response))
+		if answer != "y" && answer != "yes" {
+			sr.Error = "plan proposal rejected"
+			return sr
+		}
+
+		// Claude's output should have updated the item via st update commands
+		// in the prompt. Reload to pick up changes.
+		s2, _ := store.New(cfg)
+		item, _ = s2.Get(itemID)
+
+		// Verify fields were actually set
+		if item.Summary == "" || len(item.AcceptanceCriteria) == 0 {
+			sr.Error = fmt.Sprintf("Claude did not set required fields. Missing: %s. "+
+				"Set manually with: st edit %s <field>",
+				planMissingFields(item.Summary == "", len(item.AcceptanceCriteria) == 0), itemID)
+			return sr
+		}
+	} else {
+		// Fields present — show for design review
+		fmt.Printf("\n=== Design Gate: %s ===\n", itemID)
+		fmt.Printf("Title: %s\n", item.Title)
+		fmt.Printf("\nSummary:\n%s\n", item.Summary)
+		fmt.Printf("\nAcceptance Criteria:\n")
+		for i, ac := range item.AcceptanceCriteria {
+			fmt.Printf("  %d. %s\n", i+1, ac)
+		}
+		if len(item.DependsOn) > 0 {
+			fmt.Printf("\nDepends on: %s\n", strings.Join(item.DependsOn, ", "))
+		}
+
+		fmt.Printf("\nApprove design for %s? [y/N]: ", itemID)
+		response, err := engine.PromptUser("")
+		if err != nil {
+			sr.Error = fmt.Sprintf("prompt error: %v", err)
+			return sr
+		}
+		answer := strings.TrimSpace(strings.ToLower(response))
+		if answer != "y" && answer != "yes" {
+			sr.Error = "design not approved"
+			return sr
+		}
 	}
 
-	if len(missing) > 0 {
-		sr.Error = fmt.Sprintf("item %s cannot be planned — missing required fields: %s. "+
-			"Set them with: st edit %s <field>", itemID, strings.Join(missing, ", "), itemID)
-		return sr
-	}
-
-	// Present item for design review
-	fmt.Printf("\n=== Design Gate: %s ===\n", itemID)
-	fmt.Printf("Title: %s\n", item.Title)
-	fmt.Printf("\nSummary:\n%s\n", item.Summary)
-	fmt.Printf("\nAcceptance Criteria:\n")
-	for i, ac := range item.AcceptanceCriteria {
-		fmt.Printf("  %d. %s\n", i+1, ac)
-	}
-	if len(item.DependsOn) > 0 {
-		fmt.Printf("\nDepends on: %s\n", strings.Join(item.DependsOn, ", "))
-	}
-
-	fmt.Printf("\nApprove design for %s? [y/N]: ", itemID)
-	response, err := engine.PromptUser("")
-	if err != nil {
-		sr.Error = fmt.Sprintf("prompt error: %v", err)
-		return sr
-	}
-	answer := strings.TrimSpace(strings.ToLower(response))
-	if answer != "y" && answer != "yes" {
-		sr.Error = "design not approved"
-		return sr
-	}
-
-	// Record approval on item
+	// Record approval on item (reload in case claude updated it)
+	s3, _ := store.New(cfg)
+	item, _ = s3.Get(itemID)
 	item.PlanApproved = true
 	item.Doc.SetField("plan_approved", "true")
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	s.Write(item)
+	s3.Write(item)
 
 	sr.Passed = true
 	return sr
+}
+
+// proposePlan launches claude -p to analyze the item and propose summary + ACs.
+func proposePlan(cfg *config.Config, itemID string, item *model.Item, engine RunEngine, opts RunOpts, worktreeDir string, needsSummary, needsACs bool) (string, error) {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Analyze item %s and propose a plan.\n\n", itemID))
+	b.WriteString(fmt.Sprintf("Title: %s\n", item.Title))
+	if item.Summary != "" {
+		b.WriteString(fmt.Sprintf("Existing summary: %s\n", item.Summary))
+	}
+	if len(item.AcceptanceCriteria) > 0 {
+		b.WriteString("Existing acceptance criteria:\n")
+		for _, ac := range item.AcceptanceCriteria {
+			b.WriteString(fmt.Sprintf("- %s\n", ac))
+		}
+	}
+
+	b.WriteString("\nYour task:\n")
+	if needsSummary {
+		b.WriteString(fmt.Sprintf("1. Write a clear summary and set it: st update %s summary --stdin\n", itemID))
+	}
+	if needsACs {
+		b.WriteString(fmt.Sprintf("2. Write specific, testable acceptance criteria and set them: st update %s acceptance_criteria --stdin\n", itemID))
+	}
+	b.WriteString("\nAcceptance criteria must be:\n")
+	b.WriteString("- Specific and testable (not vague)\n")
+	b.WriteString("- Verifiable by automated tests or code inspection\n")
+	b.WriteString("- Complete — cover the full scope of the work\n")
+	b.WriteString("\nRead the codebase to understand the context before proposing.\n")
+	b.WriteString("Print your proposed summary and acceptance criteria to stdout so the user can review them.\n")
+
+	// Use the worktree dir if available, otherwise the config root
+	cwd := worktreeDir
+	if cwd == "" {
+		cwd = cfg.Root()
+	}
+
+	args := buildClaudeArgs(cfg, b.String(), opts, cwd)
+	sessionID := generateSessionID()
+	env := []string{"AS_SESSION_ID=" + sessionID}
+	if agentID := cfg.AgentID(); agentID != "" {
+		env = append(env, "AS_AGENT_ID="+agentID)
+	}
+
+	output, exitCode, err := engine.RunClaude(cwd, args, env)
+	if err != nil {
+		return "", fmt.Errorf("claude exec error: %v", err)
+	}
+
+	// Parse JSON to extract the text result
+	claudeResult, parseErr := parseClaudeOutput(output)
+	if parseErr != nil {
+		if exitCode != 0 {
+			return "", fmt.Errorf("claude exited %d", exitCode)
+		}
+		return string(output), nil
+	}
+
+	if exitCode != 0 || (claudeResult.Subtype != "" && claudeResult.Subtype != "success") {
+		return "", fmt.Errorf("claude exited %d (subtype: %s)", exitCode, claudeResult.Subtype)
+	}
+
+	return claudeResult.Result, nil
+}
+
+func planMissingFields(needsSummary, needsACs bool) string {
+	var parts []string
+	if needsSummary {
+		parts = append(parts, "summary")
+	}
+	if needsACs {
+		parts = append(parts, "acceptance_criteria")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // recordSession appends a session ID to the item's sessions list.
