@@ -634,6 +634,18 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		// Reload store after each step (other steps may have modified the item)
 		localStore, _ = store.New(cfg)
 
+		// Check if item was closed by this step (e.g., claude detected merged PR and closed it)
+		if updatedItem, ok := localStore.Get(itemID); ok && cfg.IsTerminalStatus(updatedItem.Type, updatedItem.Status) {
+			fmt.Printf("[%s] Item closed during %s — skipping remaining steps\n", itemID, step.Name())
+			break
+		}
+
+		// Check if worktree was removed (e.g., st finish cleaned it up)
+		if _, err := os.Stat(worktreeDir); err != nil && worktreeDir != cfg.Root() {
+			fmt.Printf("[%s] Worktree removed — skipping remaining steps\n", itemID)
+			break
+		}
+
 		// Stop at --step filter
 		if opts.StepFilter != "" && step.Name() == opts.StepFilter {
 			break
