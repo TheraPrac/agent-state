@@ -1747,13 +1747,44 @@ func buildDefaultPrompt(s *store.Store, cfg *config.Config, itemID, sprintID str
 	b.WriteString("7. Check if `st pr` triggered any scope suites — run them if so\n")
 	b.WriteString("8. STOP here. Do NOT merge. Report your results.\n\n")
 
+	// Add environment context so claude doesn't waste time discovering the worktree
+	b.WriteString("## Environment\n")
+	b.WriteString(fmt.Sprintf("- You are running in a worktree. Your CWD is already the correct repo.\n"))
+	if item.Manifest != nil {
+		if prsRaw, ok := item.Manifest["prs"]; ok {
+			if prsStr, ok := prsRaw.(string); ok && prsStr != "" {
+				b.WriteString(fmt.Sprintf("- PR already exists: %s — do NOT create a new one\n", prsStr))
+			}
+		}
+	}
+	if item.Delivery != nil {
+		if stage, ok := item.Delivery["stage"]; ok {
+			if stageStr, ok := stage.(string); ok && stageStr != "" {
+				b.WriteString(fmt.Sprintf("- Delivery stage: %s\n", stageStr))
+			}
+		}
+	}
+	// Show which test suites already passed
+	if item.TestingEvidence != nil {
+		var passed []string
+		for name, val := range item.TestingEvidence {
+			if s, ok := val.(string); ok && strings.HasPrefix(s, "pass") {
+				passed = append(passed, name)
+			}
+		}
+		if len(passed) > 0 {
+			sort.Strings(passed)
+			b.WriteString(fmt.Sprintf("- Test suites already passing: %s\n", strings.Join(passed, ", ")))
+			b.WriteString("  If these suites already passed on the current HEAD, do NOT re-run them.\n")
+		}
+	}
+	b.WriteString("\n")
+
 	b.WriteString("## Already Complete?\n")
-	b.WriteString("If the work is already done on main (e.g., delivered via another issue/PR):\n")
-	b.WriteString("1. Verify by checking `git diff main` — if no changes needed, the work is done\n")
-	b.WriteString("2. Run the test suites to confirm everything passes\n")
-	b.WriteString(fmt.Sprintf("3. Close the item: `st close %s completed --reason 'already on main via <PR>' --force`\n", itemID))
-	b.WriteString(fmt.Sprintf("4. Clean up: `st finish %s`\n", itemID))
-	b.WriteString("5. Report what you found\n\n")
+	b.WriteString("If the branch already has commits (check `git log main..HEAD`):\n")
+	b.WriteString("1. Verify acceptance criteria pass — do NOT re-run test suites that already passed\n")
+	b.WriteString("2. If everything passes, just report results and STOP\n")
+	b.WriteString("3. Only re-run tests if you made NEW changes\n\n")
 
 	b.WriteString("## State Tracking\n")
 	b.WriteString(fmt.Sprintf("- `st test %s <suite> --run` — execute and record test evidence\n", itemID))
@@ -1857,18 +1888,76 @@ func expandTemplate(s, itemID, sprintID, worktreeDir string, cfg *config.Config)
 	s = strings.ReplaceAll(s, "{id}", itemID)
 	s = strings.ReplaceAll(s, "{sprint}", sprintID)
 	s = strings.ReplaceAll(s, "{worktree}", worktreeDir)
+
 	// Resolve branch from worktree
-	if strings.Contains(s, "{branch}") {
-		branch := ""
-		if worktreeDir != "" {
-			out, err := exec.Command("git", "-C", worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").Output()
-			if err == nil {
-				branch = strings.TrimSpace(string(out))
+	branch := ""
+	if worktreeDir != "" {
+		out, err := exec.Command("git", "-C", worktreeDir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+		if err == nil {
+			branch = strings.TrimSpace(string(out))
+		}
+	}
+	s = strings.ReplaceAll(s, "{branch}", branch)
+
+	// Resolve PR info from item manifest
+	prInfo := ""
+	repo := ""
+	st, _ := store.New(cfg)
+	if st != nil {
+		if item, ok := st.Get(itemID); ok && item.Manifest != nil {
+			if prsRaw, ok := item.Manifest["prs"]; ok {
+				if prsStr, ok := prsRaw.(string); ok && prsStr != "" {
+					prInfo = prsStr
+					// Extract repo from first PR entry (e.g., "theraprac-web#94" → "theraprac-web")
+					if idx := strings.Index(prsStr, "#"); idx > 0 {
+						repo = prsStr[:idx]
+					}
+				}
 			}
 		}
-		s = strings.ReplaceAll(s, "{branch}", branch)
 	}
+	s = strings.ReplaceAll(s, "{pr}", prInfo)
+	s = strings.ReplaceAll(s, "{repo}", repo)
+
+	// {pr_number} — just the number from the first PR (e.g., "94" from "theraprac-web#94")
+	prNumber := ""
+	if idx := strings.Index(prInfo, "#"); idx >= 0 {
+		prNumber = prInfo[idx+1:]
+		// Handle comma-separated: take only first number
+		if ci := strings.Index(prNumber, ","); ci >= 0 {
+			prNumber = strings.TrimSpace(prNumber[:ci])
+		}
+	}
+	s = strings.ReplaceAll(s, "{pr_number}", prNumber)
+
+	// Inject context block if template uses {context}
+	if strings.Contains(s, "{context}") {
+		s = strings.ReplaceAll(s, "{context}", buildContextBlock(itemID, worktreeDir, branch, prInfo, repo, cfg))
+	}
+
 	return s
+}
+
+// buildContextBlock assembles a context section for claude prompts so the
+// subprocess doesn't have to rediscover the environment.
+func buildContextBlock(itemID, worktreeDir, branch, prInfo, repo string, cfg *config.Config) string {
+	var b strings.Builder
+	b.WriteString("\n## Environment Context\n")
+	b.WriteString(fmt.Sprintf("- Working directory: %s\n", worktreeDir))
+	if branch != "" {
+		b.WriteString(fmt.Sprintf("- Branch: %s\n", branch))
+	}
+	if repo != "" {
+		b.WriteString(fmt.Sprintf("- Repo: %s\n", repo))
+	}
+	if prInfo != "" {
+		b.WriteString(fmt.Sprintf("- PR: %s\n", prInfo))
+	}
+	ghRepo := resolveGHRepo(worktreeDir)
+	if ghRepo != "" {
+		b.WriteString(fmt.Sprintf("- GitHub repo: %s\n", ghRepo))
+	}
+	return b.String()
 }
 
 func resolveWorktreeDir(cfg *config.Config, itemID string) string {
