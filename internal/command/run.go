@@ -1602,10 +1602,15 @@ func executeSmoke(s *store.Store, cfg *config.Config, itemID, worktreeDir string
 
 func executeUAT(s *store.Store, cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "uat", Type: "uat"}
-	// Run UAT with cmd: ACs executing from the worktree directory
+	// Run UAT AC commands from the worktree BASE directory (parent of repo dirs)
+	// so that `cd theraprac-api && ...` works correctly.
+	uatDir := worktreeDir
+	if cfg.Worktree != nil && cfg.Worktree.Enabled {
+		uatDir = filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+	}
 	code := UAT(s, cfg, itemID, UATOpts{
 		RunCmd: func(cmd string) ([]byte, int, error) {
-			return runCmdInDir(worktreeDir, cmd)
+			return runCmdInDir(uatDir, cmd)
 		},
 	})
 	if code != 0 {
