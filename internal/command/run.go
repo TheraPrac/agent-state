@@ -600,10 +600,20 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// Resolve worktree directory
 	worktreeDir := resolveWorktreeDir(cfg, itemID)
 
-	// Generate a shared claude session ID for this item.
-	// First claude step creates the session, subsequent steps resume it.
-	claudeSessionID := generateSessionID()
+	// Resume prior session if item was worked on before, otherwise create new.
+	// This lets claude pick up where it left off (knows what it coded, tested, PR'd).
+	claudeSessionID := ""
 	claudeStepCount := 0
+
+	// Reload item to get sessions list
+	if freshItem, ok := localStore.Get(itemID); ok && len(freshItem.Sessions) > 0 {
+		claudeSessionID = freshItem.Sessions[len(freshItem.Sessions)-1]
+		claudeStepCount = 1 // treat as resume from the start
+		fmt.Printf("[%s] Resuming prior session %s...\n", itemID, claudeSessionID[:8])
+	}
+	if claudeSessionID == "" {
+		claudeSessionID = generateSessionID()
+	}
 
 	// Execute each pipeline step
 	for _, step := range pipeline {
