@@ -658,8 +658,9 @@ lets you pick one, validates the plan, and starts execution.`,
 				Fresh:          fresh,
 			}
 			engine := command.DefaultRunEngine()
-			if len(args) == 0 && item != "" {
-				// st run --item I-129: find the item's sprint and run it
+			if len(args) == 1 && args[0] == "status" {
+				exitCode = command.RunStatus(appStore, appCfg)
+			} else if len(args) == 0 && item != "" {
 				exitCode = command.RunItem(appStore, appCfg, item, opts, engine)
 			} else if len(args) == 0 {
 				exitCode = command.RunInteractive(appStore, appCfg, opts, engine)

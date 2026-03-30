@@ -322,6 +322,164 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 
 // RunItem runs a single item through the pipeline, finding its sprint automatically.
 // If the item has no sprint, runs it standalone.
+// RunStatus shows the pipeline progress for all items in active sprints.
+func RunStatus(s *store.Store, cfg *config.Config) int {
+	pipeline := cfg.RunPipeline()
+	if len(pipeline) == 0 {
+		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
+		return 1
+	}
+
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	stepNames := make([]string, len(pipeline))
+	for i, step := range pipeline {
+		stepNames[i] = step.Name()
+	}
+	totalSteps := len(stepNames)
+
+	// Find step index by name
+	stepIndex := func(name string) int {
+		for i, n := range stepNames {
+			if n == name {
+				return i
+			}
+		}
+		return -1
+	}
+
+	now := time.Now()
+
+	for _, epic := range reg.Epics {
+		if epic.Status != "active" {
+			continue
+		}
+		epicHasItems := false
+		for _, sp := range reg.Sprints {
+			if sp.Epic != epic.ID || len(sp.Items) == 0 {
+				continue
+			}
+			if !epicHasItems {
+				fmt.Printf("\n%s\n", epic.Title)
+				epicHasItems = true
+			}
+
+			done := 0
+			active := 0
+			for _, itemID := range sp.Items {
+				item, ok := s.Get(itemID)
+				if !ok {
+					continue
+				}
+				if cfg.IsTerminalStatus(item.Type, item.Status) {
+					done++
+				} else if item.Status == "active" {
+					active++
+				}
+			}
+
+			label := "active"
+			if sp.Status != "active" {
+				label = sp.Status
+			}
+			fmt.Printf("  %s  [%d/%d done, %d active]  (%s)\n", sp.Title, done, len(sp.Items), active, label)
+
+			for _, itemID := range sp.Items {
+				item, ok := s.Get(itemID)
+				if !ok {
+					fmt.Printf("    %-8s  ???\n", itemID)
+					continue
+				}
+
+				// Determine progress
+				lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
+				stage, _ := getNestedField(item, "delivery", "stage")
+				isDone := cfg.IsTerminalStatus(item.Type, item.Status)
+
+				// Progress bar
+				completed := 0
+				if isDone {
+					completed = totalSteps
+				} else if lastStep != "" {
+					idx := stepIndex(lastStep)
+					if idx >= 0 {
+						completed = idx + 1
+					}
+				}
+
+				bar := ""
+				for i := 0; i < totalSteps; i++ {
+					if i < completed {
+						bar += "█"
+					} else {
+						bar += "░"
+					}
+				}
+
+				// Status label
+				statusLabel := item.Status
+				if isDone {
+					statusLabel = "done"
+				} else if lastStep != "" {
+					nextIdx := stepIndex(lastStep) + 1
+					if nextIdx < totalSteps {
+						statusLabel = stepNames[nextIdx]
+					}
+				}
+				if stage != "" && !isDone {
+					statusLabel += " (" + stage + ")"
+				}
+
+				// Wall time since started
+				wallStr := ""
+				if tt := item.TimeTracking; tt != nil {
+					if startedRaw, ok := tt["started_at"]; ok {
+						if startedStr, ok := startedRaw.(string); ok {
+							if started, err := time.Parse(time.RFC3339, startedStr); err == nil {
+								dur := now.Sub(started)
+								if isDone {
+									// Use recorded wall time
+									if wallRaw, ok := tt["run_wall_seconds"]; ok {
+										switch v := wallRaw.(type) {
+										case float64:
+											dur = time.Duration(v) * time.Second
+										case int:
+											dur = time.Duration(v) * time.Second
+										}
+									}
+								}
+								wallStr = formatDuration(dur)
+							}
+						}
+					}
+				}
+
+				// Cost
+				costStr := ""
+				if tt := item.TimeTracking; tt != nil {
+					if costRaw, ok := tt["ai_cost_usd"]; ok {
+						switch v := costRaw.(type) {
+						case float64:
+							costStr = fmt.Sprintf("$%.2f", v)
+						case string:
+							costStr = "$" + v
+						}
+					}
+				}
+
+				// Format line
+				fmt.Printf("    %-8s %s  %-24s %8s  %6s\n", itemID, bar, statusLabel, wallStr, costStr)
+			}
+		}
+	}
+	fmt.Println()
+	return 0
+}
+
 func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, engine RunEngine) int {
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
