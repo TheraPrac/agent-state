@@ -33,6 +33,7 @@ type RunOpts struct {
 	Model          string
 	PermissionMode string
 	StepFilter     string // --step: advance up to this step name
+	Fresh          bool   // --fresh: ignore saved progress, restart pipeline from step 0
 }
 
 // RunEngine holds injectable dependencies for run/advance.
@@ -710,8 +711,30 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		}
 	}
 
-	// Execute each pipeline step (index-based to support skip)
-	for i := 0; i < len(pipeline); i++ {
+	// Resume from last completed step if the item has progress
+	startIdx := 0
+	if !opts.Fresh {
+		if item, ok := localStore.Get(itemID); ok {
+			if lastStep, _ := getNestedField(item, "delivery", "last_completed_step"); lastStep != "" {
+				for j, s := range pipeline {
+					if s.Name() == lastStep {
+						startIdx = j + 1
+						break
+					}
+				}
+				if startIdx > 0 && startIdx < len(pipeline) {
+					fmt.Printf("[%s] Resuming after step: %s\n", itemID, lastStep)
+				} else if startIdx >= len(pipeline) {
+					fmt.Printf("[%s] All steps already completed\n", itemID)
+					result.Success = true
+					return result
+				}
+			}
+		}
+	}
+
+	// Execute each pipeline step (index-based to support skip + resume)
+	for i := startIdx; i < len(pipeline); i++ {
 		step := pipeline[i]
 		stepStart := time.Now()
 		// Track which claude invocation this is for session reuse
@@ -734,6 +757,14 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		}
 
 		fmt.Printf("[%s] Step %s OK (%s)\n", itemID, step.Name(), sr.Duration.Round(time.Second))
+
+		// Record progress so we can resume from here if interrupted
+		if progressStore, err := store.New(cfg); err == nil {
+			if progressItem, ok := progressStore.Get(itemID); ok {
+				setNestedField(progressItem, "delivery", "last_completed_step", step.Name())
+				progressStore.Write(progressItem)
+			}
+		}
 
 		// Reload store after each step (other steps may have modified the item)
 		localStore, _ = store.New(cfg)

@@ -572,6 +572,7 @@ time_tracking:
 
 	// --- Run 2: advance again (another implement + code_review) ---
 	callNum = 10 // reset to get different session IDs
+	opts.Fresh = true // force re-execution of completed steps
 	code2 := Advance(s, cfg, "metrics-sprint", opts, engine)
 	// This will fail at "start" since item is already active, but the claude
 	// steps should still execute. Actually — item is already active, so it

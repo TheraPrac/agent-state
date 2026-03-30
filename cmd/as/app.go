@@ -647,6 +647,7 @@ lets you pick one, validates the plan, and starts execution.`,
 			item, _ := cmd.Flags().GetString("item")
 			model, _ := cmd.Flags().GetString("model")
 			permMode, _ := cmd.Flags().GetString("permission-mode")
+			fresh, _ := cmd.Flags().GetBool("fresh")
 			opts := command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
@@ -654,6 +655,7 @@ lets you pick one, validates the plan, and starts execution.`,
 				ItemFilter:     item,
 				Model:          model,
 				PermissionMode: permMode,
+				Fresh:          fresh,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 0 && item != "" {
@@ -672,6 +674,7 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().String("item", "", "run only this item ID")
 	runCmd.Flags().String("model", "", "model to use (overrides config)")
 	runCmd.Flags().String("permission-mode", "", "claude permission mode (overrides config)")
+	runCmd.Flags().Bool("fresh", false, "ignore saved progress, restart pipeline from step 0")
 	root.AddCommand(runCmd)
 
 	advanceCmd := &cobra.Command{
