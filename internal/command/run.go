@@ -344,32 +344,10 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 		return code
 	}
 
-	if !sp.PlanApproved {
-		fmt.Printf("\nSprint %s plan not yet approved. Showing plan:\n\n", sp.ID)
-		SprintPlan(s, cfg, sp.ID)
-		pipeline := cfg.RunPipeline()
-		fmt.Printf("\nPipeline (%d steps):\n", len(pipeline))
-		for i, step := range pipeline {
-			fmt.Printf("  %d. [%s] %s\n", i+1, step.Type, step.Name())
-		}
-		fmt.Printf("\nApprove this plan? [y/N]: ")
-		resp, err := engine.PromptUser("")
-		if err != nil {
-			return 1
-		}
-		answer := strings.TrimSpace(strings.ToLower(resp))
-		if answer != "y" && answer != "yes" {
-			fmt.Println("Plan not approved.")
-			return 0
-		}
-		reg, _ := registry.Load(cfg.EpicsPath())
-		if regSp, err := reg.SprintByID(sprintID); err == nil {
-			regSp.PlanApproved = true
-			regSp.PlanApprovedAt = time.Now().Format(time.RFC3339)
-			regSp.PlanApprovedBy = "user"
-			reg.Save(cfg.EpicsPath())
-		}
-		fmt.Printf("Plan approved for %s\n\n", sp.ID)
+	if !sp.PlanApproved && opts.ItemFilter == "" {
+		// Sprint plan approval only required when running the full sprint
+		fmt.Fprintf(os.Stderr, "sprint %s plan not approved — use `st run` (no args) for interactive approval\n", sprintID)
+		return 1
 	}
 
 	if opts.DryRun {
