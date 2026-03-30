@@ -1451,7 +1451,7 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 	gateMu.Lock()
 	defer gateMu.Unlock()
 
-	// Build lines first to measure width
+	// Build lines — use plain ASCII dashes for predictable alignment
 	lines := []string{
 		fmt.Sprintf("  PAUSED: %s", itemID),
 		"",
@@ -1460,29 +1460,31 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 		fmt.Sprintf("  Cost so far: $%.2f", result.TotalCost),
 		fmt.Sprintf("  Steps done:  %d", len(result.Steps)),
 		"",
-		"  [c]ontinue  — resume pipeline",
-		"  [s]kip      — skip next step, continue",
-		"  [a]bort     — stop, release item for retry",
+		"  [c]ontinue -- resume pipeline",
+		"  [s]kip     -- skip next step, continue",
+		"  [a]bort    -- stop, release item for retry",
 	}
+
+	// Measure display width (all ASCII now, so len == display width)
 	width := 0
 	for _, l := range lines {
 		if len(l) > width {
 			width = len(l)
 		}
 	}
-	width += 2 // padding
+	width += 2 // right padding
 
-	bar := strings.Repeat("═", width)
-	fmt.Printf("\n╔%s╗\n", bar)
-	for i, l := range lines {
+	bar := strings.Repeat("-", width+2)
+	fmt.Printf("\n+%s+\n", bar)
+	for _, l := range lines {
 		if l == "" {
-			fmt.Printf("╠%s╣\n", bar)
+			fmt.Printf("+%s+\n", bar)
 		} else {
-			fmt.Printf("║%-*s║\n", width, l)
+			pad := width - len(l)
+			fmt.Printf("| %s%s |\n", l, strings.Repeat(" ", pad))
 		}
-		_ = i
 	}
-	fmt.Printf("╚%s╝\n", bar)
+	fmt.Printf("+%s+\n", bar)
 
 	for {
 		fmt.Printf("\nAction [c/s/a]: ")
