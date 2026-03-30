@@ -434,6 +434,12 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					statusLabel += " (" + stage + ")"
 				}
 
+				// In-flight indicator
+				inFlight := ""
+				if item.ClaimedBy != "" {
+					inFlight = " << IN FLIGHT"
+				}
+
 				// Wall time: closed = completed_at - started_at, open = now - started_at
 				wallStr := ""
 				if tt := item.TimeTracking; tt != nil {
@@ -479,7 +485,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 
 				// Format line
-				fmt.Printf("    %-8s %s  %-24s %8s  %6s\n", itemID, bar, statusLabel, wallStr, costStr)
+				fmt.Printf("    %-8s %s  %-24s %8s  %6s%s\n", itemID, bar, statusLabel, wallStr, costStr, inFlight)
 			}
 		}
 	}
