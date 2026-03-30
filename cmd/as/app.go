@@ -656,7 +656,10 @@ lets you pick one, validates the plan, and starts execution.`,
 				PermissionMode: permMode,
 			}
 			engine := command.DefaultRunEngine()
-			if len(args) == 0 {
+			if len(args) == 0 && item != "" {
+				// st run --item I-129: find the item's sprint and run it
+				exitCode = command.RunItem(appStore, appCfg, item, opts, engine)
+			} else if len(args) == 0 {
 				exitCode = command.RunInteractive(appStore, appCfg, opts, engine)
 			} else {
 				exitCode = command.Run(appStore, appCfg, args[0], opts, engine)

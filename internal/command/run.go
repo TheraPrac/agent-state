@@ -297,6 +297,39 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 	return Run(s, cfg, sp.ID, opts, engine)
 }
 
+// RunItem runs a single item through the pipeline, finding its sprint automatically.
+// If the item has no sprint, runs it standalone.
+func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, engine RunEngine) int {
+	pipeline := cfg.RunPipeline()
+	if len(pipeline) == 0 {
+		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
+		return 1
+	}
+
+	item, ok := s.Get(itemID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", itemID)
+		return 1
+	}
+
+	// If item has a sprint, run within that sprint context
+	if item.Sprint != "" {
+		opts.ItemFilter = itemID
+		return Run(s, cfg, item.Sprint, opts, engine)
+	}
+
+	// No sprint — run standalone (single item, no sprint validation)
+	fmt.Printf("Running %s standalone (no sprint)\n", itemID)
+	opts.ItemFilter = itemID
+	result := runSingleItem(s, cfg, itemID, "", pipeline, opts, engine)
+	if result.Success {
+		fmt.Printf("\nDone: %s\n", itemID)
+		return 0
+	}
+	fmt.Printf("\nFailed: %s\n", itemID)
+	return 1
+}
+
 // Run executes a full autonomous sprint loop.
 func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engine RunEngine) int {
 	// Load sprint and validate
