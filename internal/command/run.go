@@ -760,6 +760,38 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 		if !sr.Passed {
 			fmt.Printf("[%s] Step %s FAILED: %s\n", itemID, step.Name(), sr.Error)
+
+			// For CI/merge failures, reset progress so next run goes back
+			// to implement where claude can see and fix the issue.
+			if step.Type == "merge_precheck" || step.Type == "merge" {
+				if progressStore, err := store.New(cfg); err == nil {
+					if progressItem, ok := progressStore.Get(itemID); ok {
+						// Find the last claude step before this failure
+						resetTo := ""
+						for j := i - 1; j >= 0; j-- {
+							if pipeline[j].Type == "claude" {
+								resetTo = pipeline[j].Name()
+								// Reset to one step BEFORE the claude step so it re-runs
+								if j > 0 {
+									resetTo = pipeline[j-1].Name()
+								} else {
+									resetTo = ""
+								}
+								break
+							}
+						}
+						if resetTo != "" {
+							setNestedField(progressItem, "delivery", "last_completed_step", resetTo)
+						} else {
+							// No claude step found — clear entirely
+							setNestedField(progressItem, "delivery", "last_completed_step", "")
+						}
+						progressStore.Write(progressItem)
+						fmt.Printf("[%s] Reset progress for retry (claude will see CI failure)\n", itemID)
+					}
+				}
+			}
+
 			releaseItem(cfg, itemID)
 			return result // defer records metrics
 		}
