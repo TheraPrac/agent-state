@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
@@ -2215,6 +2216,23 @@ func buildItemContext(s *store.Store, cfg *config.Config, itemID, worktreeDir st
 		b.WriteString("\n### Acceptance Criteria\n")
 		for i, ac := range item.AcceptanceCriteria {
 			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, ac))
+		}
+	}
+
+	// Files changed (from PR manifest)
+	m, err := manifest.Load(cfg.ManifestDir(), itemID)
+	if err == nil && len(m.PRs) > 0 {
+		b.WriteString("\n### Files Changed\n")
+		for _, pr := range m.PRs {
+			if len(m.PRs) > 1 {
+				b.WriteString(fmt.Sprintf("**%s#%d** (%d files, +%d/-%d):\n",
+					pr.Repo, pr.PRNumber, pr.CodeStats.FilesChanged,
+					pr.CodeStats.Insertions, pr.CodeStats.Deletions))
+			}
+			for _, f := range pr.Files {
+				b.WriteString(fmt.Sprintf("  %s %s (+%d/-%d) [%s]\n",
+					f.Action, f.Path, f.LinesAdded, f.LinesDeleted, f.Type))
+			}
 		}
 	}
 
