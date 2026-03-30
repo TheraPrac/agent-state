@@ -617,7 +617,15 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 			break // don't start new items while paused
 		}
 		wg.Add(1)
-		sem <- struct{}{} // acquire
+		sem <- struct{}{} // acquire — may block waiting for previous item
+
+		// Re-check pause after potentially blocking on semaphore
+		if pauseRequested.Load() != 0 || (activeRunCtx != nil && activeRunCtx.Err() != nil) {
+			<-sem // release
+			wg.Done()
+			break
+		}
+
 		go func(idx int, id string) {
 			defer wg.Done()
 			defer func() { <-sem }() // release
