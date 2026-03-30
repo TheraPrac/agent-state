@@ -600,20 +600,11 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// Resolve worktree directory
 	worktreeDir := resolveWorktreeDir(cfg, itemID)
 
-	// Resume prior session if item was worked on before, otherwise create new.
-	// This lets claude pick up where it left off (knows what it coded, tested, PR'd).
-	claudeSessionID := ""
+	// Generate a new session for this run.
+	// Session reuse across steps within THIS run (not across runs) is handled
+	// by the claudeStepCount logic below.
+	claudeSessionID := generateSessionID()
 	claudeStepCount := 0
-
-	// Reload item to get sessions list
-	if freshItem, ok := localStore.Get(itemID); ok && len(freshItem.Sessions) > 0 {
-		claudeSessionID = freshItem.Sessions[len(freshItem.Sessions)-1]
-		claudeStepCount = 1 // treat as resume from the start
-		fmt.Printf("[%s] Resuming prior session %s...\n", itemID, claudeSessionID[:8])
-	}
-	if claudeSessionID == "" {
-		claudeSessionID = generateSessionID()
-	}
 
 	// Execute each pipeline step
 	for _, step := range pipeline {
@@ -1705,18 +1696,14 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 }
 
 // detectMergedPR checks if the item has a PR that's already been merged.
+// Checks both the manifest and the worktree branch directly.
 func detectMergedPR(cfg *config.Config, itemID string, item *model.Item) bool {
-	// Check if manifest has PR info
-	if item.Manifest == nil {
-		return false
-	}
-	prs, ok := item.Manifest["prs"].(string)
-	if !ok || prs == "" {
-		return false
+	worktreeDir := resolveWorktreeDir(cfg, itemID)
+	if _, err := os.Stat(worktreeDir); err != nil {
+		return false // no worktree
 	}
 
-	// Try to check PR state via gh
-	worktreeDir := resolveWorktreeDir(cfg, itemID)
+	// Check PR state from the worktree branch (works even without manifest)
 	out, exitCode, _ := runCmdInDir(worktreeDir, "gh pr view --json state -q .state 2>/dev/null")
 	if exitCode == 0 {
 		state := strings.TrimSpace(string(out))
