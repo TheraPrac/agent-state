@@ -1807,9 +1807,8 @@ func isEligible(s *store.Store, cfg *config.Config, itemID string) bool {
 	if cfg.IsTerminalStatus(item.Type, item.Status) {
 		return false
 	}
-	if item.ClaimedBy != "" {
-		return false
-	}
+	// Allow items claimed by other sessions — runSingleItem handles
+	// merged-PR detection and recovery before entering the pipeline
 	return true
 }
 
