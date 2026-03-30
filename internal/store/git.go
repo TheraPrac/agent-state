@@ -4,10 +4,43 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 )
+
+// gitLockTimeout is how long to wait for the git lock before giving up.
+const gitLockTimeout = 15 * time.Second
+
+// acquireGitLock takes an exclusive file lock on a .st-git.lock file
+// in the item directory. Returns an unlock function. If the lock can't
+// be acquired within gitLockTimeout, returns an error.
+func acquireGitLock(dir string) (func(), error) {
+	lockPath := filepath.Join(dir, ".st-git.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	deadline := time.Now().Add(gitLockTimeout)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() {
+				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				f.Close()
+			}, nil
+		}
+		if time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("git lock timeout after %s (another st process is syncing)", gitLockTimeout)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
 
 // GitPull pulls latest changes from remote before reading items.
 // Best-effort: returns nil on failure so commands still work offline.
@@ -15,6 +48,14 @@ func GitPull(cfg *config.Config) error {
 	if cfg.Git == nil || !cfg.Git.AutoPush {
 		return nil
 	}
+
+	unlock, err := acquireGitLock(cfg.ItemDir())
+	if err != nil {
+		// Lock timeout — skip pull rather than hang
+		return nil
+	}
+	defer unlock()
+
 	return gitCmdQuiet(cfg.ItemDir(), "pull", "--ff-only")
 }
 
@@ -30,9 +71,14 @@ func (s *Store) GitSync(message string) error {
 
 	root := s.cfg.ItemDir()
 
+	// Acquire lock to prevent concurrent git operations from parallel st processes
+	unlock, err := acquireGitLock(root)
+	if err != nil {
+		return fmt.Errorf("git lock: %w", err)
+	}
+	defer unlock()
+
 	// Pre-pull: fetch and integrate remote changes before committing
-	// to minimize push conflicts. Use --ff-only to avoid merge commits;
-	// if it fails (diverged), we'll handle it after commit via retry.
 	if s.cfg.Git.AutoPush {
 		_ = gitCmdQuiet(root, "pull", "--ff-only")
 	}
