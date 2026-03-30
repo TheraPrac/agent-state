@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -382,15 +383,21 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 	// Reload store after recovery
 	s, _ = store.New(cfg)
 
-	// Set up Ctrl+C handler — one press kills everything
+	// Set up Ctrl+C handler — first press pauses after current step,
+	// second press kills subprocesses, third press hard-exits.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
+	pauseRequested.Store(0)
 	go func() {
 		<-sigChan
-		fmt.Fprintf(os.Stderr, "\n[st run] Interrupted — killing subprocesses and cleaning up...\n")
+		fmt.Fprintf(os.Stderr, "\n[st run] Ctrl+C received — will pause after current step finishes...\n")
+		pauseRequested.Store(1)
+		// Second Ctrl+C = kill subprocesses
+		<-sigChan
+		fmt.Fprintf(os.Stderr, "\n[st run] Interrupted — killing subprocesses...\n")
 		runCancel()
-		// Second Ctrl+C = hard exit
+		// Third Ctrl+C = hard exit
 		<-sigChan
 		os.Exit(1)
 	}()
@@ -413,6 +420,7 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 	}
 	signal.Stop(sigChan)
 	activeRunCtx = nil
+	pauseRequested.Store(0)
 
 	// Clean up any items that were started but didn't complete
 	for _, r := range allResults {
@@ -600,9 +608,12 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 	var wg sync.WaitGroup
 
 	for i, itemID := range eligible {
-		// Check for interrupt before starting next item
+		// Check for interrupt or pause before starting next item
 		if activeRunCtx != nil && activeRunCtx.Err() != nil {
 			break
+		}
+		if pauseRequested.Load() != 0 {
+			break // don't start new items while paused
 		}
 		wg.Add(1)
 		sem <- struct{}{} // acquire
@@ -622,6 +633,10 @@ var gateMu sync.Mutex
 
 // activeRunCtx is the cancel context for the current st run — Ctrl+C cancels it.
 var activeRunCtx context.Context
+
+// pauseRequested is set to 1 by Ctrl+C. The step loop checks it between steps
+// and shows an interactive menu instead of killing the process immediately.
+var pauseRequested atomic.Int32
 
 func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, pipeline []config.RunStepDef, opts RunOpts, engine RunEngine) ItemResult {
 	start := time.Now()
@@ -673,8 +688,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		localStore, _ = store.New(cfg)
 	}
 
-	// Resolve worktree directory
-	worktreeDir := resolveWorktreeDir(cfg, itemID)
+	// Resolve worktree directory — prefer the repo that has a PR (if any),
+	// otherwise fall back to the first available repo worktree.
+	worktreeDir := resolveWorktreeDirWithPR(cfg, itemID)
 
 	// Generate a new session for this run.
 	claudeSessionID := generateSessionID()
@@ -686,8 +702,17 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		recordRunMetrics(cfg, itemID, result)
 	}()
 
-	// Execute each pipeline step
-	for _, step := range pipeline {
+	// Build breakpoints set from config
+	breakpoints := make(map[string]bool)
+	if cfg.Run != nil {
+		for _, bp := range cfg.Run.Breakpoints {
+			breakpoints[bp] = true
+		}
+	}
+
+	// Execute each pipeline step (index-based to support skip)
+	for i := 0; i < len(pipeline); i++ {
+		step := pipeline[i]
 		stepStart := time.Now()
 		// Track which claude invocation this is for session reuse
 		isResume := false
@@ -728,6 +753,34 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		// Stop at --step filter
 		if opts.StepFilter != "" && step.Name() == opts.StepFilter {
 			break
+		}
+
+		// Check for pause (Ctrl+C or breakpoint) between steps
+		if i+1 < len(pipeline) {
+			nextStep := pipeline[i+1].Name()
+			shouldPause := pauseRequested.Load() != 0
+			if !shouldPause && breakpoints[nextStep] {
+				shouldPause = true
+				fmt.Printf("\n[%s] Breakpoint before step: %s\n", itemID, nextStep)
+			}
+			if shouldPause {
+				action := showPauseMenu(itemID, step.Name(), nextStep, result, engine)
+				pauseRequested.Store(0) // clear the flag after handling
+				switch action {
+				case "continue":
+					// proceed to next step
+				case "skip":
+					fmt.Printf("[%s] Skipping step: %s\n", itemID, nextStep)
+					result.Steps = append(result.Steps, StepResult{
+						Step: nextStep, Type: "skipped", Passed: true,
+					})
+					i++ // advance past the skipped step
+				case "abort":
+					fmt.Printf("[%s] Aborted by user\n", itemID)
+					releaseItem(cfg, itemID)
+					return result
+				}
+			}
 		}
 	}
 
@@ -916,7 +969,7 @@ func executeStepWithSession(s *store.Store, cfg *config.Config, itemID, sprintID
 	case "merge":
 		return executeMerge(s, cfg, itemID, worktreeDir)
 	case "merge_precheck":
-		return executeMergePrecheck(cfg, worktreeDir)
+		return executeMergePrecheck(cfg, itemID, worktreeDir)
 	case "deploy":
 		return executeDeploy(s, cfg, itemID, worktreeDir)
 	case "smoke":
@@ -1028,27 +1081,51 @@ func executeTest(s *store.Store, cfg *config.Config, itemID string, step config.
 
 func executePR(s *store.Store, cfg *config.Config, itemID string, step config.RunStepDef, worktreeDir string) StepResult {
 	sr := StepResult{Step: step.Name(), Type: "pr"}
-	repo := step.Command // command field carries the repo name
-	if repo == "" {
-		sr.Error = "pr step requires command field set to repo name"
+
+	// Detect and record PRs from all repo worktrees
+	prDirs := allWorktreeDirsWithPR(cfg, itemID)
+	if len(prDirs) == 0 {
+		// Fallback: check default worktreeDir
+		cmd := ghPRCmd(worktreeDir, "view --json number -q .number")
+		out, exitCode, _ := runCmdInDir(worktreeDir, cmd+" 2>/dev/null")
+		if exitCode == 0 && strings.TrimSpace(string(out)) != "" {
+			prDirs = []string{worktreeDir}
+		}
+	}
+	if len(prDirs) == 0 {
+		sr.Error = "could not detect PR in any repo worktree"
 		return sr
 	}
-	// Detect PR number from current branch
-	cmd := ghPRCmd(worktreeDir, "view --json number -q .number")
-	out, exitCode, err := runCmdInDir(worktreeDir, cmd)
-	if err != nil || exitCode != 0 || len(out) == 0 {
-		sr.Error = "could not detect PR number (is there an open PR on this branch?)"
-		return sr
+
+	recorded := 0
+	for _, prDir := range prDirs {
+		cmd := ghPRCmd(prDir, "view --json number -q .number")
+		out, exitCode, _ := runCmdInDir(prDir, cmd+" 2>/dev/null")
+		if exitCode != 0 || len(out) == 0 {
+			continue
+		}
+		prNum := 0
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &prNum)
+		if prNum == 0 {
+			continue
+		}
+		// Derive short repo name from the worktree directory name
+		repo := filepath.Base(prDir)
+		if step.Command != "" && len(prDirs) == 1 {
+			repo = step.Command // use configured repo name if single PR
+		}
+		code := PR(s, cfg, itemID, PROpts{Repo: repo, PRNumber: prNum})
+		if code != 0 {
+			sr.Error = fmt.Sprintf("st pr exited %d (%s#%d)", code, repo, prNum)
+			return sr
+		}
+		recorded++
+		// Reload store after each PR record (st pr modifies the item)
+		s, _ = store.New(cfg)
 	}
-	prNum := 0
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &prNum)
-	if prNum == 0 {
-		sr.Error = fmt.Sprintf("invalid PR number from gh pr view: %s", string(out))
-		return sr
-	}
-	code := PR(s, cfg, itemID, PROpts{Repo: repo, PRNumber: prNum})
-	if code != 0 {
-		sr.Error = fmt.Sprintf("st pr exited %d", code)
+
+	if recorded == 0 {
+		sr.Error = "could not detect PR number in any repo"
 		return sr
 	}
 	sr.Passed = true
@@ -1058,88 +1135,107 @@ func executePR(s *store.Store, cfg *config.Config, itemID string, step config.Ru
 func executeMerge(s *store.Store, cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "merge", Type: "merge"}
 
-	// Skip if no PR exists (item already on main, nothing to merge)
-	cmd := ghPRCmd(worktreeDir, "view --json state -q .state")
-	out, exitCode, _ := runCmdInDir(worktreeDir, cmd+" 2>/dev/null")
-	state := strings.TrimSpace(string(out))
-	if exitCode != 0 || state == "" {
-		fmt.Println("  no PR on this branch — skipping merge")
-		sr.Passed = true
-		return sr
-	}
-	if state == "MERGED" {
-		fmt.Println("  PR already merged")
-		sr.Passed = true
-		return sr
+	// Find all repo worktrees that have PRs (item may span multiple repos)
+	prDirs := allWorktreeDirsWithPR(cfg, itemID)
+	if len(prDirs) == 0 {
+		// No PRs found in any worktree — check the default worktreeDir as fallback
+		cmd := ghPRCmd(worktreeDir, "view --json state -q .state")
+		out, exitCode, _ := runCmdInDir(worktreeDir, cmd+" 2>/dev/null")
+		state := strings.TrimSpace(string(out))
+		if exitCode != 0 || state == "" {
+			fmt.Println("  no PR on this branch — skipping merge")
+			sr.Passed = true
+			return sr
+		}
+		prDirs = []string{worktreeDir}
 	}
 
-	mergeRepo := resolveGHRepo(worktreeDir)
-	mergeBranch := ""
-	if bOut, _, _ := runCmdInDir(worktreeDir, "git branch --show-current 2>/dev/null"); len(bOut) > 0 {
-		mergeBranch = strings.TrimSpace(string(bOut))
-	}
-	pipeOpts := PipelineOpts{
-		RunCmd: func(cmd string) ([]byte, int, error) {
-			// Inject --repo and branch for gh pr commands
-			if mergeRepo != "" && strings.Contains(cmd, "gh pr") && !strings.Contains(cmd, "--repo") {
-				suffix := " --repo " + mergeRepo
-				if mergeBranch != "" {
-					suffix = " " + mergeBranch + suffix
+	// Merge each repo's PR
+	for _, prDir := range prDirs {
+		cmd := ghPRCmd(prDir, "view --json state -q .state")
+		out, exitCode, _ := runCmdInDir(prDir, cmd+" 2>/dev/null")
+		state := strings.TrimSpace(string(out))
+		if exitCode != 0 || state == "" {
+			continue // no PR in this repo
+		}
+		if state == "MERGED" {
+			repo := resolveGHRepo(prDir)
+			fmt.Printf("  PR already merged (%s)\n", repo)
+			continue
+		}
+
+		mergeRepo := resolveGHRepo(prDir)
+		mergeBranch := ""
+		if bOut, _, _ := runCmdInDir(prDir, "git branch --show-current 2>/dev/null"); len(bOut) > 0 {
+			mergeBranch = strings.TrimSpace(string(bOut))
+		}
+		fmt.Printf("  merging PR in %s\n", mergeRepo)
+		pipeOpts := PipelineOpts{
+			RunCmd: func(cmd string) ([]byte, int, error) {
+				if mergeRepo != "" && strings.Contains(cmd, "gh pr") && !strings.Contains(cmd, "--repo") {
+					suffix := " --repo " + mergeRepo
+					if mergeBranch != "" {
+						suffix = " " + mergeBranch + suffix
+					}
+					cmd = strings.Replace(cmd, "gh pr", "gh pr"+suffix, 1)
 				}
-				cmd = strings.Replace(cmd, "gh pr", "gh pr"+suffix, 1)
-			}
-			return runCmdInDir(worktreeDir, cmd)
-		},
+				return runCmdInDir(prDir, cmd)
+			},
+		}
+		code := Merge(s, cfg, itemID, pipeOpts)
+		if code != 0 {
+			sr.Error = fmt.Sprintf("st merge exited %d (%s)", code, mergeRepo)
+			return sr
+		}
 	}
-	code := Merge(s, cfg, itemID, pipeOpts)
-	if code != 0 {
-		sr.Error = fmt.Sprintf("st merge exited %d", code)
-		return sr
-	}
+
 	sr.Passed = true
 	return sr
 }
 
-func executeMergePrecheck(cfg *config.Config, worktreeDir string) StepResult {
+func executeMergePrecheck(cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "merge_precheck", Type: "merge_precheck"}
 	if cfg.Pipeline == nil || cfg.Pipeline.Merge == nil || len(cfg.Pipeline.Merge.PreChecks) == 0 {
 		sr.Passed = true // no pre-checks configured
 		return sr
 	}
 
-	// Skip if no PR exists on this branch (e.g., item already on main)
-	cmd := ghPRCmd(worktreeDir, "view --json number -q .number")
-	out, exitCode, _ := runCmdInDir(worktreeDir, cmd+" 2>/dev/null")
-	if exitCode != 0 || strings.TrimSpace(string(out)) == "" {
+	// Find all repo worktrees that have PRs
+	prDirs := allWorktreeDirsWithPR(cfg, itemID)
+	if len(prDirs) == 0 {
 		fmt.Println("  no PR on this branch — skipping pre-checks")
 		sr.Passed = true
 		return sr
 	}
 
-	// CI watch can have long gaps between output — use CI idle timeout
-	ghRepo := resolveGHRepo(worktreeDir)
-	branch := ""
-	if branchOut, _, _ := runCmdInDir(worktreeDir, "git branch --show-current 2>/dev/null"); len(branchOut) > 0 {
-		branch = strings.TrimSpace(string(branchOut))
-	}
-	for _, check := range cfg.Pipeline.Merge.PreChecks {
-		// Inject --repo and branch if the command uses gh pr
-		rewritten := check
-		if ghRepo != "" && strings.Contains(check, "gh pr") && !strings.Contains(check, "--repo") {
-			suffix := " --repo " + ghRepo
-			if branch != "" {
-				suffix = " " + branch + suffix
+	// Run pre-checks for each repo that has a PR
+	for _, prDir := range prDirs {
+		ghRepo := resolveGHRepo(prDir)
+		branch := ""
+		if branchOut, _, _ := runCmdInDir(prDir, "git branch --show-current 2>/dev/null"); len(branchOut) > 0 {
+			branch = strings.TrimSpace(string(branchOut))
+		}
+		if len(prDirs) > 1 {
+			fmt.Printf("  pre-checks for %s\n", ghRepo)
+		}
+		for _, check := range cfg.Pipeline.Merge.PreChecks {
+			rewritten := check
+			if ghRepo != "" && strings.Contains(check, "gh pr") && !strings.Contains(check, "--repo") {
+				suffix := " --repo " + ghRepo
+				if branch != "" {
+					suffix = " " + branch + suffix
+				}
+				rewritten = strings.Replace(check, "gh pr", "gh pr"+suffix, 1)
 			}
-			rewritten = strings.Replace(check, "gh pr", "gh pr"+suffix, 1)
-		}
-		output, exitCode, err := runCmdGuarded(worktreeDir, rewritten, defaultCIIdleTimeout)
-		if err != nil && exitCode == 0 {
-			sr.Error = fmt.Sprintf("pre-check exec error: %v", err)
-			return sr
-		}
-		if exitCode != 0 {
-			sr.Error = fmt.Sprintf("pre-check failed (exit %d): %s", exitCode, truncate(string(output), 200))
-			return sr
+			output, exitCode, err := runCmdGuarded(prDir, rewritten, defaultCIIdleTimeout)
+			if err != nil && exitCode == 0 {
+				sr.Error = fmt.Sprintf("pre-check exec error (%s): %v", ghRepo, err)
+				return sr
+			}
+			if exitCode != 0 {
+				sr.Error = fmt.Sprintf("pre-check failed (%s, exit %d): %s", ghRepo, exitCode, truncate(string(output), 200))
+				return sr
+			}
 		}
 	}
 	sr.Passed = true
@@ -1212,6 +1308,46 @@ func executeGate(itemID string, engine RunEngine) StepResult {
 		sr.Error = "user rejected"
 	}
 	return sr
+}
+
+// showPauseMenu displays an interactive menu when the pipeline is paused
+// (either by Ctrl+C or a breakpoint). Returns "continue", "skip", or "abort".
+func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine RunEngine) string {
+	gateMu.Lock()
+	defer gateMu.Unlock()
+
+	fmt.Printf("\n╔══════════════════════════════════════════╗\n")
+	fmt.Printf("║  PAUSED: %s\n", itemID)
+	fmt.Printf("╠══════════════════════════════════════════╣\n")
+	fmt.Printf("║  Last step:  %s (OK)\n", lastStep)
+	fmt.Printf("║  Next step:  %s\n", nextStep)
+	fmt.Printf("║  Cost so far: $%.2f\n", result.TotalCost)
+	fmt.Printf("║  Steps done:  %d\n", len(result.Steps))
+	fmt.Printf("╠══════════════════════════════════════════╣\n")
+	fmt.Printf("║  [c]ontinue  — resume pipeline\n")
+	fmt.Printf("║  [s]kip      — skip next step, continue\n")
+	fmt.Printf("║  [a]bort     — stop, release item for retry\n")
+	fmt.Printf("╚══════════════════════════════════════════╝\n")
+
+	for {
+		fmt.Printf("\nAction [c/s/a]: ")
+		response, err := engine.PromptUser("")
+		if err != nil {
+			// If stdin is closed or Ctrl+C during prompt, abort
+			return "abort"
+		}
+		answer := strings.TrimSpace(strings.ToLower(response))
+		switch answer {
+		case "c", "continue":
+			return "continue"
+		case "s", "skip":
+			return "skip"
+		case "a", "abort":
+			return "abort"
+		default:
+			fmt.Printf("  Unknown option: %q (use c, s, or a)\n", answer)
+		}
+	}
 }
 
 func executeClose(s *store.Store, cfg *config.Config, itemID string, step config.RunStepDef) StepResult {
@@ -1741,6 +1877,93 @@ func resolveWorktreeDir(cfg *config.Config, itemID string) string {
 	return wtBase
 }
 
+// allWorktreeDirs returns all existing repo worktree directories for an item.
+func allWorktreeDirs(cfg *config.Config, itemID string) []string {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled || cfg.Worktree.BaseDir == "" {
+		return []string{cfg.Root()}
+	}
+
+	wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+	repos := cfg.Worktree.Repos
+	if len(repos) == 0 {
+		if _, err := os.Stat(wtBase); err == nil {
+			return []string{wtBase}
+		}
+		return nil
+	}
+
+	var dirs []string
+	for _, repo := range repos {
+		dir := repo
+		if cfg.Worktree.RepoMap != nil {
+			if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+				dir = mapped
+			}
+		}
+		candidate := filepath.Join(wtBase, dir)
+		if _, err := os.Stat(candidate); err == nil {
+			dirs = append(dirs, candidate)
+		}
+	}
+	return dirs
+}
+
+// allWorktreeDirsWithPR returns all repo worktree directories that have an open PR.
+// First checks the item's manifest prs field (e.g., "theraprac-web#94, theraprac-api#55"),
+// then falls back to probing all worktrees with gh pr view.
+func allWorktreeDirsWithPR(cfg *config.Config, itemID string) []string {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled || cfg.Worktree.BaseDir == "" {
+		return []string{cfg.Root()}
+	}
+	wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+
+	// Try to resolve from item's recorded PR manifest (e.g., "theraprac-web#94, theraprac-api#55")
+	s, _ := store.New(cfg)
+	if s != nil {
+		if item, ok := s.Get(itemID); ok && item.Manifest != nil {
+			if prsRaw, ok := item.Manifest["prs"]; ok {
+				if prsStr, ok := prsRaw.(string); ok && prsStr != "" {
+					var dirs []string
+					for _, pr := range strings.Split(prsStr, ",") {
+						pr = strings.TrimSpace(pr)
+						if idx := strings.Index(pr, "#"); idx > 0 {
+							repo := pr[:idx]
+							candidate := filepath.Join(wtBase, repo)
+							if _, err := os.Stat(candidate); err == nil {
+								dirs = append(dirs, candidate)
+							}
+						}
+					}
+					if len(dirs) > 0 {
+						return dirs
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: probe all worktrees with gh pr view
+	var dirs []string
+	for _, dir := range allWorktreeDirs(cfg, itemID) {
+		cmd := ghPRCmd(dir, "view --json number -q .number")
+		out, exitCode, _ := runCmdInDir(dir, cmd+" 2>/dev/null")
+		if exitCode == 0 && strings.TrimSpace(string(out)) != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
+// resolveWorktreeDirWithPR returns the first repo worktree that has a PR.
+// Falls back to resolveWorktreeDir if no PR is found.
+func resolveWorktreeDirWithPR(cfg *config.Config, itemID string) string {
+	dirs := allWorktreeDirsWithPR(cfg, itemID)
+	if len(dirs) > 0 {
+		return dirs[0]
+	}
+	return resolveWorktreeDir(cfg, itemID)
+}
+
 // releaseItem resets an item back to startable state after a pipeline failure.
 // Clears claim, resets status so the item can be retried.
 func releaseItem(cfg *config.Config, itemID string) {
@@ -1820,19 +2043,30 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 // detectMergedPR checks if the item has a PR that's already been merged.
 // Checks both the manifest and the worktree branch directly.
 func detectMergedPR(cfg *config.Config, itemID string, item *model.Item) bool {
-	worktreeDir := resolveWorktreeDir(cfg, itemID)
-	if _, err := os.Stat(worktreeDir); err != nil {
-		return false // no worktree
+	// Check all repo worktrees that have PRs — ALL must be merged
+	prDirs := allWorktreeDirsWithPR(cfg, itemID)
+	if len(prDirs) == 0 {
+		// No known PRs — check all worktrees as fallback
+		prDirs = allWorktreeDirs(cfg, itemID)
+	}
+	if len(prDirs) == 0 {
+		return false
 	}
 
-	// Check PR state from the worktree branch with correct --repo
-	cmd := ghPRCmd(worktreeDir, "view --json state -q .state")
-	out, exitCode, _ := runCmdInDir(worktreeDir, cmd+" 2>/dev/null")
-	if exitCode == 0 {
+	foundAny := false
+	for _, dir := range prDirs {
+		cmd := ghPRCmd(dir, "view --json state -q .state")
+		out, exitCode, _ := runCmdInDir(dir, cmd+" 2>/dev/null")
+		if exitCode != 0 || strings.TrimSpace(string(out)) == "" {
+			continue // no PR in this repo
+		}
+		foundAny = true
 		state := strings.TrimSpace(string(out))
-		return state == "MERGED"
+		if state != "MERGED" {
+			return false // at least one PR is not merged
+		}
 	}
-	return false
+	return foundAny
 }
 
 // autoCloseItem closes an item that was completed by a previous st run.

@@ -203,6 +203,7 @@ type RunConfig struct {
 	DefaultBudgetUSD float64
 	StepOrder        []string              // ordered step names
 	Steps            map[string]RunStepDef // step name → definition
+	Breakpoints      []string              // step names where the pipeline pauses for user input
 }
 
 // RunStepDef defines a single pipeline step for st run.
@@ -904,9 +905,12 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 			}
 		}
 	case "run":
-		if key == "step_order" {
-			ensureRun(cfg)
+		ensureRun(cfg)
+		switch key {
+		case "step_order":
 			cfg.Run.StepOrder = items
+		case "breakpoints":
+			cfg.Run.Breakpoints = items
 		}
 
 	case "testing":
