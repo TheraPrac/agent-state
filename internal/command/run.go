@@ -434,25 +434,32 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					statusLabel += " (" + stage + ")"
 				}
 
-				// Wall time since started
+				// Wall time: closed = completed_at - started_at, open = now - started_at
 				wallStr := ""
 				if tt := item.TimeTracking; tt != nil {
-					if startedRaw, ok := tt["started_at"]; ok {
-						if startedStr, ok := startedRaw.(string); ok {
-							if started, err := time.Parse(time.RFC3339, startedStr); err == nil {
-								dur := now.Sub(started)
-								if isDone {
-									// Use recorded wall time
-									if wallRaw, ok := tt["run_wall_seconds"]; ok {
-										switch v := wallRaw.(type) {
-										case float64:
-											dur = time.Duration(v) * time.Second
-										case int:
-											dur = time.Duration(v) * time.Second
-										}
+					startedStr := ""
+					if v, ok := tt["started_at"]; ok {
+						if s, ok := v.(string); ok {
+							startedStr = s
+						}
+					}
+					if startedStr != "" {
+						if started, err := time.Parse(time.RFC3339, startedStr); err == nil {
+							if isDone {
+								// Use completed_at - started_at for closed items
+								completedStr := ""
+								if v, ok := tt["completed_at"]; ok {
+									if s, ok := v.(string); ok {
+										completedStr = s
 									}
 								}
-								wallStr = formatDuration(dur)
+								if completedStr != "" {
+									if completed, err := time.Parse(time.RFC3339, completedStr); err == nil {
+										wallStr = formatDuration(completed.Sub(started))
+									}
+								}
+							} else {
+								wallStr = formatDuration(now.Sub(started))
 							}
 						}
 					}
