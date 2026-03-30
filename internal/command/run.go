@@ -1493,6 +1493,14 @@ func buildDefaultPrompt(s *store.Store, cfg *config.Config, itemID, sprintID str
 	b.WriteString("7. Check if `st pr` triggered any scope suites — run them if so\n")
 	b.WriteString("8. STOP here. Do NOT merge. Report your results.\n\n")
 
+	b.WriteString("## Already Complete?\n")
+	b.WriteString("If the work is already done on main (e.g., delivered via another issue/PR):\n")
+	b.WriteString("1. Verify by checking `git diff main` — if no changes needed, the work is done\n")
+	b.WriteString("2. Run the test suites to confirm everything passes\n")
+	b.WriteString(fmt.Sprintf("3. Close the item: `st close %s completed --reason 'already on main via <PR>' --force`\n", itemID))
+	b.WriteString(fmt.Sprintf("4. Clean up: `st finish %s`\n", itemID))
+	b.WriteString("5. Report what you found\n\n")
+
 	b.WriteString("## State Tracking\n")
 	b.WriteString(fmt.Sprintf("- `st test %s <suite> --run` — execute and record test evidence\n", itemID))
 	b.WriteString(fmt.Sprintf("- `st pr %s --repo <repo> --pr <N>` — record PR manifest\n", itemID))
