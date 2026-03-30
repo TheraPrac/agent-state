@@ -1173,11 +1173,7 @@ func executeMerge(s *store.Store, cfg *config.Config, itemID, worktreeDir string
 		pipeOpts := PipelineOpts{
 			RunCmd: func(cmd string) ([]byte, int, error) {
 				if mergeRepo != "" && strings.Contains(cmd, "gh pr") && !strings.Contains(cmd, "--repo") {
-					suffix := " --repo " + mergeRepo
-					if mergeBranch != "" {
-						suffix = " " + mergeBranch + suffix
-					}
-					cmd = strings.Replace(cmd, "gh pr", "gh pr"+suffix, 1)
+					cmd = injectGHPRContext(cmd, mergeBranch, mergeRepo)
 				}
 				return runCmdInDir(prDir, cmd)
 			},
@@ -1221,11 +1217,7 @@ func executeMergePrecheck(cfg *config.Config, itemID, worktreeDir string) StepRe
 		for _, check := range cfg.Pipeline.Merge.PreChecks {
 			rewritten := check
 			if ghRepo != "" && strings.Contains(check, "gh pr") && !strings.Contains(check, "--repo") {
-				suffix := " --repo " + ghRepo
-				if branch != "" {
-					suffix = " " + branch + suffix
-				}
-				rewritten = strings.Replace(check, "gh pr", "gh pr"+suffix, 1)
+				rewritten = injectGHPRContext(check, branch, ghRepo)
 			}
 			output, exitCode, err := runCmdGuarded(prDir, rewritten, defaultCIIdleTimeout)
 			if err != nil && exitCode == 0 {
@@ -2156,6 +2148,47 @@ func ghPRCmd(worktreeDir, subcmd string) string {
 		return fmt.Sprintf("gh pr %s %s --repo %s", subcmd, branch, repo)
 	}
 	return fmt.Sprintf("gh pr %s --repo %s", subcmd, repo)
+}
+
+// injectGHPRContext rewrites a "gh pr <subcmd> ..." command to include
+// branch and --repo flags in the correct position (after the subcommand).
+// e.g., "gh pr checks --watch" → "gh pr checks <branch> --repo <repo> --watch"
+func injectGHPRContext(cmd, branch, repo string) string {
+	// Find "gh pr " prefix and extract the subcommand
+	idx := strings.Index(cmd, "gh pr ")
+	if idx < 0 {
+		return cmd
+	}
+	prefix := cmd[:idx]
+	rest := cmd[idx+len("gh pr "):]
+
+	// Split rest into subcommand and remaining args
+	// e.g., "checks --watch" → subcmd="checks", args="--watch"
+	parts := strings.SplitN(rest, " ", 2)
+	subcmd := parts[0]
+	args := ""
+	if len(parts) > 1 {
+		args = parts[1]
+	}
+
+	// Rebuild: gh pr <subcmd> <branch> --repo <repo> <remaining-args>
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString("gh pr ")
+	b.WriteString(subcmd)
+	if branch != "" {
+		b.WriteString(" ")
+		b.WriteString(branch)
+	}
+	if repo != "" {
+		b.WriteString(" --repo ")
+		b.WriteString(repo)
+	}
+	if args != "" {
+		b.WriteString(" ")
+		b.WriteString(args)
+	}
+	return b.String()
 }
 
 func isEligible(s *store.Store, cfg *config.Config, itemID string) bool {

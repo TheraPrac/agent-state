@@ -820,3 +820,57 @@ func TestIsEligible(t *testing.T) {
 		t.Error("completed T-001 should not be eligible")
 	}
 }
+
+func TestInjectGHPRContext(t *testing.T) {
+	tests := []struct {
+		name   string
+		cmd    string
+		branch string
+		repo   string
+		want   string
+	}{
+		{
+			name:   "checks with watch",
+			cmd:    "gh pr checks --watch",
+			branch: "fix/I-042-foo",
+			repo:   "TheraPrac/theraprac-web",
+			want:   "gh pr checks fix/I-042-foo --repo TheraPrac/theraprac-web --watch",
+		},
+		{
+			name:   "merge with squash and delete",
+			cmd:    "gh pr merge --squash --delete-branch",
+			branch: "fix/I-042-foo",
+			repo:   "TheraPrac/theraprac-web",
+			want:   "gh pr merge fix/I-042-foo --repo TheraPrac/theraprac-web --squash --delete-branch",
+		},
+		{
+			name:   "no branch",
+			cmd:    "gh pr checks --watch",
+			branch: "",
+			repo:   "TheraPrac/theraprac-web",
+			want:   "gh pr checks --repo TheraPrac/theraprac-web --watch",
+		},
+		{
+			name:   "no args after subcommand",
+			cmd:    "gh pr view",
+			branch: "fix/I-042-foo",
+			repo:   "TheraPrac/theraprac-web",
+			want:   "gh pr view fix/I-042-foo --repo TheraPrac/theraprac-web",
+		},
+		{
+			name:   "no gh pr in command",
+			cmd:    "echo hello",
+			branch: "fix/I-042-foo",
+			repo:   "TheraPrac/theraprac-web",
+			want:   "echo hello",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := injectGHPRContext(tt.cmd, tt.branch, tt.repo)
+			if got != tt.want {
+				t.Errorf("injectGHPRContext(%q, %q, %q)\n  got:  %q\n  want: %q", tt.cmd, tt.branch, tt.repo, got, tt.want)
+			}
+		})
+	}
+}
