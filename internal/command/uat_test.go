@@ -153,10 +153,11 @@ func TestUATManualCriteria(t *testing.T) {
 		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
 	}
 
-	// Prose ACs without cmd: prefix now fail — they're not machine-verifiable
+	// Prose ACs without cmd: prefix are pending (manual review), not auto-fail.
+	// They don't block the pipeline — they show as warnings.
 	code := UAT(s, cfg, "T-003", opts)
-	if code != 1 {
-		t.Errorf("UAT returned %d, want 1 (non-cmd ACs must fail)", code)
+	if code != 0 {
+		t.Errorf("UAT returned %d, want 0 (manual ACs are pending, not blocking)", code)
 	}
 }
 

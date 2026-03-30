@@ -76,7 +76,18 @@ func AppendPR(dir, id string, pr PRRecord) error {
 	if err != nil {
 		return err
 	}
-	m.PRs = append(m.PRs, pr)
+	// Replace existing entry for the same repo#number (dedup on re-record)
+	replaced := false
+	for i, existing := range m.PRs {
+		if existing.Repo == pr.Repo && existing.PRNumber == pr.PRNumber {
+			m.PRs[i] = pr
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		m.PRs = append(m.PRs, pr)
+	}
 	return Save(dir, id, m)
 }
 

@@ -1993,6 +1993,24 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 	// Record approval on item (reload in case claude updated it)
 	s3, _ := store.New(cfg)
 	item, _ = s3.Get(itemID)
+
+	// Validate ACs — all must be cmd: prefixed
+	var badACs []string
+	for _, ac := range item.AcceptanceCriteria {
+		trimmed := strings.TrimSpace(ac)
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		if !strings.HasPrefix(trimmed, "cmd:") && !strings.HasPrefix(trimmed, "cmd :") {
+			badACs = append(badACs, trimmed)
+		}
+	}
+	if len(badACs) > 0 {
+		fmt.Printf("\n⚠ %d AC(s) missing 'cmd:' prefix (will be flagged in UAT):\n", len(badACs))
+		for _, ac := range badACs {
+			fmt.Printf("  - %s\n", ac)
+		}
+		fmt.Println()
+	}
+
 	item.PlanApproved = true
 	item.Doc.SetField("plan_approved", "true")
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
@@ -2037,6 +2055,8 @@ func proposePlan(cfg *config.Config, itemID string, item *model.Item, engine Run
 	b.WriteString("- cmd: grep -q 'SELECT.*FOR UPDATE' internal/db/client_charges.go\n")
 	b.WriteString("\nFor new features, name the test function that WILL exist after implementation.\n")
 	b.WriteString("The implement step writes the actual test. No prose ACs — if it can't be a command, it's not an AC.\n")
+	b.WriteString("\nCRITICAL: Every AC line MUST begin with '- cmd: '. Lines without this prefix will be rejected.\n")
+	b.WriteString("Use relative paths from the worktree: '../theraprac-api' or '../theraprac-web' (NOT 'theraprac-api').\n")
 	b.WriteString("\nDo NOT ask 'shall I go ahead' — just set the fields and report what you did.\n")
 
 	// Use the worktree dir if available, otherwise the config root
