@@ -2265,19 +2265,26 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 
 	const (
 		colItem   = 10
-		colStatus = 18
-		colWall   = 14
-		colAI     = 14
-		colCost   = 10
+		colStatus = 16
+		colWall   = 12
+		colAI     = 12
+		colCost   = 9
 	)
-	sep := "═══════════════════════════════════════════════════════════════════════"
+	sep := "═══════════════════════════════════════════════════════════════════════════════════════"
 
 	fmt.Println()
 	if epic != nil {
 		fmt.Printf("  Epic: %s\n", epic.Title)
 	}
 	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-*s %-*s %*s %*s %*s\n", colItem, "Item", colStatus, "Status", colWall, "Wall Time", colAI, "AI Time", colCost, "Cost")
+	fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
+		colItem, "Item", colStatus, "Status",
+		colWall, "Session", colAI, "Session", colCost, "Session",
+		colWall, "Total", colAI, "Total", colCost, "Total")
+	fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
+		colItem, "", colStatus, "",
+		colWall, "Wall", colAI, "AI", colCost, "Cost",
+		colWall, "Wall", colAI, "AI", colCost, "Cost")
 	fmt.Printf("  %s\n", sep)
 
 	// Collect all sprints in this epic
@@ -2329,14 +2336,22 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				sprintDone++
 			}
 
-			// Use accumulated time_tracking from the item (sums across all sessions).
-			// For current sprint, also check live results for status.
-			var wallTime, aiTime time.Duration
-			var cost float64
+			// Session values (this run only) and total values (accumulated)
+			var sessWall, sessAI time.Duration
+			var sessCost float64
+			var totalWall, totalAI time.Duration
+			var totalCostItem float64
 
 			if isCurrent {
 				for _, r := range results {
 					if r.ItemID == itemID {
+						sessWall = r.Duration
+						sessCost = r.TotalCost
+						for _, sr := range r.Steps {
+							if sr.Type == "claude" {
+								sessAI += sr.Duration
+							}
+						}
 						if !r.Success {
 							for _, sr := range r.Steps {
 								if !sr.Passed {
@@ -2352,44 +2367,44 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				}
 			}
 
-			// Always use accumulated time_tracking (sums across all st run sessions)
+			// Accumulated totals from time_tracking
 			if v, ok := getNestedField(item, "time_tracking", "run_wall_seconds"); ok {
 				var secs int
 				fmt.Sscanf(v, "%d", &secs)
-				wallTime = time.Duration(secs) * time.Second
+				totalWall = time.Duration(secs) * time.Second
 			}
 			if v, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); ok {
 				var secs int
 				fmt.Sscanf(v, "%d", &secs)
-				aiTime = time.Duration(secs) * time.Second
+				totalAI = time.Duration(secs) * time.Second
 			}
 			if v, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok {
-				fmt.Sscanf(v, "%f", &cost)
+				fmt.Sscanf(v, "%f", &totalCostItem)
 			}
 
-			sprintWall += wallTime
-			sprintAI += aiTime
-			sprintCost += cost
+			sprintWall += totalWall
+			sprintAI += totalAI
+			sprintCost += totalCostItem
 
-			wallStr := "—"
-			if wallTime > 0 {
-				wallStr = formatDuration(wallTime)
+			f := func(d time.Duration) string {
+				if d > 0 { return formatDuration(d) }
+				return "—"
 			}
-			aiStr := "—"
-			if aiTime > 0 {
-				aiStr = formatDuration(aiTime)
-			}
-			costStr := "—"
-			if cost > 0 {
-				costStr = fmt.Sprintf("$%.2f", cost)
+			fc := func(c float64) string {
+				if c > 0 { return fmt.Sprintf("$%.2f", c) }
+				return "—"
 			}
 
-			fmt.Printf("  %-*s %-*s %*s %*s %*s\n", colItem, itemID, colStatus, truncate(status, colStatus), colWall, wallStr, colAI, aiStr, colCost, costStr)
+			fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
+				colItem, itemID, colStatus, truncate(status, colStatus),
+				colWall, f(sessWall), colAI, f(sessAI), colCost, fc(sessCost),
+				colWall, f(totalWall), colAI, f(totalAI), colCost, fc(totalCostItem))
 		}
 
-		// Sprint subtotal
-		fmt.Printf("  %-*s %-*s %*s %*s %*s\n", colItem, "", colStatus,
+		// Sprint subtotal (totals only — session column left blank)
+		fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n", colItem, "", colStatus,
 			fmt.Sprintf("%d/%d done", sprintDone, sprintTotal),
+			colWall, "", colAI, "", colCost, "",
 			colWall, formatDuration(sprintWall),
 			colAI, formatDuration(sprintAI),
 			colCost, fmt.Sprintf("$%.2f", sprintCost))
@@ -2402,7 +2417,9 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 	// Epic total
 	if epic != nil && len(sprintIDs) > 1 {
 		fmt.Printf("\n  %s\n", sep)
-		fmt.Printf("  %-*s %-*s %*s %*s %*s\n", colItem, "Epic", colStatus, truncate(epic.Title, colStatus),
+		fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
+			colItem, "Epic", colStatus, truncate(epic.Title, colStatus),
+			colWall, "", colAI, "", colCost, "",
 			colWall, formatDuration(epicWall),
 			colAI, formatDuration(epicAI),
 			colCost, fmt.Sprintf("$%.2f", epicCost))
