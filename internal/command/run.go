@@ -580,6 +580,10 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 	var wg sync.WaitGroup
 
 	for i, itemID := range eligible {
+		// Check for interrupt before starting next item
+		if activeRunCtx != nil && activeRunCtx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		sem <- struct{}{} // acquire
 		go func(idx int, id string) {
