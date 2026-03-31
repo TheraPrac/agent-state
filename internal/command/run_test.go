@@ -1104,3 +1104,100 @@ func TestUATReviewInteractiveThenReject(t *testing.T) {
 		t.Errorf("expected 'user rejected', got %q", sr.Error)
 	}
 }
+
+func TestCloseGateRejectsSkippedDeploy(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	setNestedField(item, "delivery", "skipped_steps", "deploy_watch")
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step.SetName("close")
+
+	sr := executeClose(s, cfg, "T-001", step)
+	if sr.Passed {
+		t.Error("close should reject item with skipped deploy_watch")
+	}
+	if !strings.Contains(sr.Error, "deploy_watch") {
+		t.Errorf("error should mention deploy_watch, got: %s", sr.Error)
+	}
+}
+
+func TestCloseGateRejectsSkippedUAT(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	setNestedField(item, "delivery", "skipped_steps", "uat_review")
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step.SetName("close")
+
+	sr := executeClose(s, cfg, "T-001", step)
+	if sr.Passed {
+		t.Error("close should reject item with skipped uat_review")
+	}
+	if !strings.Contains(sr.Error, "uat_review") {
+		t.Errorf("error should mention uat_review, got: %s", sr.Error)
+	}
+}
+
+func TestCloseGateAllowsNoSkips(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step.SetName("close")
+
+	sr := executeClose(s, cfg, "T-001", step)
+	// Should pass (or fail for other reasons like gates, but not for skipped steps)
+	if sr.Error != "" && strings.Contains(sr.Error, "skipped") {
+		t.Errorf("close should not fail for skipped steps when none were skipped, got: %s", sr.Error)
+	}
+}
+
+func TestCloseGateAllowsNonCriticalSkips(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	setNestedField(item, "delivery", "skipped_steps", "code_review")
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step.SetName("close")
+
+	sr := executeClose(s, cfg, "T-001", step)
+	// code_review is not critical — should not block close
+	if sr.Error != "" && strings.Contains(sr.Error, "skipped") {
+		t.Errorf("close should allow skipped non-critical step code_review, got: %s", sr.Error)
+	}
+}
+
+func TestCloseGateRejectsMultipleSkips(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	setNestedField(item, "delivery", "skipped_steps", "code_review,deploy_watch,smoke")
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step.SetName("close")
+
+	sr := executeClose(s, cfg, "T-001", step)
+	if sr.Passed {
+		t.Error("close should reject item with skipped deploy_watch in multi-skip list")
+	}
+}
