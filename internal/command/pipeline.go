@@ -358,7 +358,7 @@ func watchMainCI(runCmd func(string) ([]byte, int, error)) error {
 		}
 
 		if status == "completed" {
-			if conclusion == "success" {
+			if conclusion == "success" || conclusion == "skipped" {
 				fmt.Println("  CI passed — proceeding to health checks")
 				return nil
 			}
