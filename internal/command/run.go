@@ -1154,14 +1154,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 				for attempt := 1; ; attempt++ {
 					fmt.Printf("[%s] %s fix attempt %d...\n", itemID, stepLabel, attempt)
 					fixPrompt := fmt.Sprintf(
-						"%s failed for item %s (attempt %d). The error was:\n\n%s\n\n"+
-							"Diagnose the failure:\n"+
-							"- For deploy failures: run `gh run list --branch main --limit 5 --json name,conclusion` to see which workflow failed, then `gh run view <id> --log-failed` for details.\n"+
-							"- For CI failures: `gh run view --log-failed` for the specific repo.\n"+
-							"- For UAT failures: check the acceptance criteria output above.\n"+
-							"- If the OpenAPI spec is out of sync: run `npm run sync-api` in the web repo, commit, and push.\n"+
-							"- Refer to CLAUDE.md for the OpenAPI contract workflow.\n\n"+
-							"Fix the issue, commit, and push. Do NOT merge.",
+						"The %s step failed for item %s (attempt %d). The error was:\n\n%s\n\n"+
+							"Investigate the failure, find the root cause, fix it, commit, and push. "+
+							"Do NOT merge. Follow all procedures in CLAUDE.md.",
 						stepLabel, itemID, attempt, sr.Error)
 					fixStep := config.RunStepDef{Type: "claude", Prompt: fixPrompt}
 					fixStep.SetName(fmt.Sprintf("ci_fix_%d", attempt))
