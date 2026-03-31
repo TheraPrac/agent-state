@@ -355,9 +355,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	now := time.Now()
 
 	// Header
-	fmt.Printf("\n    %-8s %-13s  %-24s  %-8s %10s %10s  %8s\n",
+	fmt.Printf("\n    %-8s %-15s %-24s %-8s %12s %10s %10s\n",
 		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "AI TIME", "COST")
-	fmt.Println("    " + strings.Repeat("-", 100))
+	fmt.Println("    " + strings.Repeat("-", 95))
 
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
@@ -525,7 +525,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 
 				// Format line
-				fmt.Printf("    %-8s %s  %-24s  %-8s %10s %10s  %8s%s\n",
+				fmt.Printf("    %-8s %-15s %-24s %-8s %12s %10s %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, aiStr, costStr, inFlight)
 			}
 		}
