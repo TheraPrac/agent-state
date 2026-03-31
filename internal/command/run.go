@@ -1878,12 +1878,11 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		fmt.Println("  ─────────────────────────────────────────────────────────")
 		fmt.Printf("  [%s] UAT Review (iteration %d)\n", itemID, iteration)
 		fmt.Println()
-		fmt.Println("  Type 'approve' to accept and close the item")
-		fmt.Println("  Type 'reject' to stop and release for retry")
-		fmt.Println("  Or type feedback in plain text — claude will act on it,")
-		fmt.Println("  then UAT will re-run and you'll see the updated report.")
+		fmt.Println("  (1) Approve — accept and close")
+		fmt.Println("  (2) Reject  — stop and release for retry")
+		fmt.Println("  (3) Chat    — give feedback, claude acts, UAT re-runs")
 		fmt.Println("  ─────────────────────────────────────────────────────────")
-		fmt.Printf("\n  > ")
+		fmt.Printf("\n  [1/2/3]: ")
 		response, err := engine.PromptUser("")
 		gateMu.Unlock()
 
@@ -1895,16 +1894,30 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		input := strings.TrimSpace(response)
 		lower := strings.ToLower(input)
 
-		if lower == "approve" || lower == "y" || lower == "yes" {
+		if lower == "1" || lower == "approve" || lower == "y" || lower == "yes" {
 			sr.Passed = true
 			return sr
 		}
-		if lower == "reject" || lower == "n" || lower == "no" {
+		if lower == "2" || lower == "reject" || lower == "n" || lower == "no" {
 			sr.Error = "user rejected"
 			return sr
 		}
 
-		// Plain text feedback — route to claude
+		// Option 3 or free text — get the actual feedback
+		feedback := input
+		if lower == "3" || lower == "chat" {
+			fmt.Printf("\n  Feedback: ")
+			chatResponse, chatErr := engine.PromptUser("")
+			if chatErr != nil {
+				sr.Error = fmt.Sprintf("prompt error: %v", chatErr)
+				return sr
+			}
+			feedback = strings.TrimSpace(chatResponse)
+			if feedback == "" {
+				continue // empty feedback, show prompt again
+			}
+		}
+
 		fmt.Printf("\n[%s] Acting on feedback...\n", itemID)
 		feedbackPrompt := fmt.Sprintf(
 			"The user reviewed the UAT report for %s and gave this feedback:\n\n"+
@@ -1913,7 +1926,7 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 				"something verified differently, do it. Commit and push any changes.\n\n"+
 				"IMPORTANT: The goal is to verify the IMPLEMENTATION is correct. "+
 				"Never weaken tests to make them pass. Follow CLAUDE.md procedures.",
-			itemID, input)
+			itemID, feedback)
 
 		feedbackStep := config.RunStepDef{Type: "claude", Prompt: feedbackPrompt}
 		feedbackStep.SetName(fmt.Sprintf("uat_feedback_%d", iteration))
