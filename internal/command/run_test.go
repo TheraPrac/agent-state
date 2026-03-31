@@ -875,3 +875,106 @@ func TestInjectGHPRContext(t *testing.T) {
 		})
 	}
 }
+
+func TestUATReviewApprove(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "uat_review"}
+	step.SetName("uat_review")
+
+	claudeCalls := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			claudeCalls++
+			result := ClaudeResult{Type: "result", Subtype: "success", TotalCostUSD: 0.05, DurationMs: 1000}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "approve", nil
+		},
+	}
+
+	sr := executeUATReview(s, cfg, "T-001", "test-sprint", step, RunOpts{}, engine, cfg.Root(), "test-session")
+	if !sr.Passed {
+		t.Errorf("UAT review should pass on 'approve', got error: %s", sr.Error)
+	}
+	if claudeCalls < 1 {
+		t.Error("expected claude to be called for UAT report")
+	}
+}
+
+func TestUATReviewReject(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "uat_review"}
+	step.SetName("uat_review")
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			result := ClaudeResult{Type: "result", Subtype: "success"}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "reject", nil
+		},
+	}
+
+	sr := executeUATReview(s, cfg, "T-001", "test-sprint", step, RunOpts{}, engine, cfg.Root(), "test-session")
+	if sr.Passed {
+		t.Error("UAT review should fail on 'reject'")
+	}
+	if sr.Error != "user rejected" {
+		t.Errorf("expected 'user rejected', got %q", sr.Error)
+	}
+}
+
+func TestUATReviewFeedbackLoop(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	item.Status = "active"
+	s.Write(item)
+
+	step := config.RunStepDef{Type: "uat_review"}
+	step.SetName("uat_review")
+
+	promptCount := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			result := ClaudeResult{Type: "result", Subtype: "success", TotalCostUSD: 0.02}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			promptCount++
+			if promptCount == 1 {
+				return "add a test for the empty case", nil
+			}
+			return "approve", nil
+		},
+	}
+
+	sr := executeUATReview(s, cfg, "T-001", "test-sprint", step, RunOpts{}, engine, cfg.Root(), "test-session")
+	if !sr.Passed {
+		t.Errorf("UAT review should pass after feedback + approve, got error: %s", sr.Error)
+	}
+	if promptCount != 2 {
+		t.Errorf("expected 2 prompts (feedback + approve), got %d", promptCount)
+	}
+	if sr.CostUSD == 0 {
+		t.Error("expected non-zero cost from feedback claude call")
+	}
+}
