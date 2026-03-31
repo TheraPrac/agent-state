@@ -1155,8 +1155,13 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					fmt.Printf("[%s] %s fix attempt %d...\n", itemID, stepLabel, attempt)
 					fixPrompt := fmt.Sprintf(
 						"The %s step failed for item %s (attempt %d). The error was:\n\n%s\n\n"+
-							"Investigate the failure, find the root cause, fix it, commit, and push. "+
-							"Do NOT merge. Follow all procedures in CLAUDE.md.",
+							"Investigate the failure and find the root cause.\n\n"+
+							"IMPORTANT: The goal is to verify the IMPLEMENTATION is correct, not to make tests pass.\n"+
+							"- If the code has a real bug, fix the code.\n"+
+							"- If a test is wrong (testing the wrong thing), fix the test to correctly verify the implementation.\n"+
+							"- If an acceptance criterion has escaping/path issues, fix the AC command — but make sure the fixed command still validates the actual implementation.\n"+
+							"- NEVER weaken a test or remove a check just to make it pass. Every AC must meaningfully verify the feature works.\n\n"+
+							"Commit and push any fixes. Do NOT merge. Follow all procedures in CLAUDE.md.",
 						stepLabel, itemID, attempt, sr.Error)
 					fixStep := config.RunStepDef{Type: "claude", Prompt: fixPrompt}
 					fixStep.SetName(fmt.Sprintf("ci_fix_%d", attempt))
