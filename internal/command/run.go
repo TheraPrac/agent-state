@@ -391,7 +391,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			if sp.Status != "active" {
 				label = sp.Status
 			}
-			fmt.Printf("  %-40s  [%d/%d done, %d active]  (%s)\n", sp.Title, done, len(sp.Items), active, label)
+			stats := fmt.Sprintf("[%d/%d done, %d active]", done, len(sp.Items), active)
+		fmt.Printf("  %-40s  %-24s  (%s)\n", sp.Title, stats, label)
 
 			for _, itemID := range sp.Items {
 				item, ok := s.Get(itemID)
