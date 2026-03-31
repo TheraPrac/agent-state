@@ -354,6 +354,11 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 
 	now := time.Now()
 
+	// Header
+	fmt.Printf("\n    %-8s %-13s  %-24s  %-8s %10s %10s  %8s\n",
+		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "AI TIME", "COST")
+	fmt.Println("    " + strings.Repeat("-", 100))
+
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
 			continue
@@ -479,6 +484,25 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 
+				// AI time
+				aiStr := ""
+				if tt := item.TimeTracking; tt != nil {
+					if aiRaw, ok := tt["ai_duration_seconds"]; ok {
+						var secs float64
+						switch v := aiRaw.(type) {
+						case float64:
+							secs = v
+						case int:
+							secs = float64(v)
+						case string:
+							fmt.Sscanf(v, "%f", &secs)
+						}
+						if secs > 0 {
+							aiStr = formatDuration(time.Duration(secs) * time.Second)
+						}
+					}
+				}
+
 				// Cost
 				costStr := ""
 				if tt := item.TimeTracking; tt != nil {
@@ -492,8 +516,17 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 
-				// Format line — right-align wall time and cost
-				fmt.Printf("    %-8s %s  %-28s %12s  %8s%s\n", itemID, bar, statusLabel, wallStr, costStr, inFlight)
+				// Created date
+				createdStr := ""
+				if created, ok := item.Doc.GetField("created"); ok {
+					if t, err := time.Parse(time.RFC3339, created); err == nil {
+						createdStr = t.Format("Jan 02")
+					}
+				}
+
+				// Format line
+				fmt.Printf("    %-8s %s  %-24s  %-8s %10s %10s  %8s%s\n",
+					itemID, bar, statusLabel, createdStr, wallStr, aiStr, costStr, inFlight)
 			}
 		}
 	}
