@@ -22,9 +22,25 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 		return 1
 	}
 
-	// Capture old value for changelog
+	// List fields — replace entire block instead of appending
+	listFields := map[string]bool{
+		"acceptance_criteria": true, "depends_on": true, "blocks": true,
+		"related_issues": true, "next_actions": true, "resolution": true,
+		"invariants": true, "doc_changes": true, "linked_plans": true,
+	}
+
 	var oldValue string
-	if strings.Contains(field, ".") {
+	if listFields[field] && strings.Contains(value, "\n") {
+		// Multiline value = list replacement
+		var lines []string
+		for _, line := range strings.Split(value, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				lines = append(lines, line)
+			}
+		}
+		item.Doc.ReplaceList(field, lines)
+	} else if strings.Contains(field, ".") {
 		oldValue, _ = item.Doc.GetNestedField(field)
 		item.Doc.SetNestedField(field, value)
 	} else {

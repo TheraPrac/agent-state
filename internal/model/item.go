@@ -117,6 +117,62 @@ func (d *ParsedDocument) SetField(key, value string) bool {
 	return false
 }
 
+// ReplaceList replaces an entire list field (key + all continuation lines)
+// with the new lines. Each line in values should be "- item text".
+func (d *ParsedDocument) ReplaceList(key string, values []string) {
+	// Find the key line
+	keyIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == key && line.Indent == 0 {
+			keyIdx = i
+			break
+		}
+	}
+
+	if keyIdx < 0 {
+		// Key not found — append
+		d.Lines = append(d.Lines, Line{Raw: key + ":", Key: key})
+		for _, v := range values {
+			d.Lines = append(d.Lines, Line{Raw: v, Indent: 0, BlockKey: key})
+		}
+		return
+	}
+
+	// Find the end of the list block (next key at indent 0, or empty line followed by key)
+	endIdx := keyIdx + 1
+	for endIdx < len(d.Lines) {
+		l := d.Lines[endIdx]
+		// Stop at next top-level key (not a list continuation)
+		if l.Key != "" && l.Indent == 0 && l.Key != key {
+			break
+		}
+		// List items start with "- " or are indented continuations
+		raw := strings.TrimSpace(l.Raw)
+		if raw == "" || strings.HasPrefix(raw, "- ") || l.BlockKey == key {
+			endIdx++
+			continue
+		}
+		// Some other content at indent 0 — stop
+		if l.Indent == 0 && !strings.HasPrefix(raw, "- ") {
+			break
+		}
+		endIdx++
+	}
+
+	// Build new lines
+	newLines := []Line{{Raw: key + ":", Key: key}}
+	for _, v := range values {
+		newLines = append(newLines, Line{Raw: v, BlockKey: key})
+	}
+
+	// Replace keyIdx..endIdx with newLines
+	result := make([]Line, 0, len(d.Lines)-endIdx+keyIdx+len(newLines))
+	result = append(result, d.Lines[:keyIdx]...)
+	result = append(result, newLines...)
+	result = append(result, d.Lines[endIdx:]...)
+	d.Lines = result
+}
+
 // GetField returns the value for a top-level scalar field.
 func (d *ParsedDocument) GetField(key string) (string, bool) {
 	for _, line := range d.Lines {
