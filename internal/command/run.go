@@ -438,6 +438,10 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				if stage != "" && !isDone {
 					statusLabel += " (" + stage + ")"
 				}
+				// Truncate to fit column
+				if len(statusLabel) > 20 {
+					statusLabel = statusLabel[:20]
+				}
 
 				// In-flight indicator — claimed OR touched in last 60s
 				inFlight := ""
@@ -526,11 +530,15 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				costStr := ""
 				if tt := item.TimeTracking; tt != nil {
 					if costRaw, ok := tt["ai_cost_usd"]; ok {
+						var cost float64
 						switch v := costRaw.(type) {
 						case float64:
-							costStr = fmt.Sprintf("$%.2f", v)
+							cost = v
 						case string:
-							costStr = "$" + v
+							fmt.Sscanf(v, "%f", &cost)
+						}
+						if cost > 0 {
+							costStr = fmt.Sprintf("$%.2f", cost)
 						}
 					}
 				}
