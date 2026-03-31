@@ -957,19 +957,25 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			// it to claude, retry CI. Keep going as long as the error
 			// changes (= progress). Pause only after 3 consecutive
 			// identical errors.
-			if step.Type == "merge_precheck" {
+			if step.Type == "merge_precheck" || step.Type == "uat" {
 				fixed := false
 				lastError := sr.Error
 				sameErrorCount := 0
 				const maxSameError = 3
 
+				stepLabel := "CI"
+				if step.Type == "uat" {
+					stepLabel = "UAT"
+				}
 				for attempt := 1; ; attempt++ {
-					fmt.Printf("[%s] CI fix attempt %d...\n", itemID, attempt)
+					fmt.Printf("[%s] %s fix attempt %d...\n", itemID, stepLabel, attempt)
 					fixPrompt := fmt.Sprintf(
-						"CI failed for item %s (attempt %d). The pre-check error was:\n\n%s\n\n"+
-							"Check the CI failure with `gh run view --log-failed` for the specific repo. "+
-							"Fix the issue, commit, and push. Do NOT merge.",
-						itemID, attempt, sr.Error)
+						"%s failed for item %s (attempt %d). The error was:\n\n%s\n\n"+
+							"Diagnose the failure. For CI: check `gh run view --log-failed`. "+
+							"For UAT: check the UAT report output — fix failing acceptance criteria, "+
+							"re-record test evidence with `st test`, or fix escaping issues. "+
+							"Commit and push any code fixes. Do NOT merge.",
+						stepLabel, itemID, attempt, sr.Error)
 					fixStep := config.RunStepDef{Type: "claude", Prompt: fixPrompt, Budget: 3.0}
 					fixStep.SetName(fmt.Sprintf("ci_fix_%d", attempt))
 					fixSR := executeClaude(s, cfg, itemID, sprintID, fixStep, opts, engine, worktreeDir, claudeSessionID, true)
