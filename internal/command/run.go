@@ -1288,6 +1288,18 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					result.Steps = append(result.Steps, StepResult{
 						Step: nextStep, Type: "skipped", Passed: true,
 					})
+					// Record skipped step on item so close gate can reject
+					if ps, err := store.New(cfg); err == nil {
+						if pi, ok := ps.Get(itemID); ok {
+							existing, _ := getNestedField(pi, "delivery", "skipped_steps")
+							if existing == "" {
+								setNestedField(pi, "delivery", "skipped_steps", nextStep)
+							} else {
+								setNestedField(pi, "delivery", "skipped_steps", existing+","+nextStep)
+							}
+							ps.Write(pi)
+						}
+					}
 					i++ // advance past the skipped step
 				case "abort":
 					fmt.Printf("[%s] Aborted by user\n", itemID)
@@ -2074,12 +2086,30 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 
 func executeClose(s *store.Store, cfg *config.Config, itemID string, step config.RunStepDef) StepResult {
 	sr := StepResult{Step: "close", Type: "close"}
+
+	// Gate: reject items with skipped critical steps
+	item, _ := s.Get(itemID)
+	if item != nil {
+		if skipped, _ := getNestedField(item, "delivery", "skipped_steps"); skipped != "" {
+			criticalSteps := map[string]bool{
+				"deploy_watch": true, "deploy": true,
+				"smoke": true, "uat": true, "uat_review": true,
+			}
+			for _, step := range strings.Split(skipped, ",") {
+				step = strings.TrimSpace(step)
+				if criticalSteps[step] {
+					sr.Error = fmt.Sprintf("cannot close: critical step %q was skipped — re-run to complete it", step)
+					return sr
+				}
+			}
+		}
+	}
+
 	resolution := step.Resolution
 	if resolution == "" {
 		resolution = "completed"
 	}
 
-	item, _ := s.Get(itemID)
 	if item != nil && item.Type == "issue" && resolution == "completed" {
 		resolution = "resolved"
 	}
