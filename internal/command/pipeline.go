@@ -328,10 +328,9 @@ func watchMainCI(runCmd func(string) ([]byte, int, error)) error {
 	deadline := time.Now().Add(20 * time.Minute)
 	lastStatus := ""
 	for time.Now().Before(deadline) {
-		// Find the latest non-deploy workflow on main (tests or build).
-		// Deploy workflows depend on build, so if build passes, deploy will follow.
-		// Skip "Deploy to Dev", "CI Catch-Up", and similar auxiliary workflows.
-		out, exitCode, _ := runCmd(`gh run list --branch main --limit 5 --json databaseId,status,conclusion,name --jq '[.[] | select(.name | test("Test|Build|API Test|Web Test"; "i"))][0] | "\(.databaseId) \(.status) \(.conclusion)"' 2>/dev/null`)
+		// Watch the deploy workflow — it's the last step after merge.
+		// Tests and build run first; deploy triggers after build succeeds.
+		out, exitCode, _ := runCmd(`gh run list --branch main --limit 5 --json databaseId,status,conclusion,name --jq '[.[] | select(.name | test("Deploy"; "i"))][0] | "\(.databaseId) \(.status) \(.conclusion)"' 2>/dev/null`)
 		if exitCode != 0 {
 			// gh not available or no runs — skip CI watch
 			fmt.Println("  could not query GH runs — skipping CI watch")
