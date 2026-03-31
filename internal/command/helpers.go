@@ -103,30 +103,22 @@ func formatDuration(d time.Duration) string {
 	if d < time.Second {
 		return "0s"
 	}
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
+	total := int(d.Seconds())
+	days := total / 86400
+	hours := (total % 86400) / 3600
+	minutes := (total % 3600) / 60
+	seconds := total % 60
 
-	var parts []string
+	// Fixed format: show the two most significant non-zero units
 	if days > 0 {
-		parts = append(parts, fmt.Sprintf("%dd", days))
+		return fmt.Sprintf("%dd %dh", days, hours)
 	}
 	if hours > 0 {
-		parts = append(parts, fmt.Sprintf("%dh", hours))
+		return fmt.Sprintf("%dh %02dm", hours, minutes)
 	}
 	if minutes > 0 {
-		parts = append(parts, fmt.Sprintf("%dm", minutes))
+		return fmt.Sprintf("%dm %02ds", minutes, seconds)
 	}
-	if seconds > 0 {
-		parts = append(parts, fmt.Sprintf("%ds", seconds))
-	}
-	if len(parts) == 0 {
-		return "0s"
-	}
-	result := parts[0]
-	for _, p := range parts[1:] {
-		result += " " + p
-	}
+	result := fmt.Sprintf("%ds", seconds)
 	return result
 }
