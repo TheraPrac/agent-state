@@ -957,7 +957,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			// it to claude, retry CI. Keep going as long as the error
 			// changes (= progress). Pause only after 3 consecutive
 			// identical errors.
-			if step.Type == "merge_precheck" || step.Type == "uat" {
+			if step.Type != "gate" && step.Type != "close" {
 				fixed := false
 				lastError := sr.Error
 				sameErrorCount := 0
