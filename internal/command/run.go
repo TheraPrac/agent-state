@@ -497,11 +497,22 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			}
 		}
 	}
-	// Key
+	// Legend
 	fmt.Println()
-	fmt.Println("  KEY: █ done  ░ remaining  << RUNNING = claimed by st run  << ACTIVE = touched <60s")
-	fmt.Printf("  PIPELINE: %s\n", strings.Join(stepNames, " > "))
+	fmt.Println("  ---------------------------------------------------------------")
+	fmt.Println("  Progress:  █ complete   ░ remaining")
+	fmt.Println("  Status:    << RUNNING   currently being processed by st run")
+	fmt.Println("             << ACTIVE    step completed in the last 60s")
 	fmt.Println()
+	fmt.Printf("  Pipeline:  ")
+	for i, name := range stepNames {
+		if i > 0 {
+			fmt.Print(" > ")
+		}
+		fmt.Print(name)
+	}
+	fmt.Println()
+	fmt.Println("  ---------------------------------------------------------------")
 	return 0
 }
 
