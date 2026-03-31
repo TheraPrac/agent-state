@@ -3519,28 +3519,15 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		}
 	}
 
-	const (
-		colItem   = 10
-		colStatus = 16
-		colWall   = 12
-		colAI     = 12
-		colCost   = 9
-	)
-	sep := "═══════════════════════════════════════════════════════════════════════════════════════"
+	sep := strings.Repeat("─", 105)
 
 	fmt.Println()
 	if epic != nil {
 		fmt.Printf("  Epic: %s\n", epic.Title)
 	}
 	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
-		colItem, "Item", colStatus, "Status",
-		colWall, "Session", colAI, "Session", colCost, "Session",
-		colWall, "Total", colAI, "Total", colCost, "Total")
-	fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
-		colItem, "", colStatus, "",
-		colWall, "Wall", colAI, "AI", colCost, "Cost",
-		colWall, "Wall", colAI, "AI", colCost, "Cost")
+	fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %10s\n",
+		"ITEM", "STATUS", "ST TIME", "AI TIME", "COST", "SESSION $")
 	fmt.Printf("  %s\n", sep)
 
 	// Collect all sprints in this epic
@@ -3571,7 +3558,7 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		if isCurrent {
 			marker = " ◀"
 		}
-		fmt.Printf("\n  %-*s%s\n", colItem+colStatus, sprint.Title, marker)
+		fmt.Printf("\n  %-40s%s\n", sprint.Title, marker)
 
 		var sprintWall, sprintAI time.Duration
 		var sprintCost float64
@@ -3581,7 +3568,7 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			sprintTotal++
 			item, ok := s.Get(itemID)
 			if !ok {
-				fmt.Printf("  %-*s %-*s %*s %*s %*s\n", colItem, itemID, colStatus, "(not found)", colWall, "—", colAI, "—", colCost, "—")
+				fmt.Printf("  %-8s %-22s\n", itemID, "(not found)")
 				continue
 			}
 
@@ -3593,7 +3580,6 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			}
 
 			// Session values (this run only) and total values (accumulated)
-			var sessWall, sessAI time.Duration
 			var sessCost float64
 			var totalWall, totalAI time.Duration
 			var totalCostItem float64
@@ -3601,13 +3587,7 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			if isCurrent {
 				for _, r := range results {
 					if r.ItemID == itemID {
-						sessWall = r.Duration
 						sessCost = r.TotalCost
-						for _, sr := range r.Steps {
-							if sr.Type == "claude" {
-								sessAI += sr.Duration
-							}
-						}
 						if !r.Success {
 							for _, sr := range r.Steps {
 								if !sr.Passed {
@@ -3651,19 +3631,16 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				return "—"
 			}
 
-			fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
-				colItem, itemID, colStatus, truncate(status, colStatus),
-				colWall, f(sessWall), colAI, f(sessAI), colCost, fc(sessCost),
-				colWall, f(totalWall), colAI, f(totalAI), colCost, fc(totalCostItem))
+			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %10s\n",
+				itemID, truncate(status, 22),
+				f(totalWall), f(totalAI), fc(totalCostItem), fc(sessCost))
 		}
 
-		// Sprint subtotal (totals only — session column left blank)
-		fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n", colItem, "", colStatus,
+		// Sprint subtotal
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s\n", "",
 			fmt.Sprintf("%d/%d done", sprintDone, sprintTotal),
-			colWall, "", colAI, "", colCost, "",
-			colWall, formatDuration(sprintWall),
-			colAI, formatDuration(sprintAI),
-			colCost, fmt.Sprintf("$%.2f", sprintCost))
+			formatDuration(sprintWall), formatDuration(sprintAI),
+			fmt.Sprintf("$%.2f", sprintCost))
 
 		epicWall += sprintWall
 		epicAI += sprintAI
@@ -3673,12 +3650,10 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 	// Epic total
 	if epic != nil && len(sprintIDs) > 1 {
 		fmt.Printf("\n  %s\n", sep)
-		fmt.Printf("  %-*s %-*s %*s %*s %*s    %*s %*s %*s\n",
-			colItem, "Epic", colStatus, truncate(epic.Title, colStatus),
-			colWall, "", colAI, "", colCost, "",
-			colWall, formatDuration(epicWall),
-			colAI, formatDuration(epicAI),
-			colCost, fmt.Sprintf("$%.2f", epicCost))
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s\n",
+			"TOTAL", truncate(epic.Title, 22),
+			formatDuration(epicWall), formatDuration(epicAI),
+			fmt.Sprintf("$%.2f", epicCost))
 	}
 	fmt.Printf("  %s\n\n", sep)
 }
