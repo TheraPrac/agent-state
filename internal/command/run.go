@@ -434,10 +434,18 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					statusLabel += " (" + stage + ")"
 				}
 
-				// In-flight indicator
+				// In-flight indicator — claimed OR touched in last 60s
 				inFlight := ""
 				if item.ClaimedBy != "" {
-					inFlight = " << IN FLIGHT"
+					inFlight = " << RUNNING"
+				} else if !isDone {
+					if lt, ok := item.Doc.GetField("last_touched"); ok {
+						if touched, err := time.Parse(time.RFC3339, lt); err == nil {
+							if now.Sub(touched) < 60*time.Second {
+								inFlight = " << ACTIVE"
+							}
+						}
+					}
 				}
 
 				// Wall time: closed = completed_at - started_at, open = now - started_at
