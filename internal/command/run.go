@@ -1489,6 +1489,8 @@ func executeStepWithSession(s *store.Store, cfg *config.Config, itemID, sprintID
 		return executeUAT(s, cfg, itemID, worktreeDir)
 	case "gate":
 		return executeGate(itemID, engine)
+	case "uat_review":
+		return executeUATReview(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID)
 	case "close":
 		return executeClose(s, cfg, itemID, step)
 	case "command":
@@ -1832,6 +1834,101 @@ func executeGate(itemID string, engine RunEngine) StepResult {
 		sr.Error = "user rejected"
 	}
 	return sr
+}
+
+// executeUATReview runs UAT, then enters a conversational loop where the user
+// can approve, reject, or give plain-text feedback that gets routed to claude.
+// Claude acts on the feedback (writes tests, fixes code, etc.), then UAT re-runs
+// and the updated report is shown. Loop continues until approve or reject.
+func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir, claudeSessionID string) StepResult {
+	sr := StepResult{Step: step.Name(), Type: "uat_review"}
+
+	for iteration := 1; ; iteration++ {
+		// Run UAT
+		fmt.Printf("\n[%s] Running UAT (iteration %d)...\n", itemID, iteration)
+		uatDir := worktreeDir
+		if cfg.Worktree != nil && cfg.Worktree.Enabled {
+			uatDir = filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+		}
+		uatCode := UAT(s, cfg, itemID, UATOpts{
+			RunCmd: func(cmd string) ([]byte, int, error) {
+				return runCmdInDir(uatDir, cmd)
+			},
+		})
+
+		// Now launch claude to produce the UAT summary report
+		reportPrompt := fmt.Sprintf(
+			"You just ran UAT for item %s. The UAT exit code was %d.\n\n"+
+				"Produce a concise UAT summary report for the user. Include:\n"+
+				"1. WHAT CHANGED — describe the feature in 2-3 sentences\n"+
+				"2. WHAT WAS TESTED — list the test suites that passed, any coverage gaps\n"+
+				"3. ACCEPTANCE CRITERIA — how many passed/failed, highlight any failures\n"+
+				"4. RECOMMENDATION — should the user approve? Why or why not?\n\n"+
+				"Keep it brief and actionable. The user will read this and decide whether to approve.",
+			itemID, uatCode)
+
+		reportStep := config.RunStepDef{Type: "claude", Prompt: reportPrompt}
+		reportStep.SetName("uat_report")
+		reportSR := executeClaude(s, cfg, itemID, sprintID, reportStep, opts, engine, worktreeDir, claudeSessionID, true)
+		_ = reportSR // report output goes to stdout via claude streaming
+
+		// Prompt user for decision
+		gateMu.Lock()
+		fmt.Println()
+		fmt.Println("  ─────────────────────────────────────────────────────────")
+		fmt.Printf("  [%s] UAT Review (iteration %d)\n", itemID, iteration)
+		fmt.Println()
+		fmt.Println("  Type 'approve' to accept and close the item")
+		fmt.Println("  Type 'reject' to stop and release for retry")
+		fmt.Println("  Or type feedback in plain text — claude will act on it,")
+		fmt.Println("  then UAT will re-run and you'll see the updated report.")
+		fmt.Println("  ─────────────────────────────────────────────────────────")
+		fmt.Printf("\n  > ")
+		response, err := engine.PromptUser("")
+		gateMu.Unlock()
+
+		if err != nil {
+			sr.Error = fmt.Sprintf("prompt error: %v", err)
+			return sr
+		}
+
+		input := strings.TrimSpace(response)
+		lower := strings.ToLower(input)
+
+		if lower == "approve" || lower == "y" || lower == "yes" {
+			sr.Passed = true
+			return sr
+		}
+		if lower == "reject" || lower == "n" || lower == "no" {
+			sr.Error = "user rejected"
+			return sr
+		}
+
+		// Plain text feedback — route to claude
+		fmt.Printf("\n[%s] Acting on feedback...\n", itemID)
+		feedbackPrompt := fmt.Sprintf(
+			"The user reviewed the UAT report for %s and gave this feedback:\n\n"+
+				"%s\n\n"+
+				"Act on this feedback. If they want more tests, write them. If they want "+
+				"something verified differently, do it. Commit and push any changes.\n\n"+
+				"IMPORTANT: The goal is to verify the IMPLEMENTATION is correct. "+
+				"Never weaken tests to make them pass. Follow CLAUDE.md procedures.",
+			itemID, input)
+
+		feedbackStep := config.RunStepDef{Type: "claude", Prompt: feedbackPrompt}
+		feedbackStep.SetName(fmt.Sprintf("uat_feedback_%d", iteration))
+		feedbackSR := executeClaude(s, cfg, itemID, sprintID, feedbackStep, opts, engine, worktreeDir, claudeSessionID, true)
+		sr.CostUSD += feedbackSR.CostUSD
+		sr.CostUSD += reportSR.CostUSD
+
+		if !feedbackSR.Passed {
+			fmt.Printf("[%s] Feedback action failed: %s\n", itemID, feedbackSR.Error)
+			// Don't bail — let the loop continue so user can try again
+		}
+
+		// Reload store and loop back to re-run UAT
+		s, _ = store.New(cfg)
+	}
 }
 
 // showPauseMenu displays an interactive menu when the pipeline is paused

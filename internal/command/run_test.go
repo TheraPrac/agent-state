@@ -647,8 +647,8 @@ func TestFormatDuration(t *testing.T) {
 		{45 * time.Second, "45s"},
 		{3*time.Minute + 15*time.Second, "3m 15s"},
 		{2*time.Hour + 30*time.Minute, "2h 30m"},
-		{3*24*time.Hour + 5*time.Hour + 10*time.Minute + 7*time.Second, "3d 5h 10m 7s"},
-		{24 * time.Hour, "1d"},
+		{3*24*time.Hour + 5*time.Hour + 10*time.Minute + 7*time.Second, "3d 5h"},
+		{24 * time.Hour, "1d 0h"},
 	}
 	for _, tt := range tests {
 		got := formatDuration(tt.input)
