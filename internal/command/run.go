@@ -355,9 +355,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	now := time.Now()
 
 	// Header
-	fmt.Printf("\n    %-8s %-15s %-20s %-8s  %12s  %12s  %10s  %10s\n",
+	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
 		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST")
-	fmt.Println("    " + strings.Repeat("-", 110))
+	fmt.Println("    " + strings.Repeat("-", 112))
 
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
@@ -439,19 +439,19 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					statusLabel += " (" + stage + ")"
 				}
 				// Truncate to fit column
-				if len(statusLabel) > 20 {
-					statusLabel = statusLabel[:20]
+				if len(statusLabel) > 22 {
+					statusLabel = statusLabel[:22]
 				}
 
 				// In-flight indicator — claimed OR touched in last 60s
 				inFlight := ""
 				if item.ClaimedBy != "" {
-					inFlight = " << RUNNING"
+					inFlight = "  << RUNNING"
 				} else if !isDone {
 					if lt, ok := item.Doc.GetField("last_touched"); ok {
 						if touched, err := time.Parse(time.RFC3339, lt); err == nil {
 							if now.Sub(touched) < 60*time.Second {
-								inFlight = " << ACTIVE"
+								inFlight = "  << ACTIVE"
 							}
 						}
 					}
@@ -552,7 +552,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 
 				// Format line
-				fmt.Printf("    %-8s %-15s %-20s %-8s  %12s  %12s  %10s  %10s%s\n",
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
 		}
