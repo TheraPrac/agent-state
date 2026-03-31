@@ -1903,21 +1903,37 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 			return sr
 		}
 
-		// Option 3 or free text — get the actual feedback
-		feedback := input
+		// Option 3 or free text — launch interactive claude session
 		if lower == "3" || lower == "chat" {
-			fmt.Printf("\n  Feedback: ")
-			chatResponse, chatErr := engine.PromptUser("")
-			if chatErr != nil {
-				sr.Error = fmt.Sprintf("prompt error: %v", chatErr)
-				return sr
+			fmt.Printf("\n[%s] Launching interactive claude session...\n", itemID)
+			fmt.Println("  Chat with claude to make changes. When done, exit claude (Ctrl+D or /exit).")
+			fmt.Println("  UAT will re-run automatically when you return.")
+			fmt.Println()
+
+			// Launch claude in interactive mode (no -p flag) with --resume
+			// so it has full context from the pipeline session
+			claudeBin, err := exec.LookPath("claude")
+			if err != nil {
+				fmt.Printf("[%s] claude not found in PATH\n", itemID)
+				continue
 			}
-			feedback = strings.TrimSpace(chatResponse)
-			if feedback == "" {
-				continue // empty feedback, show prompt again
+			args := []string{"--resume", claudeSessionID}
+			if worktreeDir != "" {
+				args = append(args, "--add-dir", worktreeDir)
 			}
+			cmd := exec.Command(claudeBin, args...)
+			cmd.Dir = worktreeDir
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+
+			fmt.Printf("\n[%s] Interactive session ended. Re-running UAT...\n", itemID)
+			s, _ = store.New(cfg)
+			continue
 		}
 
+		// Free text typed directly (not option 3) — route as prompt
 		fmt.Printf("\n[%s] Acting on feedback...\n", itemID)
 		feedbackPrompt := fmt.Sprintf(
 			"The user reviewed the UAT report for %s and gave this feedback:\n\n"+
@@ -1926,7 +1942,7 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 				"something verified differently, do it. Commit and push any changes.\n\n"+
 				"IMPORTANT: The goal is to verify the IMPLEMENTATION is correct. "+
 				"Never weaken tests to make them pass. Follow CLAUDE.md procedures.",
-			itemID, feedback)
+			itemID, input)
 
 		feedbackStep := config.RunStepDef{Type: "claude", Prompt: feedbackPrompt}
 		feedbackStep.SetName(fmt.Sprintf("uat_feedback_%d", iteration))
@@ -1936,7 +1952,6 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 
 		if !feedbackSR.Passed {
 			fmt.Printf("[%s] Feedback action failed: %s\n", itemID, feedbackSR.Error)
-			// Don't bail — let the loop continue so user can try again
 		}
 
 		// Reload store and loop back to re-run UAT
