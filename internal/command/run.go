@@ -355,9 +355,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	now := time.Now()
 
 	// Header
-	fmt.Printf("\n    %-8s %-15s %-24s %-8s %12s %10s %10s\n",
-		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "AI TIME", "COST")
-	fmt.Println("    " + strings.Repeat("-", 95))
+	fmt.Printf("\n    %-8s %-15s %-24s %-8s %12s %10s %10s %10s\n",
+		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST")
+	fmt.Println("    " + strings.Repeat("-", 105))
 
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
@@ -484,6 +484,25 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 
+				// ST time (cumulative st run processing)
+				stStr := ""
+				if tt := item.TimeTracking; tt != nil {
+					if raw, ok := tt["run_wall_seconds"]; ok {
+						var secs float64
+						switch v := raw.(type) {
+						case float64:
+							secs = v
+						case int:
+							secs = float64(v)
+						case string:
+							fmt.Sscanf(v, "%f", &secs)
+						}
+						if secs > 0 {
+							stStr = formatDuration(time.Duration(secs) * time.Second)
+						}
+					}
+				}
+
 				// AI time
 				aiStr := ""
 				if tt := item.TimeTracking; tt != nil {
@@ -525,8 +544,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 
 				// Format line
-				fmt.Printf("    %-8s %-15s %-24s %-8s %12s %10s %10s%s\n",
-					itemID, bar, statusLabel, createdStr, wallStr, aiStr, costStr, inFlight)
+				fmt.Printf("    %-8s %-15s %-24s %-8s %12s %10s %10s %10s%s\n",
+					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
 		}
 	}
