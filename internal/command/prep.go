@@ -274,7 +274,7 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		reviewStart := time.Now()
 		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
 		reviewDur := time.Since(reviewStart)
-		rec := extractRecommendation(reviewSR.Output)
+		rec := extractRecommendation(reviewSR.FullOutput)
 
 		choice := showReviewGate(ReviewGateInfo{
 			ItemID:         itemID,
@@ -290,6 +290,9 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			{"3", "Chat    — revise with claude"},
 		}, engine)
 
+		if choice == "^C" {
+			return "rejected"
+		}
 		if choice == "1" {
 			// Accept — save plan sidecar
 			p.Approved = true

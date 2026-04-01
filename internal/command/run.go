@@ -73,6 +73,7 @@ type StepResult struct {
 	Type         string        `json:"type"`
 	Passed       bool          `json:"passed"`
 	Output       string        `json:"output,omitempty"`
+	FullOutput   string        `json:"-"` // full untruncated output (not serialized)
 	Error        string        `json:"error,omitempty"`
 	Duration     time.Duration `json:"duration"`
 	CostUSD      float64       `json:"cost_usd,omitempty"`
@@ -1837,6 +1838,7 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	sr.CostUSD = claudeResult.TotalCostUSD
 	sr.AIDurationMs = claudeResult.DurationMs
 	sr.Output = truncate(claudeResult.Result, 500)
+	sr.FullOutput = claudeResult.Result
 
 	if exitCode != 0 || (claudeResult.Subtype != "" && claudeResult.Subtype != "success") {
 		sr.Error = fmt.Sprintf("claude exited %d (subtype: %s)", exitCode, claudeResult.Subtype)
@@ -2238,7 +2240,7 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		}
 
 		// Extract recommendation from claude's output
-		rec := extractRecommendation(reportSR.Output)
+		rec := extractRecommendation(reportSR.FullOutput)
 
 		gateMu.Lock()
 		choice := showReviewGate(ReviewGateInfo{
@@ -2654,7 +2656,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			reviewStart := time.Now()
 			reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
 			reviewDur := time.Since(reviewStart)
-			rec := extractRecommendation(reviewSR.Output)
+			rec := extractRecommendation(reviewSR.FullOutput)
 
 			gateMu.Lock()
 			choice := showReviewGate(ReviewGateInfo{
@@ -2752,7 +2754,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			reviewStart := time.Now()
 			reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
 			reviewDur := time.Since(reviewStart)
-			rec := extractRecommendation(reviewSR.Output)
+			rec := extractRecommendation(reviewSR.FullOutput)
 
 			gateMu.Lock()
 			choice := showReviewGate(ReviewGateInfo{
@@ -4217,26 +4219,47 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 // extractRecommendation pulls the recommendation from claude's review output
 // and returns it as a one-line string. Looks for Accept/Reject/Chat keywords.
 func extractRecommendation(output string) string {
-	// Search for the recommendation line
+	if output == "" {
+		return ""
+	}
+
+	lines := strings.Split(output, "\n")
 	var recLine string
-	for _, line := range strings.Split(output, "\n") {
+
+	for i, line := range lines {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "recommendation") {
-			// Extract the content after "—" or ":"
-			for _, sep := range []string{"—", ":"} {
-				if idx := strings.LastIndex(line, sep); idx >= 0 {
-					rest := strings.TrimSpace(line[idx+len(sep):])
-					rest = strings.ReplaceAll(rest, "**", "")
-					rest = strings.ReplaceAll(rest, "*", "")
-					if rest != "" {
-						recLine = rest
-						break
-					}
+		if !strings.Contains(lower, "recommendation") {
+			continue
+		}
+
+		// Try to extract from same line after "—" or ":"
+		for _, sep := range []string{"—", ":"} {
+			if idx := strings.LastIndex(line, sep); idx >= 0 {
+				rest := strings.TrimSpace(line[idx+len(sep):])
+				rest = strings.ReplaceAll(rest, "**", "")
+				rest = strings.ReplaceAll(rest, "*", "")
+				if rest != "" {
+					recLine = rest
+					break
 				}
 			}
-			if recLine != "" {
-				break
+		}
+
+		// If same line was just a header, grab the next non-empty line
+		if recLine == "" && i+1 < len(lines) {
+			for j := i + 1; j < len(lines) && j <= i+3; j++ {
+				next := strings.TrimSpace(lines[j])
+				next = strings.ReplaceAll(next, "**", "")
+				next = strings.ReplaceAll(next, "*", "")
+				if next != "" && !strings.HasPrefix(next, "#") {
+					recLine = next
+					break
+				}
 			}
+		}
+
+		if recLine != "" {
+			break
 		}
 	}
 
@@ -4255,7 +4278,6 @@ func extractRecommendation(output string) string {
 	if strings.Contains(lower, "chat") {
 		return "[3] Chat — " + recLine
 	}
-	// Default: return as-is
 	return recLine
 }
 
