@@ -639,6 +639,131 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			fmt.Printf("    %s\n", strings.Repeat("═", 112))
 		}
 	}
+	// Standalone items — active items not in any sprint
+	sprintItems := make(map[string]bool)
+	for _, sp := range reg.Sprints {
+		for _, id := range sp.Items {
+			sprintItems[id] = true
+		}
+	}
+	var standalone []*model.Item
+	for _, item := range s.All() {
+		if item.Status == "active" && !sprintItems[item.ID] {
+			standalone = append(standalone, item)
+		}
+	}
+	if len(standalone) > 0 {
+		fmt.Printf("\nStandalone (not in a sprint)\n")
+		for _, item := range standalone {
+			// Reuse the same rendering logic as sprint items
+			lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
+			isDone := cfg.IsTerminalStatus(item.Type, item.Status)
+
+			completed := 0
+			if isDone {
+				completed = totalSteps
+			} else if lastStep != "" {
+				idx := stepIndex(lastStep)
+				if idx >= 0 {
+					completed = idx + 1
+				}
+			}
+			bar := ""
+			for i := 0; i < totalSteps; i++ {
+				if i < completed {
+					bar += "█"
+				} else {
+					bar += "░"
+				}
+			}
+
+			statusLabel := item.Status
+			if lastStep != "" {
+				nextIdx := stepIndex(lastStep) + 1
+				if nextIdx < totalSteps {
+					statusLabel = stepNames[nextIdx]
+				}
+			}
+			if len(statusLabel) > 22 {
+				statusLabel = statusLabel[:22]
+			}
+
+			inFlight := ""
+			if item.ClaimedBy != "" {
+				inFlight = "  << RUNNING"
+			}
+
+			wallStr := ""
+			if tt := item.TimeTracking; tt != nil {
+				if v, ok := tt["started_at"]; ok {
+					if startStr, ok := v.(string); ok {
+						if started, err := time.Parse(time.RFC3339, startStr); err == nil {
+							wallStr = formatDuration(now.Sub(started))
+						}
+					}
+				}
+			}
+			stStr := ""
+			if tt := item.TimeTracking; tt != nil {
+				if raw, ok := tt["run_wall_seconds"]; ok {
+					var secs float64
+					switch v := raw.(type) {
+					case float64:
+						secs = v
+					case int:
+						secs = float64(v)
+					}
+					if secs > 0 {
+						stStr = formatDuration(time.Duration(secs) * time.Second)
+					}
+				}
+			}
+			aiStr := ""
+			if tt := item.TimeTracking; tt != nil {
+				if raw, ok := tt["ai_duration_seconds"]; ok {
+					var secs float64
+					switch v := raw.(type) {
+					case float64:
+						secs = v
+					case int:
+						secs = float64(v)
+					}
+					if secs > 0 {
+						aiStr = formatDuration(time.Duration(secs) * time.Second)
+					}
+				}
+			}
+			costStr := ""
+			if tt := item.TimeTracking; tt != nil {
+				if raw, ok := tt["ai_cost_usd"]; ok {
+					var cost float64
+					switch v := raw.(type) {
+					case float64:
+						cost = v
+					}
+					if cost > 0 {
+						costStr = fmt.Sprintf("$%.2f", cost)
+					}
+				}
+			}
+
+			createdStr := ""
+			if created, ok := item.Doc.GetField("created"); ok {
+				if t, err := time.Parse(time.RFC3339, created); err == nil {
+					createdStr = t.Format("Jan 02")
+				}
+			}
+
+			title := item.Title
+			if len(title) > 80 {
+				title = title[:77] + "..."
+			}
+			fmt.Printf("      %s\n", title)
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
+				item.ID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
+		}
+	}
+
 	// Legend
 	fmt.Println()
 	fmt.Println("  ---------------------------------------------------------------")
