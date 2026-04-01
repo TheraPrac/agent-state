@@ -126,7 +126,8 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	fmt.Printf("Running %s: %s\n", suite, suiteCmd)
 	start := time.Now()
 
-	// Execute suite command — prefer worktree if one exists for this item
+	// Execute suite command — prefer worktree if one exists for this item.
+	// Stream output to stderr so the user (and activity tracker) sees progress.
 	var output []byte
 	var exitCode int
 	var runErr error
@@ -135,7 +136,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	} else {
 		// Rewrite suite command to run from worktree if available
 		cmd := rewriteSuiteForWorktree(cfg, id, suiteCmd)
-		output, exitCode, runErr = runCmdInDir(cfg.Root(), cmd)
+		output, exitCode, runErr = runCmdInDirStreaming(cfg.Root(), cmd)
 	}
 	duration := time.Since(start)
 
@@ -404,6 +405,31 @@ func runCmdInDir(dir, command string) ([]byte, int, error) {
 		}
 	}
 	return output, exitCode, nil
+}
+
+// runCmdInDirStreaming executes a command, streams output to stderr in real time,
+// and returns the captured output for evidence upload.
+func runCmdInDirStreaming(dir, command string) ([]byte, int, error) {
+	cmd := exec.Command("sh", "-c", command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	// Create a pipe that tees to both stderr (live) and a buffer (capture)
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stderr, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return buf.Bytes(), 0, err
+		}
+	}
+	return buf.Bytes(), exitCode, nil
 }
 
 // uploadArtifacts globs artifact patterns from the suite config, bundles matches
