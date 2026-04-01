@@ -2229,13 +2229,11 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 
 		// Prompt user for decision
 		gateMu.Lock()
-		fmt.Println()
-		fmt.Printf("  ─── [%s] UAT Review (iteration %d) ───\n\n", itemID, iteration)
-		choice := engineSelectMenu(engine, "", []menuOption{
+		choice := showReviewGate(itemID, "UAT Review", iteration, []menuOption{
 			{"1", "Approve — accept and close"},
 			{"2", "Reject  — stop and release for retry"},
 			{"3", "Chat    — give feedback, claude acts, UAT re-runs"},
-		}, 0)
+		}, engine)
 		gateMu.Unlock()
 
 		if choice == "1" {
@@ -2631,13 +2629,11 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 
 			// Show separator + menu (same rendering as UAT)
 			gateMu.Lock()
-			fmt.Println()
-			fmt.Printf("  ─── [%s] Plan Review (iteration %d) ───\n\n", itemID, iteration)
-			choice := engineSelectMenu(engine, "", []menuOption{
+			choice := showReviewGate(itemID, "Plan Review", iteration, []menuOption{
 				{"1", "Accept  — approve and proceed"},
 				{"2", "Reject  — stop and release"},
 				{"3", "Chat    — give feedback, claude revises plan"},
-			}, 0)
+			}, engine)
 			gateMu.Unlock()
 
 			if choice == "1" {
@@ -2716,13 +2712,11 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
 
 			gateMu.Lock()
-			fmt.Println()
-			fmt.Printf("  ─── [%s] Design Review (iteration %d) ───\n\n", itemID, iteration)
-			choice := engineSelectMenu(engine, "", []menuOption{
+			choice := showReviewGate(itemID, "Design Review", iteration, []menuOption{
 				{"1", "Approve — accept and proceed"},
 				{"2", "Reject  — stop and release"},
 				{"3", "Chat    — give feedback, claude revises"},
-			}, 0)
+			}, engine)
 			gateMu.Unlock()
 
 			if choice == "1" {
@@ -4008,6 +4002,45 @@ func shortenPath(p string) string {
 		return ".../" + strings.Join(parts[len(parts)-3:], "/")
 	}
 	return p
+}
+
+// showReviewGate renders a boxed gate header and returns the user's menu choice.
+func showReviewGate(itemID, gateType string, iteration int, options []menuOption, engine RunEngine) string {
+	title := fmt.Sprintf("%s: %s (iteration %d)", gateType, itemID, iteration)
+	content := []string{title}
+
+	// Find widest line
+	w := 0
+	for _, l := range content {
+		if len(l) > w {
+			w = len(l)
+		}
+	}
+	// Ensure minimum width for the menu options
+	for _, opt := range options {
+		optLen := len(opt.Key) + len(opt.Label) + 5
+		if optLen > w {
+			w = optLen
+		}
+	}
+
+	hline := func(l, m, r string) {
+		fmt.Print(l)
+		for i := 0; i < w+4; i++ {
+			fmt.Print(m)
+		}
+		fmt.Println(r)
+	}
+
+	fmt.Println()
+	hline("╔", "═", "╗")
+	for _, l := range content {
+		fmt.Printf("║  %-*s  ║\n", w, l)
+	}
+	hline("╚", "═", "╝")
+	fmt.Println()
+
+	return engineSelectMenu(engine, "", options, 0)
 }
 
 // buildPlanReviewPrompt creates a prompt for claude to critically review a plan.

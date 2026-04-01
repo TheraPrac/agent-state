@@ -273,13 +273,11 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		runOpts := RunOpts{Model: opts.Model}
 		executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
 
-		fmt.Println()
-		fmt.Printf("  ─── [%s] Plan Review ───\n\n", itemID)
-		choice := engineSelectMenu(engine, "", []menuOption{
+		choice := showReviewGate(itemID, "Plan Review", 1, []menuOption{
 			{"1", "Accept  — save plan and proceed"},
 			{"2", "Reject  — skip this item"},
 			{"3", "Chat    — revise with claude"},
-		}, 0)
+		}, engine)
 
 		if choice == "1" {
 			// Accept — save plan sidecar
