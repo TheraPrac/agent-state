@@ -369,6 +369,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			continue
 		}
 		epicHasItems := false
+		var epicWall, epicST, epicAI time.Duration
+		var epicCost float64
+
 		for _, sp := range reg.Sprints {
 			if sp.Epic != epic.ID || len(sp.Items) == 0 {
 				continue
@@ -377,6 +380,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				fmt.Printf("\nEpic: %s\n", epic.Title)
 				epicHasItems = true
 			}
+			var sprintWall, sprintST, sprintAI time.Duration
+			var sprintCost float64
 
 			done := 0
 			active := 0
@@ -465,6 +470,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 
 				// Wall time: closed = completed_at - started_at, open = now - started_at
 				wallStr := ""
+				var wallDur time.Duration
 				if tt := item.TimeTracking; tt != nil {
 					startedStr := ""
 					if v, ok := tt["started_at"]; ok {
@@ -475,7 +481,6 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					if startedStr != "" {
 						if started, err := time.Parse(time.RFC3339, startedStr); err == nil {
 							if isDone {
-								// Use completed_at - started_at for closed items
 								completedStr := ""
 								if v, ok := tt["completed_at"]; ok {
 									if s, ok := v.(string); ok {
@@ -484,11 +489,13 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 								}
 								if completedStr != "" {
 									if completed, err := time.Parse(time.RFC3339, completedStr); err == nil {
-										wallStr = formatDuration(completed.Sub(started))
+										wallDur = completed.Sub(started)
+										wallStr = formatDuration(wallDur)
 									}
 								}
 							} else {
-								wallStr = formatDuration(now.Sub(started))
+								wallDur = now.Sub(started)
+								wallStr = formatDuration(wallDur)
 							}
 						}
 					}
@@ -496,6 +503,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 
 				// ST time (cumulative st run processing)
 				stStr := ""
+				var stDur time.Duration
 				if tt := item.TimeTracking; tt != nil {
 					if raw, ok := tt["run_wall_seconds"]; ok {
 						var secs float64
@@ -508,13 +516,15 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 							fmt.Sscanf(v, "%f", &secs)
 						}
 						if secs > 0 {
-							stStr = formatDuration(time.Duration(secs) * time.Second)
+							stDur = time.Duration(secs) * time.Second
+							stStr = formatDuration(stDur)
 						}
 					}
 				}
 
 				// AI time
 				aiStr := ""
+				var aiDur time.Duration
 				if tt := item.TimeTracking; tt != nil {
 					if aiRaw, ok := tt["ai_duration_seconds"]; ok {
 						var secs float64
@@ -527,27 +537,34 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 							fmt.Sscanf(v, "%f", &secs)
 						}
 						if secs > 0 {
-							aiStr = formatDuration(time.Duration(secs) * time.Second)
+							aiDur = time.Duration(secs) * time.Second
+							aiStr = formatDuration(aiDur)
 						}
 					}
 				}
 
 				// Cost
 				costStr := ""
+				var itemCost float64
 				if tt := item.TimeTracking; tt != nil {
 					if costRaw, ok := tt["ai_cost_usd"]; ok {
-						var cost float64
 						switch v := costRaw.(type) {
 						case float64:
-							cost = v
+							itemCost = v
 						case string:
-							fmt.Sscanf(v, "%f", &cost)
+							fmt.Sscanf(v, "%f", &itemCost)
 						}
-						if cost > 0 {
-							costStr = fmt.Sprintf("$%.2f", cost)
+						if itemCost > 0 {
+							costStr = fmt.Sprintf("$%.2f", itemCost)
 						}
 					}
 				}
+
+				// Accumulate sprint totals
+				sprintWall += wallDur
+				sprintST += stDur
+				sprintAI += aiDur
+				sprintCost += itemCost
 
 				// Created date
 				createdStr := ""
@@ -561,6 +578,59 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
+
+			// Sprint subtotal
+			if sprintWall > 0 || sprintCost > 0 {
+				sprintWallStr := ""
+				if sprintWall > 0 {
+					sprintWallStr = formatDuration(sprintWall)
+				}
+				sprintSTStr := ""
+				if sprintST > 0 {
+					sprintSTStr = formatDuration(sprintST)
+				}
+				sprintAIStr := ""
+				if sprintAI > 0 {
+					sprintAIStr = formatDuration(sprintAI)
+				}
+				sprintCostStr := ""
+				if sprintCost > 0 {
+					sprintCostStr = fmt.Sprintf("$%.2f", sprintCost)
+				}
+				fmt.Printf("    %s\n", strings.Repeat("─", 100))
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
+					"", "", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "", sprintWallStr, sprintSTStr, sprintAIStr, sprintCostStr)
+			}
+
+			// Accumulate epic totals
+			epicWall += sprintWall
+			epicST += sprintST
+			epicAI += sprintAI
+			epicCost += sprintCost
+		}
+
+		// Epic grand total
+		if epicHasItems && (epicWall > 0 || epicCost > 0) {
+			epicWallStr := ""
+			if epicWall > 0 {
+				epicWallStr = formatDuration(epicWall)
+			}
+			epicSTStr := ""
+			if epicST > 0 {
+				epicSTStr = formatDuration(epicST)
+			}
+			epicAIStr := ""
+			if epicAI > 0 {
+				epicAIStr = formatDuration(epicAI)
+			}
+			epicCostStr := ""
+			if epicCost > 0 {
+				epicCostStr = fmt.Sprintf("$%.2f", epicCost)
+			}
+			fmt.Printf("\n    %s\n", strings.Repeat("═", 100))
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
+				"TOTAL", "", epic.Title, "", epicWallStr, epicSTStr, epicAIStr, epicCostStr)
+			fmt.Printf("    %s\n", strings.Repeat("═", 100))
 		}
 	}
 	// Legend
