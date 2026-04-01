@@ -575,7 +575,12 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 
-				// Format line
+				// Format: title on first row, data on second row
+				title := item.Title
+				if len(title) > 80 {
+					title = title[:77] + "..."
+				}
+				fmt.Printf("      %s\n", title)
 				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
