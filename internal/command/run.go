@@ -2935,6 +2935,8 @@ func proposePlan(cfg *config.Config, itemID string, item *model.Item, engine Run
 	b.WriteString("The implement step writes the actual test. No prose ACs — if it can't be a command, it's not an AC.\n")
 	b.WriteString("\nCRITICAL: Every AC line MUST begin with '- cmd: '. Lines without this prefix will be rejected.\n")
 	b.WriteString("Use relative paths from the worktree: '../theraprac-api' or '../theraprac-web' (NOT 'theraprac-api').\n")
+	b.WriteString("For test suite execution, use `st test <id> <suite> --run` — NEVER use raw `make e2e` or `make test` in ACs.\n")
+	b.WriteString("ACs should be fast to verify — use targeted test runs, not full suite runs.\n")
 	b.WriteString("\nDo NOT ask 'shall I go ahead' — just set the fields and report what you did.\n")
 
 	// Use the worktree dir if available, otherwise the config root
@@ -4256,7 +4258,11 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	b.WriteString("     c) \"Chat\" — plan is mostly good but has concerns that need user input\n")
 	b.WriteString("     State which one and why in one sentence.\n\n")
 	b.WriteString("The goal: the user should be able to accept the plan without a follow-up revision session.\n")
-	b.WriteString("Be critical but constructive — flag real issues, not style preferences.\n")
+	b.WriteString("Be critical but constructive — flag real issues, not style preferences.\n\n")
+	b.WriteString("AC QUALITY RULES — flag and fix violations:\n")
+	b.WriteString("- ACs should use `st test <id> <suite> --run` for test suite execution, NOT raw `make` commands\n")
+	b.WriteString("- ACs should be fast to verify — avoid full E2E suite runs when a targeted spec suffices\n")
+	b.WriteString("- ACs should use relative paths from the worktree base (cd ../theraprac-web, NOT cd /absolute/path)\n")
 	return b.String()
 }
 

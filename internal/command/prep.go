@@ -408,6 +408,8 @@ func buildPrepPrompt(cfg *config.Config, itemID string, item *model.Item) string
 	b.WriteString("- cmd: the same ACs you set on the item\n\n")
 	b.WriteString("CRITICAL: Every AC line MUST begin with '- cmd: '. No prose ACs.\n")
 	b.WriteString("Use paths relative to the worktree: 'cd ../theraprac-api && ...' or 'cd ../theraprac-web && ...'.\n")
+	b.WriteString("For test suite execution, use `st test <id> <suite> --run` — NEVER use raw `make e2e` or `make test` in ACs.\n")
+	b.WriteString("ACs should be fast to verify — use targeted test runs (specific spec files), not full suite runs.\n")
 	b.WriteString("For new features, name the test function that WILL exist after implementation.\n\n")
 	b.WriteString("Do NOT ask permission — explore, analyze, set fields, and print the plan.\n")
 
