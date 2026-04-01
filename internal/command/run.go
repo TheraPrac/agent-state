@@ -19,6 +19,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
+	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
@@ -694,7 +695,16 @@ func autoParallelism(s *store.Store, cfg *config.Config, itemIDs []string) int {
 			}
 		}
 
-		// If no PR yet, check which worktree dirs have changes
+		// Check plan sidecar for scope_repos
+		if len(repos) == 0 {
+			if p, err := plan.Load(cfg.PlansDir(), id); err == nil && p != nil && len(p.ScopeRepos) > 0 {
+				for _, r := range p.ScopeRepos {
+					repos[r] = true
+				}
+			}
+		}
+
+		// If no PR or plan, check which worktree dirs have changes
 		if len(repos) == 0 {
 			dirs := allWorktreeDirs(cfg, id)
 			for _, dir := range dirs {
@@ -2425,8 +2435,16 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		return sr
 	}
 
-	// Already approved — skip
+	// Already approved — skip (either via item flag or plan sidecar)
 	if item.PlanApproved {
+		sr.Passed = true
+		return sr
+	}
+	if p, err := plan.Load(cfg.PlansDir(), itemID); err == nil && p != nil && p.Approved {
+		// Plan sidecar exists and is approved — sync flag to item and skip
+		item.PlanApproved = true
+		item.Doc.SetField("plan_approved", "true")
+		s.Write(item)
 		sr.Passed = true
 		return sr
 	}
@@ -3086,6 +3104,16 @@ func buildItemContext(s *store.Store, cfg *config.Config, itemID, worktreeDir st
 		b.WriteString("\n### Acceptance Criteria\n")
 		for i, ac := range item.AcceptanceCriteria {
 			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, ac))
+		}
+	}
+
+	// Implementation plan (from plan sidecar)
+	if p, err := plan.Load(cfg.PlansDir(), itemID); err == nil && p != nil {
+		planText := plan.PlainText(p)
+		if planText != "" {
+			b.WriteString("\n### Implementation Plan\n")
+			b.WriteString(planText)
+			b.WriteString("\n")
 		}
 	}
 

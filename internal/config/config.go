@@ -273,6 +273,11 @@ func (c *Config) ManifestDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".manifest")
 }
 
+// PlansDir returns the path to the plans sidecar directory.
+func (c *Config) PlansDir() string {
+	return filepath.Join(c.root, c.Paths.Root, ".plans")
+}
+
 // RunPermissionMode returns the configured claude permission mode for st run.
 func (c *Config) RunPermissionMode() string {
 	if c.Run != nil && c.Run.PermissionMode != "" {

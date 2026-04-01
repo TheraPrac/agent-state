@@ -678,6 +678,43 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().Bool("fresh", false, "ignore saved progress, restart pipeline from step 0")
 	root.AddCommand(runCmd)
 
+	prepCmd := &cobra.Command{
+		Use:   "prep [sprint]",
+		Short: "Generate implementation plans for unplanned sprint items",
+		Long: `Prep launches Claude Code to explore the codebase and create structured
+implementation plans for each unplanned item in a sprint.
+
+For each item, Claude analyzes the codebase and proposes:
+- Approach and scope (which repos are affected)
+- Implementation steps and files to create/modify
+- Acceptance criteria (executable cmd: checks)
+
+You review each plan with Accept/Reject/Chat before it's saved.
+Plans are stored as .plans/<id>.md sidecars and injected into the
+implement step during st run.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			item, _ := cmd.Flags().GetString("item")
+			model, _ := cmd.Flags().GetString("model")
+			opts := command.PrepOpts{
+				DryRun:     dryRun,
+				Model:      model,
+				ItemFilter: item,
+			}
+			engine := command.DefaultRunEngine()
+			if len(args) == 0 {
+				exitCode = command.PrepInteractive(appStore, appCfg, opts, engine)
+			} else {
+				exitCode = command.Prep(appStore, appCfg, args[0], opts, engine)
+			}
+		},
+	}
+	prepCmd.Flags().Bool("dry-run", false, "show which items would be planned")
+	prepCmd.Flags().String("item", "", "prep only this item ID")
+	prepCmd.Flags().String("model", "", "model to use (overrides config)")
+	root.AddCommand(prepCmd)
+
 	advanceCmd := &cobra.Command{
 		Use:   "advance <sprint>",
 		Short: "Execute pipeline steps for the next unblocked sprint item",
