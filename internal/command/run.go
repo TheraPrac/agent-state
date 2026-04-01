@@ -2618,16 +2618,27 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		fmt.Printf("Title: %s\n", item.Title)
 		fmt.Println(proposal)
 
-		// Plan review loop — accept, reject, or chat to revise
-		for {
-			rec := planRecommendation(item)
-			fmt.Printf("\n  >>> %s\n", rec)
+		// Plan review loop — claude reviews, user decides
+		for iteration := 1; ; iteration++ {
+			// Launch claude to critically review the plan
+			s, _ = store.New(cfg) // reload in case claude updated fields
+			item, _ = s.Get(itemID)
 
-			choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Plan Review", itemID), []menuOption{
+			reviewPrompt := buildPlanReviewPrompt(itemID, item)
+			reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+			reviewStep.SetName("plan_review")
+			executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
+
+			// Show separator + menu (same rendering as UAT)
+			gateMu.Lock()
+			fmt.Println()
+			fmt.Printf("  ─── [%s] Plan Review (iteration %d) ───\n\n", itemID, iteration)
+			choice := engineSelectMenu(engine, "", []menuOption{
 				{"1", "Accept  — approve and proceed"},
 				{"2", "Reject  — stop and release"},
 				{"3", "Chat    — give feedback, claude revises plan"},
 			}, 0)
+			gateMu.Unlock()
 
 			if choice == "1" {
 				break // approved
@@ -2694,16 +2705,25 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			fmt.Printf("\nDepends on: %s\n", strings.Join(item.DependsOn, ", "))
 		}
 
-		// Design review loop — same pattern
-		for {
-			rec := planRecommendation(item)
-			fmt.Printf("\n  >>> %s\n", rec)
+		// Design review loop — claude reviews, user decides
+		for iteration := 1; ; iteration++ {
+			s, _ = store.New(cfg)
+			item, _ = s.Get(itemID)
 
-			choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Design Review", itemID), []menuOption{
+			reviewPrompt := buildPlanReviewPrompt(itemID, item)
+			reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+			reviewStep.SetName("design_review")
+			executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
+
+			gateMu.Lock()
+			fmt.Println()
+			fmt.Printf("  ─── [%s] Design Review (iteration %d) ───\n\n", itemID, iteration)
+			choice := engineSelectMenu(engine, "", []menuOption{
 				{"1", "Approve — accept and proceed"},
 				{"2", "Reject  — stop and release"},
 				{"3", "Chat    — give feedback, claude revises"},
 			}, 0)
+			gateMu.Unlock()
 
 			if choice == "1" {
 				break // approved
@@ -3988,6 +4008,32 @@ func shortenPath(p string) string {
 		return ".../" + strings.Join(parts[len(parts)-3:], "/")
 	}
 	return p
+}
+
+// buildPlanReviewPrompt creates a prompt for claude to critically review a plan.
+func buildPlanReviewPrompt(itemID string, item *model.Item) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("You are reviewing the implementation plan for item %s.\n\n", itemID))
+	b.WriteString(fmt.Sprintf("Title: %s\n", item.Title))
+	if item.Summary != "" {
+		b.WriteString(fmt.Sprintf("\nSummary:\n%s\n", item.Summary))
+	}
+	if len(item.AcceptanceCriteria) > 0 {
+		b.WriteString("\nAcceptance Criteria:\n")
+		for i, ac := range item.AcceptanceCriteria {
+			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, ac))
+		}
+	}
+	b.WriteString("\nProduce a concise plan review report for the user. Include:\n")
+	b.WriteString("1. SCOPE — is the scope appropriate? Too broad, too narrow, or about right?\n")
+	b.WriteString("2. APPROACH — does the technical approach make sense? Any risks or alternatives?\n")
+	b.WriteString("3. ACCEPTANCE CRITERIA — are the ACs meaningful? Do they test the right things?\n")
+	b.WriteString("   Flag any that are trivial (just grep existence), overly broad, or missing.\n")
+	b.WriteString("4. GAPS — anything missing? Edge cases, error handling, tests, docs?\n")
+	b.WriteString("5. RECOMMENDATION — should the user accept this plan? Why or why not?\n\n")
+	b.WriteString("Keep it brief and actionable. The user will read this and decide whether to accept.\n")
+	b.WriteString("Be critical but constructive — flag real issues, not style preferences.\n")
+	return b.String()
 }
 
 // planRecommendation evaluates a plan/design and returns a recommendation string.

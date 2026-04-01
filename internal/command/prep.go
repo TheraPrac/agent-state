@@ -266,10 +266,16 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			}
 		}
 
-		rec := planRecommendation(item)
-		fmt.Printf("\n  >>> %s\n", rec)
+		// Launch claude to critically review the plan
+		reviewPrompt := buildPlanReviewPrompt(itemID, item)
+		reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+		reviewStep.SetName("plan_review")
+		runOpts := RunOpts{Model: opts.Model}
+		executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
 
-		choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Plan Review", itemID), []menuOption{
+		fmt.Println()
+		fmt.Printf("  ─── [%s] Plan Review ───\n\n", itemID)
+		choice := engineSelectMenu(engine, "", []menuOption{
 			{"1", "Accept  — save plan and proceed"},
 			{"2", "Reject  — skip this item"},
 			{"3", "Chat    — revise with claude"},
