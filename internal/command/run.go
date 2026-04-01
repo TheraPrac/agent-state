@@ -579,8 +579,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
 
-			// Sprint subtotal
-			if sprintWall > 0 || sprintCost > 0 {
+			// Sprint subtotal (always printed)
+			{
 				sprintWallStr := ""
 				if sprintWall > 0 {
 					sprintWallStr = formatDuration(sprintWall)
