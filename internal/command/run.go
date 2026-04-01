@@ -2894,6 +2894,27 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 	s3.Write(item)
 
+	// Create plan sidecar if one doesn't exist (st prep creates them, st run should too)
+	if !plan.Exists(cfg.PlansDir(), itemID) {
+		p := &plan.Plan{
+			Approved:   true,
+			ApprovedAt: plan.Now(),
+			Approach:   item.Summary,
+			ACs:        item.AcceptanceCriteria,
+			ScopeRepos: inferReposFromItem(cfg, item),
+			Revisions: []plan.Revision{
+				{Timestamp: plan.Now(), Summary: "Plan approved via st run"},
+			},
+		}
+		plan.Save(cfg.PlansDir(), itemID, p)
+
+		// Set scope_repos on item if not already set
+		if len(p.ScopeRepos) > 0 {
+			item.Doc.SetField("scope_repos", strings.Join(p.ScopeRepos, ", "))
+			s3.Write(item)
+		}
+	}
+
 	sr.Passed = true
 	return sr
 }
@@ -4372,6 +4393,40 @@ func summarySizeLabel(summary string) string {
 		return "good summary"
 	}
 	return "detailed summary"
+}
+
+// inferReposFromItem guesses scope repos from item fields (repo, ACs, summary).
+func inferReposFromItem(cfg *config.Config, item *model.Item) []string {
+	if cfg.Worktree == nil {
+		return nil
+	}
+	repoSet := make(map[string]bool)
+
+	// Check item.Repo field
+	if item.Repo != "" {
+		for _, r := range cfg.Worktree.Repos {
+			if strings.Contains(r, item.Repo) {
+				repoSet[r] = true
+			}
+		}
+	}
+
+	// Check ACs and summary for repo references
+	allText := item.Summary
+	for _, ac := range item.AcceptanceCriteria {
+		allText += " " + ac
+	}
+	for _, repo := range cfg.Worktree.Repos {
+		if strings.Contains(allText, repo) {
+			repoSet[repo] = true
+		}
+	}
+
+	var repos []string
+	for r := range repoSet {
+		repos = append(repos, r)
+	}
+	return repos
 }
 
 // rewriteACPaths rewrites ../repo-name paths in acceptance criteria commands
