@@ -203,6 +203,24 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	prSummary := buildPRSummary(cfg.ManifestDir(), id)
 	setNestedField(item, "manifest", "prs", prSummary)
 
+	// Surface code stats on the item
+	setNestedField(item, "manifest", "files_changed", fmt.Sprintf("%d", stats.FilesChanged))
+	setNestedField(item, "manifest", "insertions", fmt.Sprintf("%d", stats.Insertions))
+	setNestedField(item, "manifest", "deletions", fmt.Sprintf("%d", stats.Deletions))
+	setNestedField(item, "manifest", "net_lines", fmt.Sprintf("%+d", stats.Insertions-stats.Deletions))
+
+	// Build per-file change summary (most impactful files first)
+	var fileSummary []string
+	for _, f := range files {
+		net := f.LinesAdded - f.LinesDeleted
+		fileSummary = append(fileSummary, fmt.Sprintf("%s %s +%d/-%d (%+d) [%s]",
+			f.Action, f.Path, f.LinesAdded, f.LinesDeleted, net, f.Type))
+	}
+	setNestedField(item, "manifest", "file_details", strings.Join(fileSummary, "\n"))
+
+	// Record head SHA
+	setNestedField(item, "manifest", "head_sha", headSHA)
+
 	// Mark scope suites as required in testing_evidence
 	for _, suite := range scopeSuites {
 		current, _ := getNestedField(item, "testing_evidence", suite)

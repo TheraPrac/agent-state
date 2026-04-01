@@ -2105,6 +2105,17 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		gateMu.Unlock()
 
 		if choice == "1" {
+			// Record UAT approval on item
+			if approvalStore, err := store.New(cfg); err == nil {
+				if approvalItem, ok := approvalStore.Get(itemID); ok {
+					now := time.Now()
+					setNestedField(approvalItem, "delivery", "uat_approved_by", "user")
+					setNestedField(approvalItem, "delivery", "uat_approved_date", now.Format("2006-01-02"))
+					setNestedField(approvalItem, "delivery", "stage", "uat_approved")
+					approvalItem.Doc.SetField("last_touched", now.Format(time.RFC3339))
+					approvalStore.Write(approvalItem)
+				}
+			}
 			sr.Passed = true
 			return sr
 		}

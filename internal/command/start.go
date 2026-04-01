@@ -76,9 +76,13 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			fmt.Fprintln(os.Stderr, "--slug is required when worktree integration is enabled")
 			return 2
 		}
-		if err := createWorktrees(cfg, id, item.Type, opts); err != nil {
+		branch, err := createWorktrees(cfg, id, item.Type, opts)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "creating worktrees: %v\n", err)
 			return 1
+		}
+		if branch != "" {
+			setNestedField(item, "work_tracking", "branch", branch)
 		}
 	}
 
@@ -143,14 +147,14 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 // createWorktrees creates git worktrees for the given item.
 // Absorbs start-work.sh logic: pull main, create branch, worktree add,
 // symlink .env files, npm install for web repos.
-func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) error {
+func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (string, error) {
 	wt := cfg.Worktree
 	repos := opts.Repos
 	if len(repos) == 0 {
 		repos = wt.Repos
 	}
 	if len(repos) == 0 {
-		return fmt.Errorf("no repos configured for worktree creation")
+		return "", fmt.Errorf("no repos configured for worktree creation")
 	}
 
 	// Branch naming: feat/T-xxx-slug for tasks, fix/I-xxx-slug for issues
@@ -171,7 +175,7 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) er
 	}
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return fmt.Errorf("creating worktree dir: %w", err)
+		return "", fmt.Errorf("creating worktree dir: %w", err)
 	}
 
 	for _, repoShort := range repos {
@@ -191,7 +195,7 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) er
 
 		// Verify main repo exists
 		if _, err := os.Stat(filepath.Join(mainRepoPath, ".git")); err != nil {
-			return fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
+			return "", fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
 		}
 
 		// Pull main
@@ -206,17 +210,17 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) er
 		if branchExists(mainRepoPath, branch) {
 			// Reuse existing branch
 			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, branch); err != nil {
-				return fmt.Errorf("worktree add %s (existing branch): %w", repoDir, err)
+				return "", fmt.Errorf("worktree add %s (existing branch): %w", repoDir, err)
 			}
 		} else if remoteBranchExists(mainRepoPath, branch) {
 			// Track remote branch
 			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/"+branch); err != nil {
-				return fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
+				return "", fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
 			}
 		} else {
 			// Create new branch
 			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
-				return fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+				return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
 			}
 		}
 
@@ -229,7 +233,7 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) er
 
 	fmt.Printf("  Branch: %s\n", branch)
 	fmt.Printf("  Dir:    %s\n", workDir)
-	return nil
+	return branch, nil
 }
 
 func branchExists(repoDir, branch string) bool {
