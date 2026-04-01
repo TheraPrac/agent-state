@@ -3,6 +3,8 @@ package command
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
@@ -25,7 +27,14 @@ func Commit(s *store.Store, cfg *config.Config, id, message string) int {
 	}
 
 	now := time.Now().Format(time.RFC3339)
-	commitLine := fmt.Sprintf("%s: %s", now[:10], message)
+
+	// Try to get the HEAD SHA from the current directory
+	sha := ""
+	if out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output(); err == nil {
+		sha = strings.TrimSpace(string(out))
+	}
+
+	commitLine := fmt.Sprintf("%s %s: %s", now[:10], sha, message)
 
 	// Add to work_tracking.commits in the document
 	appendToNestedList(item.Doc, "work_tracking", "commits", commitLine)

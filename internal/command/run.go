@@ -1479,6 +1479,12 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 	appendAISessionRecord(item, result)
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	agentID := cfg.AgentID()
+	if agentID != "" {
+		item.Doc.SetField("last_touched_by", agentID)
+	} else {
+		item.Doc.SetField("last_touched_by", "st-run")
+	}
 	localStore.Write(item)
 }
 

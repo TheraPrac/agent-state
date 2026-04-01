@@ -221,6 +221,64 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	// Record head SHA
 	setNestedField(item, "manifest", "head_sha", headSHA)
 
+	// Record PR in work_tracking
+	prRef := fmt.Sprintf("%s#%d", opts.Repo, opts.PRNumber)
+	appendToNestedList(item.Doc, "work_tracking", "pr", prRef)
+
+	// Record test files written (files classified as "test")
+	var testFiles []string
+	for _, f := range files {
+		if f.Type == "test" && f.Action != "D" {
+			testFiles = append(testFiles, f.Path)
+		}
+	}
+	// Also record expected test files for app files (1:1 mapping)
+	for _, f := range files {
+		if f.Type == "app" && f.Action != "D" {
+			if tf := testFileFor(f.Path); tf != "" {
+				if opts.FileExists(filepath.Join(repoDir, tf)) {
+					testFiles = append(testFiles, tf)
+				}
+			}
+		}
+	}
+	// Deduplicate
+	seen := make(map[string]bool)
+	for _, tf := range testFiles {
+		if !seen[tf] {
+			seen[tf] = true
+			appendToNestedList(item.Doc, "testing_evidence", "tests_written", tf)
+		}
+	}
+
+	// Record doc changes
+	var docFiles []string
+	for _, f := range files {
+		if f.Type == "doc" && f.Action != "D" {
+			docFiles = append(docFiles, f.Path)
+		}
+	}
+	if len(docFiles) > 0 {
+		for _, df := range docFiles {
+			appendToNestedList(item.Doc, "testing_evidence", "doc_changes", df)
+		}
+	}
+
+	// Record E2E spec coverage
+	for _, f := range files {
+		if f.Action == "D" {
+			continue
+		}
+		if spec := e2eSpecFor(f.Path); spec != "" {
+			if opts.FileExists(filepath.Join(repoDir, spec)) {
+				if !seen[spec] {
+					seen[spec] = true
+					appendToNestedList(item.Doc, "testing_evidence", "tests_written", spec)
+				}
+			}
+		}
+	}
+
 	// Mark scope suites as required in testing_evidence
 	for _, suite := range scopeSuites {
 		current, _ := getNestedField(item, "testing_evidence", suite)

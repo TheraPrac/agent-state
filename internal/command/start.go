@@ -92,6 +92,11 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 
 	now := time.Now().Format(time.RFC3339)
 	item.Doc.SetField("last_touched", now)
+	if agentID != "" {
+		item.Doc.SetField("last_touched_by", agentID)
+	} else {
+		item.Doc.SetField("last_touched_by", "user")
+	}
 
 	if agentID != "" {
 		item.Doc.SetField("assigned_to", agentID)
