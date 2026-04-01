@@ -409,21 +409,48 @@ func runCmdInDir(dir, command string) ([]byte, int, error) {
 
 // runCmdInDirStreaming executes a command, streams output to stderr in real time,
 // and returns the captured output for evidence upload.
+// Uses pipe + goroutine to avoid backpressure (MultiWriter blocks Playwright).
 func runCmdInDirStreaming(dir, command string) ([]byte, int, error) {
 	cmd := exec.Command("sh", "-c", command)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 
-	// Create a pipe that tees to both stderr (live) and a buffer (capture)
-	var buf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stderr, &buf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-
-	err := cmd.Run()
-	exitCode := 0
+	// Use a pipe so we can read output asynchronously
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		return nil, 0, err
+	}
+	cmd.Stderr = cmd.Stdout // merge stderr into stdout pipe
+
+	if err := cmd.Start(); err != nil {
+		return nil, 0, err
+	}
+
+	// Read output in a goroutine — write to stderr (live) and buffer (capture)
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tmp := make([]byte, 8192)
+		for {
+			n, readErr := stdoutPipe.Read(tmp)
+			if n > 0 {
+				os.Stderr.Write(tmp[:n])
+				buf.Write(tmp[:n])
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	cmdErr := cmd.Wait()
+	<-done // wait for reader to finish
+
+	exitCode := 0
+	if cmdErr != nil {
+		if exitErr, ok := cmdErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			return buf.Bytes(), 0, err
