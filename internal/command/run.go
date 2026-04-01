@@ -2255,6 +2255,10 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		}, engine)
 		gateMu.Unlock()
 
+		if choice == "^C" {
+			sr.Error = "interrupted by Ctrl+C"
+			return sr
+		}
 		if choice == "1" {
 			// Record UAT approval on item
 			if approvalStore, err := store.New(cfg); err == nil {
@@ -2404,6 +2408,9 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 		{"s", "skip     — skip next step, continue"},
 		{"a", "abort    — stop, release item for retry"},
 	}, 0)
+	if choice == "^C" {
+		return "abort"
+	}
 	return map[string]string{"c": "continue", "s": "skip", "a": "abort"}[choice]
 }
 
@@ -2665,6 +2672,10 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			}, engine)
 			gateMu.Unlock()
 
+			if choice == "^C" {
+				sr.Error = "interrupted by Ctrl+C"
+				return sr
+			}
 			if choice == "1" {
 				break // approved
 			}
@@ -2759,6 +2770,10 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			}, engine)
 			gateMu.Unlock()
 
+			if choice == "^C" {
+				sr.Error = "interrupted by Ctrl+C"
+				return sr
+			}
 			if choice == "1" {
 				break // approved
 			}
@@ -4188,43 +4203,60 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	b.WriteString("   - CHANGES MADE — list what you fixed (if anything)\n")
 	b.WriteString("   - REMAINING CONCERNS — only issues you could NOT fix (e.g., design decisions\n")
 	b.WriteString("     that require user input, architectural trade-offs with no clear winner)\n")
-	b.WriteString("   - RECOMMENDATION — accept, or chat to resolve remaining concerns\n\n")
+	b.WriteString("   - RECOMMENDATION — MUST be exactly one of these three:\n")
+	b.WriteString("     a) \"Accept\" — plan is ready, no issues remain\n")
+	b.WriteString("     b) \"Reject\" — plan is fundamentally flawed, needs complete rethink\n")
+	b.WriteString("     c) \"Chat\" — plan is mostly good but has concerns that need user input\n")
+	b.WriteString("     State which one and why in one sentence.\n\n")
 	b.WriteString("The goal: the user should be able to accept the plan without a follow-up revision session.\n")
 	b.WriteString("Be critical but constructive — flag real issues, not style preferences.\n")
 	return b.String()
 }
 
 // planRecommendation evaluates a plan/design and returns a recommendation string.
-// extractRecommendation pulls the recommendation line from claude's review output.
+// extractRecommendation pulls the recommendation from claude's review output
+// and returns it as a one-line string. Looks for Accept/Reject/Chat keywords.
 func extractRecommendation(output string) string {
-	// Look for "RECOMMENDATION" section or "Accept"/"Reject" keywords
+	// Search for the recommendation line
+	var recLine string
 	for _, line := range strings.Split(output, "\n") {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "recommendation") && strings.Contains(lower, "—") {
-			// e.g., "### 5. RECOMMENDATION — Accept with minor additions"
-			if idx := strings.Index(line, "—"); idx >= 0 {
-				return strings.TrimSpace(line[idx+len("—"):])
-			}
-		}
-		if strings.Contains(lower, "recommendation") && strings.Contains(lower, ":") {
-			if idx := strings.LastIndex(line, ":"); idx >= 0 {
-				rest := strings.TrimSpace(line[idx+1:])
-				if rest != "" {
-					return rest
+		if strings.Contains(lower, "recommendation") {
+			// Extract the content after "—" or ":"
+			for _, sep := range []string{"—", ":"} {
+				if idx := strings.LastIndex(line, sep); idx >= 0 {
+					rest := strings.TrimSpace(line[idx+len(sep):])
+					rest = strings.ReplaceAll(rest, "**", "")
+					rest = strings.ReplaceAll(rest, "*", "")
+					if rest != "" {
+						recLine = rest
+						break
+					}
 				}
 			}
+			if recLine != "" {
+				break
+			}
 		}
 	}
-	// Fallback: look for bold recommendation patterns
-	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "**Accept") || strings.Contains(line, "**Approve") {
-			return strings.ReplaceAll(strings.ReplaceAll(line, "**", ""), "*", "")
-		}
-		if strings.Contains(line, "**Do not") || strings.Contains(line, "**Reject") {
-			return strings.ReplaceAll(strings.ReplaceAll(line, "**", ""), "*", "")
-		}
+
+	if recLine == "" {
+		return ""
 	}
-	return ""
+
+	// Map to menu option
+	lower := strings.ToLower(recLine)
+	if strings.Contains(lower, "accept") || strings.Contains(lower, "approve") {
+		return "[1] Accept — " + recLine
+	}
+	if strings.Contains(lower, "reject") {
+		return "[2] Reject — " + recLine
+	}
+	if strings.Contains(lower, "chat") {
+		return "[3] Chat — " + recLine
+	}
+	// Default: return as-is
+	return recLine
 }
 
 func planRecommendation(item *model.Item) string {
