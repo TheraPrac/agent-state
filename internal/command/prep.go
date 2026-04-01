@@ -266,6 +266,9 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			}
 		}
 
+		rec := planRecommendation(item)
+		fmt.Printf("\n  >>> %s\n", rec)
+
 		choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Plan Review", itemID), []menuOption{
 			{"1", "Accept  — save plan and proceed"},
 			{"2", "Reject  — skip this item"},

@@ -2620,6 +2620,9 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 
 		// Plan review loop — accept, reject, or chat to revise
 		for {
+			rec := planRecommendation(item)
+			fmt.Printf("\n  >>> %s\n", rec)
+
 			choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Plan Review", itemID), []menuOption{
 				{"1", "Accept  — approve and proceed"},
 				{"2", "Reject  — stop and release"},
@@ -2693,6 +2696,9 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 
 		// Design review loop — same pattern
 		for {
+			rec := planRecommendation(item)
+			fmt.Printf("\n  >>> %s\n", rec)
+
 			choice := engineSelectMenu(engine, fmt.Sprintf("[%s] Design Review", itemID), []menuOption{
 				{"1", "Approve — accept and proceed"},
 				{"2", "Reject  — stop and release"},
@@ -3982,6 +3988,49 @@ func shortenPath(p string) string {
 		return ".../" + strings.Join(parts[len(parts)-3:], "/")
 	}
 	return p
+}
+
+// planRecommendation evaluates a plan/design and returns a recommendation string.
+func planRecommendation(item *model.Item) string {
+	var issues []string
+
+	if item.Summary == "" {
+		issues = append(issues, "missing summary")
+	}
+	if len(item.AcceptanceCriteria) == 0 {
+		issues = append(issues, "no acceptance criteria")
+	} else {
+		// Check for non-cmd ACs
+		nonCmd := 0
+		for _, ac := range item.AcceptanceCriteria {
+			trimmed := strings.TrimSpace(strings.TrimPrefix(ac, "- "))
+			if !strings.HasPrefix(trimmed, "cmd:") {
+				nonCmd++
+			}
+		}
+		if nonCmd > 0 {
+			issues = append(issues, fmt.Sprintf("%d AC(s) not cmd: prefixed — will fail validation", nonCmd))
+		}
+	}
+
+	if len(issues) > 0 {
+		return fmt.Sprintf("Issues: %s — consider chatting to fix", strings.Join(issues, ", "))
+	}
+
+	acCount := len(item.AcceptanceCriteria)
+	return fmt.Sprintf("Plan looks complete — %s, %d AC(s), all cmd: prefixed",
+		summarySizeLabel(item.Summary), acCount)
+}
+
+func summarySizeLabel(summary string) string {
+	words := len(strings.Fields(summary))
+	if words < 20 {
+		return "brief summary"
+	}
+	if words < 80 {
+		return "good summary"
+	}
+	return "detailed summary"
 }
 
 // rewriteACPaths rewrites ../repo-name paths in acceptance criteria commands
