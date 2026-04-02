@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -249,6 +250,35 @@ func evaluateAcceptanceCriteria(item *model.Item, cfg *config.Config, runCmd fun
 		results = append(results, evaluateCriterion(ac, item, cfg, runCmd))
 	}
 	return results
+}
+
+// ValidateACsyntax checks each cmd: AC for shell syntax errors using sh -n.
+// Returns a list of ACs with syntax errors (index + error message).
+// Call this at plan approval time to catch bad ACs before they enter the pipeline.
+func ValidateACsyntax(acs []string) []string {
+	var errors []string
+	for i, ac := range acs {
+		trimmed := strings.TrimSpace(ac)
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		if !strings.HasPrefix(trimmed, "cmd:") {
+			continue
+		}
+		cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:"))
+		if cmd == "" {
+			errors = append(errors, fmt.Sprintf("AC #%d: empty command", i+1))
+			continue
+		}
+		// Shell syntax check
+		check := exec.Command("sh", "-n", "-c", cmd)
+		if out, err := check.CombinedOutput(); err != nil {
+			errMsg := strings.TrimSpace(string(out))
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			errors = append(errors, fmt.Sprintf("AC #%d: shell syntax error: %s\n  cmd: %s", i+1, errMsg, cmd))
+		}
+	}
+	return errors
 }
 
 func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, runCmd func(string) ([]byte, int, error)) checkResult {

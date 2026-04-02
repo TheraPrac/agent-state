@@ -192,3 +192,35 @@ func TestUATNoAcceptanceCriteria(t *testing.T) {
 // Ensure imports used
 var _ config.Config
 var _ evidence.LocalBackend
+
+func TestValidateACsyntax(t *testing.T) {
+	// Valid commands
+	valid := []string{
+		"- cmd: grep -q 'foo' file.txt",
+		"- cmd: cd ../theraprac-api && make test-unit",
+		"- cmd: test -f file.go",
+	}
+	errors := ValidateACsyntax(valid)
+	if len(errors) != 0 {
+		t.Errorf("expected 0 errors for valid ACs, got %d: %v", len(errors), errors)
+	}
+
+	// Invalid commands — unmatched quotes
+	invalid := []string{
+		"- cmd: grep -q 'foo file.txt",                                                  // unmatched '
+		"- cmd: awk '/pattern/,/^}/' file | grep -q 'text",                              // unmatched ' at end
+		"- cmd: echo ok",                                                                  // valid
+		"- cmd: ! grep -q 'haproxy ../theraprac-infra/ansible/nat-prod/playbook.yml",    // unmatched '
+	}
+	errors = ValidateACsyntax(invalid)
+	if len(errors) != 3 {
+		t.Errorf("expected 3 syntax errors, got %d: %v", len(errors), errors)
+	}
+
+	// Empty command
+	empty := []string{"- cmd: "}
+	errors = ValidateACsyntax(empty)
+	if len(errors) != 1 {
+		t.Errorf("expected 1 error for empty command, got %d", len(errors))
+	}
+}
