@@ -117,7 +117,7 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestShowHappy(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{})
+	code := Show(s, nil, "T-001", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show T-001 returned %d, want 0", code)
 	}
@@ -125,7 +125,7 @@ func TestShowHappy(t *testing.T) {
 
 func TestShowBrief(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{Brief: true})
+	code := Show(s, nil, "T-001", ShowOpts{Brief: true})
 	if code != 0 {
 		t.Errorf("Show --brief returned %d, want 0", code)
 	}
@@ -133,7 +133,7 @@ func TestShowBrief(t *testing.T) {
 
 func TestShowField(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{Field: "status"})
+	code := Show(s, nil, "T-001", ShowOpts{Field: "status"})
 	if code != 0 {
 		t.Errorf("Show --field returned %d, want 0", code)
 	}
@@ -141,7 +141,7 @@ func TestShowField(t *testing.T) {
 
 func TestShowFieldNotFound(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{Field: "nonexistent"})
+	code := Show(s, nil, "T-001", ShowOpts{Field: "nonexistent"})
 	if code != 1 {
 		t.Errorf("Show --field nonexistent returned %d, want 1", code)
 	}
@@ -149,7 +149,7 @@ func TestShowFieldNotFound(t *testing.T) {
 
 func TestShowNotFound(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-999", ShowOpts{})
+	code := Show(s, nil, "T-999", ShowOpts{})
 	if code != 1 {
 		t.Errorf("Show T-999 returned %d, want 1", code)
 	}
@@ -556,11 +556,11 @@ func TestPrimeJSON(t *testing.T) {
 func TestShowFullOutput(t *testing.T) {
 	s, _ := setupTestEnv(t)
 	// T-003 has assigned_to, and I-001 has severity — test full output paths
-	code := Show(s, "T-003", ShowOpts{})
+	code := Show(s, nil, "T-003", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show T-003 full returned %d, want 0", code)
 	}
-	code = Show(s, "I-001", ShowOpts{})
+	code = Show(s, nil, "I-001", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show I-001 full returned %d, want 0", code)
 	}
@@ -568,7 +568,7 @@ func TestShowFullOutput(t *testing.T) {
 
 func TestShowBriefWithStage(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "I-001", ShowOpts{Brief: true})
+	code := Show(s, nil, "I-001", ShowOpts{Brief: true})
 	if code != 0 {
 		t.Errorf("Show I-001 brief returned %d, want 0", code)
 	}

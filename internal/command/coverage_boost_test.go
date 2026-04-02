@@ -982,7 +982,7 @@ func TestCommitHappyV2(t *testing.T) {
 
 func TestShowWithFieldV2(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{Field: "status"})
+	code := Show(s, nil, "T-001", ShowOpts{Field: "status"})
 	if code != 0 {
 		t.Errorf("show --field exit %d", code)
 	}
@@ -990,7 +990,7 @@ func TestShowWithFieldV2(t *testing.T) {
 
 func TestShowFieldNotFoundV2(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Show(s, "T-001", ShowOpts{Field: "nonexistent"})
+	code := Show(s, nil, "T-001", ShowOpts{Field: "nonexistent"})
 	if code != 1 {
 		t.Errorf("show missing field exit %d, want 1", code)
 	}

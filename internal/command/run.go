@@ -584,7 +584,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					title = title[:77] + "..."
 				}
 				planBadge := ""
-				if item.PlanApproved && !isDone && completed == 0 {
+				if item.PlanApproved {
 					planBadge = fmt.Sprintf("  %s󰙅%s", "\033[32m", "\033[0m")
 				}
 				fmt.Printf("      %-80s%s\n", title, planBadge)
@@ -953,6 +953,20 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 
 	// Recover items left in broken state from previous failed runs
 	recoverStaleItems(s, cfg, sp.Items)
+
+	// Clean stale locks — remove locks for items no longer active
+	store.CleanStaleLocks(cfg, func(id string) bool {
+		item, ok := s.Get(id)
+		if !ok {
+			return false
+		}
+		tc, ok := cfg.Types[item.Type]
+		if !ok {
+			return false
+		}
+		return item.Status == tc.ActiveStatus
+	})
+
 	// Reload store after recovery
 	s, _ = store.New(cfg)
 
@@ -2093,6 +2107,19 @@ func executeMergePrecheck(cfg *config.Config, itemID, worktreeDir string) StepRe
 			if exitCode != 0 {
 				sr.Error = fmt.Sprintf("pre-check failed (%s, exit %d): %s", ghRepo, exitCode, truncate(string(output), 200))
 				return sr
+			}
+		}
+
+		// Bugbot gate: zero open findings required before merge.
+		// Fetch inline comments from Bugbot — if any exist, block merge.
+		if ghRepo != "" {
+			prNum := detectPRNumber(prDir, ghRepo)
+			if prNum > 0 {
+				count := countBugbotFindings(ghRepo, prNum, prDir)
+				if count > 0 {
+					sr.Error = fmt.Sprintf("Cursor Bugbot has %d unresolved finding(s) on %s#%d — fix or resolve before merging", count, ghRepo, prNum)
+					return sr
+				}
 			}
 		}
 	}
@@ -3623,6 +3650,59 @@ func resolveGHRepoFromShortName(repoShort string, worktreeDir string, cfg *confi
 	return ""
 }
 
+// detectPRNumber gets the PR number for the current branch from GitHub.
+func detectPRNumber(worktreeDir, ghRepo string) int {
+	cmd := fmt.Sprintf(`gh pr view --json number --jq .number --repo %s 2>/dev/null`, ghRepo)
+	out, exitCode, _ := runCmdInDir(worktreeDir, cmd)
+	if exitCode != 0 {
+		return 0
+	}
+	var n int
+	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n)
+	return n
+}
+
+// countBugbotFindings returns the number of unresolved Bugbot findings on a PR.
+// Uses the GraphQL reviewThreads API to check isResolved/isOutdated status —
+// only threads that are neither resolved nor outdated count as open.
+func countBugbotFindings(ghRepo string, prNumber int, worktreeDir string) int {
+	parts := strings.SplitN(ghRepo, "/", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	owner, repo := parts[0], parts[1]
+
+	query := fmt.Sprintf(`query {
+  repository(owner: "%s", name: "%s") {
+    pullRequest(number: %d) {
+      reviewThreads(first: 50) {
+        nodes {
+          isResolved
+          isOutdated
+          comments(first: 1) {
+            nodes { author { login } }
+          }
+        }
+      }
+    }
+  }
+}`, owner, repo, prNumber)
+
+	cmd := fmt.Sprintf(`gh api graphql -f query='%s' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false and .isOutdated == false and (.comments.nodes[0].author.login | test("cursor|bugbot"; "i")))] | length' 2>/dev/null`, query)
+	out, exitCode, _ := runCmdInDir(worktreeDir, cmd)
+	if exitCode != 0 {
+		// Fallback: count all Bugbot comments (conservative)
+		fallback := fmt.Sprintf(`gh api "repos/%s/pulls/%d/comments" --jq '[.[] | select(.user.login | test("cursor|bugbot"; "i"))] | length' 2>/dev/null`, ghRepo, prNumber)
+		out, exitCode, _ = runCmdInDir(worktreeDir, fallback)
+		if exitCode != 0 {
+			return 0
+		}
+	}
+	var count int
+	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	return count
+}
+
 // getPRHeadSHA fetches the head commit SHA for a PR.
 func getPRHeadSHA(ghRepo string, prNumber int) string {
 	cmd := fmt.Sprintf(`gh api "repos/%s/pulls/%d" --jq .head.sha 2>/dev/null`, ghRepo, prNumber)
@@ -3851,6 +3931,9 @@ func releaseItem(cfg *config.Config, itemID string) {
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 	localStore.Write(item)
+
+	// Release item lock so GitPull stops protecting it
+	store.UnlockItem(cfg, itemID)
 }
 
 // recoverStaleItems finds items in the sprint that are active but not

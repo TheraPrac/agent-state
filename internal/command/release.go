@@ -49,6 +49,9 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 
+	// Release item lock
+	store.UnlockItem(cfg, id)
+
 	changelog.Append(cfg, id, changelog.Entry{
 		Op: "release", Field: "assigned_to", OldValue: oldAgent,
 	})

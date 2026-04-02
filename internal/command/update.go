@@ -22,6 +22,13 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 		return 1
 	}
 
+	// Block status changes on locked items (being worked on by a pipeline).
+	// Use `st unlock <id>` to force-release the lock first.
+	if field == "status" && store.IsLocked(cfg, id) {
+		fmt.Fprintf(os.Stderr, "%s is locked (active pipeline) — use `st unlock %s` first\n", id, id)
+		return 1
+	}
+
 	// List fields — replace entire block instead of appending
 	listFields := map[string]bool{
 		"acceptance_criteria": true, "depends_on": true, "blocks": true,

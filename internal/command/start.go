@@ -137,6 +137,11 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		return 1
 	}
 
+	// Lock the item file so GitPull can't overwrite it
+	if err := store.LockItem(cfg, id, sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not lock item: %v\n", err)
+	}
+
 	changelog.Append(cfg, id, changelog.Entry{
 		Op: "start", Field: "status",
 		OldValue: tc.StartStatus, NewValue: tc.ActiveStatus,

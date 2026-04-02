@@ -16,7 +16,7 @@ import (
 func TestShowWithDeps(t *testing.T) {
 	s, _ := setupTestEnv(t)
 	// T-002 has depends_on — exercises that branch
-	code := Show(s, "T-002", ShowOpts{})
+	code := Show(s, nil, "T-002", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show T-002 full returned %d, want 0", code)
 	}
@@ -28,7 +28,7 @@ func TestShowWithBlocks(t *testing.T) {
 	DepAdd(s, cfg, "T-002", "T-001")
 
 	// Now T-001 should show blocks
-	code := Show(s, "T-001", ShowOpts{})
+	code := Show(s, nil, "T-001", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show with blocks returned %d, want 0", code)
 	}
@@ -37,7 +37,7 @@ func TestShowWithBlocks(t *testing.T) {
 func TestShowWithTags(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 	Tag(s, cfg, "T-001", "add", "infra")
-	code := Show(s, "T-001", ShowOpts{})
+	code := Show(s, nil, "T-001", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show with tags returned %d, want 0", code)
 	}
@@ -59,12 +59,12 @@ delivery:
 	cfg, _ := config.Load(root)
 	s, _ := store.New(cfg)
 
-	code := Show(s, "T-010", ShowOpts{})
+	code := Show(s, nil, "T-010", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show with delivery stage returned %d, want 0", code)
 	}
 
-	code = Show(s, "T-010", ShowOpts{Brief: true})
+	code = Show(s, nil, "T-010", ShowOpts{Brief: true})
 	if code != 0 {
 		t.Errorf("Show brief with stage returned %d, want 0", code)
 	}
@@ -93,7 +93,7 @@ next_actions:
 	cfg, _ := config.Load(root)
 	s, _ := store.New(cfg)
 
-	code := Show(s, "T-010", ShowOpts{})
+	code := Show(s, nil, "T-010", ShowOpts{})
 	if code != 0 {
 		t.Errorf("Show with summary returned %d, want 0", code)
 	}
@@ -103,7 +103,7 @@ func TestShowFieldNoDoc(t *testing.T) {
 	s, _ := setupTestEnv(t)
 	item, _ := s.Get("T-001")
 	item.Doc = nil
-	code := Show(s, "T-001", ShowOpts{Field: "status"})
+	code := Show(s, nil, "T-001", ShowOpts{Field: "status"})
 	// Will access the item from store which has a doc, so exercises the path
 	_ = code
 }

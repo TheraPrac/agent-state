@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -14,7 +15,7 @@ type ShowOpts struct {
 	Raw   bool
 }
 
-func Show(s *store.Store, id string, opts ShowOpts) int {
+func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
@@ -70,6 +71,9 @@ func Show(s *store.Store, id string, opts ShowOpts) int {
 	fmt.Printf("%s — %s\n", item.ID, item.Title)
 	fmt.Printf("  Type:     %s\n", item.Type)
 	fmt.Printf("  Status:   %s\n", item.Status)
+	if cfg != nil && store.IsLocked(cfg, id) {
+		fmt.Printf("  Lock:     \033[33mlocked\033[0m (protected from git pull)\n")
+	}
 	if item.AssignedTo != "" {
 		fmt.Printf("  Assigned: %s\n", item.AssignedTo)
 	}

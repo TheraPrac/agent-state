@@ -34,6 +34,12 @@ func Edit(s *store.Store, cfg *config.Config, id, field string, useStdin bool) i
 		return 1
 	}
 
+	// Block status changes on locked items
+	if field == "status" && store.IsLocked(cfg, id) {
+		fmt.Fprintf(os.Stderr, "%s is locked (active pipeline) — use `st unlock %s` first\n", id, id)
+		return 1
+	}
+
 	// Get current value
 	currentValue, _ := item.Doc.GetField(field)
 

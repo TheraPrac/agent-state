@@ -122,6 +122,9 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		return 1
 	}
 
+	// Release item lock
+	store.UnlockItem(cfg, id)
+
 	// Move to correct directory
 	if err := s.Move(id); err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)

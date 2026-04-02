@@ -88,7 +88,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			brief, _ := cmd.Flags().GetBool("brief")
 			field, _ := cmd.Flags().GetString("field")
 			raw, _ := cmd.Flags().GetBool("raw")
-			exitCode = command.Show(appStore, args[0], command.ShowOpts{Brief: brief, Field: field, Raw: raw})
+			exitCode = command.Show(appStore, appCfg, args[0], command.ShowOpts{Brief: brief, Field: field, Raw: raw})
 		},
 	}
 	showCmd.Flags().BoolP("brief", "b", false, "compact one-line output")
@@ -262,6 +262,23 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		},
 	}
 	root.AddCommand(releaseCmd)
+
+	unlockCmd := &cobra.Command{
+		Use:   "unlock <id>",
+		Short: "Force-release the item lock (use when a pipeline is stuck)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			id := args[0]
+			if !store.IsLocked(appCfg, id) {
+				fmt.Fprintf(os.Stderr, "%s is not locked\n", id)
+				exitCode = 1
+				return
+			}
+			store.UnlockItem(appCfg, id)
+			fmt.Printf("Unlocked %s\n", id)
+		},
+	}
+	root.AddCommand(unlockCmd)
 
 	commitCmd := &cobra.Command{
 		Use:   "commit <id> <message>",

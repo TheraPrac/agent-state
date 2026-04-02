@@ -45,6 +45,8 @@ func acquireGitLock(dir string) (func(), error) {
 // GitPull pulls latest changes from remote before reading items.
 // Preserves any uncommitted local changes (e.g., test evidence written
 // but not yet synced) by committing them first, then pulling with rebase.
+// Item-level locks: files for locked items are snapshotted before the pull
+// and restored after, so concurrent pulls can't revert active item state.
 func GitPull(cfg *config.Config) error {
 	if cfg.Git == nil || !cfg.Git.AutoPush {
 		return nil
@@ -58,6 +60,11 @@ func GitPull(cfg *config.Config) error {
 
 	root := cfg.ItemDir()
 
+	// Snapshot locked item files before any git operations.
+	// These are items currently being worked on by a pipeline —
+	// we must not let a pull overwrite their state.
+	lockedSnapshots := snapshotLockedItems(cfg, root)
+
 	// Commit any uncommitted local changes BEFORE pulling,
 	// so they don't get overwritten by the remote.
 	out, err := gitOutput(root, "status", "--porcelain")
@@ -70,10 +77,71 @@ func GitPull(cfg *config.Config) error {
 	if err := gitCmdQuiet(root, "pull", "--rebase"); err != nil {
 		// If rebase fails (conflict), abort and continue with local state
 		_ = gitCmdQuiet(root, "rebase", "--abort")
+		restoreLockedItems(lockedSnapshots)
 		return nil
 	}
 
+	// Restore locked item files if the pull changed them.
+	restoreLockedItems(lockedSnapshots)
+
 	return nil
+}
+
+// snapshotLockedItems reads the content of all locked item files.
+// Returns a map of file path -> content for restoration after pull.
+func snapshotLockedItems(cfg *config.Config, root string) map[string][]byte {
+	locked := LockedItems(cfg)
+	if len(locked) == 0 {
+		return nil
+	}
+
+	// Build a set for fast lookup
+	lockedSet := make(map[string]bool, len(locked))
+	for _, id := range locked {
+		lockedSet[id] = true
+	}
+
+	snapshots := make(map[string][]byte)
+	// Scan all type directories for files matching locked IDs.
+	// Filenames are like "T-103-title-slug.md" — match by ID prefix.
+	for _, tc := range cfg.Types {
+		for _, dir := range tc.DirectoryMap {
+			dirPath := filepath.Join(root, dir)
+			entries, err := os.ReadDir(dirPath)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				// Extract ID: everything before the second hyphen-delimited segment
+				// e.g., "T-103-title-slug.md" -> check if "T-103" is locked
+				name := strings.TrimSuffix(e.Name(), ".md")
+				for id := range lockedSet {
+					if name == id || strings.HasPrefix(name, id+"-") {
+						path := filepath.Join(dirPath, e.Name())
+						if data, err := os.ReadFile(path); err == nil {
+							snapshots[path] = data
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+	return snapshots
+}
+
+// restoreLockedItems writes back snapshotted content for any files
+// that were changed by a git pull.
+func restoreLockedItems(snapshots map[string][]byte) {
+	for path, originalData := range snapshots {
+		currentData, err := os.ReadFile(path)
+		if err != nil || string(currentData) != string(originalData) {
+			os.WriteFile(path, originalData, 0644)
+		}
+	}
 }
 
 // GitSync stages, commits, and pushes changes in the item root directory.
@@ -95,9 +163,12 @@ func (s *Store) GitSync(message string) error {
 	}
 	defer unlock()
 
-	// Pre-pull: fetch and integrate remote changes before committing
+	// Pre-pull: fetch and integrate remote changes before committing.
+	// Snapshot locked items so the pull can't overwrite active work.
 	if s.cfg.Git.AutoPush {
+		snap := snapshotLockedItems(s.cfg, root)
 		_ = gitCmdQuiet(root, "pull", "--ff-only")
+		restoreLockedItems(snap)
 	}
 
 	// Stage all changes in the item root
@@ -140,8 +211,11 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 			return err
 		}
 
-		// Pull with rebase to avoid merge commits in agent-state
+		// Pull with rebase to avoid merge commits in agent-state.
+		// Protect locked items across the rebase.
+		snap := snapshotLockedItems(s.cfg, root)
 		if pullErr := gitCmdQuiet(root, "pull", "--rebase"); pullErr != nil {
+			restoreLockedItems(snap)
 			// Check for active rebase (indicates conflict)
 			conflictOut, _ := gitOutput(root, "ls-files", "-u")
 			if strings.TrimSpace(conflictOut) != "" {
@@ -151,6 +225,7 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 			}
 			return fmt.Errorf("pull failed during retry: %w", pullErr)
 		}
+		restoreLockedItems(snap)
 	}
 	return nil
 }

@@ -102,6 +102,8 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 	if !opts.DryRun {
 		// Remove the worktree directory
 		os.RemoveAll(wtDir)
+		// Release item lock
+		store.UnlockItem(cfg, id)
 		fmt.Printf("Finished %s — worktrees cleaned up\n", id)
 	}
 
