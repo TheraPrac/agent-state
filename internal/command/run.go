@@ -583,7 +583,11 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				if len(title) > 80 {
 					title = title[:77] + "..."
 				}
-				fmt.Printf("      %s\n", title)
+				planBadge := ""
+				if item.PlanApproved && !isDone && completed == 0 {
+					planBadge = fmt.Sprintf("  %s󰙅%s", "\033[32m", "\033[0m")
+				}
+				fmt.Printf("      %s%s\n", title, planBadge)
 				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
 			}
