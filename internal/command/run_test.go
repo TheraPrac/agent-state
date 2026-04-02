@@ -1378,3 +1378,67 @@ func TestRewriteACPathsNoWorktree(t *testing.T) {
 		t.Errorf("should not rewrite without worktree config, got %q", got)
 	}
 }
+
+func TestIsReviewBot(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"Cursor Bugbot", true},
+		{"bugbot", true},
+		{"CodeRabbit", true},
+		{"SonarCloud", true},
+		{"codeclimate", true},
+		{"unit-test", false},
+		{"changes", false},
+		{"integration", false},
+	}
+	for _, tt := range tests {
+		got := isReviewBot(tt.name)
+		if got != tt.want {
+			t.Errorf("isReviewBot(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestStripBugbotMarkup(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "html comment",
+			input: "<!-- BUGBOT_REVIEW -->\nHello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "sub tags",
+			input: "Finding here\n<sub>- powered by bugbot</sub>",
+			want:  "Finding here",
+		},
+		{
+			name:  "a tag with link text",
+			input: `Click <a href="http://example.com">Fix in Cursor</a> to fix`,
+			want:  "Click Fix in Cursor to fix",
+		},
+		{
+			name:  "plain text unchanged",
+			input: "### Empty DB roles fail to override stale JWT roles",
+			want:  "### Empty DB roles fail to override stale JWT roles",
+		},
+		{
+			name:  "multiple blank lines collapsed",
+			input: "line1\n\n\n\nline2",
+			want:  "line1 line2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripBugbotMarkup(tt.input)
+			if got != tt.want {
+				t.Errorf("stripBugbotMarkup() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

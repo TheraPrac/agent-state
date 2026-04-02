@@ -2466,11 +2466,19 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 	}
 	hline("╚", "═", "╝")
 
-	choice := engineSelectMenu(engine, "", []menuOption{
+	opts := []menuOption{
 		{"c", "continue — resume pipeline"},
 		{"s", "skip     — skip next step, continue"},
 		{"a", "abort    — stop, release item for retry"},
-	}, 0)
+	}
+
+	// Auto-continue after timeout when recommendation is to continue.
+	var choice string
+	if strings.HasPrefix(recommendation, "[c]") {
+		choice = engineSelectMenuTimed(engine, "", opts, 0, autoAcceptTimeout)
+	} else {
+		choice = engineSelectMenu(engine, "", opts, 0)
+	}
 	if choice == "^C" {
 		return "abort"
 	}
@@ -3456,7 +3464,207 @@ func buildItemContext(s *store.Store, cfg *config.Config, itemID, worktreeDir st
 		}
 	}
 
+	// PR review bot findings (Cursor Bugbot, etc.)
+	if m != nil && len(m.PRs) > 0 {
+		for _, pr := range m.PRs {
+			findings := fetchPRBotFindings(pr.Repo, pr.PRNumber, worktreeDir, cfg)
+			if findings != "" {
+				if len(m.PRs) > 1 {
+					b.WriteString(fmt.Sprintf("\n### Review Bot Findings (%s#%d)\n", pr.Repo, pr.PRNumber))
+				} else {
+					b.WriteString("\n### Review Bot Findings\n")
+				}
+				b.WriteString(findings)
+				b.WriteString("\n")
+			}
+		}
+	}
+
 	return b.String()
+}
+
+// fetchPRBotFindings fetches check run output, review comments, and inline file
+// comments from automated review bots (like Cursor Bugbot) on a PR.
+// Returns a formatted string with findings, or "" if no bot findings exist.
+func fetchPRBotFindings(repoShort string, prNumber int, worktreeDir string, cfg *config.Config) string {
+	// Resolve the full GitHub repo (owner/repo) from the short name
+	ghRepo := resolveGHRepoFromShortName(repoShort, worktreeDir, cfg)
+	if ghRepo == "" {
+		return ""
+	}
+
+	var findings strings.Builder
+
+	// 1. Fetch check run outputs (Bugbot posts its summary status here)
+	sha := getPRHeadSHA(ghRepo, prNumber)
+	if sha != "" {
+		runsCmd := fmt.Sprintf(`gh api "repos/%s/commits/%s/check-runs" --jq '.check_runs[] | select(.output.summary != null and .output.summary != "") | "\(.name)\t\(.conclusion)\t\(.output.summary)"' 2>/dev/null`, ghRepo, sha)
+		runsOut, rc, _ := runCmdInDir("", runsCmd)
+		if rc == 0 && len(runsOut) > 0 {
+			for _, line := range strings.Split(strings.TrimSpace(string(runsOut)), "\n") {
+				if line == "" {
+					continue
+				}
+				parts := strings.SplitN(line, "\t", 3)
+				if len(parts) < 3 {
+					continue
+				}
+				name, conclusion, summary := parts[0], parts[1], parts[2]
+				if isReviewBot(name) {
+					findings.WriteString(fmt.Sprintf("**%s** (%s):\n%s\n\n", name, conclusion, summary))
+				}
+			}
+		}
+	}
+
+	// 2. Fetch inline file comments from bot accounts (the actionable findings)
+	// These are the specific file:line issues Bugbot identifies.
+	inlineCmd := fmt.Sprintf(`gh api "repos/%s/pulls/%d/comments" --jq '[.[] | select(.user.login | test("cursor|bugbot"; "i")) | {path, line: (.line // .original_line), body}]' 2>/dev/null`, ghRepo, prNumber)
+	inlineOut, rc, _ := runCmdInDir("", inlineCmd)
+	if rc == 0 && len(inlineOut) > 0 {
+		var comments []struct {
+			Path string `json:"path"`
+			Line int    `json:"line"`
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(inlineOut, &comments); err == nil && len(comments) > 0 {
+			findings.WriteString(fmt.Sprintf("**Bugbot Inline Issues (%d):**\n", len(comments)))
+			for i, c := range comments {
+				// Strip HTML/markdown noise, keep the actionable content
+				body := stripBugbotMarkup(c.Body)
+				if len(body) > 500 {
+					body = body[:500] + "..."
+				}
+				findings.WriteString(fmt.Sprintf("%d. `%s:%d` — %s\n", i+1, c.Path, c.Line, body))
+			}
+			findings.WriteString("\n")
+		}
+	}
+
+	// 3. Fetch PR-level review comments from bot accounts (summary review)
+	reviewCmd := fmt.Sprintf(`gh api "repos/%s/pulls/%d/reviews" --jq '.[] | select(.user.login | test("cursor|bugbot"; "i")) | "\(.state)\t\(.body)"' 2>/dev/null`, ghRepo, prNumber)
+	reviewOut, rc, _ := runCmdInDir("", reviewCmd)
+	if rc == 0 && len(reviewOut) > 0 {
+		trimmed := strings.TrimSpace(string(reviewOut))
+		if trimmed != "" {
+			// Only include if there's meaningful content (not just HTML markers)
+			for _, line := range strings.Split(trimmed, "\n") {
+				parts := strings.SplitN(line, "\t", 2)
+				if len(parts) == 2 {
+					body := stripBugbotMarkup(parts[1])
+					if body != "" {
+						findings.WriteString(fmt.Sprintf("**Bot Review** (%s): %s\n", parts[0], body))
+					}
+				}
+			}
+		}
+	}
+
+	return findings.String()
+}
+
+// resolveGHRepoFromShortName resolves a short repo name (e.g., "theraprac-api")
+// to a full GitHub repo path (e.g., "TheraPrac/theraprac-api").
+func resolveGHRepoFromShortName(repoShort string, worktreeDir string, cfg *config.Config) string {
+	if worktreeDir != "" {
+		// Try the specific repo worktree
+		if cfg.Worktree != nil && cfg.Worktree.Enabled && cfg.Worktree.BaseDir != "" {
+			repoDir := filepath.Join(worktreeDir, "..", repoShort)
+			if fi, err := os.Stat(repoDir); err == nil && fi.IsDir() {
+				if r := resolveGHRepo(repoDir); r != "" {
+					return r
+				}
+			}
+		}
+	}
+	// Try parent dir + repo name (common worktree layout)
+	parentDir := cfg.Root()
+	if cfg.Worktree != nil && cfg.Worktree.ParentDir != "" {
+		parentDir = filepath.Join(cfg.Root(), cfg.Worktree.ParentDir)
+	}
+	repoDir := filepath.Join(parentDir, repoShort)
+	if fi, err := os.Stat(repoDir); err == nil && fi.IsDir() {
+		if r := resolveGHRepo(repoDir); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// getPRHeadSHA fetches the head commit SHA for a PR.
+func getPRHeadSHA(ghRepo string, prNumber int) string {
+	cmd := fmt.Sprintf(`gh api "repos/%s/pulls/%d" --jq .head.sha 2>/dev/null`, ghRepo, prNumber)
+	out, exitCode, _ := runCmdInDir("", cmd)
+	if exitCode == 0 {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+// stripBugbotMarkup removes HTML comments, Bugbot-specific markers, and link markup
+// from Bugbot review comments, keeping only the human-readable content.
+func stripBugbotMarkup(s string) string {
+	// Remove HTML comments (<!-- ... -->)
+	for {
+		start := strings.Index(s, "<!--")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start:], "-->")
+		if end < 0 {
+			break
+		}
+		s = s[:start] + s[start+end+3:]
+	}
+	// Remove <a href=...>...</a> tags but keep link text
+	for {
+		start := strings.Index(s, "<a ")
+		if start < 0 {
+			break
+		}
+		tagEnd := strings.Index(s[start:], ">")
+		if tagEnd < 0 {
+			break
+		}
+		closeTag := strings.Index(s[start:], "</a>")
+		if closeTag < 0 {
+			break
+		}
+		linkText := s[start+tagEnd+1 : start+closeTag]
+		s = s[:start] + linkText + s[start+closeTag+4:]
+	}
+	// Remove <sub>...</sub> tags
+	for {
+		start := strings.Index(s, "<sub>")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start:], "</sub>")
+		if end < 0 {
+			break
+		}
+		s = s[:start] + s[start+end+6:]
+	}
+	// Clean up resulting whitespace
+	lines := strings.Split(s, "\n")
+	var clean []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			clean = append(clean, trimmed)
+		}
+	}
+	return strings.Join(clean, " ")
+}
+
+// isReviewBot returns true if the check run name matches a known automated review bot.
+func isReviewBot(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "bugbot") ||
+		strings.Contains(lower, "cursor") ||
+		strings.Contains(lower, "coderabbit") ||
+		strings.Contains(lower, "codeclimate") ||
+		strings.Contains(lower, "sonar")
 }
 
 func resolveWorktreeDir(cfg *config.Config, itemID string) string {
@@ -4263,6 +4471,11 @@ func showReviewGate(info ReviewGateInfo, options []menuOption, engine RunEngine)
 	}
 	hline("╚", "═", "╝")
 
+	// Auto-accept after timeout when recommendation is positive.
+	lower := strings.ToLower(info.Recommendation)
+	if strings.Contains(lower, "accept") || strings.Contains(lower, "approve") {
+		return engineSelectMenuTimed(engine, "", options, 0, autoAcceptTimeout)
+	}
 	return engineSelectMenu(engine, "", options, 0)
 }
 
@@ -4497,12 +4710,25 @@ func defaultPromptUser(_ string) (string, error) {
 	return reader.ReadString('\n')
 }
 
+// autoAcceptTimeout is how long pause/review gates wait before auto-selecting
+// the recommended option (accept, approve, or continue).
+const autoAcceptTimeout = 120 * time.Second
+
 // engineSelectMenu uses the engine override if set, otherwise the real terminal menu.
 func engineSelectMenu(engine RunEngine, prompt string, options []menuOption, defaultIdx int) string {
 	if engine.SelectMenu != nil {
 		return engine.SelectMenu(prompt, options, defaultIdx)
 	}
 	return selectMenu(prompt, options, defaultIdx)
+}
+
+// engineSelectMenuTimed is like engineSelectMenu but with a timeout that
+// auto-selects the default option. Used when the recommendation is positive.
+func engineSelectMenuTimed(engine RunEngine, prompt string, options []menuOption, defaultIdx int, timeout time.Duration) string {
+	if engine.SelectMenu != nil {
+		return engine.SelectMenu(prompt, options, defaultIdx)
+	}
+	return selectMenuTimed(prompt, options, defaultIdx, timeout)
 }
 
 // engineConfirmPrompt uses the engine override if set, otherwise the real terminal prompt.
