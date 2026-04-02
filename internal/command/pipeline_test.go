@@ -252,6 +252,55 @@ func TestSmokeNotConfigured(t *testing.T) {
 	}
 }
 
+// --- watchMainCI ---
+
+func TestWatchMainCINullRuns(t *testing.T) {
+	// When gh returns "null null null" (no Deploy workflow), watchMainCI should
+	// skip gracefully instead of looping forever.
+	runCmd := func(cmd string) ([]byte, int, error) {
+		return []byte("null null null\n"), 0, nil
+	}
+	err := watchMainCI(runCmd)
+	if err != nil {
+		t.Errorf("watchMainCI returned error for null runs: %v", err)
+	}
+}
+
+func TestWatchMainCIEmptyOutput(t *testing.T) {
+	// When gh returns empty output (no runs at all), should keep polling.
+	// But if exit code != 0, should skip.
+	runCmd := func(cmd string) ([]byte, int, error) {
+		return []byte(""), 1, nil
+	}
+	err := watchMainCI(runCmd)
+	if err != nil {
+		t.Errorf("watchMainCI returned error for gh failure: %v", err)
+	}
+}
+
+func TestWatchMainCISuccess(t *testing.T) {
+	runCmd := func(cmd string) ([]byte, int, error) {
+		return []byte("12345 completed success\n"), 0, nil
+	}
+	err := watchMainCI(runCmd)
+	if err != nil {
+		t.Errorf("watchMainCI returned error for success: %v", err)
+	}
+}
+
+func TestWatchMainCIFailed(t *testing.T) {
+	runCmd := func(cmd string) ([]byte, int, error) {
+		return []byte("12345 completed failure\n"), 0, nil
+	}
+	err := watchMainCI(runCmd)
+	if err == nil {
+		t.Error("watchMainCI should return error for failed CI")
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Errorf("error should mention failure: %v", err)
+	}
+}
+
 // --- Config ---
 
 func TestPipelineConfig(t *testing.T) {

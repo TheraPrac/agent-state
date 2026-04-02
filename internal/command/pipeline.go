@@ -345,6 +345,12 @@ func watchMainCI(runCmd func(string) ([]byte, int, error)) error {
 
 		runID := parts[0]
 		status := parts[1]
+
+		// jq returns "null null null" when no matching workflow exists
+		if runID == "null" || status == "null" {
+			fmt.Println("  no Deploy workflow found — skipping CI watch")
+			return nil
+		}
 		conclusion := ""
 		if len(parts) >= 3 {
 			conclusion = parts[2]
