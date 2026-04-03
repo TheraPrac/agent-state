@@ -335,6 +335,23 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	editCmd.Flags().Bool("stdin", false, "read new value from stdin instead of opening $EDITOR")
 	root.AddCommand(editCmd)
 
+	revertCmd := &cobra.Command{
+		Use:   "revert <id> [step]",
+		Short: "Revert item to pre-step snapshot state",
+		Long:  `Restore an item to its state before the most recent snapshot. If step is given, reverts to the snapshot from that specific step (e.g., "plan_review", "implement").`,
+		Args:  cobra.RangeArgs(1, 2),
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			step := ""
+			if len(args) > 1 {
+				step = args[1]
+			}
+			exitCode = command.Revert(appStore, appCfg, args[0], step, dryRun)
+		},
+	}
+	revertCmd.Flags().Bool("dry-run", false, "show what would be reverted without making changes")
+	root.AddCommand(revertCmd)
+
 	// --- Read/query commands ---
 
 	statusCmd := &cobra.Command{

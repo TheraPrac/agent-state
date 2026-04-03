@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/plan"
@@ -1538,6 +1539,22 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		}
 		sr := executeStepWithSession(localStore, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID, isResume)
 		sr.Duration = time.Since(stepStart)
+
+		// Show item changes made by this step (reload and diff against pre-step snapshot)
+		if step.Type == "claude" || step.Type == "uat_review" {
+			localStore, _ = store.New(cfg) // reload after subprocess may have modified files
+			if postItem, ok := localStore.Get(itemID); ok && postItem.Doc != nil {
+				postContent := postItem.Doc.String()
+				preContent := changelog.LastSnapshot(cfg, itemID, step.Name())
+				if preContent != "" && preContent != postContent {
+					diff := changelog.DiffSnapshot(preContent, postContent)
+					if diff != "(no changes)" && diff != "(whitespace-only changes)" {
+						fmt.Fprintf(os.Stderr, "\n[%s] Item changes from %s:\n%s", itemID, step.Name(), diff)
+					}
+				}
+			}
+		}
+
 		result.Steps = append(result.Steps, sr)
 		result.TotalCost += sr.CostUSD
 		result.InputTokens += sr.InputTokens
@@ -1987,6 +2004,18 @@ func executeStepWithSession(s *store.Store, cfg *config.Config, itemID, sprintID
 
 func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, step config.RunStepDef, opts RunOpts, engine RunEngine, worktreeDir, claudeSessionID string, isResume bool) StepResult {
 	sr := StepResult{Step: step.Name(), Type: "claude"}
+
+	// Snapshot item state before this step for diff tracking
+	var preSnapshot string
+	if item, ok := s.Get(itemID); ok && item.Doc != nil {
+		preSnapshot = item.Doc.String()
+		changelog.Snapshot(cfg, itemID, step.Name(), preSnapshot)
+	}
+
+	// Set active session for changelog grouping
+	prevSession := changelog.ActiveSessionID
+	changelog.ActiveSessionID = fmt.Sprintf("%s/%s", itemID, step.Name())
+	defer func() { changelog.ActiveSessionID = prevSession }()
 
 	// Build prompt
 	prompt := step.Prompt

@@ -18,12 +18,17 @@ import (
 type Entry struct {
 	Timestamp string `json:"timestamp"`
 	Agent     string `json:"agent,omitempty"`
-	Op        string `json:"op"`              // create, update, start, close, tag_add, tag_rm, dep_add, dep_rm
-	Field     string `json:"field,omitempty"`  // field that changed
-	OldValue  string `json:"old,omitempty"`    // previous value
-	NewValue  string `json:"new,omitempty"`    // new value
-	Reason    string `json:"reason,omitempty"` // human/agent explanation
+	SessionID string `json:"session,omitempty"` // groups entries from the same subprocess step
+	Op        string `json:"op"`                // create, update, start, close, tag_add, tag_rm, dep_add, dep_rm, snapshot
+	Field     string `json:"field,omitempty"`    // field that changed
+	OldValue  string `json:"old,omitempty"`      // previous value
+	NewValue  string `json:"new,omitempty"`      // new value
+	Reason    string `json:"reason,omitempty"`   // human/agent explanation
 }
+
+// ActiveSessionID is set by st run subprocess steps to group changelog entries.
+// When set, all Append calls include this session ID automatically.
+var ActiveSessionID string
 
 // Append adds an entry to the changelog for the given item ID.
 func Append(cfg *config.Config, id string, entry Entry) error {
@@ -32,6 +37,9 @@ func Append(cfg *config.Config, id string, entry Entry) error {
 	}
 	if entry.Agent == "" {
 		entry.Agent = cfg.AgentID()
+	}
+	if entry.SessionID == "" && ActiveSessionID != "" {
+		entry.SessionID = ActiveSessionID
 	}
 
 	dir := cfg.ChangelogDir()
@@ -118,6 +126,91 @@ func readFile(path string) ([]Entry, error) {
 	}
 
 	return entries, scanner.Err()
+}
+
+// Snapshot records the full document state before a subprocess step.
+// Returns the snapshot content for later diff comparison.
+func Snapshot(cfg *config.Config, id, stepName, content string) (string, error) {
+	entry := Entry{
+		Op:       "snapshot",
+		Field:    stepName,
+		NewValue: content,
+		Reason:   "pre-step snapshot",
+	}
+	err := Append(cfg, id, entry)
+	return content, err
+}
+
+// DiffSnapshot compares a pre-step snapshot with the current content
+// and returns a human-readable summary of what changed.
+func DiffSnapshot(before, after string) string {
+	if before == after {
+		return "(no changes)"
+	}
+
+	beforeLines := strings.Split(before, "\n")
+	afterLines := strings.Split(after, "\n")
+
+	// Build line sets for simple diff
+	beforeSet := make(map[string]bool, len(beforeLines))
+	for _, l := range beforeLines {
+		beforeSet[strings.TrimSpace(l)] = true
+	}
+	afterSet := make(map[string]bool, len(afterLines))
+	for _, l := range afterLines {
+		afterSet[strings.TrimSpace(l)] = true
+	}
+
+	var added, removed []string
+	for _, l := range afterLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" && !beforeSet[trimmed] {
+			added = append(added, trimmed)
+		}
+	}
+	for _, l := range beforeLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" && !afterSet[trimmed] {
+			removed = append(removed, trimmed)
+		}
+	}
+
+	var sb strings.Builder
+	if len(removed) > 0 {
+		for _, l := range removed {
+			if len(l) > 80 {
+				l = l[:77] + "..."
+			}
+			sb.WriteString("  - " + l + "\n")
+		}
+	}
+	if len(added) > 0 {
+		for _, l := range added {
+			if len(l) > 80 {
+				l = l[:77] + "..."
+			}
+			sb.WriteString("  + " + l + "\n")
+		}
+	}
+
+	if sb.Len() == 0 {
+		return "(whitespace-only changes)"
+	}
+	return sb.String()
+}
+
+// LastSnapshot returns the most recent snapshot content for a given step, if any.
+func LastSnapshot(cfg *config.Config, id, stepName string) string {
+	entries, err := Read(cfg, id)
+	if err != nil {
+		return ""
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Op == "snapshot" && entries[i].Field == stepName {
+			return entries[i].NewValue
+		}
+	}
+	return ""
 }
 
 // Format renders a changelog entry as a human-readable string.
