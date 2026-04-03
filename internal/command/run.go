@@ -376,9 +376,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	now := time.Now()
 
 	// Header
-	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
-		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST")
-	fmt.Println("    " + strings.Repeat("-", 112))
+	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s\n",
+		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST", "TOKENS (I/O)")
+	fmt.Println("    " + strings.Repeat("-", 130))
 
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
@@ -387,6 +387,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 		epicHasItems := false
 		var epicWall, epicST, epicAI time.Duration
 		var epicCost float64
+		var epicInTok, epicOutTok int
 
 		for _, sp := range reg.Sprints {
 			if sp.Epic != epic.ID || len(sp.Items) == 0 {
@@ -398,6 +399,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			}
 			var sprintWall, sprintST, sprintAI time.Duration
 			var sprintCost float64
+			var sprintInTok, sprintOutTok int
 
 			done := 0
 			active := 0
@@ -577,11 +579,42 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 
+				// Token counts
+				var itemInTok, itemOutTok int
+				if tt := item.TimeTracking; tt != nil {
+					if raw, ok := tt["input_tokens"]; ok {
+						switch v := raw.(type) {
+						case float64:
+							itemInTok = int(v)
+						case int:
+							itemInTok = v
+						case string:
+							fmt.Sscanf(v, "%d", &itemInTok)
+						}
+					}
+					if raw, ok := tt["output_tokens"]; ok {
+						switch v := raw.(type) {
+						case float64:
+							itemOutTok = int(v)
+						case int:
+							itemOutTok = v
+						case string:
+							fmt.Sscanf(v, "%d", &itemOutTok)
+						}
+					}
+				}
+				tokStr := ""
+				if itemInTok > 0 || itemOutTok > 0 {
+					tokStr = fmt.Sprintf("%s/%s", formatTokens(itemInTok), formatTokens(itemOutTok))
+				}
+
 				// Accumulate sprint totals
 				sprintWall += wallDur
 				sprintST += stDur
 				sprintAI += aiDur
 				sprintCost += itemCost
+				sprintInTok += itemInTok
+				sprintOutTok += itemOutTok
 
 				// Created date
 				createdStr := ""
@@ -601,8 +634,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					planBadge = fmt.Sprintf("  %s󰙅%s", "\033[32m", "\033[0m")
 				}
 				fmt.Printf("      %-80s%s\n", title, planBadge)
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
-					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s%s\n",
+					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, tokStr, inFlight)
 			}
 
 			// Sprint subtotal (always printed)
@@ -623,9 +656,13 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				if sprintCost > 0 {
 					sprintCostStr = fmt.Sprintf("$%.2f", sprintCost)
 				}
-				fmt.Printf("    %s\n", strings.Repeat("─", 112))
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
-					"", "", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "", sprintWallStr, sprintSTStr, sprintAIStr, sprintCostStr)
+				sprintTokStr := ""
+				if sprintInTok > 0 || sprintOutTok > 0 {
+					sprintTokStr = fmt.Sprintf("%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok))
+				}
+				fmt.Printf("    %s\n", strings.Repeat("─", 130))
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s\n",
+					"", "", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "", sprintWallStr, sprintSTStr, sprintAIStr, sprintCostStr, sprintTokStr)
 			}
 
 			// Accumulate epic totals
@@ -633,6 +670,8 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			epicST += sprintST
 			epicAI += sprintAI
 			epicCost += sprintCost
+			epicInTok += sprintInTok
+			epicOutTok += sprintOutTok
 		}
 
 		// Epic grand total
@@ -653,10 +692,14 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			if epicCost > 0 {
 				epicCostStr = fmt.Sprintf("$%.2f", epicCost)
 			}
-			fmt.Printf("\n    %s\n", strings.Repeat("═", 112))
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s\n",
-				"TOTAL", "", epic.Title, "", epicWallStr, epicSTStr, epicAIStr, epicCostStr)
-			fmt.Printf("    %s\n", strings.Repeat("═", 112))
+			epicTokStr := ""
+			if epicInTok > 0 || epicOutTok > 0 {
+				epicTokStr = fmt.Sprintf("%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok))
+			}
+			fmt.Printf("\n    %s\n", strings.Repeat("═", 130))
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s\n",
+				"TOTAL", "", epic.Title, "", epicWallStr, epicSTStr, epicAIStr, epicCostStr, epicTokStr)
+			fmt.Printf("    %s\n", strings.Repeat("═", 130))
 		}
 	}
 	// Standalone items — active items not in any sprint
@@ -778,9 +821,37 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			if len(title) > 80 {
 				title = title[:77] + "..."
 			}
+			tokStr := ""
+			if tt := item.TimeTracking; tt != nil {
+				var inTok, outTok int
+				if raw, ok := tt["input_tokens"]; ok {
+					switch v := raw.(type) {
+					case float64:
+						inTok = int(v)
+					case int:
+						inTok = v
+					case string:
+						fmt.Sscanf(v, "%d", &inTok)
+					}
+				}
+				if raw, ok := tt["output_tokens"]; ok {
+					switch v := raw.(type) {
+					case float64:
+						outTok = int(v)
+					case int:
+						outTok = v
+					case string:
+						fmt.Sscanf(v, "%d", &outTok)
+					}
+				}
+				if inTok > 0 || outTok > 0 {
+					tokStr = fmt.Sprintf("%s/%s", formatTokens(inTok), formatTokens(outTok))
+				}
+			}
+
 			fmt.Printf("      %s\n", title)
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s%s\n",
-				item.ID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, inFlight)
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s%s\n",
+				item.ID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, tokStr, inFlight)
 		}
 	}
 
