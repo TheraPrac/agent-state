@@ -161,8 +161,8 @@ func TestDeployCheckHealthURL(t *testing.T) {
 	}
 
 	opts := PipelineOpts{
-		HTTPGet: func(url string) (int, error) {
-			return 200, nil
+		HTTPGet: func(url string) (int, string, error) {
+			return 200, "", nil
 		},
 		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
 	}
@@ -187,8 +187,8 @@ func TestDeployCheckHealthFail(t *testing.T) {
 	}
 
 	opts := PipelineOpts{
-		HTTPGet: func(url string) (int, error) {
-			return 503, nil
+		HTTPGet: func(url string) (int, string, error) {
+			return 503, `{"status":"unhealthy"}`, nil
 		},
 		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
 	}
@@ -349,8 +349,8 @@ func TestPipelineConfig(t *testing.T) {
 // --- Health check ---
 
 func TestCheckHealthPass(t *testing.T) {
-	err := checkHealth("http://test", 1, func(url string) (int, error) {
-		return 200, nil
+	err := checkHealth("http://test", 1, func(url string) (int, string, error) {
+		return 200, "", nil
 	})
 	if err != nil {
 		t.Errorf("checkHealth: %v", err)
@@ -358,10 +358,13 @@ func TestCheckHealthPass(t *testing.T) {
 }
 
 func TestCheckHealthTimeout(t *testing.T) {
-	err := checkHealth("http://test", 1, func(url string) (int, error) {
-		return 503, nil
+	err := checkHealth("http://test", 1, func(url string) (int, string, error) {
+		return 503, `{"status":"unhealthy","mode":"grounded"}`, nil
 	})
 	if err == nil {
 		t.Error("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "grounded") {
+		t.Errorf("expected body in error, got: %v", err)
 	}
 }

@@ -1511,6 +1511,21 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	for i := startIdx; i < len(pipeline); i++ {
 		step := pipeline[i]
 		stepStart := time.Now()
+
+		// Ensure item is active before each step. Pipeline commands
+		// (merge, deploy-check, smoke, test) require active status.
+		// Status can drift if a previous fix attempt or concurrent
+		// process changed it.
+		if refreshStore, err := store.New(cfg); err == nil {
+			if refreshItem, ok := refreshStore.Get(itemID); ok {
+				if refreshItem.Status != "active" {
+					refreshItem.Status = "active"
+					refreshStore.Write(refreshItem)
+					localStore, _ = store.New(cfg)
+				}
+			}
+		}
+
 		// Track which claude invocation this is for session reuse.
 		// Resume if: (a) 2nd+ claude step in this run, or (b) reusing
 		// a session from a previous run.
@@ -1564,6 +1579,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 							"- If a test is wrong (testing the wrong thing), fix the test to correctly verify the implementation.\n"+
 							"- If an acceptance criterion has escaping/path issues, fix the AC command — but make sure the fixed command still validates the actual implementation.\n"+
 							"- NEVER weaken a test or remove a check just to make it pass. Every AC must meaningfully verify the feature works.\n\n"+
+							"If the failure is NOT caused by this item's changes (e.g. pre-existing flaky test, "+
+							"infrastructure/permission error, item status issue), include the text [NOT_FIXABLE] "+
+							"in your final response. This signals the pipeline to auto-skip instead of retrying.\n\n"+
 							"Commit and push any fixes. Do NOT merge. Follow all procedures in CLAUDE.md.",
 						stepLabel, itemID, attempt, sr.Error)
 					fixStep := config.RunStepDef{Type: "claude", Prompt: fixPrompt}
@@ -1573,6 +1591,18 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					result.TotalCost += fixSR.CostUSD
 					result.InputTokens += fixSR.InputTokens
 					result.OutputTokens += fixSR.OutputTokens
+
+					// Check for "not fixable" signal: if the fix agent's output
+					// contains the marker, auto-skip instead of retrying.
+					if fixSR.Passed && strings.Contains(fixSR.FullOutput, "[NOT_FIXABLE]") {
+						fmt.Printf("[%s] Fix agent reported NOT_FIXABLE — auto-skipping %s\n", itemID, step.Name())
+						result.Steps = append(result.Steps, StepResult{
+							Step: step.Name(), Type: "skipped", Passed: true,
+							Output: "auto-skipped: fix agent reported NOT_FIXABLE",
+						})
+						fixed = true
+						break
+					}
 
 					if !fixSR.Passed {
 						fmt.Printf("[%s] Fix attempt %d failed to run\n", itemID, attempt)

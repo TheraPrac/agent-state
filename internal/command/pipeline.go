@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ import (
 type PipelineOpts struct {
 	RunCmd    func(cmd string) ([]byte, int, error)
 	Backend   evidence.Backend
-	HTTPGet   func(url string) (int, error) // returns status code
+	HTTPGet   func(url string) (int, string, error) // returns status code, body, error
 }
 
 // --- Merge ---
@@ -383,32 +384,42 @@ func watchMainCI(runCmd func(string) ([]byte, int, error)) error {
 	return fmt.Errorf("CI watch timed out after 20 minutes")
 }
 
-func checkHealth(url string, timeout int, httpGet func(string) (int, error)) error {
+func checkHealth(url string, timeout int, httpGet func(string) (int, string, error)) error {
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		status, err := httpGet(url)
+		status, body, err := httpGet(url)
 		if err == nil && status == 200 {
 			return nil
 		}
 		if err != nil {
 			lastErr = err
 		} else {
-			lastErr = fmt.Errorf("status %d", status)
+			// Include truncated response body for non-200 to aid diagnosis
+			detail := body
+			if len(detail) > 500 {
+				detail = detail[:500] + "..."
+			}
+			if detail != "" {
+				lastErr = fmt.Errorf("status %d: %s", status, detail)
+			} else {
+				lastErr = fmt.Errorf("status %d", status)
+			}
 		}
 		time.Sleep(5 * time.Second)
 	}
 	return fmt.Errorf("timeout after %ds: %v", timeout, lastErr)
 }
 
-func defaultHTTPGet(url string) (int, error) {
+func defaultHTTPGet(url string) (int, string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	resp.Body.Close()
-	return resp.StatusCode, nil
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	return resp.StatusCode, string(bodyBytes), nil
 }
 
 // uploadArtifactsFromPatterns bundles matching files and uploads as tar.gz.
