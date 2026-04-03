@@ -101,12 +101,15 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 		if plan.Exists(cfg.PlansDir(), itemID) {
 			p, _ := plan.Load(cfg.PlansDir(), itemID)
 			if p != nil && p.Approved {
-				continue // already planned and approved
+				continue // already planned and approved (plan sidecar)
 			}
 		}
 		item, ok := s.Get(itemID)
 		if !ok || cfg.IsTerminalStatus(item.Type, item.Status) {
 			continue
+		}
+		if item.PlanApproved {
+			continue // already approved (item field)
 		}
 		unplanned = append(unplanned, itemID)
 	}
