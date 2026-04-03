@@ -103,6 +103,17 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		setNestedField(item, "time_tracking", "total_ai_cost_usd", aiCost)
 	}
 
+	// Token totals
+	if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok && v != "" {
+		setNestedField(item, "time_tracking", "total_input_tokens", v)
+	}
+	if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok && v != "" {
+		setNestedField(item, "time_tracking", "total_output_tokens", v)
+	}
+	if v, ok := getNestedField(item, "time_tracking", "total_tokens"); ok && v != "" {
+		setNestedField(item, "time_tracking", "total_tokens_final", v)
+	}
+
 	if opts.Reason != "" {
 		item.Doc.SetField("resolution", opts.Reason)
 	}

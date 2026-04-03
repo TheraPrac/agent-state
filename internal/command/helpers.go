@@ -122,3 +122,37 @@ func formatDuration(d time.Duration) string {
 	result := fmt.Sprintf("%ds", seconds)
 	return result
 }
+
+// formatTokens formats a token count as human-readable: 1.2K, 3.5M, 1.1B, 2.0T.
+func formatTokens(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1_000_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	}
+	if n < 1_000_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n < 1_000_000_000_000 {
+		return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
+	}
+	return fmt.Sprintf("%.1fT", float64(n)/1_000_000_000_000)
+}
+
+// formatLOC formats a net LOC count as human-readable with +/- prefix: +1.2K, -350, +2.5M.
+func formatLOC(n int) string {
+	sign := "+"
+	abs := n
+	if n < 0 {
+		sign = ""
+		abs = -n
+	}
+	if abs < 1000 {
+		return fmt.Sprintf("%s%d", sign, n)
+	}
+	if abs < 1_000_000 {
+		return fmt.Sprintf("%s%.1fK", sign, float64(n)/1_000)
+	}
+	return fmt.Sprintf("%s%.1fM", sign, float64(n)/1_000_000)
+}

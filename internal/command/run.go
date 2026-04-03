@@ -55,17 +55,26 @@ type RunEngine struct {
 	ConfirmPrompt func(prompt string) bool
 }
 
+// ClaudeUsage represents token usage from claude -p --output-format json.
+type ClaudeUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
 // ClaudeResult represents parsed JSON output from claude -p --output-format json.
 type ClaudeResult struct {
-	Type         string   `json:"type"`
-	Subtype      string   `json:"subtype"`
-	TotalCostUSD float64  `json:"total_cost_usd"`
-	DurationMs   int64    `json:"duration_ms"`
-	SessionID    string   `json:"session_id"`
-	NumTurns     int      `json:"num_turns"`
-	Result       string   `json:"result"`
-	IsError      bool     `json:"is_error"`
-	Errors       []string `json:"errors"`
+	Type         string      `json:"type"`
+	Subtype      string      `json:"subtype"`
+	TotalCostUSD float64     `json:"total_cost_usd"`
+	DurationMs   int64       `json:"duration_ms"`
+	SessionID    string      `json:"session_id"`
+	NumTurns     int         `json:"num_turns"`
+	Result       string      `json:"result"`
+	IsError      bool        `json:"is_error"`
+	Errors       []string    `json:"errors"`
+	Usage        ClaudeUsage `json:"usage"`
 }
 
 // StepResult captures the outcome of a single pipeline step.
@@ -79,16 +88,20 @@ type StepResult struct {
 	Duration     time.Duration `json:"duration"`
 	CostUSD      float64       `json:"cost_usd,omitempty"`
 	AIDurationMs int64         `json:"ai_duration_ms,omitempty"`
+	InputTokens  int           `json:"input_tokens,omitempty"`
+	OutputTokens int           `json:"output_tokens,omitempty"`
 }
 
 // ItemResult captures the outcome of running one sprint item.
 type ItemResult struct {
-	ItemID    string       `json:"item_id"`
-	Title     string       `json:"title"`
-	Steps     []StepResult `json:"steps"`
-	Success   bool         `json:"success"`
-	TotalCost float64      `json:"total_cost"`
-	Duration  time.Duration `json:"duration"`
+	ItemID       string        `json:"item_id"`
+	Title        string        `json:"title"`
+	Steps        []StepResult  `json:"steps"`
+	Success      bool          `json:"success"`
+	TotalCost    float64       `json:"total_cost"`
+	Duration     time.Duration `json:"duration"`
+	InputTokens  int           `json:"input_tokens"`
+	OutputTokens int           `json:"output_tokens"`
 }
 
 // DefaultRunEngine returns a RunEngine with real implementations.
@@ -1136,7 +1149,7 @@ func Advance(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, 
 	result := runSingleItem(s, cfg, itemID, sprintID, pipeline, opts, engine)
 
 	if result.Success {
-		fmt.Printf("\nDone: %s (cost: $%.2f)\n", itemID, result.TotalCost)
+		fmt.Printf("\nDone: %s (cost: $%.2f, tokens: %s in / %s out)\n", itemID, result.TotalCost, formatTokens(result.InputTokens), formatTokens(result.OutputTokens))
 	} else {
 		fmt.Printf("\nFailed: %s\n", itemID)
 		for _, sr := range result.Steps {
@@ -1406,6 +1419,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		sr.Duration = time.Since(stepStart)
 		result.Steps = append(result.Steps, sr)
 		result.TotalCost += sr.CostUSD
+		result.InputTokens += sr.InputTokens
+		result.OutputTokens += sr.OutputTokens
 
 		if !sr.Passed {
 			fmt.Printf("[%s] Step %s FAILED: %s\n", itemID, step.Name(), sr.Error)
@@ -1450,6 +1465,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					fixSR := executeClaude(s, cfg, itemID, sprintID, fixStep, opts, engine, worktreeDir, claudeSessionID, true)
 					result.Steps = append(result.Steps, fixSR)
 					result.TotalCost += fixSR.CostUSD
+					result.InputTokens += fixSR.InputTokens
+					result.OutputTokens += fixSR.OutputTokens
 
 					if !fixSR.Passed {
 						fmt.Printf("[%s] Fix attempt %d failed to run\n", itemID, attempt)
@@ -1462,6 +1479,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 						sr2.Duration = time.Since(stepStart)
 						result.Steps = append(result.Steps, sr2)
 						result.TotalCost += sr2.CostUSD
+						result.InputTokens += sr2.InputTokens
+						result.OutputTokens += sr2.OutputTokens
 
 						if sr2.Passed {
 							fmt.Printf("[%s] Step %s OK after fix attempt %d (%s)\n", itemID, step.Name(), attempt, sr2.Duration.Round(time.Second))
@@ -1615,6 +1634,20 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.4f", prev+result.TotalCost))
 	}
 
+	// Accumulate token counts
+	if result.InputTokens > 0 {
+		prev := readIntField(item, "time_tracking", "input_tokens")
+		setNestedField(item, "time_tracking", "input_tokens", fmt.Sprintf("%d", prev+result.InputTokens))
+	}
+	if result.OutputTokens > 0 {
+		prev := readIntField(item, "time_tracking", "output_tokens")
+		setNestedField(item, "time_tracking", "output_tokens", fmt.Sprintf("%d", prev+result.OutputTokens))
+	}
+	if result.InputTokens > 0 || result.OutputTokens > 0 {
+		prev := readIntField(item, "time_tracking", "total_tokens")
+		setNestedField(item, "time_tracking", "total_tokens", fmt.Sprintf("%d", prev+result.InputTokens+result.OutputTokens))
+	}
+
 	// Accumulate AI duration from all steps that report it (claude, plan, uat_review, etc.)
 	var aiDurationMs int64
 	for _, sr := range result.Steps {
@@ -1655,11 +1688,12 @@ func appendAISessionRecord(item *model.Item, result ItemResult) {
 		if sr.Type != "claude" || sr.CostUSD == 0 {
 			continue
 		}
-		// Format: "cost:$X.XXXX duration:Xs step:<name> at:<timestamp>"
+		// Format: "cost:$X.XXXX duration:Xs in:N out:N step:<name> at:<timestamp>"
 		aiDur := time.Duration(sr.AIDurationMs) * time.Millisecond
-		record := fmt.Sprintf("cost:$%.4f duration:%s step:%s at:%s",
-			sr.CostUSD, aiDur.Round(time.Second), sr.Step,
-			time.Now().Format(time.RFC3339))
+		record := fmt.Sprintf("cost:$%.4f duration:%s in:%d out:%d step:%s at:%s",
+			sr.CostUSD, aiDur.Round(time.Second),
+			sr.InputTokens, sr.OutputTokens,
+			sr.Step, time.Now().Format(time.RFC3339))
 
 		if item.WorkTracking == nil {
 			item.WorkTracking = make(map[string]interface{})
@@ -1881,6 +1915,8 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	sr.CostUSD = claudeResult.TotalCostUSD
 	sr.AIDurationMs = claudeResult.DurationMs
+	sr.InputTokens = claudeResult.Usage.InputTokens + claudeResult.Usage.CacheCreationInputTokens + claudeResult.Usage.CacheReadInputTokens
+	sr.OutputTokens = claudeResult.Usage.OutputTokens
 	sr.Output = truncate(claudeResult.Result, 500)
 	sr.FullOutput = claudeResult.Result
 
@@ -1918,6 +1954,8 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					}
 					sr.CostUSD = cr2.TotalCostUSD
 					sr.AIDurationMs = cr2.DurationMs
+					sr.InputTokens = cr2.Usage.InputTokens + cr2.Usage.CacheCreationInputTokens + cr2.Usage.CacheReadInputTokens
+					sr.OutputTokens = cr2.Usage.OutputTokens
 					sr.Output = truncate(cr2.Result, 500)
 					sr.FullOutput = cr2.Result
 					if exitCode2 == 0 && (cr2.Subtype == "" || cr2.Subtype == "success") {
@@ -2471,7 +2509,7 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 	content = append(content,
 		"",
 		fmt.Sprintf("Next:   %s", nextStep),
-		fmt.Sprintf("Cost:   $%.2f  |  Steps: %d  |  Fails: %d", result.TotalCost, len(result.Steps), failCount),
+		fmt.Sprintf("Cost:   $%.2f  |  Tokens: %s in / %s out  |  Steps: %d  |  Fails: %d", result.TotalCost, formatTokens(result.InputTokens), formatTokens(result.OutputTokens), len(result.Steps), failCount),
 		"",
 		fmt.Sprintf(">>> %s", recommendation),
 		"",
@@ -4962,15 +5000,15 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		}
 	}
 
-	sep := strings.Repeat("─", 105)
+	sep := strings.Repeat("─", 130)
 
 	fmt.Println()
 	if epic != nil {
 		fmt.Printf("  Epic: %s\n", epic.Title)
 	}
 	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %10s\n",
-		"ITEM", "STATUS", "ST TIME", "AI TIME", "COST", "SESSION $")
+	fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s  %10s\n",
+		"ITEM", "STATUS", "ST TIME", "AI TIME", "COST", "TOKENS (I/O)", "NET LOC", "SESSION $")
 	fmt.Printf("  %s\n", sep)
 
 	// Collect all sprints in this epic
@@ -4989,6 +5027,8 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 
 	var epicWall, epicAI time.Duration
 	var epicCost float64
+	var epicInTok, epicOutTok int
+	var epicNetLOC int
 
 	for _, sid := range sprintIDs {
 		sprint, err := reg.SprintByID(sid)
@@ -5005,6 +5045,8 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 
 		var sprintWall, sprintAI time.Duration
 		var sprintCost float64
+		var sprintInTok, sprintOutTok int
+		var sprintNetLOC int
 		sprintDone, sprintTotal := 0, 0
 
 		for _, itemID := range sprint.Items {
@@ -5026,6 +5068,7 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			var sessCost float64
 			var totalWall, totalAI time.Duration
 			var totalCostItem float64
+			var itemInTok, itemOutTok int
 
 			if isCurrent {
 				for _, r := range results {
@@ -5060,10 +5103,27 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			if v, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok {
 				fmt.Sscanf(v, "%f", &totalCostItem)
 			}
+			if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok {
+				fmt.Sscanf(v, "%d", &itemInTok)
+			}
+			if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok {
+				fmt.Sscanf(v, "%d", &itemOutTok)
+			}
+
+			// Net LOC from PR manifest
+			var itemNetLOC int
+			if m, err := manifest.Load(cfg.ManifestDir(), itemID); err == nil {
+				for _, pr := range m.PRs {
+					itemNetLOC += pr.CodeStats.Insertions - pr.CodeStats.Deletions
+				}
+			}
 
 			sprintWall += totalWall
 			sprintAI += totalAI
 			sprintCost += totalCostItem
+			sprintInTok += itemInTok
+			sprintOutTok += itemOutTok
+			sprintNetLOC += itemNetLOC
 
 			f := func(d time.Duration) string {
 				if d > 0 { return formatDuration(d) }
@@ -5073,30 +5133,57 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				if c > 0 { return fmt.Sprintf("$%.2f", c) }
 				return "—"
 			}
+			ft := func(in, out int) string {
+				if in == 0 && out == 0 { return "—" }
+				return fmt.Sprintf("%s/%s", formatTokens(in), formatTokens(out))
+			}
+			fl := func(n int) string {
+				if n == 0 { return "—" }
+				return formatLOC(n)
+			}
 
-			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %10s\n",
+			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s  %10s\n",
 				itemID, truncate(status, 22),
-				f(totalWall), f(totalAI), fc(totalCostItem), fc(sessCost))
+				f(totalWall), f(totalAI), fc(totalCostItem), ft(itemInTok, itemOutTok), fl(itemNetLOC), fc(sessCost))
 		}
 
 		// Sprint subtotal
-		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s\n", "",
+		sprintTokStr := "—"
+		if sprintInTok > 0 || sprintOutTok > 0 {
+			sprintTokStr = fmt.Sprintf("%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok))
+		}
+		sprintLOCStr := "—"
+		if sprintNetLOC != 0 {
+			sprintLOCStr = formatLOC(sprintNetLOC)
+		}
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s\n", "",
 			fmt.Sprintf("%d/%d done", sprintDone, sprintTotal),
 			formatDuration(sprintWall), formatDuration(sprintAI),
-			fmt.Sprintf("$%.2f", sprintCost))
+			fmt.Sprintf("$%.2f", sprintCost), sprintTokStr, sprintLOCStr)
 
 		epicWall += sprintWall
 		epicAI += sprintAI
 		epicCost += sprintCost
+		epicInTok += sprintInTok
+		epicOutTok += sprintOutTok
+		epicNetLOC += sprintNetLOC
 	}
 
 	// Epic total
 	if epic != nil && len(sprintIDs) > 1 {
+		epicTokStr := "—"
+		if epicInTok > 0 || epicOutTok > 0 {
+			epicTokStr = fmt.Sprintf("%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok))
+		}
+		epicLOCStr := "—"
+		if epicNetLOC != 0 {
+			epicLOCStr = formatLOC(epicNetLOC)
+		}
 		fmt.Printf("\n  %s\n", sep)
-		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s\n",
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s\n",
 			"TOTAL", truncate(epic.Title, 22),
 			formatDuration(epicWall), formatDuration(epicAI),
-			fmt.Sprintf("$%.2f", epicCost))
+			fmt.Sprintf("$%.2f", epicCost), epicTokStr, epicLOCStr)
 	}
 	fmt.Printf("  %s\n\n", sep)
 }
