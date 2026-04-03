@@ -68,8 +68,25 @@ func Edit(s *store.Store, cfg *config.Config, id, field string, useStdin bool) i
 		editor = os.Getenv("VISUAL")
 	}
 	if editor == "" {
-		fmt.Fprintln(os.Stderr, "$EDITOR not set — set EDITOR or VISUAL environment variable, or pipe input via --stdin")
-		return 1
+		// No editor available — fall back to reading from stdin with a prompt.
+		// This makes `st edit` work in non-interactive contexts (agent subprocesses)
+		// where $EDITOR isn't set but stdin is a terminal.
+		fmt.Fprintf(os.Stderr, "No $EDITOR set. Enter new value for %s (Ctrl+D to finish):\n", field)
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reading stdin: %v\n", err)
+			return 1
+		}
+		newValue := strings.TrimRight(string(data), "\n")
+		if newValue == "" {
+			fmt.Fprintln(os.Stderr, "empty input — no changes")
+			return 1
+		}
+		if newValue == currentValue {
+			fmt.Println("No changes.")
+			return 0
+		}
+		return Update(s, cfg, id, field, newValue)
 	}
 
 	// Write to temp file
