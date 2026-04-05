@@ -160,8 +160,8 @@ func File(path string) (*model.Item, error) {
 				continue
 			}
 
-			// Regular list item — strip quotes
-			listContent = strings.Trim(listContent, `"'`)
+			// Regular list item — strip balanced wrapping quotes only.
+			listContent = unquote(listContent)
 			currentList = append(currentList, listContent)
 			doc.Lines = append(doc.Lines, line)
 			continue
@@ -300,8 +300,23 @@ func splitKV(s string) (string, string) {
 	}
 	key := strings.TrimSpace(s[:idx])
 	val := strings.TrimSpace(s[idx+1:])
-	val = strings.Trim(val, `"'`)
+	val = unquote(val)
 	return key, val
+}
+
+// unquote strips balanced wrapping quotes from a value. Unlike
+// strings.Trim(val, `"'`), it only removes quotes that form a matched
+// pair around the entire value, so values containing unbalanced or
+// internal quotes (e.g. shell commands with `grep -q 'foo'`) survive intact.
+func unquote(s string) string {
+	if len(s) < 2 {
+		return s
+	}
+	first, last := s[0], s[len(s)-1]
+	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 func storeScalar(item *model.Item, key, val string) {
@@ -311,7 +326,7 @@ func storeScalar(item *model.Item, key, val string) {
 	}
 
 	// Strip quotes from value
-	val = strings.Trim(val, `"'`)
+	val = unquote(val)
 
 	switch key {
 	case "id":
@@ -368,7 +383,7 @@ func storeNestedScalar(item *model.Item, parent, key, val string) {
 	if val == "null" || val == "~" {
 		val = ""
 	}
-	val = strings.Trim(val, `"'`)
+	val = unquote(val)
 
 	switch parent {
 	case "work_tracking":

@@ -101,6 +101,9 @@ func Parse(text string) (*Plan, error) {
 	if v, ok := sections["Approach"]; ok {
 		p.Approach = strings.TrimSpace(v)
 	}
+	if v, ok := sections["Scope"]; ok && len(p.ScopeRepos) == 0 {
+		p.ScopeRepos = parseScopeRepos(v)
+	}
 	if v, ok := sections["Implementation Steps"]; ok {
 		p.Steps = parseList(v)
 	}
@@ -286,6 +289,27 @@ func parseFrontmatter(p *Plan, text string) {
 			p.RejectedAt = strings.TrimSpace(strings.TrimPrefix(line, "rejected_at:"))
 		}
 	}
+}
+
+// parseScopeRepos extracts repo names from a "## Scope" section.
+// Expects format like "Repos: theraprac-api, theraprac-web, theraprac-infra"
+func parseScopeRepos(text string) []string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Repos:") {
+			val := strings.TrimPrefix(line, "Repos:")
+			val = strings.TrimSpace(val)
+			var repos []string
+			for _, repo := range strings.Split(val, ",") {
+				repo = strings.TrimSpace(repo)
+				if repo != "" {
+					repos = append(repos, repo)
+				}
+			}
+			return repos
+		}
+	}
+	return nil
 }
 
 func parseSections(text string) map[string]string {

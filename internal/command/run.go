@@ -19,6 +19,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -377,9 +378,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	now := time.Now()
 
 	// Header
-	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s  %10s\n",
-		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST", "TOKENS (I/O)", "NET LOC")
-	fmt.Println("    " + strings.Repeat("-", 142))
+	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
+		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST", "TOKENS (I/O/T)", "NET LOC")
+	fmt.Println("    " + strings.Repeat("-", 148))
 
 	for _, epic := range reg.Epics {
 		if epic.Status != "active" {
@@ -396,7 +397,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				continue
 			}
 			if !epicHasItems {
-				fmt.Printf("\nEpic: %s\n", epic.Title)
+				fmt.Printf("\nEpic: %s  (%s)\n", epic.Title, epic.ID)
 				epicHasItems = true
 			}
 			var sprintWall, sprintST, sprintAI time.Duration
@@ -608,7 +609,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 				tokStr := ""
 				if itemInTok > 0 || itemOutTok > 0 {
-					tokStr = fmt.Sprintf("%s/%s", formatTokens(itemInTok), formatTokens(itemOutTok))
+					tokStr = fmt.Sprintf("%s/%s/%s", formatTokens(itemInTok), formatTokens(itemOutTok), formatTokens(itemInTok+itemOutTok))
 				}
 
 				// Net LOC from PR manifest
@@ -650,7 +651,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					planBadge = fmt.Sprintf("  %s󰙅%s", "\033[32m", "\033[0m")
 				}
 				fmt.Printf("      %-80s%s\n", title, planBadge)
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s  %10s%s\n",
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
 					itemID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, tokStr, locStr, inFlight)
 			}
 
@@ -674,14 +675,14 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 				}
 				sprintTokStr := ""
 				if sprintInTok > 0 || sprintOutTok > 0 {
-					sprintTokStr = fmt.Sprintf("%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok))
+					sprintTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok), formatTokens(sprintInTok+sprintOutTok))
 				}
 				sprintLOCStr := ""
 				if sprintNetLOC != 0 {
 					sprintLOCStr = formatLOC(sprintNetLOC)
 				}
-				fmt.Printf("    %s\n", strings.Repeat("─", 142))
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s  %10s\n",
+				fmt.Printf("    %s\n", strings.Repeat("─", 148))
+				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
 					"", "", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "", sprintWallStr, sprintSTStr, sprintAIStr, sprintCostStr, sprintTokStr, sprintLOCStr)
 			}
 
@@ -715,16 +716,16 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			}
 			epicTokStr := ""
 			if epicInTok > 0 || epicOutTok > 0 {
-				epicTokStr = fmt.Sprintf("%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok))
+				epicTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok), formatTokens(epicInTok+epicOutTok))
 			}
 			epicLOCStr := ""
 			if epicNetLOC != 0 {
 				epicLOCStr = formatLOC(epicNetLOC)
 			}
-			fmt.Printf("\n    %s\n", strings.Repeat("═", 142))
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s  %10s\n",
+			fmt.Printf("\n    %s\n", strings.Repeat("═", 148))
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
 				"TOTAL", "", epic.Title, "", epicWallStr, epicSTStr, epicAIStr, epicCostStr, epicTokStr, epicLOCStr)
-			fmt.Printf("    %s\n", strings.Repeat("═", 142))
+			fmt.Printf("    %s\n", strings.Repeat("═", 148))
 		}
 	}
 	// Standalone items — active items not in any sprint
@@ -870,7 +871,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 					}
 				}
 				if inTok > 0 || outTok > 0 {
-					tokStr = fmt.Sprintf("%s/%s", formatTokens(inTok), formatTokens(outTok))
+					tokStr = fmt.Sprintf("%s/%s/%s", formatTokens(inTok), formatTokens(outTok), formatTokens(inTok+outTok))
 				}
 			}
 
@@ -886,7 +887,7 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 			}
 
 			fmt.Printf("      %s\n", title)
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %15s  %10s%s\n",
+			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
 				item.ID, bar, statusLabel, createdStr, wallStr, stStr, aiStr, costStr, tokStr, locStr, inFlight)
 		}
 	}
@@ -1436,7 +1437,45 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	// Start the item if not already active (creates worktrees + claims)
 	tc, _ := cfg.Types[item.Type]
+
+	// Recovery: an active item whose worktrees no longer exist (e.g. cleaned
+	// up by `st finish` after a prior aborted run) needs to be restarted so
+	// the pipeline has a directory to run in. Reset to start status so the
+	// Start() call below recreates the worktrees cleanly.
+	if item.Status == tc.ActiveStatus && cfg.Worktree != nil && cfg.Worktree.Enabled {
+		wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+		if _, err := os.Stat(wtBase); os.IsNotExist(err) {
+			fmt.Printf("[%s] Active item with missing worktree — recreating\n", itemID)
+			item.Doc.SetField("status", tc.StartStatus)
+			item.Status = tc.StartStatus
+			if item.ClaimedBy != "" {
+				mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+				_ = mgr.RemoveClaim(item.ClaimedBy, itemID)
+				item.ClaimedBy = ""
+				item.ClaimedAt = ""
+				item.Doc.SetField("claimed_by", "")
+				item.Doc.SetField("claimed_at", "")
+			}
+			store.UnlockItem(cfg, itemID)
+			localStore.Write(item)
+			localStore, _ = store.New(cfg)
+			item, _ = localStore.Get(itemID)
+		}
+	}
+
 	if item.Status == tc.StartStatus {
+		// Precheck dependencies so we can report "blocked" instead of the
+		// misleading "fail@start" when unresolved deps are the reason.
+		g := deps.Build(localStore.All(), cfg)
+		if g.IsBlocked(itemID) {
+			unresolved := g.UnresolvedDeps(itemID)
+			fmt.Printf("[%s] Blocked by: %v\n", itemID, unresolved)
+			result.Steps = append(result.Steps, StepResult{
+				Step:  "blocked",
+				Error: fmt.Sprintf("blocked by: %v", unresolved),
+			})
+			return result
+		}
 		fmt.Printf("[%s] Starting item...\n", itemID)
 		slug := slugFromTitle(item.Title)
 		startCode := Start(localStore, cfg, itemID, StartOpts{Slug: slug})
@@ -1471,6 +1510,22 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		}
 	}
 	claudeStepCount := 0
+
+	// Sync agent-state to git after this item finishes. Registered first
+	// so it runs LAST (defers are LIFO), after recordRunMetrics has written
+	// the final time_tracking totals. Without this, any uncommitted state
+	// changes from close/metrics would be discarded by the next GitPull.
+	defer func() {
+		if syncStore, err := store.New(cfg); err == nil {
+			msg := fmt.Sprintf("st run: %s", itemID)
+			if updatedItem, ok := syncStore.Get(itemID); ok && cfg.IsTerminalStatus(updatedItem.Type, updatedItem.Status) {
+				msg = fmt.Sprintf("st run: %s closed (%s)", itemID, updatedItem.Status)
+			}
+			if err := syncStore.GitSync(msg); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] warning: sync after run failed: %v\n", itemID, err)
+			}
+		}
+	}()
 
 	// Always record metrics on exit — success, failure, or Ctrl+C
 	defer func() {
@@ -1562,6 +1617,17 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 		if !sr.Passed {
 			fmt.Printf("[%s] Step %s FAILED: %s\n", itemID, step.Name(), sr.Error)
+
+			// Structural errors that can't be fixed by running more claude —
+			// the subprocess can't even start. Bail out immediately instead
+			// of burning fix attempts.
+			structuralErr := strings.Contains(sr.Error, "chdir") &&
+				strings.Contains(sr.Error, "no such file or directory")
+			if structuralErr {
+				fmt.Printf("[%s] Structural error (worktree missing) — cannot fix via retry\n", itemID)
+				releaseItem(cfg, itemID)
+				return result
+			}
 
 			// For CI failures, fix inline: get the failure log, feed
 			// it to claude, retry CI. Keep going as long as the error
@@ -2176,6 +2242,24 @@ func executePR(s *store.Store, cfg *config.Config, itemID string, step config.Ru
 		}
 	}
 	if len(prDirs) == 0 {
+		// No PR found. If the item's worktree branches have zero commits
+		// relative to main, this is an operational-only item (e.g. worktree
+		// cleanup, branch deletion) with no code to land. Mark it as no-op
+		// and fast-forward past PR/test/deploy/smoke to close.
+		if hasNoBranchCommits(cfg, itemID) {
+			fmt.Printf("[%s] No code changes — marking as no-op, skipping PR/test/deploy steps\n", itemID)
+			if localStore, err := store.New(cfg); err == nil {
+				if item, ok := localStore.Get(itemID); ok {
+					setNestedField(item, "delivery", "stage", "no_op")
+					setNestedField(item, "delivery", "last_completed_step", "smoke")
+					item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+					localStore.Write(item)
+				}
+			}
+			sr.Passed = true
+			sr.Output = "no-op item (zero commits)"
+			return sr
+		}
 		sr.Error = "could not detect PR in any repo worktree"
 		return sr
 	}
@@ -2333,6 +2417,15 @@ func executeMergePrecheck(cfg *config.Config, itemID, worktreeDir string) StepRe
 func executeDeploy(s *store.Store, cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "deploy", Type: "deploy"}
 
+	// No-op items were never merged/deployed — nothing to verify.
+	if item, ok := s.Get(itemID); ok {
+		if stage, _ := getNestedField(item, "delivery", "stage"); stage == "no_op" {
+			sr.Passed = true
+			sr.Output = "no-op item — skipping deploy check"
+			return sr
+		}
+	}
+
 	// For CI watching, use the repo worktree that had the PR
 	prDir := resolveWorktreeDirWithPR(cfg, itemID)
 	if prDir == "" {
@@ -2355,6 +2448,16 @@ func executeDeploy(s *store.Store, cfg *config.Config, itemID, worktreeDir strin
 
 func executeSmoke(s *store.Store, cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "smoke", Type: "smoke"}
+
+	// No-op items have nothing deployed to smoke-test.
+	if item, ok := s.Get(itemID); ok {
+		if stage, _ := getNestedField(item, "delivery", "stage"); stage == "no_op" {
+			sr.Passed = true
+			sr.Output = "no-op item — skipping smoke"
+			return sr
+		}
+	}
+
 	pipeOpts := PipelineOpts{
 		RunCmd: func(cmd string) ([]byte, int, error) {
 			return runCmdInDir(worktreeDir, cmd)
@@ -2832,6 +2935,13 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 	item, ok := s.Get(itemID)
 	if !ok {
 		sr.Error = "item not found"
+		return sr
+	}
+
+	// No-op items (housekeeping with zero code changes) have nothing to test.
+	if stage, _ := getNestedField(item, "delivery", "stage"); stage == "no_op" {
+		sr.Passed = true
+		sr.Output = "no-op item — skipping tests"
 		return sr
 	}
 
@@ -4027,6 +4137,30 @@ func resolveWorktreeDir(cfg *config.Config, itemID string) string {
 }
 
 // allWorktreeDirs returns all existing repo worktree directories for an item.
+// hasNoBranchCommits returns true if the item's branch across all configured
+// repo worktrees has zero commits relative to main. Used to detect operational
+// / housekeeping items that made no code changes and shouldn't run through
+// PR/test/deploy steps.
+func hasNoBranchCommits(cfg *config.Config, itemID string) bool {
+	dirs := allWorktreeDirs(cfg, itemID)
+	if len(dirs) == 0 {
+		return false
+	}
+	for _, dir := range dirs {
+		cmd := exec.Command("git", "log", "main..HEAD", "--oneline")
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			// Can't determine — assume it has commits (safer default)
+			return false
+		}
+		if strings.TrimSpace(string(out)) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func allWorktreeDirs(cfg *config.Config, itemID string) []string {
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled || cfg.Worktree.BaseDir == "" {
 		return []string{cfg.Root()}
@@ -5396,15 +5530,15 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		}
 	}
 
-	sep := strings.Repeat("─", 130)
+	sep := strings.Repeat("─", 136)
 
 	fmt.Println()
 	if epic != nil {
 		fmt.Printf("  Epic: %s\n", epic.Title)
 	}
 	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s  %10s\n",
-		"ITEM", "STATUS", "ST TIME", "AI TIME", "COST", "TOKENS (I/O)", "NET LOC", "SESSION $")
+	fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s  %10s\n",
+		"ITEM", "STATUS", "ST TIME", "AI TIME", "COST", "TOKENS (I/O/T)", "NET LOC", "SESSION $")
 	fmt.Printf("  %s\n", sep)
 
 	// Collect all sprints in this epic
@@ -5473,7 +5607,11 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 						if !r.Success {
 							for _, sr := range r.Steps {
 								if !sr.Passed {
-									status = "fail@" + sr.Step
+									if sr.Step == "blocked" {
+										status = "blocked"
+									} else {
+										status = "fail@" + sr.Step
+									}
 									break
 								}
 							}
@@ -5531,14 +5669,14 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			}
 			ft := func(in, out int) string {
 				if in == 0 && out == 0 { return "—" }
-				return fmt.Sprintf("%s/%s", formatTokens(in), formatTokens(out))
+				return fmt.Sprintf("%s/%s/%s", formatTokens(in), formatTokens(out), formatTokens(in+out))
 			}
 			fl := func(n int) string {
 				if n == 0 { return "—" }
 				return formatLOC(n)
 			}
 
-			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s  %10s\n",
+			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s  %10s\n",
 				itemID, truncate(status, 22),
 				f(totalWall), f(totalAI), fc(totalCostItem), ft(itemInTok, itemOutTok), fl(itemNetLOC), fc(sessCost))
 		}
@@ -5546,13 +5684,13 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		// Sprint subtotal
 		sprintTokStr := "—"
 		if sprintInTok > 0 || sprintOutTok > 0 {
-			sprintTokStr = fmt.Sprintf("%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok))
+			sprintTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok), formatTokens(sprintInTok+sprintOutTok))
 		}
 		sprintLOCStr := "—"
 		if sprintNetLOC != 0 {
 			sprintLOCStr = formatLOC(sprintNetLOC)
 		}
-		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s\n", "",
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s\n", "",
 			fmt.Sprintf("%d/%d done", sprintDone, sprintTotal),
 			formatDuration(sprintWall), formatDuration(sprintAI),
 			fmt.Sprintf("$%.2f", sprintCost), sprintTokStr, sprintLOCStr)
@@ -5569,14 +5707,14 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 	if epic != nil && len(sprintIDs) > 1 {
 		epicTokStr := "—"
 		if epicInTok > 0 || epicOutTok > 0 {
-			epicTokStr = fmt.Sprintf("%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok))
+			epicTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok), formatTokens(epicInTok+epicOutTok))
 		}
 		epicLOCStr := "—"
 		if epicNetLOC != 0 {
 			epicLOCStr = formatLOC(epicNetLOC)
 		}
 		fmt.Printf("\n  %s\n", sep)
-		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %15s  %10s\n",
+		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s\n",
 			"TOTAL", truncate(epic.Title, 22),
 			formatDuration(epicWall), formatDuration(epicAI),
 			fmt.Sprintf("$%.2f", epicCost), epicTokStr, epicLOCStr)

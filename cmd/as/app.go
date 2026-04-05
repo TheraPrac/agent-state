@@ -739,10 +739,24 @@ implement step during st run.`,
 				IncludeRejected: includeRejected,
 			}
 			engine := command.DefaultRunEngine()
-			if len(args) == 0 {
-				exitCode = command.PrepInteractive(appStore, appCfg, opts, engine)
-			} else {
+			if len(args) > 0 {
 				exitCode = command.Prep(appStore, appCfg, args[0], opts, engine)
+			} else if item != "" {
+				// Resolve sprint from item
+				it, ok := appStore.Get(item)
+				if !ok {
+					fmt.Fprintf(os.Stderr, "item not found: %s\n", item)
+					exitCode = 1
+					return
+				}
+				if it.Sprint == "" {
+					fmt.Fprintf(os.Stderr, "item %s has no sprint assigned\n", item)
+					exitCode = 1
+					return
+				}
+				exitCode = command.Prep(appStore, appCfg, it.Sprint, opts, engine)
+			} else {
+				exitCode = command.PrepInteractive(appStore, appCfg, opts, engine)
 			}
 		},
 	}

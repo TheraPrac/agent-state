@@ -627,6 +627,47 @@ sessions:
 	}
 }
 
+func TestParseACPreservesInternalQuotes(t *testing.T) {
+	// Regression: strings.Trim(val, `"'`) stripped the trailing quote from
+	// ACs like `cmd: grep -q 'foo'`, producing an unbalanced shell command
+	// that failed at UAT time with "unexpected EOF while looking for matching".
+	content := `id: I-001
+type: issue
+status: open
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: AC quote preservation
+
+acceptance_criteria:
+- cmd: grep -q 'playbook: ansible/basic-server/deploy-api.yml' file.yml
+- cmd: grep -q "double quoted value"
+- "cmd: fully single-wrapped"
+- 'cmd: fully single-wrapped 2'
+- cmd: mixed 'single' and "double"
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if len(item.AcceptanceCriteria) != 5 {
+		t.Fatalf("AcceptanceCriteria len = %d, want 5: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	want := []string{
+		"cmd: grep -q 'playbook: ansible/basic-server/deploy-api.yml' file.yml",
+		`cmd: grep -q "double quoted value"`,
+		"cmd: fully single-wrapped",
+		"cmd: fully single-wrapped 2",
+		`cmd: mixed 'single' and "double"`,
+	}
+	for i, w := range want {
+		if item.AcceptanceCriteria[i] != w {
+			t.Errorf("AC[%d] = %q, want %q", i, item.AcceptanceCriteria[i], w)
+		}
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -67,44 +67,46 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 		return 0
 	}
 
-	// Full output
+	// Full output — field keys match the YAML field names (lowercase, single
+	// space) so that ACs written as `st show I-XXX | grep 'status: resolved'`
+	// work against both the raw file and the pretty output.
 	fmt.Printf("%s — %s\n", item.ID, item.Title)
-	fmt.Printf("  Type:     %s\n", item.Type)
-	fmt.Printf("  Status:   %s\n", item.Status)
+	fmt.Printf("  type: %s\n", item.Type)
+	fmt.Printf("  status: %s\n", item.Status)
 	if cfg != nil && store.IsLocked(cfg, id) {
-		fmt.Printf("  Lock:     \033[33mlocked\033[0m (protected from git pull)\n")
+		fmt.Printf("  lock: \033[33mlocked\033[0m (protected from git pull)\n")
 	}
 	if item.AssignedTo != "" {
-		fmt.Printf("  Assigned: %s\n", item.AssignedTo)
+		fmt.Printf("  assigned_to: %s\n", item.AssignedTo)
 	}
 	if item.Severity != "" {
-		fmt.Printf("  Severity: %s\n", item.Severity)
+		fmt.Printf("  severity: %s\n", item.Severity)
 	}
 	if stage, ok := item.Delivery["stage"]; ok {
 		if str, ok := stage.(string); ok && str != "" {
-			fmt.Printf("  Stage:    %s\n", str)
+			fmt.Printf("  stage: %s\n", str)
 		}
 	}
 	if len(item.DependsOn) > 0 {
-		fmt.Printf("  Depends:  %v\n", item.DependsOn)
+		fmt.Printf("  depends_on: %v\n", item.DependsOn)
 	}
 	if len(item.Blocks) > 0 {
-		fmt.Printf("  Blocks:   %v\n", item.Blocks)
+		fmt.Printf("  blocks: %v\n", item.Blocks)
 	}
 	if len(item.Tags) > 0 {
-		fmt.Printf("  Tags:     %v\n", item.Tags)
+		fmt.Printf("  tags: %v\n", item.Tags)
 	}
 	if item.Summary != "" {
-		fmt.Printf("  Summary:\n    %s\n", item.Summary)
+		fmt.Printf("  summary:\n    %s\n", item.Summary)
 	}
 	if len(item.AcceptanceCriteria) > 0 {
-		fmt.Println("  Acceptance criteria:")
+		fmt.Println("  acceptance_criteria:")
 		for _, ac := range item.AcceptanceCriteria {
 			fmt.Printf("    - %s\n", ac)
 		}
 	}
 	if len(item.NextActions) > 0 {
-		fmt.Println("  Next actions:")
+		fmt.Println("  next_actions:")
 		for _, na := range item.NextActions {
 			fmt.Printf("    - %s\n", na)
 		}

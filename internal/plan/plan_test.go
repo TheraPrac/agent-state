@@ -136,6 +136,38 @@ func TestParseFrontmatter(t *testing.T) {
 	}
 }
 
+func TestParseScopeFromMarkdown(t *testing.T) {
+	// No frontmatter — scope_repos extracted from ## Scope section
+	text := "## Approach\nDo ops stuff.\n\n## Scope\nRepos: theraprac-infra\n\n## Acceptance Criteria\n- cmd: echo ok\n"
+	p, err := Parse(text)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.ScopeRepos) != 1 || p.ScopeRepos[0] != "theraprac-infra" {
+		t.Errorf("ScopeRepos = %v, want [theraprac-infra]", p.ScopeRepos)
+	}
+
+	// Multiple repos
+	text2 := "## Approach\nCleanup.\n\n## Scope\nRepos: theraprac-api, theraprac-web, theraprac-infra\n\n## Acceptance Criteria\n- cmd: echo ok\n"
+	p2, err := Parse(text2)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p2.ScopeRepos) != 3 {
+		t.Errorf("ScopeRepos = %v, want 3 repos", p2.ScopeRepos)
+	}
+
+	// Frontmatter takes precedence over ## Scope
+	text3 := "---\nscope_repos: [api]\n---\n\n## Approach\nTest.\n\n## Scope\nRepos: web, infra\n"
+	p3, err := Parse(text3)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p3.ScopeRepos) != 1 || p3.ScopeRepos[0] != "api" {
+		t.Errorf("ScopeRepos = %v, want [api] (frontmatter should win)", p3.ScopeRepos)
+	}
+}
+
 func TestSaveCreatesDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "plans")
 	err := Save(dir, "T-001", &Plan{
