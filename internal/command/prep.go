@@ -264,6 +264,7 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 	}
 
 	// Review loop
+	autoFixCount := 0
 	for {
 		// Show the plan
 		fmt.Printf("\n=== Plan: %s ===\n", itemID)
@@ -308,6 +309,23 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
 		reviewDur := time.Since(reviewStart)
 		rec := extractRecommendation(reviewSR.FullOutput)
+
+		// Auto-fix "Accept with notes" — feed notes back to claude without user input
+		if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
+			autoFixCount++
+			fmt.Printf("[%s] Review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
+				itemID, autoFixCount, maxAutoFixIterations)
+			notes := extractNotesFromReview(reviewSR.FullOutput)
+			s, _ = store.New(cfg)
+			item, _ = s.Get(itemID)
+			var sr StepResult
+			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", &sr)
+			// Re-save draft after auto-fix
+			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)
+			}
+			continue // re-run review
+		}
 
 		choice := showReviewGate(ReviewGateInfo{
 			ItemID:         itemID,

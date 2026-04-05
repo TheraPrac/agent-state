@@ -2497,6 +2497,7 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		fmt.Printf("[%s] %s\n", itemID, e2eSummary)
 	}
 
+	autoFixCount := 0
 	for iteration := 1; ; iteration++ {
 		// Run UAT
 		fmt.Printf("\n[%s] Running UAT (iteration %d)...\n", itemID, iteration)
@@ -2547,6 +2548,19 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 
 		// Extract recommendation from claude's output
 		rec := extractRecommendation(reportSR.FullOutput)
+
+		// Auto-fix "Accept with notes" — feed notes back to claude without user input
+		if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
+			autoFixCount++
+			fmt.Printf("[%s] UAT returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
+				itemID, autoFixCount, maxAutoFixIterations)
+			notes := extractNotesFromReview(reportSR.FullOutput)
+			s, _ = store.New(cfg)
+			if fixItem, ok := s.Get(itemID); ok {
+				runAutoFixFromNotes(s, cfg, itemID, sprintID, fixItem, "UAT review", notes, opts, engine, worktreeDir, claudeSessionID, &sr)
+			}
+			continue // re-run UAT
+		}
 
 		gateMu.Lock()
 		choice := showReviewGate(ReviewGateInfo{
@@ -2966,6 +2980,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		}
 
 		// Plan review loop — claude reviews, user decides
+		autoFixCount := 0
 		for iteration := 1; ; iteration++ {
 			// Launch claude to critically review the plan
 			s, _ = store.New(cfg) // reload in case claude updated fields
@@ -2980,6 +2995,18 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			sr.CostUSD += reviewSR.CostUSD
 			sr.AIDurationMs += reviewSR.AIDurationMs
 			rec := extractRecommendation(reviewSR.FullOutput)
+
+			// Auto-fix "Accept with notes" — feed notes back to claude without user input
+			if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
+				autoFixCount++
+				fmt.Printf("[%s] Review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
+					itemID, autoFixCount, maxAutoFixIterations)
+				notes := extractNotesFromReview(reviewSR.FullOutput)
+				s, _ = store.New(cfg)
+				item, _ = s.Get(itemID)
+				runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, opts, engine, worktreeDir, "", &sr)
+				continue // re-run review
+			}
 
 			gateMu.Lock()
 			choice := showReviewGate(ReviewGateInfo{
@@ -3049,6 +3076,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		}
 
 		// Design review loop — claude reviews, user decides
+		autoFixCount := 0
 		for iteration := 1; ; iteration++ {
 			s, _ = store.New(cfg)
 			item, _ = s.Get(itemID)
@@ -3062,6 +3090,18 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			sr.CostUSD += reviewSR.CostUSD
 			sr.AIDurationMs += reviewSR.AIDurationMs
 			rec := extractRecommendation(reviewSR.FullOutput)
+
+			// Auto-fix "Accept with notes" — feed notes back to claude without user input
+			if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
+				autoFixCount++
+				fmt.Printf("[%s] Review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
+					itemID, autoFixCount, maxAutoFixIterations)
+				notes := extractNotesFromReview(reviewSR.FullOutput)
+				s, _ = store.New(cfg)
+				item, _ = s.Get(itemID)
+				runAutoFixFromNotes(s, cfg, itemID, "", item, "design review", notes, opts, engine, worktreeDir, "", &sr)
+				continue // re-run review
+			}
 
 			gateMu.Lock()
 			choice := showReviewGate(ReviewGateInfo{
@@ -4841,18 +4881,20 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	b.WriteString("   - CHANGES MADE — list what you fixed (if anything)\n")
 	b.WriteString("   - REMAINING CONCERNS — only issues you could NOT fix (e.g., design decisions\n")
 	b.WriteString("     that require user input, architectural trade-offs with no clear winner)\n")
-	b.WriteString("   - RECOMMENDATION — MUST be exactly one of these four:\n")
-	b.WriteString("     a) \"Accept\" — plan is ready, no issues remain\n")
-	b.WriteString("     b) \"Accept with notes\" — plan is ready, but there are informational notes\n")
-	b.WriteString("        the user should be aware of (e.g., operational steps, coordination needs,\n")
-	b.WriteString("        caveats). These notes do NOT change the plan — they are context, not blockers.\n")
-	b.WriteString("        Format: RECOMMENDATION: Accept with notes — <one-line summary>\\n<bullet notes>\n")
-	b.WriteString("     c) \"Reject\" — plan is fundamentally flawed, needs complete rethink\n")
-	b.WriteString("     d) \"Feedback\" — plan has design problems that need user input to resolve.\n")
-	b.WriteString("        Use Feedback ONLY when the plan itself needs to change. If the concern is\n")
-	b.WriteString("        informational (who runs it, when to deploy, what to coordinate), use\n")
-	b.WriteString("        \"Accept with notes\" instead.\n")
+	b.WriteString("   - RECOMMENDATION — MUST be exactly one of these three:\n")
+	b.WriteString("     a) \"Accept\" — plan is ready, no issues remain. If you have informational\n")
+	b.WriteString("        notes (operational steps, coordination needs, caveats), include them in\n")
+	b.WriteString("        the summary field via `st update` — do NOT downgrade to a weaker recommendation.\n")
+	b.WriteString("        If it's fixable, fix it. Then recommend Accept.\n")
+	b.WriteString("     b) \"Reject\" — plan is fundamentally flawed, needs complete rethink\n")
+	b.WriteString("     c) \"Feedback\" — plan has design problems that ONLY the user can resolve\n")
+	b.WriteString("        (architectural trade-offs, business decisions, ambiguous requirements).\n")
+	b.WriteString("        Use Feedback ONLY when you genuinely cannot proceed without human input.\n")
 	b.WriteString("     State which one and why in one sentence.\n\n")
+	b.WriteString("IMPORTANT: Do NOT use \"Accept with notes\". If you have notes, either:\n")
+	b.WriteString("  - Fix the issue yourself (update summary/ACs) → recommend Accept\n")
+	b.WriteString("  - Or if it truly requires user input → recommend Feedback\n")
+	b.WriteString("There is no middle ground. Fix it or escalate it.\n\n")
 	b.WriteString("The goal: the user should be able to accept the plan without a follow-up revision session.\n")
 	b.WriteString("Be critical but constructive — flag real issues, not style preferences.\n\n")
 	b.WriteString("AC QUALITY RULES — flag and fix violations:\n")
@@ -4995,6 +5037,80 @@ func runConstrainedFeedback(s *store.Store, cfg *config.Config, itemID, sprintID
 	sr.AIDurationMs += feedbackSR.AIDurationMs
 
 	return true
+}
+
+// maxAutoFixIterations is how many times the system will auto-fix "Accept with notes"
+// before falling through to the user gate. Prevents infinite loops.
+const maxAutoFixIterations = 3
+
+// extractNotesFromReview pulls the REMAINING CONCERNS and notes sections from a
+// review output to use as auto-feedback. Returns empty string if nothing found.
+func extractNotesFromReview(output string) string {
+	if output == "" {
+		return ""
+	}
+
+	lines := strings.Split(output, "\n")
+	var notes []string
+	capturing := false
+
+	for _, line := range lines {
+		lower := strings.ToLower(strings.TrimSpace(line))
+
+		// Start capturing at REMAINING CONCERNS, notes sections, or recommendation with notes
+		if strings.Contains(lower, "remaining concerns") ||
+			strings.Contains(lower, "accept with notes") ||
+			(strings.Contains(lower, "recommendation") && strings.Contains(lower, "notes")) {
+			capturing = true
+			continue
+		}
+
+		// Stop capturing at the next major section header
+		if capturing && (strings.HasPrefix(strings.TrimSpace(line), "##") ||
+			(strings.Contains(lower, "recommendation") && !strings.Contains(lower, "notes"))) {
+			break
+		}
+
+		if capturing {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				notes = append(notes, trimmed)
+			}
+		}
+	}
+
+	return strings.Join(notes, "\n")
+}
+
+// runAutoFixFromNotes sends the review notes as auto-feedback to claude so it can
+// fix them without user intervention. Returns true if feedback was processed.
+func runAutoFixFromNotes(s *store.Store, cfg *config.Config, itemID, sprintID string, item *model.Item,
+	gateType string, notes string, opts RunOpts, engine RunEngine, worktreeDir, claudeSessionID string, sr *StepResult) bool {
+
+	if strings.TrimSpace(notes) == "" {
+		return false
+	}
+
+	fmt.Printf("\n[%s] Auto-fixing review notes (no user input needed)...\n", itemID)
+
+	autoFeedback := "The reviewer flagged the following notes/concerns. Fix all of them — " +
+		"update the summary and/or acceptance criteria as needed. Do not leave informational " +
+		"notes for the user; resolve everything you can.\n\n" + notes
+
+	feedbackPrompt := buildFeedbackPrompt(itemID, item, gateType, autoFeedback)
+	feedbackStep := config.RunStepDef{Type: "claude", Prompt: feedbackPrompt}
+	feedbackStep.SetName("auto_fix")
+	feedbackSR := executeClaude(s, cfg, itemID, sprintID, feedbackStep, opts, engine, worktreeDir, claudeSessionID, true)
+	sr.CostUSD += feedbackSR.CostUSD
+	sr.AIDurationMs += feedbackSR.AIDurationMs
+
+	return true
+}
+
+// isAcceptWithNotes returns true if the extracted recommendation is "Accept with notes".
+func isAcceptWithNotes(rec string) bool {
+	lower := strings.ToLower(rec)
+	return strings.Contains(lower, "accept") && strings.Contains(lower, "notes")
 }
 
 // runInteractiveEscapeHatch launches an ungoverned interactive claude session.
