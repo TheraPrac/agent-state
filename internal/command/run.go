@@ -128,6 +128,35 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 		return 1
 	}
 
+	// Build the set of "running" sprint IDs — sprints with at least one claimed
+	// item or a non-stale session attached. These are excluded from selection.
+	runningSprints := make(map[string]bool)
+	{
+		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+		sessions, _ := mgr.ListSessions()
+		for _, sess := range sessions {
+			if sess.Sprint == "" || mgr.IsStale(sess) {
+				continue
+			}
+			runningSprints[sess.Sprint] = true
+		}
+		for _, sp := range reg.Sprints {
+			if runningSprints[sp.ID] {
+				continue
+			}
+			for _, itemID := range sp.Items {
+				item, ok := s.Get(itemID)
+				if !ok {
+					continue
+				}
+				if item.ClaimedBy != "" {
+					runningSprints[sp.ID] = true
+					break
+				}
+			}
+		}
+	}
+
 	// Build sprint progress map
 	type sprintProgress struct {
 		sprint   *registry.Sprint
@@ -214,6 +243,17 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 				continue
 			}
 
+			// Running sprint — show but don't allow selection
+			if runningSprints[sid] {
+				if sp, ok := sprintMap[sid]; ok {
+					fmt.Printf("    running %s  %d/%d\n", sp.sprint.Title, sp.complete, sp.total)
+				} else {
+					fmt.Printf("    running %s\n", sprintRef.Title)
+				}
+				hasSprintsForEpic = true
+				continue
+			}
+
 			// Active sprint with remaining work
 			if sp, ok := sprintMap[sid]; ok {
 				num++
@@ -239,6 +279,10 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 	if len(looseSprints) > 0 {
 		fmt.Printf("\nSprints (no epic):\n")
 		for _, sp := range looseSprints {
+			if runningSprints[sp.sprint.ID] {
+				fmt.Printf("    running %s  %d/%d\n", sp.sprint.Title, sp.complete, sp.total)
+				continue
+			}
 			num++
 			approved := ""
 			if sp.sprint.PlanApproved {
@@ -1162,6 +1206,12 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 		return 1
 	}
 
+	// Reject sprints already being executed by another session
+	if isSprintRunning(s, cfg, sprintID) {
+		fmt.Fprintf(os.Stderr, "sprint %s is already being executed — use `st run status --running` to see active runs\n", sprintID)
+		return 1
+	}
+
 	groups, sp, code := loadSprintGroups(s, cfg, sprintID)
 	if code != 0 {
 		return code
@@ -1671,10 +1721,36 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		}
 	}
 
+	// Track steps that were skipped (NOT_FIXABLE, user skip, or requires-cascade).
+	// Used to auto-skip downstream steps whose Requires include a skipped step.
+	skippedSteps := map[string]bool{}
+
 	// Execute each pipeline step (index-based to support skip + resume)
 	for i := startIdx; i < len(pipeline); i++ {
 		step := pipeline[i]
 		stepStart := time.Now()
+
+		// Check requires: if any required predecessor was skipped, auto-skip this step.
+		if len(step.Requires) > 0 {
+			var missingReq string
+			for _, req := range step.Requires {
+				if skippedSteps[req] {
+					missingReq = req
+					break
+				}
+			}
+			if missingReq != "" {
+				fmt.Printf("[%s] Skipping %s — required step %q was skipped\n", itemID, step.Name(), missingReq)
+				result.Steps = append(result.Steps, StepResult{
+					Step: step.Name(), Type: "skipped", Passed: true,
+					Output: fmt.Sprintf("auto-skipped: required step %q was skipped", missingReq),
+				})
+				skippedSteps[step.Name()] = true
+				recordDeliverySkip(cfg, itemID, step.Name())
+				localStore, _ = store.New(cfg)
+				continue
+			}
+		}
 
 		// Ensure item is active before each step. Pipeline commands
 		// (merge, deploy-check, smoke, test) require active status.
@@ -1791,6 +1867,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 							Step: step.Name(), Type: "skipped", Passed: true,
 							Output: "auto-skipped: fix agent reported NOT_FIXABLE",
 						})
+						skippedSteps[step.Name()] = true
+						recordDeliverySkip(cfg, itemID, step.Name())
 						fixed = true
 						break
 					}
@@ -1846,6 +1924,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 							result.Steps = append(result.Steps, StepResult{
 								Step: step.Name(), Type: "skipped", Passed: true,
 							})
+							skippedSteps[step.Name()] = true
+							recordDeliverySkip(cfg, itemID, step.Name())
 							fixed = true // not really fixed, but skip means move on
 							break
 						case "abort":
@@ -1858,6 +1938,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 				}
 
 				if fixed {
+					localStore, _ = store.New(cfg)
 					continue // proceed to next pipeline step
 				}
 			}
@@ -1917,18 +1998,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					result.Steps = append(result.Steps, StepResult{
 						Step: nextStep, Type: "skipped", Passed: true,
 					})
-					// Record skipped step on item so close gate can reject
-					if ps, err := store.New(cfg); err == nil {
-						if pi, ok := ps.Get(itemID); ok {
-							existing, _ := getNestedField(pi, "delivery", "skipped_steps")
-							if existing == "" {
-								setNestedField(pi, "delivery", "skipped_steps", nextStep)
-							} else {
-								setNestedField(pi, "delivery", "skipped_steps", existing+","+nextStep)
-							}
-							ps.Write(pi)
-						}
-					}
+					skippedSteps[nextStep] = true
+					recordDeliverySkip(cfg, itemID, nextStep)
 					i++ // advance past the skipped step
 				case "abort":
 					fmt.Printf("[%s] Aborted by user\n", itemID)
@@ -2006,6 +2077,23 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		item.Doc.SetField("last_touched_by", "st-run")
 	}
 	localStore.Write(item)
+}
+
+// recordDeliverySkip appends a step name to the item's delivery.skipped_steps
+// (comma-separated). This is the single place to record skips so the close
+// gate can reject items with skipped critical steps.
+func recordDeliverySkip(cfg *config.Config, itemID, stepName string) {
+	if ps, err := store.New(cfg); err == nil {
+		if pi, ok := ps.Get(itemID); ok {
+			existing, _ := getNestedField(pi, "delivery", "skipped_steps")
+			if existing == "" {
+				setNestedField(pi, "delivery", "skipped_steps", stepName)
+			} else {
+				setNestedField(pi, "delivery", "skipped_steps", existing+","+stepName)
+			}
+			ps.Write(pi)
+		}
+	}
 }
 
 // appendAISessionRecord adds a line to the work_tracking.ai_sessions list
@@ -2992,12 +3080,28 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 		}
 	}
 
-	// Gate: block close if the worktree has uncommitted changes. Closing an
-	// item and then failing to clean up leaves stale state that the next item
-	// inherits. Surface this to the operator so they can commit/discard first.
+	// Gate: block close if the worktree has uncommitted changes to tracked
+	// files. If the item is already merged, the real work is safe on main —
+	// dirty files are just pipeline artifacts, so warn and proceed rather
+	// than stalling the entire sprint.
 	if dirty := worktreeDirtyRepos(cfg, itemID); len(dirty) > 0 {
-		sr.Error = fmt.Sprintf("cannot close: uncommitted changes in worktree (%s) — commit, discard, or run `st finish %s --force`", strings.Join(dirty, ", "), itemID)
-		return sr
+		merged := false
+		if item != nil {
+			if stage, ok := getNestedField(item, "delivery", "stage"); ok {
+				for _, s := range []string{"merged", "deployed_dev", "deployed_prod", "smoke_passed", "uat_approved"} {
+					if stage == s {
+						merged = true
+						break
+					}
+				}
+			}
+		}
+		if merged {
+			fmt.Fprintf(os.Stderr, "  [warn] worktree has uncommitted changes (%s) — item already merged, proceeding with close\n", strings.Join(dirty, ", "))
+		} else {
+			sr.Error = fmt.Sprintf("cannot close: uncommitted changes in worktree (%s) — commit, discard, or run `st finish %s --force`", strings.Join(dirty, ", "), itemID)
+			return sr
+		}
 	}
 
 	resolution := step.Resolution
@@ -3040,7 +3144,10 @@ func worktreeDirtyRepos(cfg *config.Config, itemID string) []string {
 		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 			continue
 		}
-		out, err := gitOutputDir(repoDir, "status", "--porcelain")
+		// Only check tracked files (modified/staged). Untracked files
+		// (like smoke-results.json or other pipeline artifacts) are not
+		// real uncommitted work and shouldn't block close + cleanup.
+		out, err := gitOutputDir(repoDir, "status", "--porcelain", "-uno")
 		if err != nil {
 			continue
 		}
@@ -3212,6 +3319,20 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 
 	// Already approved — skip (either via item flag or plan sidecar)
 	if item.PlanApproved {
+		// Ensure sidecar exists — items approved before sidecar system may lack one
+		if !plan.Exists(cfg.PlansDir(), itemID) {
+			p := &plan.Plan{
+				Approved:   true,
+				ApprovedAt: plan.Now(),
+				Approach:   item.Summary,
+				ACs:        item.AcceptanceCriteria,
+				ScopeRepos: inferReposFromItem(cfg, item),
+				Revisions: []plan.Revision{
+					{Timestamp: plan.Now(), Summary: "Backfilled — item had plan_approved but no sidecar"},
+				},
+			}
+			plan.Save(cfg.PlansDir(), itemID, p)
+		}
 		sr.Passed = true
 		return sr
 	}
@@ -4751,8 +4872,45 @@ func pollPRChecks(prDir, ghRepo, branch string) ([]byte, int, error) {
 			return log.Bytes(), 1, activeRunCtx.Err()
 		}
 
-		time.Sleep(interval)
+		// Live countdown so the user can tell we're not stuck.
+		elapsed := time.Since(deadline.Add(-maxWait))
+		pollCountdown(elapsed, interval, activeRunCtx)
 	}
+}
+
+// pollCountdown prints a single in-place line that counts elapsed time up and
+// the next-poll countdown down, updating every second. The line is erased via
+// \r before the next poll iteration prints real status.
+func pollCountdown(elapsed, interval time.Duration, ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	start := time.Now()
+	for remaining := interval; remaining > 0; remaining = interval - time.Since(start) {
+		if remaining < 0 {
+			remaining = 0
+		}
+		waited := elapsed + time.Since(start)
+		fmt.Fprintf(os.Stderr, "\r  Waited %s — next check in %s  ",
+			formatDurationCompact(waited), formatDurationCompact(remaining))
+		if ctx != nil && ctx.Err() != nil {
+			fmt.Fprint(os.Stderr, "\r\033[K") // clear line
+			return
+		}
+		<-ticker.C
+	}
+	fmt.Fprint(os.Stderr, "\r\033[K") // clear line before next status print
+}
+
+// formatDurationCompact formats a duration as "Xm Ys" (minutes + seconds),
+// dropping the minutes component when < 1m.
+func formatDurationCompact(d time.Duration) string {
+	d = d.Truncate(time.Second)
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 // bugbotBucket returns a printable bucket label for the Bugbot check row, or
@@ -5759,6 +5917,34 @@ func engineConfirmPrompt(engine RunEngine, prompt string) bool {
 
 // --- Sprint loading ---
 
+// isSprintRunning returns true if the sprint is already being executed —
+// either a non-stale session is bound to it, or any of its items is claimed.
+func isSprintRunning(s *store.Store, cfg *config.Config, sprintID string) bool {
+	mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+	sessions, _ := mgr.ListSessions()
+	for _, sess := range sessions {
+		if sess.Sprint == sprintID && !mgr.IsStale(sess) {
+			return true
+		}
+	}
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		return false
+	}
+	for _, sp := range reg.Sprints {
+		if sp.ID != sprintID {
+			continue
+		}
+		for _, itemID := range sp.Items {
+			item, ok := s.Get(itemID)
+			if ok && item.ClaimedBy != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func loadSprintGroups(s *store.Store, cfg *config.Config, sprintID string) ([][]string, *registry.Sprint, int) {
 	r, err := registry.Load(cfg.EpicsPath())
 	if err != nil {
@@ -5939,19 +6125,24 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				for _, r := range results {
 					if r.ItemID == itemID {
 						sessCost = r.TotalCost
-						if !r.Success {
-							for _, sr := range r.Steps {
-								if !sr.Passed {
-									if sr.Step == "blocked" {
-										status = "blocked"
-									} else {
-										status = "fail@" + sr.Step
+						// Item's actual terminal status takes priority over
+						// in-memory run result (e.g., close step failed but
+						// item was closed manually or in a later retry).
+						if status != "done" {
+							if !r.Success {
+								for _, sr := range r.Steps {
+									if !sr.Passed {
+										if sr.Step == "blocked" {
+											status = "blocked"
+										} else {
+											status = "fail@" + sr.Step
+										}
+										break
 									}
-									break
 								}
+							} else {
+								status = "done"
 							}
-						} else {
-							status = "done"
 						}
 						break
 					}

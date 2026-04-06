@@ -212,14 +212,15 @@ type RunConfig struct {
 
 // RunStepDef defines a single pipeline step for st run.
 type RunStepDef struct {
-	Type       string  // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
-	Command    string  // for command type
-	Prompt     string  // for claude type (optional, uses default)
-	Resolution string  // for close type (e.g. "completed")
-	Timeout    int     // for watch/deploy (seconds, default 600)
-	Coverage   bool    // for test type
-	Budget     float64 // per-step budget override (USD, 0 = use default)
-	name       string  // set by RunPipeline(), not from config
+	Type       string   // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
+	Command    string   // for command type
+	Prompt     string   // for claude type (optional, uses default)
+	Resolution string   // for close type (e.g. "completed")
+	Timeout    int      // for watch/deploy (seconds, default 600)
+	Coverage   bool     // for test type
+	Budget     float64  // per-step budget override (USD, 0 = use default)
+	Requires   []string // step names that must succeed — if any were skipped, this step is auto-skipped
+	name       string   // set by RunPipeline(), not from config
 }
 
 // Name returns the step's name (set when building the pipeline from config).
@@ -932,6 +933,12 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 		}
 	case "run":
 		ensureRun(cfg)
+		if levels[1] == "steps" && levels[2] != "" && key == "requires" {
+			step := cfg.Run.Steps[levels[2]]
+			step.Requires = items
+			cfg.Run.Steps[levels[2]] = step
+			return
+		}
 		switch key {
 		case "step_order":
 			cfg.Run.StepOrder = items

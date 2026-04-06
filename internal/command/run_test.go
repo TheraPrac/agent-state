@@ -12,6 +12,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -259,6 +260,75 @@ func TestRunPlanNotApproved(t *testing.T) {
 	code := Run(s, cfg, "unapproved", RunOpts{}, mockRunEngine(true))
 	if code != 1 {
 		t.Errorf("expected exit 1 for unapproved plan, got %d", code)
+	}
+}
+
+func TestRunRejectsRunningSprint(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Create a session bound to the test sprint
+	mgr := session.NewManager(cfg.SessionsDir(), 7200*time.Second)
+	mgr.Save(&session.Session{
+		ID:         "session-abc",
+		StartedAt:  time.Now(),
+		Sprint:     "test-sprint",
+		LastActive: time.Now(),
+	})
+
+	code := Run(s, cfg, "test-sprint", RunOpts{DryRun: true}, mockRunEngine(true))
+	if code != 1 {
+		t.Errorf("expected exit 1 for running sprint, got %d", code)
+	}
+}
+
+func TestRunRejectsSprintWithClaimedItems(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Claim an item in the sprint (simulates another session executing it)
+	item, _ := s.Get("T-001")
+	item.ClaimedBy = "other-session-xyz"
+	item.Doc.SetField("claimed_by", "other-session-xyz")
+	s.Write(item)
+
+	code := Run(s, cfg, "test-sprint", RunOpts{DryRun: true}, mockRunEngine(true))
+	if code != 1 {
+		t.Errorf("expected exit 1 for sprint with claimed items, got %d", code)
+	}
+}
+
+func TestRunInteractiveExcludesRunningSprints(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Add a second selectable sprint
+	reg, _ := registry.Load(cfg.EpicsPath())
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "idle-sprint", Title: "Idle Sprint", Epic: "test-epic",
+		Status: "active", Items: []string{"T-002"},
+		PlanApproved: true,
+	})
+	reg.Epics[0].SprintOrder = []string{"test-sprint", "idle-sprint"}
+	reg.Save(cfg.EpicsPath())
+
+	// Create a session bound to test-sprint — makes it "running"
+	mgr := session.NewManager(cfg.SessionsDir(), 7200*time.Second)
+	mgr.Save(&session.Session{
+		ID:         "session-abc",
+		StartedAt:  time.Now(),
+		Sprint:     "test-sprint",
+		LastActive: time.Now(),
+	})
+
+	// Engine selects "1" which should now be idle-sprint (test-sprint is excluded)
+	engine := RunEngine{
+		RunClaude: mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) {
+			return "1\n", nil
+		},
+	}
+
+	code := RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+	if code != 0 {
+		t.Errorf("interactive with running sprint returned %d, want 0", code)
 	}
 }
 
@@ -1435,5 +1505,320 @@ func TestStripBugbotMarkup(t *testing.T) {
 				t.Errorf("stripBugbotMarkup() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// --- Pipeline requires tests ---
+
+// setupPipelineRequiresEnv creates a test env with a pipeline that has requires
+// dependencies: merge → deploy_watch → smoke. Uses command steps for
+// deterministic control. The item is already active so we skip worktree creation.
+func setupPipelineRequiresEnv(t *testing.T, mergeCmd string) (*store.Store, *config.Config) {
+	t.Helper()
+	root := t.TempDir()
+
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Config with requires chain: deploy_watch requires merge, smoke requires deploy_watch
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(fmt.Sprintf(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [merge, deploy_watch, smoke, close]
+  steps:
+    merge:
+      type: command
+      command: %s
+    deploy_watch:
+      type: command
+      command: echo deploy-ok
+      requires: [merge]
+    smoke:
+      type: command
+      command: echo smoke-ok
+      requires: [deploy_watch]
+    close:
+      type: close
+      resolution: completed
+`, mergeCmd)), 0644)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "test-epic", Title: "Test Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "req-sprint", Title: "Requires Test", Epic: "test-epic",
+		Status: "active", Items: []string{"T-050"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	writeFile(t, filepath.Join(root, "tasks", "T-050-requires.md"), `id: T-050
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Requires test item
+
+depends_on:
+- []
+
+sprint: req-sprint
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, cfg
+}
+
+// TestPipeline_SkippedStep_SkipsDependents verifies that when a step is skipped
+// (via user pause menu), all downstream steps that require it are auto-skipped.
+func TestPipeline_SkippedStep_SkipsDependents(t *testing.T) {
+	// Use "false" so merge fails, triggering the fix loop
+	s, cfg := setupPipelineRequiresEnv(t, "false")
+
+	// Engine: fix agent reports NOT_FIXABLE so merge gets skipped
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			result := ClaudeResult{
+				Type: "result", Subtype: "success",
+				TotalCostUSD: 0.01, DurationMs: 1000,
+				Result: "This is [NOT_FIXABLE] — infrastructure issue",
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "y\n", nil
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "continue"
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	pipeline := cfg.RunPipeline()
+	opts := RunOpts{ItemFilter: "T-050"}
+	result := runSingleItem(s, cfg, "T-050", "req-sprint", pipeline, opts, engine)
+
+	// merge should be skipped (NOT_FIXABLE), deploy_watch and smoke should be
+	// auto-skipped because they require merge/deploy_watch respectively.
+	skippedSteps := map[string]bool{}
+	for _, sr := range result.Steps {
+		if sr.Type == "skipped" {
+			skippedSteps[sr.Step] = true
+		}
+	}
+
+	for _, stepName := range []string{"merge", "deploy_watch", "smoke"} {
+		if !skippedSteps[stepName] {
+			t.Errorf("expected %s to be skipped, but it was not", stepName)
+		}
+	}
+}
+
+// TestPipeline_NotFixable_SkipsDependents verifies NOT_FIXABLE auto-skip cascades.
+func TestPipeline_NotFixable_SkipsDependents(t *testing.T) {
+	s, cfg := setupPipelineRequiresEnv(t, "false")
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			result := ClaudeResult{
+				Type: "result", Subtype: "success",
+				TotalCostUSD: 0.01, DurationMs: 1000,
+				Result: "[NOT_FIXABLE] — merge precondition not met",
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "y\n", nil
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "continue"
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	pipeline := cfg.RunPipeline()
+	opts := RunOpts{ItemFilter: "T-050"}
+	result := runSingleItem(s, cfg, "T-050", "req-sprint", pipeline, opts, engine)
+
+	// Verify cascade: deploy_watch auto-skipped because merge was skipped,
+	// smoke auto-skipped because deploy_watch was skipped
+	var deploySkipped, smokeSkipped bool
+	for _, sr := range result.Steps {
+		if sr.Step == "deploy_watch" && sr.Type == "skipped" {
+			deploySkipped = true
+			if !strings.Contains(sr.Output, "merge") {
+				t.Errorf("deploy_watch skip reason should mention merge, got: %s", sr.Output)
+			}
+		}
+		if sr.Step == "smoke" && sr.Type == "skipped" {
+			smokeSkipped = true
+			if !strings.Contains(sr.Output, "deploy_watch") {
+				t.Errorf("smoke skip reason should mention deploy_watch, got: %s", sr.Output)
+			}
+		}
+	}
+
+	if !deploySkipped {
+		t.Error("deploy_watch should be auto-skipped when merge was NOT_FIXABLE")
+	}
+	if !smokeSkipped {
+		t.Error("smoke should be auto-skipped when deploy_watch was skipped")
+	}
+}
+
+// TestPipeline_SkippedStep_RecordsDeliverySkippedSteps verifies that all skipped
+// steps (including cascade skips) are recorded in delivery.skipped_steps.
+func TestPipeline_SkippedStep_RecordsDeliverySkippedSteps(t *testing.T) {
+	s, cfg := setupPipelineRequiresEnv(t, "false")
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			result := ClaudeResult{
+				Type: "result", Subtype: "success",
+				TotalCostUSD: 0.01, DurationMs: 1000,
+				Result: "[NOT_FIXABLE]",
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "y\n", nil
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "continue"
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	pipeline := cfg.RunPipeline()
+	opts := RunOpts{ItemFilter: "T-050"}
+	runSingleItem(s, cfg, "T-050", "req-sprint", pipeline, opts, engine)
+
+	// Reload and check delivery.skipped_steps
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-050")
+	if !ok {
+		t.Fatal("T-050 not found")
+	}
+
+	skipped, _ := getNestedField(item, "delivery", "skipped_steps")
+	for _, stepName := range []string{"merge", "deploy_watch", "smoke"} {
+		if !strings.Contains(skipped, stepName) {
+			t.Errorf("delivery.skipped_steps should contain %q, got: %q", stepName, skipped)
+		}
+	}
+}
+
+// TestPipeline_NoRequires_RunsNormally verifies that steps without requires
+// run normally even when earlier steps fail (backward compatibility).
+func TestPipeline_NoRequires_RunsNormally(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Pipeline with NO requires — all steps are command type
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [step_a, step_b, step_c]
+  steps:
+    step_a:
+      type: command
+      command: echo a-ok
+    step_b:
+      type: command
+      command: echo b-ok
+    step_c:
+      type: command
+      command: echo c-ok
+`), 0644)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "test-epic", Title: "Test", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "noreq-sprint", Title: "No Requires", Epic: "test-epic",
+		Status: "active", Items: []string{"T-060"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	writeFile(t, filepath.Join(root, "tasks", "T-060-noreq.md"), `id: T-060
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: No requires test
+
+depends_on:
+- []
+
+sprint: noreq-sprint
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			return nil, 0, nil
+		},
+		PromptUser: func(prompt string) (string, error) {
+			return "y\n", nil
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "continue"
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	pipeline := cfg.RunPipeline()
+	opts := RunOpts{ItemFilter: "T-060"}
+	result := runSingleItem(s, cfg, "T-060", "noreq-sprint", pipeline, opts, engine)
+
+	// All three command steps should pass (none skipped)
+	passedSteps := map[string]bool{}
+	for _, sr := range result.Steps {
+		if sr.Passed && sr.Type != "skipped" {
+			passedSteps[sr.Step] = true
+		}
+	}
+
+	for _, stepName := range []string{"step_a", "step_b", "step_c"} {
+		if !passedSteps[stepName] {
+			t.Errorf("step %s should have passed, result steps: %+v", stepName, result.Steps)
+		}
 	}
 }
