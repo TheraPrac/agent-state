@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -77,7 +78,7 @@ func getNestedField(item *model.Item, parent, key string) (string, bool) {
 	case int:
 		return fmt.Sprintf("%d", val), true
 	case float64:
-		return fmt.Sprintf("%g", val), true
+		return strconv.FormatFloat(val, 'f', -1, 64), true
 	default:
 		return fmt.Sprintf("%v", val), true
 	}

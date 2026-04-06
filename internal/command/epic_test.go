@@ -573,6 +573,7 @@ func TestGetNestedField_NumericTypes(t *testing.T) {
 			"total_tokens":       5196078,
 			"run_wall_seconds":   3600,
 			"a_string_field":     "hello",
+			"large_float_tokens": float64(5196078), // YAML edge case: large int stored as float64
 		},
 	}
 
@@ -585,6 +586,7 @@ func TestGetNestedField_NumericTypes(t *testing.T) {
 		{"total_tokens", "5196078"},
 		{"run_wall_seconds", "3600"},
 		{"a_string_field", "hello"},
+		{"large_float_tokens", "5196078"}, // must not produce scientific notation
 	}
 
 	for _, tc := range tests {
