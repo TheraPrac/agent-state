@@ -1215,6 +1215,12 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 			break
 		}
 
+		// Reload store between groups so completed items from the previous
+		// group are visible to dependency checks in the current group.
+		if i > 0 {
+			s, _ = store.New(cfg)
+		}
+
 		fmt.Printf("\n=== Group %d/%d ===\n", i+1, len(groups))
 		results := runGroup(s, cfg, group, sprintID, pipeline, opts, engine)
 		allResults = append(allResults, results...)
@@ -1437,6 +1443,27 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 			break
 		}
 
+		// Reload store and recheck dependencies after acquiring the
+		// semaphore — a sibling item that just finished may have resolved
+		// a dependency that was blocking this item (or vice versa).
+		if freshStore, err := store.New(cfg); err == nil {
+			g := deps.Build(freshStore.All(), cfg)
+			if g.IsBlocked(itemID) {
+				unresolved := g.UnresolvedDeps(itemID)
+				fmt.Printf("[%s] Still blocked by: %v — skipping\n", itemID, unresolved)
+				results[i] = ItemResult{
+					ItemID: itemID,
+					Steps: []StepResult{{
+						Step:  "blocked",
+						Error: fmt.Sprintf("blocked by: %v", unresolved),
+					}},
+				}
+				<-sem // release
+				wg.Done()
+				continue
+			}
+		}
+
 		go func(idx int, id string) {
 			defer wg.Done()
 			defer func() { <-sem }() // release
@@ -1654,11 +1681,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	if !opts.Fresh {
 		if item, ok := localStore.Get(itemID); ok {
 			if lastStep, _ := getNestedField(item, "delivery", "last_completed_step"); lastStep != "" {
-				for j, s := range pipeline {
-					if s.Name() == lastStep {
-						startIdx = j + 1
-						break
-					}
+				if idx := stepIndex(pipeline, lastStep); idx >= 0 {
+					startIdx = idx + 1
 				}
 				if startIdx > 0 && startIdx < len(pipeline) {
 					fmt.Printf("[%s] Resuming after step: %s\n", itemID, lastStep)
@@ -1684,6 +1708,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			if refreshItem, ok := refreshStore.Get(itemID); ok {
 				if refreshItem.Status != "active" {
 					refreshItem.Status = "active"
+					refreshItem.Doc.SetField("status", "active")
 					refreshStore.Write(refreshItem)
 					localStore, _ = store.New(cfg)
 				}
@@ -1815,6 +1840,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 								if progressItem, ok := progressStore.Get(itemID); ok {
 									setNestedField(progressItem, "delivery", "last_completed_step", step.Name())
 									progressStore.Write(progressItem)
+									_ = progressStore.GitSync(fmt.Sprintf("st run: %s checkpoint@%s", itemID, step.Name()))
 								}
 							}
 							localStore, _ = store.New(cfg)
@@ -1873,6 +1899,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			if progressItem, ok := progressStore.Get(itemID); ok {
 				setNestedField(progressItem, "delivery", "last_completed_step", step.Name())
 				progressStore.Write(progressItem)
+				// GitSync so checkpoint survives session interruption (e.g. breakpoint pause)
+				_ = progressStore.GitSync(fmt.Sprintf("st run: %s checkpoint@%s", itemID, step.Name()))
 			}
 		}
 
@@ -3606,7 +3634,15 @@ func planMissingFields(needsSummary, needsACs bool) string {
 
 // recordSession appends a session ID to the item's sessions list.
 func recordSession(s *store.Store, cfg *config.Config, itemID, sessionID, stepName string) {
-	item, ok := s.Get(itemID)
+	// Always reload from disk to avoid overwriting changes made by
+	// pipeline steps or Claude subprocesses. The caller's store may be
+	// stale — especially during fix cycles where the function parameter
+	// `s` is never refreshed (I-169).
+	freshStore, err := store.New(cfg)
+	if err != nil {
+		return
+	}
+	item, ok := freshStore.Get(itemID)
 	if !ok {
 		return
 	}
@@ -3620,7 +3656,7 @@ func recordSession(s *store.Store, cfg *config.Config, itemID, sessionID, stepNa
 	setNestedField(item, "time_tracking", "last_step", stepName)
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	s.Write(item)
+	freshStore.Write(item)
 }
 
 // --- Prompt and args ---
@@ -4816,6 +4852,16 @@ func isEligible(s *store.Store, cfg *config.Config, itemID string) bool {
 	// Allow items claimed by other sessions — runSingleItem handles
 	// merged-PR detection and recovery before entering the pipeline
 	return true
+}
+
+// stepIndex returns the index of the named step in the pipeline, or -1 if not found.
+func stepIndex(pipeline []config.RunStepDef, name string) int {
+	for i, s := range pipeline {
+		if s.Name() == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func slugFromTitle(title string) string {

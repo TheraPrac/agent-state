@@ -134,9 +134,6 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		return 1
 	}
 
-	// Release item lock
-	store.UnlockItem(cfg, id)
-
 	// Move to correct directory
 	if err := s.Move(id); err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
@@ -187,6 +184,11 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	if err := s.GitSync(fmt.Sprintf("st close: %s (%s)", id, resolution)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync after close failed: %v\n", err)
 	}
+
+	// Release item lock AFTER GitSync so that sibling items in the same
+	// st run batch see the committed terminal status when they reload the
+	// store and recheck dependencies.
+	store.UnlockItem(cfg, id)
 
 	// Auto-archive sprint and epic when all items are terminal.
 	autoArchiveSprintAndEpic(s, cfg, item.Sprint)

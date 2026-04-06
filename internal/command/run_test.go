@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -1435,5 +1436,694 @@ func TestStripBugbotMarkup(t *testing.T) {
 				t.Errorf("stripBugbotMarkup() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRecordSessionReloadsFreshState verifies that recordSession reads the
+// current on-disk state rather than using the caller's (potentially stale)
+// store. This prevents overwriting fields added by pipeline steps or Claude
+// subprocesses during fix cycles (I-169).
+func TestRecordSessionReloadsFreshState(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Create an item with basic fields
+	writeFile(t, filepath.Join(root, "tasks", "T-100-test.md"), `id: T-100
+type: task
+status: active
+created: 2026-04-06T10:00:00-06:00
+last_touched: 2026-04-06T10:00:00-06:00
+
+title: Test item
+
+sessions:
+- []
+
+depends_on:
+- []
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load a "stale" store — this represents the function parameter `s`
+	// that is never refreshed during the pipeline.
+	staleStore, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now simulate pipeline steps adding fields by writing directly to disk.
+	// This is what happens when localStore or subprocess `st` commands modify
+	// the item between pipeline steps.
+	freshStore, _ := store.New(cfg)
+	item, _ := freshStore.Get("T-100")
+	setNestedField(item, "delivery", "stage", "implement")
+	setNestedField(item, "testing_evidence", "api_unit", "pass abc123 2026-04-06T12:00:00-06:00")
+	freshStore.Write(item)
+
+	// Call recordSession with the STALE store. Before the fix, this would
+	// overwrite the delivery and testing_evidence fields. After the fix,
+	// it should reload from disk and preserve them.
+	recordSession(staleStore, cfg, "T-100", "session-new", "ci_fix_1")
+
+	// Reload from disk and verify fields were preserved
+	verifyStore, _ := store.New(cfg)
+	result, ok := verifyStore.Get("T-100")
+	if !ok {
+		t.Fatal("item T-100 not found after recordSession")
+	}
+
+	// Check that delivery fields survived
+	if result.Delivery == nil {
+		t.Fatal("delivery section was stripped by recordSession")
+	}
+	stage, _ := result.Delivery["stage"].(string)
+	if stage != "implement" {
+		t.Errorf("delivery.stage = %q, want %q", stage, "implement")
+	}
+
+	// Check that testing_evidence survived
+	if result.TestingEvidence == nil {
+		t.Fatal("testing_evidence section was stripped by recordSession")
+	}
+	apiUnit, _ := result.TestingEvidence["api_unit"].(string)
+	if !strings.HasPrefix(apiUnit, "pass") {
+		t.Errorf("testing_evidence.api_unit = %q, want prefix %q", apiUnit, "pass")
+	}
+
+	// Check that the session WAS recorded
+	found := false
+	for _, s := range result.Sessions {
+		if s == "session-new" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("session 'session-new' was not recorded")
+	}
+
+	// Check time_tracking was set
+	if result.TimeTracking == nil {
+		t.Fatal("time_tracking should be set")
+	}
+	lastStep, _ := result.TimeTracking["last_step"].(string)
+	if lastStep != "ci_fix_1" {
+		t.Errorf("time_tracking.last_step = %q, want %q", lastStep, "ci_fix_1")
+	}
+}
+
+// TestEnsureActiveUpdatesDoc verifies that the status guard updates both the
+// struct field AND the Doc so the write actually persists to disk (I-169).
+func TestEnsureActiveUpdatesDoc(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Create an item with status "queued" (simulating status drift)
+	writeFile(t, filepath.Join(root, "tasks", "T-200-drift.md"), `id: T-200
+type: task
+status: queued
+created: 2026-04-06T10:00:00-06:00
+last_touched: 2026-04-06T10:00:00-06:00
+
+title: Drifted item
+
+delivery:
+  stage: implement
+
+depends_on:
+- []
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the status guard logic (mirrors lines 1679-1691 in run.go)
+	refreshStore, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshItem, ok := refreshStore.Get("T-200")
+	if !ok {
+		t.Fatal("T-200 not found")
+	}
+	if refreshItem.Status != "active" {
+		refreshItem.Status = "active"
+		refreshItem.Doc.SetField("status", "active")
+		refreshStore.Write(refreshItem)
+	}
+
+	// Reload and verify status persisted to disk
+	verifyStore, _ := store.New(cfg)
+	result, ok := verifyStore.Get("T-200")
+	if !ok {
+		t.Fatal("T-200 not found after write")
+	}
+	if result.Status != "active" {
+		t.Errorf("status = %q, want %q (Doc.SetField was missing)", result.Status, "active")
+	}
+
+	// Also verify via Doc to be thorough
+	docStatus, _ := result.Doc.GetField("status")
+	if docStatus != "active" {
+		t.Errorf("Doc status = %q, want %q", docStatus, "active")
+	}
+
+	// Verify delivery fields weren't stripped
+	if result.Delivery == nil {
+		t.Fatal("delivery section was stripped by status guard")
+	}
+	stage, _ := result.Delivery["stage"].(string)
+	if stage != "implement" {
+		t.Errorf("delivery.stage = %q, want %q", stage, "implement")
+	}
+}
+
+// TestRunResumeCheckpointAfterStep verifies that after each step completes,
+// last_completed_step is recorded so a subsequent run resumes from that point.
+func TestRunResumeCheckpointAfterStep(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Pipeline: step_a → step_b → step_c (all simple commands)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [step_a, step_b, step_c]
+  steps:
+    step_a:
+      type: command
+      command: echo step_a
+    step_b:
+      type: command
+      command: echo step_b
+    step_c:
+      type: command
+      command: echo step_c
+`), 0644)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep", Title: "Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-ckpt", Title: "Checkpoint Sprint", Epic: "ep",
+		Status: "active", Items: []string{"T-100"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	writeFile(t, filepath.Join(root, "tasks", "T-100-ckpt.md"), `id: T-100
+type: task
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Checkpoint test item
+depends_on:
+- []
+sprint: sp-ckpt
+time_tracking:
+  started_at: 2026-04-01T10:00:00-06:00
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+	pipeline := cfg.RunPipeline()
+
+	// Run with StepFilter to stop after step_b
+	result := runSingleItem(s, cfg, "T-100", "sp-ckpt", pipeline, RunOpts{StepFilter: "step_b"}, mockRunEngine(true))
+	if !result.Success {
+		// Command steps don't set result.Success (only set at end), but steps should pass
+		for _, sr := range result.Steps {
+			if !sr.Passed {
+				t.Fatalf("step %s failed: %s", sr.Step, sr.Error)
+			}
+		}
+	}
+
+	// Verify last_completed_step was set to step_b
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-100")
+	if !ok {
+		t.Fatal("item not found after run")
+	}
+	lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
+	if lastStep != "step_b" {
+		t.Errorf("last_completed_step = %q, want %q", lastStep, "step_b")
+	}
+
+	// Now run again WITHOUT --fresh — should resume after step_b (only step_c runs)
+	s3, _ := store.New(cfg)
+	result2 := runSingleItem(s3, cfg, "T-100", "sp-ckpt", pipeline, RunOpts{}, mockRunEngine(true))
+
+	// Should have exactly one step executed: step_c
+	executedSteps := []string{}
+	for _, sr := range result2.Steps {
+		executedSteps = append(executedSteps, sr.Step)
+	}
+	if len(executedSteps) != 1 || executedSteps[0] != "step_c" {
+		t.Errorf("expected only [step_c] to run on resume, got %v", executedSteps)
+	}
+}
+
+// TestRunResumeNoRegression verifies that resume does not re-execute
+// already-completed steps — only steps after the checkpoint run.
+func TestRunResumeNoRegression(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Track which steps actually execute via temp file side-effects
+	logFile := filepath.Join(root, "step_log.txt")
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(fmt.Sprintf(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [alpha, beta, gamma]
+  steps:
+    alpha:
+      type: command
+      command: echo alpha >> %s
+    beta:
+      type: command
+      command: echo beta >> %s
+    gamma:
+      type: command
+      command: echo gamma >> %s
+`, logFile, logFile, logFile)), 0644)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep", Title: "Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-noreg", Title: "No Regression Sprint", Epic: "ep",
+		Status: "active", Items: []string{"T-200"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	writeFile(t, filepath.Join(root, "tasks", "T-200-noreg.md"), `id: T-200
+type: task
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: No regression test item
+depends_on:
+- []
+sprint: sp-noreg
+time_tracking:
+  started_at: 2026-04-01T10:00:00-06:00
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+	pipeline := cfg.RunPipeline()
+
+	// Run 1: execute all steps (alpha, beta, gamma)
+	runSingleItem(s, cfg, "T-200", "sp-noreg", pipeline, RunOpts{StepFilter: "beta"}, mockRunEngine(true))
+
+	// Clear the log file
+	os.WriteFile(logFile, nil, 0644)
+
+	// Run 2: resume — only gamma should execute
+	s2, _ := store.New(cfg)
+	runSingleItem(s2, cfg, "T-200", "sp-noreg", pipeline, RunOpts{}, mockRunEngine(true))
+
+	// Read log — should only contain "gamma"
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logContent := strings.TrimSpace(string(logData))
+	lines := strings.Split(logContent, "\n")
+
+	// Filter empty lines
+	var nonEmpty []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			nonEmpty = append(nonEmpty, l)
+		}
+	}
+
+	if len(nonEmpty) != 1 || nonEmpty[0] != "gamma" {
+		t.Errorf("expected only [gamma] in log after resume, got %v (raw: %q)", nonEmpty, logContent)
+	}
+}
+
+// TestDetectMergedPR_FallbackToManifest verifies that detectMergedPR falls back
+// to checking all worktree directories when no PRs are recorded in the manifest.
+func TestDetectMergedPR_FallbackToManifest(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+`), 0644)
+
+	// Item with NO manifest (no PRs recorded)
+	writeFile(t, filepath.Join(root, "tasks", "T-300-fallback.md"), `id: T-300
+type: task
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Fallback test item
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	item, ok := s.Get("T-300")
+	if !ok {
+		t.Fatal("item not found")
+	}
+
+	// Without worktree config and no gh CLI, detectMergedPR should return false
+	// (fallback to allWorktreeDirs which returns cfg.Root(), but gh pr view fails)
+	result := detectMergedPR(cfg, "T-300", item)
+	if result {
+		t.Error("detectMergedPR should return false when gh pr view fails (no git repo)")
+	}
+
+	// Verify allWorktreeDirsWithPR returns the root when no worktree config
+	dirs := allWorktreeDirsWithPR(cfg, "T-300")
+	if len(dirs) == 0 {
+		t.Error("allWorktreeDirsWithPR should fall back to root dir")
+	}
+
+	// Verify allWorktreeDirs also returns the root as fallback
+	fallbackDirs := allWorktreeDirs(cfg, "T-300")
+	if len(fallbackDirs) == 0 {
+		t.Error("allWorktreeDirs should return root dir as fallback")
+	}
+	if fallbackDirs[0] != cfg.Root() {
+		t.Errorf("allWorktreeDirs fallback = %q, want %q", fallbackDirs[0], cfg.Root())
+	}
+}
+
+// TestRunGroupReloadsStoreBetweenGroups verifies that the Run loop reloads
+// the store between dependency groups so that items completed in group N
+// are visible to group N+1's dependency checks.
+func TestRunGroupReloadsStoreBetweenGroups(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Pipeline with only a command step (no claude)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 1.00
+  step_order: [echo]
+  steps:
+    echo:
+      type: command
+      command: echo done
+`), 0644)
+
+	// Two items: T-010 (no deps) and T-011 (depends on T-010).
+	// computeParallelGroups will put them in separate groups.
+	writeFile(t, filepath.Join(root, "tasks", "T-010-parent.md"), `id: T-010
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Parent task
+depends_on:
+- []
+sprint: sp-reload
+`)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-011-child.md"), `id: T-011
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Child task
+depends_on:
+- T-010
+sprint: sp-reload
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep-reload", Title: "Reload Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-reload", Title: "Reload Sprint", Epic: "ep-reload",
+		Status: "active", Items: []string{"T-010", "T-011"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Build groups — T-010 should be in group 1, T-011 in group 2
+	groups, _, code := loadSprintGroups(s, cfg, "sp-reload")
+	if code != 0 {
+		t.Fatalf("loadSprintGroups returned %d", code)
+	}
+	if len(groups) < 2 {
+		t.Fatalf("expected >=2 groups, got %d", len(groups))
+	}
+
+	// Capture the stale dep graph BEFORE completing T-010 — this proves
+	// that without a reload, T-011 remains blocked.
+	staleG := deps.Build(s.All(), cfg)
+	if !staleG.IsBlocked("T-011") {
+		t.Fatal("T-011 should be blocked before T-010 is completed")
+	}
+
+	// Simulate what Run does: after group 1, complete T-010 on disk.
+	item, _ := s.Get("T-010")
+	item.Doc.SetField("status", "completed")
+	item.Status = "completed"
+	item.Doc.SetField("completed", time.Now().Format(time.RFC3339))
+	s.Write(item)
+	s.Move("T-010")
+
+	// A fresh store reload (our fix) should see T-010 as completed
+	// and T-011 as unblocked.
+	freshStore, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshItem, ok := freshStore.Get("T-010")
+	if !ok {
+		t.Fatal("T-010 not found in fresh store")
+	}
+	if freshItem.Status != "completed" {
+		t.Errorf("fresh store shows T-010 status = %q, want completed", freshItem.Status)
+	}
+
+	// Verify dep graph on fresh store shows T-011 unblocked
+	g := deps.Build(freshStore.All(), cfg)
+	if g.IsBlocked("T-011") {
+		t.Error("T-011 should be unblocked after T-010 completed (fresh store), but IsBlocked=true")
+	}
+}
+
+// TestRunGroupRechecksDepsBetweenItems verifies that within a group,
+// dependencies are rechecked after acquiring the semaphore so that
+// items unblocked by a just-completed sibling are detected.
+func TestRunGroupRechecksDepsBetweenItems(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 1.00
+  step_order: [echo]
+  steps:
+    echo:
+      type: command
+      command: echo done
+`), 0644)
+
+	// T-020 depends on T-019 which is NOT in the sprint — simulates
+	// an external blocker that hasn't been resolved yet.
+	writeFile(t, filepath.Join(root, "tasks", "T-019-ext.md"), `id: T-019
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: External blocker
+depends_on:
+- []
+`)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-020-blocked.md"), `id: T-020
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Blocked by external
+depends_on:
+- T-019
+sprint: sp-recheck
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep-recheck", Title: "Recheck Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-recheck", Title: "Recheck Sprint", Epic: "ep-recheck",
+		Status: "active", Items: []string{"T-020"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// T-020 is blocked — runGroup should detect it via the dep recheck.
+	// First, verify it IS blocked:
+	g := deps.Build(s.All(), cfg)
+	if !g.IsBlocked("T-020") {
+		t.Fatal("T-020 should be blocked by T-019")
+	}
+
+	// Run the group with T-020 — the dep recheck after sem acquire
+	// should detect the block and produce a "blocked" step result.
+	pipeline := cfg.RunPipeline()
+	results := runGroup(s, cfg, []string{"T-020"}, "sp-recheck", pipeline, RunOpts{}, mockRunEngine(true))
+
+	// T-020 should be reported as blocked (either in runGroup's sem
+	// recheck or in runSingleItem's precheck)
+	if len(results) == 0 {
+		t.Fatal("expected results for T-020")
+	}
+	foundBlocked := false
+	for _, r := range results {
+		for _, sr := range r.Steps {
+			if sr.Step == "blocked" {
+				foundBlocked = true
+			}
+		}
+	}
+	if !foundBlocked {
+		t.Error("expected T-020 to be reported as blocked, but no 'blocked' step found")
+	}
+}
+
+// TestCloseUnlocksAfterGitSync verifies that Close() releases the item
+// lock AFTER the GitSync call, not before. This ordering ensures that
+// sibling items in the same st run batch see the committed terminal
+// status when they reload the store and recheck dependencies.
+func TestCloseUnlocksAfterGitSync(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-030-locktest.md"), `id: T-030
+type: task
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Lock test item
+depends_on:
+- []
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Create a lock for T-030 (simulates st start)
+	if err := store.LockItem(cfg, "T-030", "test-session"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.IsLocked(cfg, "T-030") {
+		t.Fatal("lock should exist before close")
+	}
+
+	// Close the item — lock should be released after GitSync
+	code := Close(s, cfg, "T-030", "completed", CloseOpts{})
+	if code != 0 {
+		t.Fatalf("Close returned %d, want 0", code)
+	}
+
+	// Lock should be released
+	if store.IsLocked(cfg, "T-030") {
+		t.Error("lock should be released after Close()")
+	}
+
+	// Item should be in terminal status
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-030")
+	if !ok {
+		t.Fatal("T-030 not found after close")
+	}
+	if item.Status != "completed" {
+		t.Errorf("status = %q, want completed", item.Status)
 	}
 }

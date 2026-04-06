@@ -24,8 +24,9 @@ import (
 
 // TestRecordOpts holds flags and injectable functions for the test command.
 type TestRecordOpts struct {
-	Run      bool // execute the suite command (--run)
-	Coverage bool // enforce per-file coverage (--coverage, requires --run)
+	Run      bool   // execute the suite command (--run)
+	Coverage bool   // enforce per-file coverage (--coverage, requires --run)
+	Skip     string // --skip <reason>: mark a scope suite as intentionally skipped
 	// Injectable for testing (nil = use real implementations)
 	GitHeadSHA func(repoDir string) (string, error)
 	RunCmd     func(command string) (output []byte, exitCode int, err error)
