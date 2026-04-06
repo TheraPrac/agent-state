@@ -1,6 +1,7 @@
 package command
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -492,6 +493,110 @@ func TestGetNestedFieldBadParent(t *testing.T) {
 	_, ok := getNestedField(item, "nonexistent_parent", "key")
 	if ok {
 		t.Error("expected not found for bad parent")
+	}
+}
+
+func TestCompletionReport_NumericTimeTracking(t *testing.T) {
+	// Simulates the extraction logic from printCompletionReport (run.go:5980-5997)
+	// when time_tracking values are stored as numeric types (int/float64) by YAML.
+	item := &model.Item{
+		TimeTracking: map[string]interface{}{
+			"run_wall_seconds":   3600,
+			"ai_duration_seconds": 2284,
+			"ai_cost_usd":        10.4589,
+			"input_tokens":       3000000,
+			"output_tokens":      2196078,
+		},
+	}
+
+	// run_wall_seconds
+	if v, ok := getNestedField(item, "time_tracking", "run_wall_seconds"); !ok {
+		t.Fatal("run_wall_seconds: expected ok=true")
+	} else {
+		var secs int
+		fmt.Sscanf(v, "%d", &secs)
+		if secs != 3600 {
+			t.Errorf("run_wall_seconds: got %d, want 3600", secs)
+		}
+	}
+
+	// ai_duration_seconds
+	if v, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); !ok {
+		t.Fatal("ai_duration_seconds: expected ok=true")
+	} else {
+		var secs int
+		fmt.Sscanf(v, "%d", &secs)
+		if secs != 2284 {
+			t.Errorf("ai_duration_seconds: got %d, want 2284", secs)
+		}
+	}
+
+	// ai_cost_usd
+	if v, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); !ok {
+		t.Fatal("ai_cost_usd: expected ok=true")
+	} else {
+		var cost float64
+		fmt.Sscanf(v, "%f", &cost)
+		if cost < 10.45 || cost > 10.46 {
+			t.Errorf("ai_cost_usd: got %f, want ~10.4589", cost)
+		}
+	}
+
+	// input_tokens
+	if v, ok := getNestedField(item, "time_tracking", "input_tokens"); !ok {
+		t.Fatal("input_tokens: expected ok=true")
+	} else {
+		var tok int
+		fmt.Sscanf(v, "%d", &tok)
+		if tok != 3000000 {
+			t.Errorf("input_tokens: got %d, want 3000000", tok)
+		}
+	}
+
+	// output_tokens
+	if v, ok := getNestedField(item, "time_tracking", "output_tokens"); !ok {
+		t.Fatal("output_tokens: expected ok=true")
+	} else {
+		var tok int
+		fmt.Sscanf(v, "%d", &tok)
+		if tok != 2196078 {
+			t.Errorf("output_tokens: got %d, want 2196078", tok)
+		}
+	}
+}
+
+func TestGetNestedField_NumericTypes(t *testing.T) {
+	item := &model.Item{
+		TimeTracking: map[string]interface{}{
+			"ai_duration_seconds": 2284,
+			"ai_cost_usd":        10.4589,
+			"total_tokens":       5196078,
+			"run_wall_seconds":   3600,
+			"a_string_field":     "hello",
+		},
+	}
+
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{"ai_duration_seconds", "2284"},
+		{"ai_cost_usd", "10.4589"},
+		{"total_tokens", "5196078"},
+		{"run_wall_seconds", "3600"},
+		{"a_string_field", "hello"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.key, func(t *testing.T) {
+			val, ok := getNestedField(item, "time_tracking", tc.key)
+			if !ok {
+				t.Fatalf("expected ok=true for key %q", tc.key)
+			}
+			if val != tc.want {
+				t.Errorf("key %q: got %q, want %q", tc.key, val, tc.want)
+			}
+		})
 	}
 }
 

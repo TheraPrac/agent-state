@@ -61,6 +61,7 @@ func setNestedField(item *model.Item, parent, key, val string) {
 }
 
 // getNestedField reads a value from a nested map on the item.
+// It handles string, int, and float64 types (YAML may parse numeric values as int or float64).
 func getNestedField(item *model.Item, parent, key string) (string, bool) {
 	m := nestedMap(item, parent)
 	if m == nil {
@@ -70,8 +71,16 @@ func getNestedField(item *model.Item, parent, key string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	s, ok := v.(string)
-	return s, ok
+	switch val := v.(type) {
+	case string:
+		return val, true
+	case int:
+		return fmt.Sprintf("%d", val), true
+	case float64:
+		return fmt.Sprintf("%g", val), true
+	default:
+		return fmt.Sprintf("%v", val), true
+	}
 }
 
 // nestedMap returns the map for a given parent field name.
