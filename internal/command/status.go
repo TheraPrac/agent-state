@@ -667,6 +667,14 @@ func statusSingle(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Printf("  Completed: %s\n", item.Completed.Format("2006-01-02"))
 	}
 
+	if interruptedAt, ok := getNestedField(item, "delivery", "interrupted_at"); ok && interruptedAt != "" {
+		if t, err := time.Parse(time.RFC3339, interruptedAt); err == nil {
+			fmt.Printf("  Interrupted: %s\n", t.Format("2006-01-02"))
+		} else {
+			fmt.Printf("  Interrupted: %s\n", interruptedAt)
+		}
+	}
+
 	if path, ok := s.Path(id); ok {
 		rel, err := filepath.Rel(cfg.Root(), path)
 		if err == nil {

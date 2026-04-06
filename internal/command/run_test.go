@@ -1437,3 +1437,340 @@ func TestStripBugbotMarkup(t *testing.T) {
 		})
 	}
 }
+
+// --- Interrupt / Resume tests (I-176) ---
+
+func TestReleaseItem_SetsInterruptedAt(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-060-interrupt.md"), `id: T-060
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Interrupt test item
+
+delivery:
+  stage: uat
+  last_completed_step: smoke
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	releaseItem(cfg, "T-060")
+
+	// Reload and verify interrupted_at was set
+	s, _ := store.New(cfg)
+	item, ok := s.Get("T-060")
+	if !ok {
+		t.Fatal("item not found after release")
+	}
+	interruptedAt, found := getNestedField(item, "delivery", "interrupted_at")
+	if !found || interruptedAt == "" {
+		t.Error("interrupted_at not set after releaseItem")
+	}
+	// Verify it's a valid RFC3339 timestamp
+	if _, err := time.Parse(time.RFC3339, interruptedAt); err != nil {
+		t.Errorf("interrupted_at is not valid RFC3339: %q", interruptedAt)
+	}
+}
+
+func TestReleaseItem_CallsGitSync(t *testing.T) {
+	// This test verifies releaseItem calls GitSync by checking that
+	// the interrupted_at field is persisted to disk (store.Write + GitSync).
+	// GitSync itself may no-op without a git repo, but the field should be written.
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-061-sync.md"), `id: T-061
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Sync test item
+
+delivery:
+  stage: coding
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	releaseItem(cfg, "T-061")
+
+	// Read raw file to confirm the field was persisted
+	data, err := os.ReadFile(filepath.Join(root, "tasks", "T-061-sync.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "interrupted_at") {
+		t.Error("interrupted_at not persisted to file — GitSync/Write did not run")
+	}
+}
+
+func TestRunSingleItem_ResumeAfterInterrupt(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [implement, merge]
+  steps:
+    implement:
+      type: command
+      command: echo done
+    merge:
+      type: command
+      command: echo merged
+`), 0644)
+
+	// Item with interrupted_at and last_completed_step set (was interrupted after implement)
+	writeFile(t, filepath.Join(root, "tasks", "T-062-resume.md"), `id: T-062
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Resume after interrupt
+
+delivery:
+  stage: coding
+  last_completed_step: implement
+  interrupted_at: "2026-04-06T10:00:00-06:00"
+
+sprint: resume-sprint
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "test-epic", Title: "Test", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "resume-sprint", Title: "Resume Sprint", Epic: "test-epic",
+		Status: "active", Items: []string{"T-062"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	pipeline := cfg.RunPipeline()
+	engine := mockRunEngine(true)
+
+	result := runSingleItem(s, cfg, "T-062", "resume-sprint", pipeline, RunOpts{}, engine)
+	if !result.Success {
+		t.Errorf("runSingleItem failed: %+v", result.Steps)
+	}
+
+	// Item should have resumed from after implement (i.e. ran merge)
+	// and completed successfully
+	s2, _ := store.New(cfg)
+	item, _ := s2.Get("T-062")
+	lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
+	if lastStep != "merge" {
+		t.Errorf("last_completed_step = %q, want merge", lastStep)
+	}
+}
+
+func TestRunSingleItem_ClearsInterruptedAtOnResume(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 2.00
+  step_order: [implement]
+  steps:
+    implement:
+      type: command
+      command: echo done
+`), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-063-clear.md"), `id: T-063
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Clear interrupted_at on resume
+
+delivery:
+  stage: coding
+  interrupted_at: "2026-04-06T10:00:00-06:00"
+
+sprint: clear-sprint
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "test-epic", Title: "Test", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "clear-sprint", Title: "Clear Sprint", Epic: "test-epic",
+		Status: "active", Items: []string{"T-063"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	pipeline := cfg.RunPipeline()
+	engine := mockRunEngine(true)
+
+	runSingleItem(s, cfg, "T-063", "clear-sprint", pipeline, RunOpts{}, engine)
+
+	// Verify interrupted_at was cleared
+	s2, _ := store.New(cfg)
+	item, _ := s2.Get("T-063")
+	interruptedAt, _ := getNestedField(item, "delivery", "interrupted_at")
+	if interruptedAt != "" {
+		t.Errorf("interrupted_at not cleared on resume: %q", interruptedAt)
+	}
+}
+
+func TestStatusOutput_ShowsInterrupted(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-070-interrupted.md"), `id: T-070
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Interrupted item for status
+
+delivery:
+  stage: uat
+  interrupted_at: "2026-04-06T10:00:00-06:00"
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	Status(s, cfg, "T-070", StatusOpts{})
+
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "Interrupted") {
+		t.Errorf("status output missing 'Interrupted' line:\n%s", output)
+	}
+	if !strings.Contains(output, "2026-04-06") {
+		t.Errorf("status output missing interrupted date:\n%s", output)
+	}
+}
+
+func TestQueueShow_ShowsInterruptedItems(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-080-qi.md"), `id: T-080
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Queue interrupted item
+
+delivery:
+  stage: uat
+  interrupted_at: "2026-04-06T10:00:00-06:00"
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Add item to queue
+	QueueAdd(s, cfg, "T-080", QueueOpts{})
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	QueueShow(s, cfg)
+
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "interrupted") {
+		t.Errorf("queue output missing 'interrupted' badge:\n%s", output)
+	}
+	// Should NOT show "active" when interrupted
+	if strings.Contains(output, "● active") {
+		t.Errorf("queue output should show interrupted instead of active:\n%s", output)
+	}
+}

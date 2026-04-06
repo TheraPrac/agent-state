@@ -103,7 +103,11 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 
 		active := ""
 		if ok && item.Status == "active" {
-			active = fmt.Sprintf("  %s● active%s", cGreen, cReset)
+			if interruptedAt, _ := getNestedField(item, "delivery", "interrupted_at"); interruptedAt != "" {
+				active = fmt.Sprintf("  %s⏸ interrupted%s", cYellow, cReset)
+			} else {
+				active = fmt.Sprintf("  %s● active%s", cGreen, cReset)
+			}
 		}
 
 		fmt.Printf("  %d. %s%-8s%s %s  %s(%s)%s%s%s%s\n",
