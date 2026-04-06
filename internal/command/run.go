@@ -2607,6 +2607,7 @@ func executeUAT(s *store.Store, cfg *config.Config, itemID, worktreeDir string) 
 	}
 	code := UAT(s, cfg, itemID, UATOpts{
 		RunCmd: func(cmd string) ([]byte, int, error) {
+			cmd = rewriteACPaths(cfg, itemID, uatDir, cmd)
 			return runCmdInDir(uatDir, cmd)
 		},
 	})
@@ -5701,6 +5702,8 @@ func inferReposFromItem(cfg *config.Config, item *model.Item) []string {
 // rewriteACPaths rewrites ../repo-name paths in acceptance criteria commands
 // to use the worktree path. From the worktree base (worktrees/T-095/),
 // repos are direct subdirectories (theraprac-web/), not siblings (../theraprac-web).
+// When uatDir is already a repo subdirectory, ../repo paths are natural relative
+// navigation and should NOT be rewritten.
 func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
 		return cmd
@@ -5712,7 +5715,22 @@ func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
 		return cmd
 	}
 
-	// Rewrite ../repo-name → repo-name (direct subdirectory of worktree base)
+	// If uatDir is already a repo subdirectory, ../repo paths are correct
+	// relative navigation (subdir → base → sibling) — do not rewrite them.
+	uatBase := filepath.Base(uatDir)
+	for _, repo := range cfg.Worktree.Repos {
+		dir := repo
+		if cfg.Worktree.RepoMap != nil {
+			if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+				dir = mapped
+			}
+		}
+		if uatBase == dir {
+			return cmd
+		}
+	}
+
+	// Running from the worktree base — rewrite ../repo-name → repo-name
 	for _, repo := range cfg.Worktree.Repos {
 		for _, pattern := range []string{
 			"cd ../" + repo + " ",
