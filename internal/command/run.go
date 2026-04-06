@@ -131,29 +131,9 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 	// Build the set of "running" sprint IDs — sprints with at least one claimed
 	// item or a non-stale session attached. These are excluded from selection.
 	runningSprints := make(map[string]bool)
-	{
-		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
-		sessions, _ := mgr.ListSessions()
-		for _, sess := range sessions {
-			if sess.Sprint == "" || mgr.IsStale(sess) {
-				continue
-			}
-			runningSprints[sess.Sprint] = true
-		}
-		for _, sp := range reg.Sprints {
-			if runningSprints[sp.ID] {
-				continue
-			}
-			for _, itemID := range sp.Items {
-				item, ok := s.Get(itemID)
-				if !ok {
-					continue
-				}
-				if item.ClaimedBy != "" {
-					runningSprints[sp.ID] = true
-					break
-				}
-			}
+	for _, sp := range reg.Sprints {
+		if isSprintRunning(s, cfg, sp.ID) {
+			runningSprints[sp.ID] = true
 		}
 	}
 
@@ -421,29 +401,9 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 	// Build the set of "running" sprint IDs — sprints with at least one claimed
 	// item or a non-stale session attached. Used when opts.RunningOnly is true.
 	runningSprints := make(map[string]bool)
-	{
-		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
-		sessions, _ := mgr.ListSessions()
-		for _, sess := range sessions {
-			if sess.Sprint == "" || mgr.IsStale(sess) {
-				continue
-			}
-			runningSprints[sess.Sprint] = true
-		}
-		for _, sp := range reg.Sprints {
-			if runningSprints[sp.ID] {
-				continue
-			}
-			for _, itemID := range sp.Items {
-				item, ok := s.Get(itemID)
-				if !ok {
-					continue
-				}
-				if item.ClaimedBy != "" {
-					runningSprints[sp.ID] = true
-					break
-				}
-			}
+	for _, sp := range reg.Sprints {
+		if isSprintRunning(s, cfg, sp.ID) {
+			runningSprints[sp.ID] = true
 		}
 	}
 
@@ -1723,7 +1683,20 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	// Track steps that were skipped (NOT_FIXABLE, user skip, or requires-cascade).
 	// Used to auto-skip downstream steps whose Requires include a skipped step.
+	// On resume, re-hydrate from delivery.skipped_steps so cascade still works.
 	skippedSteps := map[string]bool{}
+	if startIdx > 0 {
+		if resumeItem, ok := localStore.Get(itemID); ok {
+			if prev, exists := getNestedField(resumeItem, "delivery", "skipped_steps"); exists && prev != "" {
+				for _, s := range strings.Split(prev, ",") {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						skippedSteps[s] = true
+					}
+				}
+			}
+		}
+	}
 
 	// Execute each pipeline step (index-based to support skip + resume)
 	for i := startIdx; i < len(pipeline); i++ {
@@ -4874,14 +4847,14 @@ func pollPRChecks(prDir, ghRepo, branch string) ([]byte, int, error) {
 
 		// Live countdown so the user can tell we're not stuck.
 		elapsed := time.Since(deadline.Add(-maxWait))
-		pollCountdown(elapsed, interval, activeRunCtx)
+		pollCountdown(activeRunCtx, elapsed, interval)
 	}
 }
 
 // pollCountdown prints a single in-place line that counts elapsed time up and
 // the next-poll countdown down, updating every second. The line is erased via
 // \r before the next poll iteration prints real status.
-func pollCountdown(elapsed, interval time.Duration, ctx context.Context) {
+func pollCountdown(ctx context.Context, elapsed, interval time.Duration) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	start := time.Now()
@@ -4892,11 +4865,12 @@ func pollCountdown(elapsed, interval time.Duration, ctx context.Context) {
 		waited := elapsed + time.Since(start)
 		fmt.Fprintf(os.Stderr, "\r  Waited %s — next check in %s  ",
 			formatDurationCompact(waited), formatDurationCompact(remaining))
-		if ctx != nil && ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			fmt.Fprint(os.Stderr, "\r\033[K") // clear line
 			return
+		case <-ticker.C:
 		}
-		<-ticker.C
 	}
 	fmt.Fprint(os.Stderr, "\r\033[K") // clear line before next status print
 }

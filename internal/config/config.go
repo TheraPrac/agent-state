@@ -219,7 +219,7 @@ type RunStepDef struct {
 	Timeout    int      // for watch/deploy (seconds, default 600)
 	Coverage   bool     // for test type
 	Budget     float64  // per-step budget override (USD, 0 = use default)
-	Requires   []string // step names that must succeed — if any were skipped, this step is auto-skipped
+	Requires   []string // step names that must not be skipped — if any were skipped, this step is auto-skipped
 	name       string   // set by RunPipeline(), not from config
 }
 
