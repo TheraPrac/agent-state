@@ -1215,6 +1215,12 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 			break
 		}
 
+		// Reload store between groups so completed items from the previous
+		// group are visible to dependency checks in the current group.
+		if i > 0 {
+			s, _ = store.New(cfg)
+		}
+
 		fmt.Printf("\n=== Group %d/%d ===\n", i+1, len(groups))
 		results := runGroup(s, cfg, group, sprintID, pipeline, opts, engine)
 		allResults = append(allResults, results...)
@@ -1435,6 +1441,27 @@ func runGroup(s *store.Store, cfg *config.Config, group []string, sprintID strin
 			<-sem // release
 			wg.Done()
 			break
+		}
+
+		// Reload store and recheck dependencies after acquiring the
+		// semaphore — a sibling item that just finished may have resolved
+		// a dependency that was blocking this item (or vice versa).
+		if freshStore, err := store.New(cfg); err == nil {
+			g := deps.Build(freshStore.All(), cfg)
+			if g.IsBlocked(itemID) {
+				unresolved := g.UnresolvedDeps(itemID)
+				fmt.Printf("[%s] Still blocked by: %v — skipping\n", itemID, unresolved)
+				results[i] = ItemResult{
+					ItemID: itemID,
+					Steps: []StepResult{{
+						Step:  "blocked",
+						Error: fmt.Sprintf("blocked by: %v", unresolved),
+					}},
+				}
+				<-sem // release
+				wg.Done()
+				continue
+			}
 		}
 
 		go func(idx int, id string) {

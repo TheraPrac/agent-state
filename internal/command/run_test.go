@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/manifest"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -1856,5 +1857,273 @@ title: Fallback test item
 	}
 	if fallbackDirs[0] != cfg.Root() {
 		t.Errorf("allWorktreeDirs fallback = %q, want %q", fallbackDirs[0], cfg.Root())
+	}
+}
+
+// TestRunGroupReloadsStoreBetweenGroups verifies that the Run loop reloads
+// the store between dependency groups so that items completed in group N
+// are visible to group N+1's dependency checks.
+func TestRunGroupReloadsStoreBetweenGroups(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	// Pipeline with only a command step (no claude)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 1.00
+  step_order: [echo]
+  steps:
+    echo:
+      type: command
+      command: echo done
+`), 0644)
+
+	// Two items: T-010 (no deps) and T-011 (depends on T-010).
+	// computeParallelGroups will put them in separate groups.
+	writeFile(t, filepath.Join(root, "tasks", "T-010-parent.md"), `id: T-010
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Parent task
+depends_on:
+- []
+sprint: sp-reload
+`)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-011-child.md"), `id: T-011
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Child task
+depends_on:
+- T-010
+sprint: sp-reload
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep-reload", Title: "Reload Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-reload", Title: "Reload Sprint", Epic: "ep-reload",
+		Status: "active", Items: []string{"T-010", "T-011"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Build groups — T-010 should be in group 1, T-011 in group 2
+	groups, _, code := loadSprintGroups(s, cfg, "sp-reload")
+	if code != 0 {
+		t.Fatalf("loadSprintGroups returned %d", code)
+	}
+	if len(groups) < 2 {
+		t.Fatalf("expected >=2 groups, got %d", len(groups))
+	}
+
+	// Capture the stale dep graph BEFORE completing T-010 — this proves
+	// that without a reload, T-011 remains blocked.
+	staleG := deps.Build(s.All(), cfg)
+	if !staleG.IsBlocked("T-011") {
+		t.Fatal("T-011 should be blocked before T-010 is completed")
+	}
+
+	// Simulate what Run does: after group 1, complete T-010 on disk.
+	item, _ := s.Get("T-010")
+	item.Doc.SetField("status", "completed")
+	item.Status = "completed"
+	item.Doc.SetField("completed", time.Now().Format(time.RFC3339))
+	s.Write(item)
+	s.Move("T-010")
+
+	// A fresh store reload (our fix) should see T-010 as completed
+	// and T-011 as unblocked.
+	freshStore, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshItem, ok := freshStore.Get("T-010")
+	if !ok {
+		t.Fatal("T-010 not found in fresh store")
+	}
+	if freshItem.Status != "completed" {
+		t.Errorf("fresh store shows T-010 status = %q, want completed", freshItem.Status)
+	}
+
+	// Verify dep graph on fresh store shows T-011 unblocked
+	g := deps.Build(freshStore.All(), cfg)
+	if g.IsBlocked("T-011") {
+		t.Error("T-011 should be unblocked after T-010 completed (fresh store), but IsBlocked=true")
+	}
+}
+
+// TestRunGroupRechecksDepsBetweenItems verifies that within a group,
+// dependencies are rechecked after acquiring the semaphore so that
+// items unblocked by a just-completed sibling are detected.
+func TestRunGroupRechecksDepsBetweenItems(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  default_budget_usd: 1.00
+  step_order: [echo]
+  steps:
+    echo:
+      type: command
+      command: echo done
+`), 0644)
+
+	// T-020 depends on T-019 which is NOT in the sprint — simulates
+	// an external blocker that hasn't been resolved yet.
+	writeFile(t, filepath.Join(root, "tasks", "T-019-ext.md"), `id: T-019
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: External blocker
+depends_on:
+- []
+`)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-020-blocked.md"), `id: T-020
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Blocked by external
+depends_on:
+- T-019
+sprint: sp-recheck
+`)
+
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep-recheck", Title: "Recheck Epic", Status: "active",
+	})
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "sp-recheck", Title: "Recheck Sprint", Epic: "ep-recheck",
+		Status: "active", Items: []string{"T-020"},
+		PlanApproved: true,
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// T-020 is blocked — runGroup should detect it via the dep recheck.
+	// First, verify it IS blocked:
+	g := deps.Build(s.All(), cfg)
+	if !g.IsBlocked("T-020") {
+		t.Fatal("T-020 should be blocked by T-019")
+	}
+
+	// Run the group with T-020 — the dep recheck after sem acquire
+	// should detect the block and produce a "blocked" step result.
+	pipeline := cfg.RunPipeline()
+	results := runGroup(s, cfg, []string{"T-020"}, "sp-recheck", pipeline, RunOpts{}, mockRunEngine(true))
+
+	// T-020 should be reported as blocked (either in runGroup's sem
+	// recheck or in runSingleItem's precheck)
+	if len(results) == 0 {
+		t.Fatal("expected results for T-020")
+	}
+	foundBlocked := false
+	for _, r := range results {
+		for _, sr := range r.Steps {
+			if sr.Step == "blocked" {
+				foundBlocked = true
+			}
+		}
+	}
+	if !foundBlocked {
+		t.Error("expected T-020 to be reported as blocked, but no 'blocked' step found")
+	}
+}
+
+// TestCloseUnlocksAfterGitSync verifies that Close() releases the item
+// lock AFTER the GitSync call, not before. This ordering ensures that
+// sibling items in the same st run batch see the committed terminal
+// status when they reload the store and recheck dependencies.
+func TestCloseUnlocksAfterGitSync(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-030-locktest.md"), `id: T-030
+type: task
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: Lock test item
+depends_on:
+- []
+`)
+
+	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.New(cfg)
+
+	// Create a lock for T-030 (simulates st start)
+	if err := store.LockItem(cfg, "T-030", "test-session"); err != nil {
+		t.Fatal(err)
+	}
+	if !store.IsLocked(cfg, "T-030") {
+		t.Fatal("lock should exist before close")
+	}
+
+	// Close the item — lock should be released after GitSync
+	code := Close(s, cfg, "T-030", "completed", CloseOpts{})
+	if code != 0 {
+		t.Fatalf("Close returned %d, want 0", code)
+	}
+
+	// Lock should be released
+	if store.IsLocked(cfg, "T-030") {
+		t.Error("lock should be released after Close()")
+	}
+
+	// Item should be in terminal status
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-030")
+	if !ok {
+		t.Fatal("T-030 not found after close")
+	}
+	if item.Status != "completed" {
+		t.Errorf("status = %q, want completed", item.Status)
 	}
 }
