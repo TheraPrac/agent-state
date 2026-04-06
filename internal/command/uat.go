@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,14 +39,10 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 
 	runCmd := opts.RunCmd
 	if runCmd == nil {
-		// Determine best CWD: worktree base if exists, else project root
-		runDir := cfg.Root()
-		if cfg.Worktree != nil && cfg.Worktree.Enabled && cfg.Worktree.BaseDir != "" {
-			wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, id)
-			if _, err := os.Stat(wtBase); err == nil {
-				runDir = wtBase
-			}
-		}
+		// Determine best CWD: repo subdir within worktree if exists, else project root.
+		// resolveWorktreeDir descends into the first existing repo subdirectory,
+		// so bare relative paths (e.g. "go test ./...") run from the repo dir.
+		runDir := resolveWorktreeDir(cfg, id)
 		runCmd = func(cmd string) ([]byte, int, error) {
 			cmd = rewriteACPaths(cfg, id, runDir, cmd)
 			return runCmdInDir(runDir, cmd)
