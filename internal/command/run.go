@@ -122,9 +122,16 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 		return 1
 	}
 
+	// Reload registry and store fresh so the picker reflects current disk state
+	// (sprints/items may have changed since process start, e.g. after git pull).
 	reg, err := registry.Load(cfg.EpicsPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+	s, err = store.New(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reloading store: %v\n", err)
 		return 1
 	}
 
