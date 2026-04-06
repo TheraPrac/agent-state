@@ -176,6 +176,14 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		}
 	}
 
+	// Re-index so that items previously blocked by this one move from the
+	// "Blocked" section to "Queued Tasks" (or wherever they now belong).
+	// Without this, users had to run `st index` manually after every close.
+	// Runs before GitSync so the updated index.md is included in the commit.
+	if code := Index(s, cfg); code != 0 {
+		fmt.Fprintf(os.Stderr, "warning: index regeneration after close failed\n")
+	}
+
 	// Commit + push the close to git immediately. Previously the move to
 	// archive/ and status change sat uncommitted until the caller happened
 	// to run `st sync` or until `st run`'s deferred sync caught it. That
@@ -190,13 +198,6 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 
 	// Auto-archive sprint and epic when all items are terminal.
 	autoArchiveSprintAndEpic(s, cfg, item.Sprint)
-
-	// Re-index so that items previously blocked by this one move from the
-	// "Blocked" section to "Queued Tasks" (or wherever they now belong).
-	// Without this, users had to run `st index` manually after every close.
-	if code := Index(s, cfg); code != 0 {
-		fmt.Fprintf(os.Stderr, "warning: index regeneration after close failed\n")
-	}
 
 	return 0
 }

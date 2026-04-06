@@ -380,15 +380,15 @@ func TestCloseNotFound(t *testing.T) {
 func TestCloseReindexesBlockedDependents(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	// Create index file so Index() can write to it
-	os.WriteFile(cfg.IndexPath(), []byte(""), 0644)
-
 	// T-002 depends on T-001 — verify it starts as blocked
 	code := Index(s, cfg)
 	if code != 0 {
 		t.Fatalf("initial Index returned %d", code)
 	}
-	indexBytes, _ := os.ReadFile(cfg.IndexPath())
+	indexBytes, err := os.ReadFile(cfg.IndexPath())
+	if err != nil {
+		t.Fatalf("reading index: %v", err)
+	}
 	indexStr := string(indexBytes)
 	if !strings.Contains(indexStr, "## Blocked") || !strings.Contains(indexStr, "T-002") {
 		t.Fatalf("T-002 should appear in Blocked section before T-001 is closed\nindex:\n%s", indexStr)
@@ -402,13 +402,21 @@ func TestCloseReindexesBlockedDependents(t *testing.T) {
 	}
 
 	// Read the index again — T-002 should now be in Queued Tasks, not Blocked
-	indexBytes, _ = os.ReadFile(cfg.IndexPath())
+	indexBytes, err = os.ReadFile(cfg.IndexPath())
+	if err != nil {
+		t.Fatalf("reading index after close: %v", err)
+	}
 	indexStr = string(indexBytes)
 	if strings.Contains(indexStr, "## Blocked") {
 		t.Errorf("Blocked section should be gone after closing the only blocker\nindex:\n%s", indexStr)
 	}
-	if !strings.Contains(indexStr, "## Queued Tasks") || !strings.Contains(indexStr, "T-002") {
+	// Verify T-002 appears specifically under "## Queued Tasks", not elsewhere
+	queuedIdx := strings.Index(indexStr, "## Queued Tasks")
+	t002Idx := strings.Index(indexStr, "T-002")
+	if queuedIdx < 0 || t002Idx < 0 {
 		t.Errorf("T-002 should appear in Queued Tasks after blocker resolved\nindex:\n%s", indexStr)
+	} else if t002Idx < queuedIdx {
+		t.Errorf("T-002 (pos %d) should appear after '## Queued Tasks' (pos %d)\nindex:\n%s", t002Idx, queuedIdx, indexStr)
 	}
 }
 
