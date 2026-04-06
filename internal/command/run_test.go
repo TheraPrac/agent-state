@@ -1437,3 +1437,172 @@ func TestStripBugbotMarkup(t *testing.T) {
 		})
 	}
 }
+
+// TestRunInteractive_ReloadsRegistryBeforeDisplay verifies that RunInteractive
+// reads the registry fresh at display time, not from a cached snapshot.
+func TestRunInteractive_ReloadsRegistryBeforeDisplay(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// Modify the registry on disk AFTER the store was created — add a new sprint.
+	// If RunInteractive uses a stale snapshot, it won't see this sprint.
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Sprints = append(reg.Sprints, registry.Sprint{
+		ID: "late-sprint", Title: "Late Addition", Epic: "test-epic",
+		Status: "active", Items: []string{"T-001"},
+		PlanApproved: true,
+	})
+	if err := reg.Save(cfg.EpicsPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture stdout to verify the late sprint appears
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	engine := RunEngine{
+		RunClaude:  mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) { return "1\n", nil },
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return options[0].Key
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 16384)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "Late Addition") {
+		t.Errorf("RunInteractive did not reload registry — missing 'Late Addition' sprint in output:\n%s", output)
+	}
+}
+
+// TestRunInteractive_ShowsNewlyAddedSprints verifies that sprints created on
+// disk after the store was initialized still appear in the picker.
+func TestRunInteractive_ShowsNewlyAddedSprints(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`paths:
+  root: .
+run:
+  permission_mode: dangerously-skip-permissions
+  default_model: sonnet
+  max_parallelism: 1
+  step_order: [implement]
+  steps:
+    implement:
+      type: claude
+`), 0644)
+
+	// Start with an empty registry (no sprints)
+	reg := &registry.Registry{}
+	reg.Epics = append(reg.Epics, registry.Epic{
+		ID: "ep-1", Title: "Epic One", Status: "active",
+	})
+	reg.Save(filepath.Join(root, ".as", "epics.yaml"))
+
+	writeFile(t, filepath.Join(root, "tasks", "T-100-new.md"), `id: T-100
+type: task
+status: queued
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+completed: null
+title: New task
+sprint: new-sprint
+`)
+
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+	s, _ := store.New(cfg)
+
+	// Now add a sprint to the registry on disk (simulating another process)
+	reg2, _ := registry.Load(cfg.EpicsPath())
+	reg2.Sprints = append(reg2.Sprints, registry.Sprint{
+		ID: "new-sprint", Title: "Brand New Sprint", Epic: "ep-1",
+		Status: "active", Items: []string{"T-100"},
+		PlanApproved: true,
+	})
+	reg2.Save(cfg.EpicsPath())
+
+	// Capture output
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	engine := RunEngine{
+		RunClaude:  mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) { return "1\n", nil },
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return options[0].Key
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 16384)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "Brand New Sprint") {
+		t.Errorf("RunInteractive did not show newly added sprint:\n%s", output)
+	}
+}
+
+// TestRunInteractive_ShowsUpdatedItemCounts verifies that item completion
+// changes on disk are reflected in the picker's N/M counts.
+func TestRunInteractive_ShowsUpdatedItemCounts(t *testing.T) {
+	s, cfg := setupRunTestEnv(t)
+
+	// The default setup has test-sprint with T-001 and T-002, both queued (0/2).
+	// Complete T-001 on disk after the store was created.
+	item, ok := s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found")
+	}
+	item.Doc.SetField("status", "completed")
+	item.Status = "completed"
+	s.Write(item)
+
+	// Capture output
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	engine := RunEngine{
+		RunClaude:  mockRunEngine(true).RunClaude,
+		PromptUser: func(prompt string) (string, error) { return "1\n", nil },
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return options[0].Key
+		},
+		ConfirmPrompt: func(prompt string) bool { return true },
+	}
+
+	RunInteractive(s, cfg, RunOpts{DryRun: true}, engine)
+
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 16384)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	// Should show 1/2 (one completed out of two)
+	if !strings.Contains(output, "1/2") {
+		t.Errorf("RunInteractive did not show updated item count (expected 1/2):\n%s", output)
+	}
+}
