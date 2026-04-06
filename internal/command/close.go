@@ -7,6 +7,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
@@ -187,5 +188,69 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		fmt.Fprintf(os.Stderr, "warning: sync after close failed: %v\n", err)
 	}
 
+	// Auto-archive sprint and epic when all items are terminal.
+	autoArchiveSprintAndEpic(s, cfg, item.Sprint)
+
 	return 0
+}
+
+// autoArchiveSprintAndEpic checks if all items in the sprint are terminal.
+// If so, archives the sprint. Then checks if all sprints in the epic are
+// archived, and if so, archives the epic. This runs after st close so that
+// completed sprints/epics are automatically cleaned up without manual
+// st sprint archive / st epic archive commands.
+func autoArchiveSprintAndEpic(s *store.Store, cfg *config.Config, sprintID string) {
+	if sprintID == "" {
+		return
+	}
+
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		return
+	}
+
+	sp, err := reg.SprintByID(sprintID)
+	if err != nil || sp.Status != "active" {
+		return
+	}
+
+	// Check if all items in the sprint are terminal.
+	for _, itemID := range sp.Items {
+		item, ok := s.Get(itemID)
+		if !ok {
+			continue
+		}
+		if !cfg.IsTerminalStatus(item.Type, item.Status) {
+			return // at least one item still active — don't archive
+		}
+	}
+
+	// All items terminal — archive the sprint.
+	sp.Status = "archived"
+	fmt.Printf("[auto-archive] All items in sprint %q complete — archived\n", sp.Title)
+
+	// Check if all sprints in the parent epic are now archived.
+	epicID := sp.Epic
+	if epicID != "" {
+		allDone := true
+		for _, es := range reg.Sprints {
+			if es.Epic == epicID && es.Status != "archived" {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			for i := range reg.Epics {
+				if reg.Epics[i].ID == epicID {
+					reg.Epics[i].Status = "archived"
+					fmt.Printf("[auto-archive] All sprints in epic %q complete — archived\n", reg.Epics[i].Title)
+					break
+				}
+			}
+		}
+	}
+
+	if err := reg.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: auto-archive save failed: %v\n", err)
+	}
 }
