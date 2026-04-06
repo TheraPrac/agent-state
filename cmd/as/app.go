@@ -309,18 +309,20 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	testRecordCmd := &cobra.Command{
 		Use:   "test <id> <suite>",
 		Short: "Record or execute a test suite for an item",
-		Long:  "Without --run: records a manual test pass. With --run: executes the suite command, captures output, uploads evidence.",
+		Long:  "Without --run: records a manual test pass. With --run: executes the suite command, captures output, uploads evidence. With --skip <reason>: marks a scope suite as intentionally skipped (scope suites only — required suites cannot be skipped).",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			run, _ := cmd.Flags().GetBool("run")
 			cov, _ := cmd.Flags().GetBool("coverage")
+			skip, _ := cmd.Flags().GetString("skip")
 			exitCode = command.TestRecord(appStore, appCfg, args[0], args[1], command.TestRecordOpts{
-				Run: run, Coverage: cov,
+				Run: run, Coverage: cov, Skip: skip,
 			})
 		},
 	}
 	testRecordCmd.Flags().Bool("run", false, "execute the suite command and capture evidence")
 	testRecordCmd.Flags().Bool("coverage", false, "enforce per-file coverage thresholds (requires --run)")
+	testRecordCmd.Flags().String("skip", "", "mark a scope suite as intentionally skipped with the given reason (scope suites only)")
 	root.AddCommand(testRecordCmd)
 
 	editCmd := &cobra.Command{
@@ -682,6 +684,10 @@ lets you pick one, validates the plan, and starts execution.`,
 			model, _ := cmd.Flags().GetString("model")
 			permMode, _ := cmd.Flags().GetString("permission-mode")
 			fresh, _ := cmd.Flags().GetBool("fresh")
+			runningOnly, _ := cmd.Flags().GetBool("running")
+			statusID, _ := cmd.Flags().GetString("id")
+			showAll, _ := cmd.Flags().GetBool("all")
+			closedOnly, _ := cmd.Flags().GetBool("closed")
 			opts := command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
@@ -693,7 +699,12 @@ lets you pick one, validates the plan, and starts execution.`,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 1 && args[0] == "status" {
-				exitCode = command.RunStatus(appStore, appCfg)
+				exitCode = command.RunStatus(appStore, appCfg, command.RunStatusOpts{
+					RunningOnly: runningOnly,
+					ID:          statusID,
+					ShowAll:     showAll,
+					ClosedOnly:  closedOnly,
+				})
 			} else if len(args) == 0 && item != "" {
 				exitCode = command.RunItem(appStore, appCfg, item, opts, engine)
 			} else if len(args) == 0 {
@@ -710,6 +721,10 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().String("model", "", "model to use (overrides config)")
 	runCmd.Flags().String("permission-mode", "", "claude permission mode (overrides config)")
 	runCmd.Flags().Bool("fresh", false, "ignore saved progress, restart pipeline from step 0")
+	runCmd.Flags().Bool("running", false, "with 'status': show only sprints currently being executed")
+	runCmd.Flags().String("id", "", "with 'status': show only this epic or sprint (by slug)")
+	runCmd.Flags().Bool("all", false, "with 'status': show all epics/sprints including archived")
+	runCmd.Flags().BoolP("closed", "c", false, "with 'status': show only closed/archived epics and sprints")
 	root.AddCommand(runCmd)
 
 	prepCmd := &cobra.Command{

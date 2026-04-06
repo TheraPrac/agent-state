@@ -345,8 +345,23 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 
 // RunItem runs a single item through the pipeline, finding its sprint automatically.
 // If the item has no sprint, runs it standalone.
+// RunStatusOpts holds flags for RunStatus.
+type RunStatusOpts struct {
+	// RunningOnly filters the view to sprints currently being executed by st run.
+	// A sprint is "running" if any of its items is claimed (item.ClaimedBy != "")
+	// or if a non-stale session is attached to it (session.Sprint == sprint.ID).
+	RunningOnly bool
+	// ID filters the view to a single epic or sprint by slug.
+	// Auto-detects whether the slug is an epic or sprint.
+	ID string
+	// ShowAll disables the default filter that hides archived sprints.
+	ShowAll bool
+	// ClosedOnly shows only archived/completed epics and sprints.
+	ClosedOnly bool
+}
+
 // RunStatus shows the pipeline progress for all items in active sprints.
-func RunStatus(s *store.Store, cfg *config.Config) int {
+func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
 		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
@@ -357,6 +372,40 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
 		return 1
+	}
+
+	// Build the set of "running" sprint IDs — sprints with at least one claimed
+	// item or a non-stale session attached. Used when opts.RunningOnly is true.
+	runningSprints := make(map[string]bool)
+	{
+		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+		sessions, _ := mgr.ListSessions()
+		for _, sess := range sessions {
+			if sess.Sprint == "" || mgr.IsStale(sess) {
+				continue
+			}
+			runningSprints[sess.Sprint] = true
+		}
+		for _, sp := range reg.Sprints {
+			if runningSprints[sp.ID] {
+				continue
+			}
+			for _, itemID := range sp.Items {
+				item, ok := s.Get(itemID)
+				if !ok {
+					continue
+				}
+				if item.ClaimedBy != "" {
+					runningSprints[sp.ID] = true
+					break
+				}
+			}
+		}
+	}
+
+	if opts.RunningOnly && len(runningSprints) == 0 {
+		fmt.Println("No running sprint. Start one with: st run <sprint>")
+		return 0
 	}
 
 	stepNames := make([]string, len(pipeline))
@@ -375,6 +424,33 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 		return -1
 	}
 
+	// Resolve --id filter: determine if it's an epic or sprint slug.
+	var filterEpicID, filterSprintID string
+	if opts.ID != "" {
+		found := false
+		for _, e := range reg.Epics {
+			if e.ID == opts.ID {
+				filterEpicID = e.ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, sp := range reg.Sprints {
+				if sp.ID == opts.ID {
+					filterSprintID = sp.ID
+					filterEpicID = sp.Epic // also filter to parent epic
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "no epic or sprint found with ID %q\n", opts.ID)
+			return 1
+		}
+	}
+
 	now := time.Now()
 
 	// Header
@@ -383,8 +459,20 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	fmt.Println("    " + strings.Repeat("-", 148))
 
 	for _, epic := range reg.Epics {
-		if epic.Status != "active" {
+		// Apply epic-level filtering based on flags.
+		if filterEpicID != "" && epic.ID != filterEpicID {
 			continue
+		}
+		if opts.ClosedOnly {
+			// Only show non-active epics
+			if epic.Status == "active" {
+				continue
+			}
+		} else if !opts.ShowAll && filterEpicID == "" {
+			// Default: only show active epics
+			if epic.Status != "active" {
+				continue
+			}
 		}
 		epicHasItems := false
 		var epicWall, epicST, epicAI time.Duration
@@ -395,6 +483,23 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 		for _, sp := range reg.Sprints {
 			if sp.Epic != epic.ID || len(sp.Items) == 0 {
 				continue
+			}
+			if filterSprintID != "" && sp.ID != filterSprintID {
+				continue
+			}
+			if opts.RunningOnly && !runningSprints[sp.ID] {
+				continue
+			}
+			// Apply sprint-level archive filtering.
+			if opts.ClosedOnly {
+				if sp.Status == "active" {
+					continue
+				}
+			} else if !opts.ShowAll && filterEpicID == "" && filterSprintID == "" {
+				// Default: hide archived sprints
+				if sp.Status == "archived" || sp.Status == "completed" {
+					continue
+				}
 			}
 			if !epicHasItems {
 				fmt.Printf("\nEpic: %s  (%s)\n", epic.Title, epic.ID)
@@ -738,6 +843,9 @@ func RunStatus(s *store.Store, cfg *config.Config) int {
 	var standalone []*model.Item
 	for _, item := range s.All() {
 		if item.Status == "active" && !sprintItems[item.ID] {
+			if opts.RunningOnly && item.ClaimedBy == "" {
+				continue
+			}
 			standalone = append(standalone, item)
 		}
 	}
@@ -2382,6 +2490,23 @@ func executeMergePrecheck(cfg *config.Config, itemID, worktreeDir string) StepRe
 			fmt.Printf("  pre-checks for %s\n", ghRepo)
 		}
 		for _, check := range cfg.Pipeline.Merge.PreChecks {
+			// Substitute `gh pr checks --watch` with our custom poller: it
+			// prints only on state changes (no table-reprint spam) and treats
+			// Cursor Bugbot's `skipping` bucket as non-terminal (skipping
+			// means Bugbot has open findings it's still processing).
+			if strings.Contains(check, "gh pr checks") && strings.Contains(check, "--watch") && ghRepo != "" && branch != "" {
+				output, exitCode, err := pollPRChecks(prDir, ghRepo, branch)
+				if err != nil && exitCode == 0 {
+					sr.Error = fmt.Sprintf("pre-check exec error (%s): %v", ghRepo, err)
+					return sr
+				}
+				if exitCode != 0 {
+					sr.Error = fmt.Sprintf("pre-check failed (%s): %s", ghRepo, truncate(string(output), 300))
+					return sr
+				}
+				continue
+			}
+
 			rewritten := check
 			if ghRepo != "" && strings.Contains(check, "gh pr") && !strings.Contains(check, "--repo") {
 				rewritten = injectGHPRContext(check, branch, ghRepo)
@@ -2665,14 +2790,27 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 			continue // re-run UAT
 		}
 
+		// Real auto-fail signal from UAT blocks auto-proceed. After the
+		// skip-handling fix, uatCode != 0 means there are genuine failures
+		// (not false positives from `skip:` scope suites), so the operator
+		// must make the call — claude's "approve" recommendation cannot
+		// silently override.
+		blockAuto := uatCode != 0
+		blockReason := ""
+		if blockAuto {
+			blockReason = fmt.Sprintf("UAT exit %d — auto-fails present", uatCode)
+		}
+
 		gateMu.Lock()
 		choice := showReviewGate(ReviewGateInfo{
-			ItemID:         itemID,
-			Title:          itemTitle,
-			GateType:       "UAT Review",
-			Iteration:      iteration,
-			Recommendation: rec,
-			ReviewDuration: reviewDur,
+			ItemID:           itemID,
+			Title:            itemTitle,
+			GateType:         "UAT Review",
+			Iteration:        iteration,
+			Recommendation:   rec,
+			ReviewDuration:   reviewDur,
+			BlockAutoProceed: blockAuto,
+			BlockReason:      blockReason,
 		}, []menuOption{
 			{"1", "Approve     — accept and close"},
 			{"2", "Reject      — stop and release for retry"},
@@ -2818,10 +2956,12 @@ func showPauseMenu(itemID, lastStep, nextStep string, result ItemResult, engine 
 		{"a", "abort    — stop, release item for retry"},
 	}
 
-	// Auto-continue after timeout when recommendation is to continue.
+	// Positive recommendation ("[c]") auto-proceeds immediately with no pause.
+	// Anything else blocks for operator input.
 	var choice string
 	if strings.HasPrefix(recommendation, "[c]") {
-		choice = engineSelectMenuTimed(engine, "", opts, 0, autoAcceptTimeout)
+		fmt.Fprintf(os.Stderr, "  \033[1mAuto-proceeding [c] (positive recommendation)\033[0m\n")
+		choice = "c"
 	} else {
 		choice = engineSelectMenu(engine, "", opts, 0)
 	}
@@ -2852,6 +2992,14 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 		}
 	}
 
+	// Gate: block close if the worktree has uncommitted changes. Closing an
+	// item and then failing to clean up leaves stale state that the next item
+	// inherits. Surface this to the operator so they can commit/discard first.
+	if dirty := worktreeDirtyRepos(cfg, itemID); len(dirty) > 0 {
+		sr.Error = fmt.Sprintf("cannot close: uncommitted changes in worktree (%s) — commit, discard, or run `st finish %s --force`", strings.Join(dirty, ", "), itemID)
+		return sr
+	}
+
 	resolution := step.Resolution
 	if resolution == "" {
 		resolution = "completed"
@@ -2872,6 +3020,35 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 
 	sr.Passed = true
 	return sr
+}
+
+// worktreeDirtyRepos returns a list of repo names inside the item's worktree
+// that have uncommitted changes. Empty slice means the worktree is clean
+// (or no worktree exists, or worktree integration is disabled).
+func worktreeDirtyRepos(cfg *config.Config, itemID string) []string {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return nil
+	}
+	baseDir := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir)
+	wtDir := filepath.Join(baseDir, itemID)
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return nil
+	}
+	var dirty []string
+	for _, repo := range cfg.Worktree.Repos {
+		repoDir := filepath.Join(wtDir, repo)
+		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+			continue
+		}
+		out, err := gitOutputDir(repoDir, "status", "--porcelain")
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(out) != "" {
+			dirty = append(dirty, repo)
+		}
+	}
+	return dirty
 }
 
 // cleanupWorktree removes the item's worktree and pulls main on all repos.
@@ -4438,6 +4615,155 @@ func ghPRCmd(worktreeDir, subcmd string) string {
 	return fmt.Sprintf("gh pr %s --repo %s", subcmd, repo)
 }
 
+// prCheckState is a single check row from `gh pr checks --json`.
+type prCheckState struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"` // pass | fail | pending | skipping | cancel
+	State  string `json:"state"`
+	Link   string `json:"link"`
+}
+
+// isBugbot returns true if the check row is a Cursor Bugbot check.
+func (c prCheckState) isBugbot() bool {
+	n := strings.ToLower(c.Name)
+	return strings.Contains(n, "cursor bugbot") || strings.Contains(n, "bugbot")
+}
+
+// pollPRChecks replaces `gh pr checks --watch` with a cleaner polling loop.
+// Prints a one-line snapshot only when check states change.
+//
+// Cursor Bugbot semantics (from Cursor's forum/docs — the check-row state is
+// NOT a findings signal):
+//   - `pass`     — Bugbot analyzed the current HEAD, regardless of findings.
+//   - `pending`  — Bugbot is still analyzing HEAD.
+//   - `skipping` — Bugbot did NOT run (disabled, auth failure, or no-op).
+//   - `fail`     — Bugbot internal error (not "bugs found").
+//
+// Findings are posted as inline PR review comments, independent of the check
+// state. So the authoritative gate is: enumerate unresolved Bugbot comments
+// via countBugbotFindings. The check state only tells us whether to keep
+// waiting for more findings to appear (pending) or stop waiting.
+//
+// Exit codes:
+//
+//	0 — all non-Bugbot checks terminal, Bugbot not pending, zero open findings
+//	1 — any check failed, Bugbot has unresolved findings, or timeout
+func pollPRChecks(prDir, ghRepo, branch string) ([]byte, int, error) {
+	const interval = 20 * time.Second
+	const maxWait = 30 * time.Minute
+
+	var log bytes.Buffer
+	logln := func(format string, args ...interface{}) {
+		line := fmt.Sprintf(format, args...)
+		fmt.Fprintln(os.Stderr, "  "+line)
+		log.WriteString(line + "\n")
+	}
+
+	queryCmd := fmt.Sprintf("gh pr checks %s --repo %s --json name,bucket,state,link", branch, ghRepo)
+	prNum := detectPRNumber(prDir, ghRepo)
+
+	prevSig := ""
+	deadline := time.Now().Add(maxWait)
+
+	for {
+		out, exitCode, err := runCmdInDir(prDir, queryCmd)
+		// gh pr checks exits 8 when there are pending checks; that's fine.
+		if err != nil && exitCode != 8 {
+			return out, exitCode, err
+		}
+
+		var checks []prCheckState
+		if jerr := json.Unmarshal(bytes.TrimSpace(out), &checks); jerr != nil {
+			return out, 1, fmt.Errorf("parsing gh pr checks JSON: %v", jerr)
+		}
+
+		pass, fail, pending, skipping, cancel := 0, 0, 0, 0, 0
+		var bugbot *prCheckState
+		for i := range checks {
+			switch checks[i].Bucket {
+			case "pass":
+				pass++
+			case "fail":
+				fail++
+			case "pending":
+				pending++
+			case "skipping":
+				skipping++
+			case "cancel":
+				cancel++
+			}
+			if checks[i].isBugbot() {
+				bugbot = &checks[i]
+			}
+		}
+
+		sig := fmt.Sprintf("%d/%d/%d/%d/%d", pass, fail, pending, skipping, cancel)
+		if sig != prevSig {
+			bugbotNote := ""
+			if bugbot != nil {
+				bugbotNote = fmt.Sprintf(" | bugbot=%s", bugbot.Bucket)
+			}
+			logln("PR checks: %d pass, %d fail, %d pending, %d skipping, %d cancel%s",
+				pass, fail, pending, skipping, cancel, bugbotNote)
+			prevSig = sig
+		}
+
+		// Any outright failure → stop and report immediately.
+		if fail > 0 {
+			var failed []string
+			for _, c := range checks {
+				if c.Bucket == "fail" {
+					failed = append(failed, c.Name)
+				}
+			}
+			logln("PR checks: %d failed (%s)", fail, strings.Join(failed, ", "))
+			return log.Bytes(), 1, nil
+		}
+
+		// Bugbot is "still working" only when its bucket is `pending`. Every
+		// other bucket (pass, skipping, cancel) means Bugbot is not going to
+		// do more work on the current HEAD — at that point the findings count
+		// is authoritative and we can decide.
+		bugbotStillWorking := bugbot != nil && bugbot.Bucket == "pending"
+
+		if pending == 0 && !bugbotStillWorking {
+			// All non-Bugbot terminal, Bugbot not actively processing.
+			// Authoritative gate: inline PR review findings by Bugbot.
+			if prNum > 0 {
+				count := countBugbotFindings(ghRepo, prNum, prDir)
+				if count > 0 {
+					logln("Cursor Bugbot: %d unresolved finding(s) — blocking merge (state=%s)", count, bugbotBucket(bugbot))
+					return log.Bytes(), 1, nil
+				}
+			}
+			logln("PR checks: all terminal — %d pass, %d skipping, %d cancel (bugbot: %s, no open findings)",
+				pass, skipping, cancel, bugbotBucket(bugbot))
+			return log.Bytes(), 0, nil
+		}
+
+		if time.Now().After(deadline) {
+			logln("PR checks: timeout after %s (pending=%d, bugbot=%s)", maxWait, pending, bugbotBucket(bugbot))
+			return log.Bytes(), 1, nil
+		}
+
+		// Respect Ctrl+C.
+		if activeRunCtx != nil && activeRunCtx.Err() != nil {
+			return log.Bytes(), 1, activeRunCtx.Err()
+		}
+
+		time.Sleep(interval)
+	}
+}
+
+// bugbotBucket returns a printable bucket label for the Bugbot check row, or
+// "absent" if there is no Bugbot check (e.g., Bugbot not installed on the repo).
+func bugbotBucket(c *prCheckState) string {
+	if c == nil {
+		return "absent"
+	}
+	return c.Bucket
+}
+
 // injectGHPRContext rewrites a "gh pr <subcmd> ..." command to include
 // branch and --repo flags in the correct position (after the subcommand).
 // e.g., "gh pr checks --watch" → "gh pr checks <branch> --repo <repo> --watch"
@@ -4874,6 +5200,11 @@ type ReviewGateInfo struct {
 	ReviewDuration time.Duration
 	AcsPassed     int
 	AcsTotal      int
+	// BlockAutoProceed forces operator input even when the recommendation is
+	// positive — used when there's an objective failure signal (e.g., UAT
+	// auto-fails) that should never be silently overridden by claude's approval.
+	BlockAutoProceed bool
+	BlockReason      string
 }
 
 // showReviewGate renders a boxed gate with context and returns the user's menu choice.
@@ -4971,10 +5302,25 @@ func showReviewGate(info ReviewGateInfo, options []menuOption, engine RunEngine)
 	}
 	hline("╚", "═", "╝")
 
-	// Auto-accept after timeout when recommendation is positive.
+	// If the caller set BlockAutoProceed, force operator input regardless of
+	// the recommendation. This is used when there's an objective failure signal
+	// (e.g., UAT auto-fails) that should never be silently overridden by
+	// claude's approval.
+	if info.BlockAutoProceed {
+		reason := info.BlockReason
+		if reason == "" {
+			reason = "objective failure signal present"
+		}
+		fmt.Fprintf(os.Stderr, "  \033[1;31mAuto-proceed blocked: %s — operator input required\033[0m\n", reason)
+		return engineSelectMenu(engine, "", options, 0)
+	}
+
+	// Positive recommendation (accept/approve) auto-proceeds immediately with
+	// no pause. Anything else blocks for operator input.
 	lower := strings.ToLower(info.Recommendation)
 	if strings.Contains(lower, "accept") || strings.Contains(lower, "approve") {
-		return engineSelectMenuTimed(engine, "", options, 0, autoAcceptTimeout)
+		fmt.Fprintf(os.Stderr, "  \033[1mAuto-proceeding [%s] (positive recommendation)\033[0m\n", options[0].Key)
+		return options[0].Key
 	}
 	return engineSelectMenu(engine, "", options, 0)
 }
@@ -5393,25 +5739,14 @@ func defaultPromptUser(_ string) (string, error) {
 	return reader.ReadString('\n')
 }
 
-// autoAcceptTimeout is how long pause/review gates wait before auto-selecting
-// the recommended option (accept, approve, or continue).
-const autoAcceptTimeout = 120 * time.Second
-
 // engineSelectMenu uses the engine override if set, otherwise the real terminal menu.
+// Positive-recommendation auto-proceed is handled at call sites (no menu render) —
+// this function only runs when operator input is actually required.
 func engineSelectMenu(engine RunEngine, prompt string, options []menuOption, defaultIdx int) string {
 	if engine.SelectMenu != nil {
 		return engine.SelectMenu(prompt, options, defaultIdx)
 	}
 	return selectMenu(prompt, options, defaultIdx)
-}
-
-// engineSelectMenuTimed is like engineSelectMenu but with a timeout that
-// auto-selects the default option. Used when the recommendation is positive.
-func engineSelectMenuTimed(engine RunEngine, prompt string, options []menuOption, defaultIdx int, timeout time.Duration) string {
-	if engine.SelectMenu != nil {
-		return engine.SelectMenu(prompt, options, defaultIdx)
-	}
-	return selectMenuTimed(prompt, options, defaultIdx, timeout)
 }
 
 // engineConfirmPrompt uses the engine override if set, otherwise the real terminal prompt.
