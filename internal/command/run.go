@@ -1653,6 +1653,13 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	startIdx := 0
 	if !opts.Fresh {
 		if item, ok := localStore.Get(itemID); ok {
+			// Clear interrupted_at on resume — the item is being picked up again
+			if interruptedAt, _ := getNestedField(item, "delivery", "interrupted_at"); interruptedAt != "" {
+				fmt.Printf("[%s] Resuming after interrupt (was interrupted at %s)\n", itemID, interruptedAt)
+				setNestedField(item, "delivery", "interrupted_at", "")
+				item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+				localStore.Write(item)
+			}
 			if lastStep, _ := getNestedField(item, "delivery", "last_completed_step"); lastStep != "" {
 				for j, s := range pipeline {
 					if s.Name() == lastStep {
@@ -4431,6 +4438,7 @@ func resolveWorktreeDirWithPR(cfg *config.Config, itemID string) string {
 
 // releaseItem resets an item back to startable state after a pipeline failure.
 // Clears claim, resets status so the item can be retried.
+// Records an interrupted_at timestamp so status/queue can surface the interruption.
 func releaseItem(cfg *config.Config, itemID string) {
 	localStore, err := store.New(cfg)
 	if err != nil {
@@ -4458,11 +4466,20 @@ func releaseItem(cfg *config.Config, itemID string) {
 	// Keep plan_approved if it was set — the user already approved the design.
 	// Only the plan step itself should set/clear this flag.
 
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+	// Record when the item was interrupted so status/queue can surface it
+	now := time.Now().Format(time.RFC3339)
+	setNestedField(item, "delivery", "interrupted_at", now)
+
+	item.Doc.SetField("last_touched", now)
 	localStore.Write(item)
 
 	// Release item lock so GitPull stops protecting it
 	store.UnlockItem(cfg, itemID)
+
+	// Sync to git so the interrupted state is persisted
+	if err := localStore.GitSync(fmt.Sprintf("st run: %s interrupted", itemID)); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] warning: sync after release failed: %v\n", itemID, err)
+	}
 }
 
 // recoverStaleItems finds items in the sprint that are active but not
