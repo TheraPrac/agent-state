@@ -119,7 +119,14 @@ func (d *ParsedDocument) SetField(key, value string) bool {
 
 // ReplaceList replaces an entire list field (key + all continuation lines)
 // with the new lines. Each line in values should be "- item text".
+// Supports dotted paths (e.g., "testing_evidence.api_unit") for nested fields.
 func (d *ParsedDocument) ReplaceList(key string, values []string) {
+	// Handle dotted paths for nested fields
+	if parts := strings.SplitN(key, ".", 2); len(parts) == 2 {
+		d.replaceNestedList(parts[0], parts[1], values)
+		return
+	}
+
 	// Find the key line
 	keyIdx := -1
 	for i, line := range d.Lines {
@@ -168,6 +175,99 @@ func (d *ParsedDocument) ReplaceList(key string, values []string) {
 	// Replace keyIdx..endIdx with newLines
 	result := make([]Line, 0, len(d.Lines)-endIdx+keyIdx+len(newLines))
 	result = append(result, d.Lines[:keyIdx]...)
+	result = append(result, newLines...)
+	result = append(result, d.Lines[endIdx:]...)
+	d.Lines = result
+}
+
+// replaceNestedList replaces a nested field's content (child key + continuation
+// lines) under a parent block. Used by ReplaceList for dotted paths.
+func (d *ParsedDocument) replaceNestedList(parent, child string, values []string) {
+	// Find the parent key line
+	parentIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+			break
+		}
+	}
+
+	if parentIdx < 0 {
+		// Parent not found — append parent + child + values
+		newLines := []Line{
+			{Raw: parent + ":", Key: parent},
+			{Raw: "  " + child + ":", Key: child, Indent: 2, BlockKey: parent},
+		}
+		for _, v := range values {
+			newLines = append(newLines, Line{Raw: "  " + v, Indent: 2, BlockKey: parent})
+		}
+		d.Lines = append(d.Lines, newLines...)
+		return
+	}
+
+	// Find the child key under parent
+	childIdx := -1
+	for i := parentIdx + 1; i < len(d.Lines); i++ {
+		line := d.Lines[i]
+		if line.Indent == 0 && !line.IsEmpty {
+			break // left parent block
+		}
+		if line.Key == child && line.Indent > 0 {
+			childIdx = i
+			break
+		}
+	}
+
+	if childIdx < 0 {
+		// Child not found — insert after last nested line of parent
+		insertIdx := parentIdx + 1
+		for insertIdx < len(d.Lines) {
+			if d.Lines[insertIdx].Indent == 0 && !d.Lines[insertIdx].IsEmpty {
+				break
+			}
+			insertIdx++
+		}
+		newLines := []Line{
+			{Raw: "  " + child + ":", Key: child, Indent: 2, BlockKey: parent},
+		}
+		for _, v := range values {
+			newLines = append(newLines, Line{Raw: "  " + v, Indent: 2, BlockKey: parent})
+		}
+		tail := make([]Line, len(d.Lines[insertIdx:]))
+		copy(tail, d.Lines[insertIdx:])
+		d.Lines = append(d.Lines[:insertIdx], append(newLines, tail...)...)
+		return
+	}
+
+	// Find end of child's block (next sibling key at same indent, or end of parent)
+	childIndent := d.Lines[childIdx].Indent
+	endIdx := childIdx + 1
+	for endIdx < len(d.Lines) {
+		l := d.Lines[endIdx]
+		// Left the parent block entirely
+		if l.Indent == 0 && !l.IsEmpty {
+			break
+		}
+		// Sibling key at same or lesser indent (but not empty)
+		if l.Key != "" && l.Indent <= childIndent && !l.IsEmpty {
+			break
+		}
+		// Continuation: deeper indent, list items, or empty lines
+		endIdx++
+	}
+
+	// Build replacement lines preserving the child's indent
+	indent := strings.Repeat(" ", childIndent)
+	newLines := []Line{
+		{Raw: indent + child + ":", Key: child, Indent: childIndent, BlockKey: parent},
+	}
+	for _, v := range values {
+		newLines = append(newLines, Line{Raw: indent + v, Indent: childIndent, BlockKey: parent})
+	}
+
+	// Replace childIdx..endIdx with newLines
+	result := make([]Line, 0, len(d.Lines)-endIdx+childIdx+len(newLines))
+	result = append(result, d.Lines[:childIdx]...)
 	result = append(result, newLines...)
 	result = append(result, d.Lines[endIdx:]...)
 	d.Lines = result

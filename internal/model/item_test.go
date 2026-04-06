@@ -180,6 +180,45 @@ func TestParsedDocumentSetListClearsInlineValue(t *testing.T) {
 	}
 }
 
+func TestReplaceList_NestedField_ReplacesInPlace(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+			{Raw: "testing_evidence:", Key: "testing_evidence"},
+			{Raw: "  api_unit: old_value", Key: "api_unit", Value: "old_value", Indent: 2, BlockKey: "testing_evidence"},
+			{Raw: "  api_lint: pass", Key: "api_lint", Value: "pass", Indent: 2, BlockKey: "testing_evidence"},
+			{Raw: "title: Test", Key: "title", Value: "Test"},
+		},
+	}
+
+	doc.ReplaceList("testing_evidence.api_unit", []string{"- line1", "- line2"})
+
+	got := doc.String()
+	want := "id: T-001\ntesting_evidence:\n  api_unit:\n  - line1\n  - line2\n  api_lint: pass\ntitle: Test"
+	if got != want {
+		t.Errorf("ReplaceList nested =\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceList_TopLevel_StillWorks(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+			{Raw: "next_actions:", Key: "next_actions"},
+			{Raw: "- old action", BlockKey: "next_actions"},
+			{Raw: "title: Test", Key: "title", Value: "Test"},
+		},
+	}
+
+	doc.ReplaceList("next_actions", []string{"- new action 1", "- new action 2"})
+
+	got := doc.String()
+	want := "id: T-001\nnext_actions:\n- new action 1\n- new action 2\ntitle: Test"
+	if got != want {
+		t.Errorf("ReplaceList top-level =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestParsedDocumentSetFieldIgnoresNested(t *testing.T) {
 	doc := &ParsedDocument{
 		Lines: []Line{

@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -663,6 +664,103 @@ func TestReadyWithTag(t *testing.T) {
 	code := Ready(s, cfg, ReadyOpts{Tag: "nonexistent"})
 	if code != 0 {
 		t.Errorf("Ready --tag nonexistent returned %d, want 0", code)
+	}
+}
+
+func TestUpdate_DottedListField_ReplacesNotAppends(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-010-nested.md"), `id: T-010
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Nested test
+testing_evidence:
+  api_unit: old_value
+  api_lint: pass
+`)
+
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+
+	// Multiline value for a dotted field should replace, not append
+	code := Update(s, cfg, "T-010", "testing_evidence.api_unit", "- line1\n- line2")
+	if code != 0 {
+		t.Fatalf("Update returned %d, want 0", code)
+	}
+
+	// Re-read and verify
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-010")
+	if !ok {
+		t.Fatal("T-010 should exist")
+	}
+
+	got := item.Doc.String()
+	if strings.Contains(got, "old_value") {
+		t.Errorf("old value should be replaced, got:\n%s", got)
+	}
+	if !strings.Contains(got, "- line1") || !strings.Contains(got, "- line2") {
+		t.Errorf("new values should be present, got:\n%s", got)
+	}
+	// api_lint should be preserved
+	if !strings.Contains(got, "api_lint: pass") {
+		t.Errorf("sibling field api_lint should be preserved, got:\n%s", got)
+	}
+}
+
+func TestEditFromStdin_NestedListField(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	writeFile(t, filepath.Join(root, "tasks", "T-011-edit.md"), `id: T-011
+type: task
+status: active
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Edit test
+testing_evidence:
+  api_unit: old_value
+  api_lint: pass
+`)
+
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+
+	// Simulate stdin with multiline input
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	w.WriteString("- new1\n- new2\n")
+	w.Close()
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	code := Edit(s, cfg, "T-011", "testing_evidence.api_unit", true)
+	if code != 0 {
+		t.Fatalf("Edit returned %d, want 0", code)
+	}
+
+	// Re-read and verify
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-011")
+	if !ok {
+		t.Fatal("T-011 should exist")
+	}
+
+	got := item.Doc.String()
+	if strings.Contains(got, "old_value") {
+		t.Errorf("old value should be replaced, got:\n%s", got)
+	}
+	if !strings.Contains(got, "- new1") || !strings.Contains(got, "- new2") {
+		t.Errorf("new values should be present, got:\n%s", got)
 	}
 }
 

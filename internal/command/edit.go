@@ -40,8 +40,13 @@ func Edit(s *store.Store, cfg *config.Config, id, field string, useStdin bool) i
 		return 1
 	}
 
-	// Get current value
-	currentValue, _ := item.Doc.GetField(field)
+	// Get current value (use nested lookup for dotted paths)
+	var currentValue string
+	if strings.Contains(field, ".") {
+		currentValue, _ = item.Doc.GetNestedField(field)
+	} else {
+		currentValue, _ = item.Doc.GetField(field)
+	}
 
 	// Stdin mode: explicit flag or auto-detected pipe
 	if useStdin || stdinIsPiped() {

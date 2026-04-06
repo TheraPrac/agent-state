@@ -37,8 +37,11 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 	}
 
 	var oldValue string
-	if listFields[field] && strings.Contains(value, "\n") {
-		// Multiline value = list replacement.
+	isMultiline := strings.Contains(value, "\n")
+	isDotted := strings.Contains(field, ".")
+
+	if isMultiline && (listFields[field] || isDotted) {
+		// Multiline value = list/block replacement.
 		// Preserve indentation — TrimSpace would destroy YAML structure
 		// for continuation lines (e.g., "  command:" under "- description:").
 		var lines []string
@@ -48,7 +51,7 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 			}
 		}
 		item.Doc.ReplaceList(field, lines)
-	} else if strings.Contains(field, ".") {
+	} else if isDotted {
 		oldValue, _ = item.Doc.GetNestedField(field)
 		item.Doc.SetNestedField(field, value)
 	} else {
