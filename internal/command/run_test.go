@@ -1374,6 +1374,89 @@ func TestRewriteACPathsNoWorktree(t *testing.T) {
 	}
 }
 
+func TestRewriteACPathsParentDirFallback(t *testing.T) {
+	// Simulate post-merge: no worktree, but running from parent dir
+	// where repos are direct children
+	root := t.TempDir()
+	parentDir := filepath.Join(root, "parent")
+	for _, repo := range []string{"theraprac-api", "theraprac-web"} {
+		os.MkdirAll(filepath.Join(parentDir, repo), 0755)
+	}
+
+	cfg := &config.Config{
+		Worktree: &config.WorktreeConfig{
+			Enabled:   true,
+			BaseDir:   "worktrees",
+			ParentDir: parentDir,
+			Repos:     []string{"theraprac-api", "theraprac-web"},
+		},
+	}
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"cd ../theraprac-web && npx vitest run", "cd theraprac-web && npx vitest run"},
+		{"cd ../theraprac-api && make test-unit", "cd theraprac-api && make test-unit"},
+		{"grep -q 'foo' ../theraprac-web/src/lib/hooks.ts", "grep -q 'foo' theraprac-web/src/lib/hooks.ts"},
+		{"echo no repo path", "echo no repo path"},
+	}
+	for _, tt := range tests {
+		got := rewriteACPaths(cfg, "T-001", parentDir, tt.input)
+		if got != tt.want {
+			t.Errorf("rewriteACPaths(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRewriteACPathsAutoDetectRepo(t *testing.T) {
+	// Simulate bare commands that need repo auto-detection
+	root := t.TempDir()
+	for _, dir := range []string{
+		"theraprac-api/internal/billing",
+		"theraprac-api/cmd/server",
+		"theraprac-api/api/openapi",
+		"theraprac-web/src/lib",
+	} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	// Create marker files
+	os.WriteFile(filepath.Join(root, "theraprac-api/internal/billing/feature_gating.go"), []byte("package billing"), 0644)
+	os.WriteFile(filepath.Join(root, "theraprac-api/api/openapi/api.yaml"), []byte("openapi: 3.0"), 0644)
+	os.WriteFile(filepath.Join(root, "theraprac-api/go.mod"), []byte("module theraprac-api"), 0644)
+	os.WriteFile(filepath.Join(root, "theraprac-api/Makefile"), []byte("build:"), 0644)
+
+	cfg := &config.Config{
+		Worktree: &config.WorktreeConfig{
+			Enabled: true,
+			BaseDir: "worktrees",
+			Repos:   []string{"theraprac-api", "theraprac-web"},
+		},
+	}
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Bare path → auto-detect theraprac-api
+		{"grep -q 'foo' internal/billing/feature_gating.go", "cd theraprac-api && grep -q 'foo' internal/billing/feature_gating.go"},
+		{"grep -q 'bar' api/openapi/api.yaml", "cd theraprac-api && grep -q 'bar' api/openapi/api.yaml"},
+		// go/make commands → auto-detect via go.mod/Makefile
+		{"go test ./internal/billing/ -run TestFoo -count=1", "cd theraprac-api && go test ./internal/billing/ -run TestFoo -count=1"},
+		{"make integration-local PKG=./cmd/server/...", "cd theraprac-api && make integration-local PKG=./cmd/server/..."},
+		// Already has context → no change
+		{"cd theraprac-api && go test ./...", "cd theraprac-api && go test ./..."},
+		// No match → no change
+		{"echo hello", "echo hello"},
+	}
+	for _, tt := range tests {
+		got := rewriteACPaths(cfg, "T-001", root, tt.input)
+		if got != tt.want {
+			t.Errorf("rewriteACPaths(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestIsReviewBot(t *testing.T) {
 	tests := []struct {
 		name string

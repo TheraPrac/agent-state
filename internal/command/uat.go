@@ -15,6 +15,32 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// resolveUATDir returns the best directory for running UAT/AC commands.
+// Priority: worktree base (active worktree) → parent dir (post-merge) → config root.
+func resolveUATDir(cfg *config.Config, itemID string) string {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return cfg.Root()
+	}
+
+	// Try worktree base first (active worktree still exists)
+	if cfg.Worktree.BaseDir != "" {
+		wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
+		if _, err := os.Stat(wtBase); err == nil {
+			return wtBase
+		}
+	}
+
+	// Worktree cleaned up (post-merge) — fall back to parent dir
+	// which has the same repo-as-children layout with merged code on main
+	if pd := cfg.ResolvedParentDir(); pd != "" {
+		if _, err := os.Stat(pd); err == nil {
+			return pd
+		}
+	}
+
+	return cfg.Root()
+}
+
 // UATOpts holds injectable functions for the uat command.
 type UATOpts struct {
 	RunCmd  func(cmd string) ([]byte, int, error)
@@ -28,6 +54,7 @@ type checkResult struct {
 	Passed  bool   `json:"passed"`
 	Detail  string `json:"detail"`
 	Pending bool   `json:"pending,omitempty"` // manual review needed
+	Skipped bool   `json:"skipped,omitempty"` // intentionally skipped (scope suite)
 }
 
 // UAT runs automated acceptance criteria verification and produces a report.
@@ -40,14 +67,7 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 
 	runCmd := opts.RunCmd
 	if runCmd == nil {
-		// Determine best CWD: worktree base if exists, else project root
-		runDir := cfg.Root()
-		if cfg.Worktree != nil && cfg.Worktree.Enabled && cfg.Worktree.BaseDir != "" {
-			wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, id)
-			if _, err := os.Stat(wtBase); err == nil {
-				runDir = wtBase
-			}
-		}
+		runDir := resolveUATDir(cfg, id)
 		runCmd = func(cmd string) ([]byte, int, error) {
 			cmd = rewriteACPaths(cfg, id, runDir, cmd)
 			return runCmdInDir(runDir, cmd)
@@ -67,9 +87,11 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 	results = append(results, acResults...)
 
 	// --- Render report ---
-	autoPass, autoFail, manual := 0, 0, 0
+	autoPass, autoFail, manual, skipped := 0, 0, 0, 0
 	for _, r := range results {
-		if r.Pending {
+		if r.Skipped {
+			skipped++
+		} else if r.Pending {
 			manual++
 		} else if r.Passed {
 			autoPass++
@@ -88,7 +110,9 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 			continue // show in AC section
 		}
 		icon := fmt.Sprintf("%s✓%s", cGreen, cReset)
-		if !r.Passed {
+		if r.Skipped {
+			icon = fmt.Sprintf("%s⊘%s", cCyan, cReset)
+		} else if !r.Passed {
 			icon = fmt.Sprintf("%s✗%s", cRed, cReset)
 		}
 		fmt.Printf("  %s %s: %s\n", icon, r.Label, r.Detail)
@@ -121,6 +145,9 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 		fmt.Printf("%s%d auto-fail%s, ", cRed, autoFail, cReset)
 	} else {
 		fmt.Printf("0 auto-fail, ")
+	}
+	if skipped > 0 {
+		fmt.Printf("%s%d skipped%s, ", cCyan, skipped, cReset)
 	}
 	if manual > 0 {
 		fmt.Printf("%s%d manual review%s\n", cYellow, manual, cReset)
@@ -181,6 +208,16 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 				Mode:   "auto",
 				Passed: false,
 				Detail: "required but not recorded",
+			})
+			continue
+		}
+		if strings.HasPrefix(val, "skip") {
+			results = append(results, checkResult{
+				Label:   name,
+				Mode:    "auto",
+				Passed:  false,
+				Skipped: true,
+				Detail:  val,
 			})
 			continue
 		}

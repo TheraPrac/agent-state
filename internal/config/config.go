@@ -233,6 +233,19 @@ func (c *Config) Root() string {
 	return c.root
 }
 
+// ResolvedParentDir returns the absolute path to the worktree parent directory.
+// Returns "" if worktrees are not configured or ParentDir is empty.
+func (c *Config) ResolvedParentDir() string {
+	if c.Worktree == nil || c.Worktree.ParentDir == "" {
+		return ""
+	}
+	pd := c.Worktree.ParentDir
+	if !filepath.IsAbs(pd) {
+		pd = filepath.Join(c.root, pd)
+	}
+	return pd
+}
+
 // ItemDir returns the absolute path to the item storage root.
 func (c *Config) ItemDir() string {
 	return filepath.Join(c.root, c.Paths.Root)

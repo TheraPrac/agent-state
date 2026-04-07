@@ -2,6 +2,7 @@ package command
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -186,6 +187,79 @@ func TestUATNoAcceptanceCriteria(t *testing.T) {
 	code := UAT(s, cfg, "T-003", opts)
 	if code != 0 {
 		t.Errorf("UAT returned %d", code)
+	}
+}
+
+func TestResolveUATDirWorktreeExists(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{".as", "worktrees/T-001/theraprac-api", "worktrees/T-001/theraprac-web"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`worktree:
+  enabled: true
+  base_dir: worktrees
+  parent_dir: ..
+  repos: [theraprac-api, theraprac-web]
+`), 0644)
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+
+	got := resolveUATDir(cfg, "T-001")
+	want := filepath.Join(root, "worktrees", "T-001")
+	if got != want {
+		t.Errorf("resolveUATDir() = %q, want %q (worktree exists)", got, want)
+	}
+}
+
+func TestResolveUATDirFallbackToParentDir(t *testing.T) {
+	root := t.TempDir()
+	// Create parent dir with repos but NO worktree
+	parentDir := filepath.Dir(root) // root's parent
+	os.MkdirAll(filepath.Join(root, ".as"), 0755)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`worktree:
+  enabled: true
+  base_dir: worktrees
+  parent_dir: ..
+  repos: [theraprac-api, theraprac-web]
+`), 0644)
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+
+	got := resolveUATDir(cfg, "T-001")
+	// Worktree doesn't exist, should fall back to parent dir
+	if got != parentDir {
+		t.Errorf("resolveUATDir() = %q, want %q (parent dir fallback)", got, parentDir)
+	}
+}
+
+func TestResolveUATDirNoWorktreeConfig(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".as"), 0755)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte(`project:
+  name: test
+`), 0644)
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+
+	got := resolveUATDir(cfg, "T-001")
+	if got != root {
+		t.Errorf("resolveUATDir() = %q, want %q (no worktree config)", got, root)
+	}
+}
+
+func TestUATSkippedScopeSuiteNotAutoFail(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	// Set a scope suite to "skip: reason"
+	item, _ := s.Get("T-003")
+	setNestedField(item, "testing_evidence", "web_e2e", "skip: No UI flows changed")
+	s.Write(item)
+
+	opts := UATOpts{
+		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("ok"), 0, nil },
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := UAT(s, cfg, "T-003", opts)
+	if code != 0 {
+		t.Errorf("UAT returned %d, want 0 (skipped scope suite should not count as auto-fail)", code)
 	}
 }
 
