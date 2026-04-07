@@ -22,6 +22,7 @@ type Store struct {
 	cfg   *config.Config
 	items map[string]*model.Item // keyed by ID
 	paths map[string]string      // ID -> file path
+	dirty map[string]bool        // file paths modified since last sync
 }
 
 // New creates a store from config and scans all item directories.
@@ -30,6 +31,7 @@ func New(cfg *config.Config) (*Store, error) {
 		cfg:   cfg,
 		items: make(map[string]*model.Item),
 		paths: make(map[string]string),
+		dirty: make(map[string]bool),
 	}
 
 	if err := s.scan(); err != nil {
@@ -243,6 +245,7 @@ func (s *Store) Write(item *model.Item) error {
 
 	// Update in-memory state
 	s.items[item.ID] = item
+	s.dirty[path] = true
 
 	return nil
 }
@@ -281,7 +284,24 @@ func (s *Store) Move(id string) error {
 	}
 
 	s.paths[id] = newPath
+	s.dirty[oldPath] = true
+	s.dirty[newPath] = true
 	return nil
+}
+
+// MarkDirty records an external file path as modified so GitSync will stage it.
+func (s *Store) MarkDirty(path string) {
+	s.dirty[path] = true
+}
+
+// DirtyFiles returns and clears the set of files modified since the last sync.
+func (s *Store) DirtyFiles() []string {
+	files := make([]string, 0, len(s.dirty))
+	for f := range s.dirty {
+		files = append(files, f)
+	}
+	s.dirty = make(map[string]bool)
+	return files
 }
 
 func (s *Store) filenameForItem(item *model.Item) string {

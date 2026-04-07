@@ -147,16 +147,44 @@ func restoreLockedItems(snapshots map[string][]byte) {
 	}
 }
 
-// GitSync stages, commits, and pushes changes in the item root directory.
-// Message is the commit message. Pre-pulls with --ff-only before committing
-// to minimize conflicts. If push fails (remote ahead), retries with
-// pull --rebase + re-push up to maxRetries times. Detects rebase conflicts
-// and aborts cleanly with an error.
+// GitSync stages only the files modified by this Store instance, commits,
+// and pushes. This prevents unrelated dirty working-tree files from being
+// swept into the commit — the root cause of cross-item state clobbering
+// when parallel st processes modify different items.
+//
+// Use GitSyncAll for the explicit "commit everything" case (st sync).
 func (s *Store) GitSync(message string) error {
 	if s.cfg.Git == nil || !s.cfg.Git.AutoCommit {
 		return nil
 	}
 
+	files := s.DirtyFiles()
+	if len(files) == 0 {
+		// Nothing tracked as dirty — fall through to check if there are
+		// staged changes from a prior add (e.g., index.md regeneration).
+		return s.gitSyncInternal(message, nil)
+	}
+
+	return s.gitSyncInternal(message, files)
+}
+
+// GitSyncAll stages ALL changes in the item root (git add -A) and commits.
+// This is the broad "commit everything" mode used by `st sync`.
+func (s *Store) GitSyncAll(message string) error {
+	if s.cfg.Git == nil || !s.cfg.Git.AutoCommit {
+		return nil
+	}
+
+	// Clear dirty set since we're committing everything
+	s.DirtyFiles()
+
+	return s.gitSyncInternal(message, nil)
+}
+
+// gitSyncInternal is the shared commit/push logic.
+// If files is non-nil, only those files are staged (git add <files>).
+// If files is nil, all changes are staged (git add -A).
+func (s *Store) gitSyncInternal(message string, files []string) error {
 	root := s.cfg.ItemDir()
 
 	// Acquire lock to prevent concurrent git operations from parallel st processes
@@ -174,9 +202,24 @@ func (s *Store) GitSync(message string) error {
 		restoreLockedItems(snap)
 	}
 
-	// Stage all changes in the item root
-	if err := gitCmd(root, "add", "-A"); err != nil {
-		return fmt.Errorf("git add: %w", err)
+	// Stage changes
+	if files != nil {
+		// Scoped: only stage the files this Store instance modified.
+		// Convert absolute paths to relative paths from the git root.
+		for _, f := range files {
+			rel, err := filepath.Rel(root, f)
+			if err != nil {
+				rel = f // fallback to absolute
+			}
+			if err := gitCmd(root, "add", "--", rel); err != nil {
+				return fmt.Errorf("git add %s: %w", rel, err)
+			}
+		}
+	} else {
+		// Broad: stage everything (used by st sync / fallback)
+		if err := gitCmd(root, "add", "-A"); err != nil {
+			return fmt.Errorf("git add: %w", err)
+		}
 	}
 
 	// Check if there's anything to commit

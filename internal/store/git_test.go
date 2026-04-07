@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -139,6 +140,100 @@ func TestGitSyncWithPushNoRemote(t *testing.T) {
 	err := s.GitSync("test push")
 	if err == nil {
 		t.Error("expected push error with no remote")
+	}
+}
+
+func TestGitSyncScopedStaging(t *testing.T) {
+	root, _ := setupTestDir(t)
+	// Add a second item
+	writeItem(t, filepath.Join(root, "tasks", "T-002-second-task.md"), `id: T-002
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: Second task
+`)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+
+	cfg, _ := config.Load(root)
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+
+	s, _ := New(cfg)
+
+	// Modify T-001 through the Store (dirty-tracked)
+	item1, _ := s.Get("T-001")
+	item1.Doc.SetField("status", "active")
+	s.Write(item1)
+
+	// Modify T-002 directly on disk (NOT through Store — simulates parallel process)
+	t002Path := filepath.Join(root, "tasks", "T-002-second-task.md")
+	os.WriteFile(t002Path, []byte("id: T-002\ntype: task\nstatus: active\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\n\ntitle: CLOBBERED\n"), 0644)
+
+	// GitSync should only stage T-001, not T-002
+	err := s.GitSync("scoped update T-001")
+	if err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
+
+	// Verify T-002 is NOT in the commit (use diff-tree to inspect commit contents only)
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	cmd.Dir = root
+	out, _ := cmd.Output()
+	if strings.Contains(string(out), "T-002") {
+		t.Errorf("GitSync staged unrelated file T-002; committed files: %s", string(out))
+	}
+	if !strings.Contains(string(out), "T-001") {
+		t.Errorf("GitSync did not stage T-001; committed files: %s", string(out))
+	}
+
+	// T-002 should still be dirty on disk (uncommitted)
+	cmd = exec.Command("git", "status", "--porcelain")
+	cmd.Dir = root
+	out, _ = cmd.Output()
+	if !strings.Contains(string(out), "T-002") {
+		t.Errorf("T-002 should still be uncommitted; status: %s", string(out))
+	}
+}
+
+func TestGitSyncAllStagesEverything(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+
+	cfg, _ := config.Load(root)
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+
+	s, _ := New(cfg)
+
+	// Modify T-001 through Store
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.Write(item)
+
+	// Also write an untracked file directly (simulates changelog, index, etc.)
+	os.WriteFile(filepath.Join(root, "tasks", "untracked.md"), []byte("extra"), 0644)
+
+	// GitSyncAll should stage everything
+	err := s.GitSyncAll("sync all")
+	if err != nil {
+		t.Fatalf("GitSyncAll: %v", err)
+	}
+
+	// Verify both files are in the commit (use diff-tree for commit-only view)
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	cmd.Dir = root
+	out, _ := cmd.Output()
+	if !strings.Contains(string(out), "T-001") {
+		t.Errorf("GitSyncAll should include T-001; got: %s", string(out))
+	}
+	if !strings.Contains(string(out), "untracked.md") {
+		t.Errorf("GitSyncAll should include untracked.md; got: %s", string(out))
 	}
 }
 

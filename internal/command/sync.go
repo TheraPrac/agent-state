@@ -12,7 +12,7 @@ func Sync(s *store.Store, message string) int {
 		message = "as: sync agent-state"
 	}
 
-	if err := s.GitSync(message); err != nil {
+	if err := s.GitSyncAll(message); err != nil {
 		fmt.Fprintf(os.Stderr, "sync: %v\n", err)
 		return 1
 	}

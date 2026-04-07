@@ -1636,6 +1636,11 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			if updatedItem, ok := syncStore.Get(itemID); ok && cfg.IsTerminalStatus(updatedItem.Type, updatedItem.Status) {
 				msg = fmt.Sprintf("st run: %s closed (%s)", itemID, updatedItem.Status)
 			}
+			// Mark the item file dirty so GitSync only stages it —
+			// not unrelated files that may be mid-edit by parallel pipelines.
+			if p, ok := syncStore.Path(itemID); ok {
+				syncStore.MarkDirty(p)
+			}
 			if err := syncStore.GitSync(msg); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] warning: sync after run failed: %v\n", itemID, err)
 			}
@@ -2606,14 +2611,10 @@ func executeSmoke(s *store.Store, cfg *config.Config, itemID, worktreeDir string
 
 func executeUAT(s *store.Store, cfg *config.Config, itemID, worktreeDir string) StepResult {
 	sr := StepResult{Step: "uat", Type: "uat"}
-	// Run UAT AC commands from the worktree BASE directory (parent of repo dirs)
-	// so that `cd theraprac-api && ...` works correctly.
-	uatDir := worktreeDir
-	if cfg.Worktree != nil && cfg.Worktree.Enabled {
-		uatDir = filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
-	}
+	uatDir := resolveUATDir(cfg, itemID)
 	code := UAT(s, cfg, itemID, UATOpts{
 		RunCmd: func(cmd string) ([]byte, int, error) {
+			cmd = rewriteACPaths(cfg, itemID, uatDir, cmd)
 			return runCmdInDir(uatDir, cmd)
 		},
 	})
@@ -2736,13 +2737,9 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 	for iteration := 1; ; iteration++ {
 		// Run UAT
 		fmt.Printf("\n[%s] Running UAT (iteration %d)...\n", itemID, iteration)
-		uatDir := worktreeDir
-		if cfg.Worktree != nil && cfg.Worktree.Enabled {
-			uatDir = filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
-		}
+		uatDir := resolveUATDir(cfg, itemID)
 		uatCode := UAT(s, cfg, itemID, UATOpts{
 			RunCmd: func(cmd string) ([]byte, int, error) {
-				// Rewrite ../repo paths for worktree context
 				cmd = rewriteACPaths(cfg, itemID, uatDir, cmd)
 				return runCmdInDir(uatDir, cmd)
 			},
@@ -2999,12 +2996,21 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 		}
 	}
 
-	// Gate: block close if the worktree has uncommitted changes. Closing an
-	// item and then failing to clean up leaves stale state that the next item
-	// inherits. Surface this to the operator so they can commit/discard first.
-	if dirty := worktreeDirtyRepos(cfg, itemID); len(dirty) > 0 {
-		sr.Error = fmt.Sprintf("cannot close: uncommitted changes in worktree (%s) — commit, discard, or run `st finish %s --force`", strings.Join(dirty, ", "), itemID)
-		return sr
+	// Gate: block close if the worktree has uncommitted changes — unless
+	// the item is post-merge. After merge, worktree changes are stale
+	// (the merged code on main is the source of truth) and should not
+	// block closing. The worktree will be cleaned up after close.
+	postMerge := false
+	if item != nil {
+		if stage, _ := getNestedField(item, "delivery", "stage"); stage != "" {
+			postMerge = cfg.StageReached(stage, "merged")
+		}
+	}
+	if !postMerge {
+		if dirty := worktreeDirtyRepos(cfg, itemID); len(dirty) > 0 {
+			sr.Error = fmt.Sprintf("cannot close: uncommitted changes in worktree (%s) — commit, discard, or run `st finish %s --force`", strings.Join(dirty, ", "), itemID)
+			return sr
+		}
 	}
 
 	resolution := step.Resolution
@@ -5708,19 +5714,18 @@ func inferReposFromItem(cfg *config.Config, item *model.Item) []string {
 // rewriteACPaths rewrites ../repo-name paths in acceptance criteria commands
 // to use the worktree path. From the worktree base (worktrees/T-095/),
 // repos are direct subdirectories (theraprac-web/), not siblings (../theraprac-web).
-func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
+func rewriteACPaths(cfg *config.Config, itemID, runDir, cmd string) string {
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
 		return cmd
 	}
 
-	// Check if the worktree base exists for this item
-	wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
-	if _, err := os.Stat(wtBase); err != nil {
-		return cmd
-	}
-
-	// Rewrite ../repo-name → repo-name (direct subdirectory of worktree base)
+	// Rewrite ../repo-name → repo-name when running from a directory
+	// where repos are direct subdirectories (worktree base or parent dir).
 	for _, repo := range cfg.Worktree.Repos {
+		// Only rewrite if the repo actually exists as a child of runDir
+		if _, err := os.Stat(filepath.Join(runDir, repo)); err != nil {
+			continue
+		}
 		for _, pattern := range []string{
 			"cd ../" + repo + " ",
 			"cd ../" + repo + "/",
@@ -5738,7 +5743,73 @@ func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
 		}
 	}
 
+	// Auto-detect repo context for bare commands (no cd or ../ prefix).
+	// If the command references paths or tools that belong to a specific repo,
+	// prepend "cd <repo> && " so it runs from the right directory.
+	if !hasRepoContext(cmd, cfg.Worktree.Repos) {
+		if repo := detectRepoForCmd(runDir, cfg.Worktree.Repos, cmd); repo != "" {
+			cmd = "cd " + repo + " && " + cmd
+		}
+	}
+
 	return cmd
+}
+
+// hasRepoContext returns true if the command already has a repo context
+// (e.g., starts with "cd <repo>" or references "../<repo>/").
+func hasRepoContext(cmd string, repos []string) bool {
+	for _, repo := range repos {
+		if strings.HasPrefix(cmd, "cd "+repo) ||
+			strings.Contains(cmd, "../"+repo) ||
+			strings.Contains(cmd, repo+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// detectRepoForCmd determines which repo a bare command belongs to by checking:
+// 1. File paths referenced in the command (e.g., "internal/billing/..." exists in repo X)
+// 2. Go/Make tool commands (need go.mod/Makefile in repo root)
+func detectRepoForCmd(runDir string, repos []string, cmd string) string {
+	// Extract path-like tokens (contain /) that aren't flags
+	tokens := strings.Fields(cmd)
+	for _, tok := range tokens {
+		// Skip flags, operators, quoted strings
+		if strings.HasPrefix(tok, "-") || tok == "&&" || tok == "||" || tok == "|" {
+			continue
+		}
+		// Strip surrounding quotes
+		tok = strings.Trim(tok, "'\"")
+		if !strings.Contains(tok, "/") {
+			continue
+		}
+		// Check if this path exists inside any repo
+		for _, repo := range repos {
+			candidate := filepath.Join(runDir, repo, tok)
+			if _, err := os.Stat(candidate); err == nil {
+				return repo
+			}
+		}
+	}
+
+	// Check for go/make commands that need a project root
+	cmdBase := strings.Fields(cmd)[0]
+	switch cmdBase {
+	case "go", "make":
+		for _, repo := range repos {
+			// go commands need go.mod, make needs Makefile
+			marker := "go.mod"
+			if cmdBase == "make" {
+				marker = "Makefile"
+			}
+			if _, err := os.Stat(filepath.Join(runDir, repo, marker)); err == nil {
+				return repo
+			}
+		}
+	}
+
+	return ""
 }
 
 func defaultPromptUser(_ string) (string, error) {
