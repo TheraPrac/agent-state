@@ -901,6 +901,14 @@ implement step during st run.`,
 			exitCode = command.QueueApprove(appCfg, args[0])
 		},
 	})
+	queueCmd.AddCommand(&cobra.Command{
+		Use:   "prune",
+		Short: "Drop terminal (resolved/completed/etc) items from the queue",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.QueuePrune(appStore, appCfg)
+		},
+	})
 	root.AddCommand(queueCmd)
 
 	noteCmd := &cobra.Command{

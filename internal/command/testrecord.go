@@ -24,8 +24,9 @@ import (
 
 // TestRecordOpts holds flags and injectable functions for the test command.
 type TestRecordOpts struct {
-	Run      bool // execute the suite command (--run)
-	Coverage bool // enforce per-file coverage (--coverage, requires --run)
+	Run      bool   // execute the suite command (--run)
+	Coverage bool   // enforce per-file coverage (--coverage, requires --run)
+	Skip     string // mark scope suite as intentionally skipped with reason (--skip)
 	// Injectable for testing (nil = use real implementations)
 	GitHeadSHA func(repoDir string) (string, error)
 	RunCmd     func(command string) (output []byte, exitCode int, err error)
@@ -76,6 +77,26 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	if !isRequired && !isScope {
 		fmt.Fprintf(os.Stderr, "unknown suite %q — not in required_suites or scope_suites\n", suite)
 		return 1
+	}
+
+	// Handle --skip: mark a scope suite as intentionally skipped.
+	if opts.Skip != "" {
+		if isRequired {
+			fmt.Fprintf(os.Stderr, "cannot skip required suite %q\n", suite)
+			return 1
+		}
+		ev := fmt.Sprintf("skip: %s", opts.Skip)
+		setNestedField(item, "testing_evidence", suite, ev)
+		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		if err := s.Write(item); err != nil {
+			fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+			return 1
+		}
+		changelog.Append(cfg, id, changelog.Entry{
+			Op: "test_skipped", Field: "testing_evidence." + suite, NewValue: ev,
+		})
+		fmt.Printf("Skipped %s on %s: %s\n", suite, id, opts.Skip)
+		return 0
 	}
 
 	// For scope suites, warn if not triggered by st pr

@@ -376,6 +376,35 @@ func TestCloseNotFound(t *testing.T) {
 	}
 }
 
+func TestCloseAutoRemovesFromQueue(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Add the active item (and an unrelated one) to the queue.
+	if code := QueueAdd(s, cfg, "T-003", QueueOpts{}); code != 0 {
+		t.Fatalf("QueueAdd T-003 = %d", code)
+	}
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
+		t.Fatalf("QueueAdd T-001 = %d", code)
+	}
+
+	if code := Close(s, cfg, "T-003", "completed", CloseOpts{}); code != 0 {
+		t.Fatalf("Close T-003 = %d", code)
+	}
+
+	entries := LoadQueue(cfg)
+	if len(entries) != 1 || entries[0].ID != "T-001" {
+		t.Errorf("after close: entries = %v, want only T-001", entries)
+	}
+}
+
+func TestCloseQueueAutoRemoveSilentOnUnqueuedItem(t *testing.T) {
+	// Closing an item that isn't in the queue must not error.
+	s, cfg := setupTestEnv(t)
+	if code := Close(s, cfg, "T-003", "completed", CloseOpts{}); code != 0 {
+		t.Errorf("Close on unqueued item returned %d, want 0", code)
+	}
+}
+
 // --- Update ---
 
 func TestUpdateHappy(t *testing.T) {

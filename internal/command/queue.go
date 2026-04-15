@@ -144,6 +144,25 @@ func QueueNext(s *store.Store, cfg *config.Config) int {
 }
 
 func QueueRm(cfg *config.Config, id string) int {
+	removed, err := removeFromQueueSilently(cfg, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
+		return 1
+	}
+	if !removed {
+		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
+		return 1
+	}
+	fmt.Printf("Removed %s from queue\n", id)
+	return 0
+}
+
+// removeFromQueueSilently drops the entry with the given ID from the queue
+// if present. Returns (removed, err). Safe to call when the ID isn't in the
+// queue — that case returns (false, nil). Callers that want the user-facing
+// "not in queue" message should use QueueRm; internal callers (e.g. auto-
+// cleanup on st close) use this helper to stay quiet on a miss.
+func removeFromQueueSilently(cfg *config.Config, id string) (bool, error) {
 	entries := LoadQueue(cfg)
 	found := false
 	var updated []QueueEntry
@@ -155,14 +174,55 @@ func QueueRm(cfg *config.Config, id string) int {
 		updated = append(updated, e)
 	}
 	if !found {
-		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
-		return 1
+		return false, nil
 	}
 	if err := SaveQueue(cfg, updated); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// QueuePrune drops every queue entry whose underlying item has a terminal
+// status (resolved/completed/wontfix/abandoned/etc per the type config).
+// Keeps entries for items that no longer exist in the store (so broken
+// references still surface in queue show) — only terminal items are
+// dropped.
+func QueuePrune(s *store.Store, cfg *config.Config) int {
+	entries := LoadQueue(cfg)
+	if len(entries) == 0 {
+		fmt.Println("Queue is empty — nothing to prune")
+		return 0
+	}
+
+	var kept []QueueEntry
+	var dropped []string
+	for _, e := range entries {
+		item, ok := s.Get(e.ID)
+		if !ok {
+			kept = append(kept, e)
+			continue
+		}
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			dropped = append(dropped, fmt.Sprintf("%s (%s)", e.ID, item.Status))
+			continue
+		}
+		kept = append(kept, e)
+	}
+
+	if len(dropped) == 0 {
+		fmt.Println("No terminal items in queue — nothing to prune")
+		return 0
+	}
+
+	if err := SaveQueue(cfg, kept); err != nil {
 		fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Removed %s from queue\n", id)
+
+	fmt.Printf("Pruned %d terminal item(s) from queue:\n", len(dropped))
+	for _, d := range dropped {
+		fmt.Printf("  - %s\n", d)
+	}
 	return 0
 }
 

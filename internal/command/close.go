@@ -151,6 +151,15 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)
 
+	// Auto-remove from the work queue. A closed item staying in the queue
+	// just clutters `st queue show` and misleads the operator about what's
+	// left. Silent if the item wasn't queued.
+	if removed, qerr := removeFromQueueSilently(cfg, id); qerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove %s from queue: %v\n", id, qerr)
+	} else if removed {
+		fmt.Printf("  also removed from queue\n")
+	}
+
 	// Auto-pop stack if this item is on top
 	stack := LoadStack(cfg)
 	if len(stack) > 0 && stack[len(stack)-1].ID == id {
