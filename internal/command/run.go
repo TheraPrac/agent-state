@@ -21,8 +21,8 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -529,7 +529,7 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 				label = sp.Status
 			}
 			stats := fmt.Sprintf("[%d/%d done, %d active]", done, len(sp.Items), active)
-		fmt.Printf("  %-40s  %-24s  (%s)\n", sp.Title, stats, label)
+			fmt.Printf("  %-40s  %-24s  (%s)\n", sp.Title, stats, label)
 			fmt.Printf("    %s\n", sp.ID)
 
 			for _, itemID := range sp.Items {
@@ -2029,102 +2029,6 @@ func appendAISessionRecord(item *model.Item, result ItemResult) {
 		// Append to ai_sessions list in document
 		appendListField(item, "work_tracking", "ai_sessions", record)
 	}
-}
-
-// appendListField appends a value to a list field under a parent block in the document.
-func appendListField(item *model.Item, parent, key, val string) {
-	if item.Doc == nil {
-		return
-	}
-
-	// Find or create the parent block, then find or create the key as a list
-	parentIdx := -1
-	keyIdx := -1
-	lastInBlock := -1
-	for i, line := range item.Doc.Lines {
-		if line.Key == parent && line.Indent == 0 {
-			parentIdx = i
-		}
-		if parentIdx >= 0 && i > parentIdx {
-			if line.Indent == 0 && !line.IsEmpty && line.Key != "" {
-				break // left the parent block
-			}
-			if line.Key == key && line.Indent > 0 {
-				keyIdx = i
-			}
-			lastInBlock = i
-		}
-	}
-
-	newLine := model.Line{
-		Raw:      fmt.Sprintf("  - %s", val),
-		Indent:   2,
-		BlockKey: parent,
-	}
-
-	if parentIdx < 0 {
-		// Create parent + key + value
-		item.Doc.Lines = append(item.Doc.Lines,
-			model.Line{Raw: "", IsEmpty: true},
-			model.Line{Raw: parent + ":", Key: parent},
-			model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent},
-			newLine,
-		)
-		return
-	}
-
-	if keyIdx < 0 {
-		// Parent exists but key doesn't — insert at end of parent block
-		insertAt := lastInBlock + 1
-		if insertAt <= parentIdx {
-			insertAt = parentIdx + 1
-		}
-		lines := make([]model.Line, 0, len(item.Doc.Lines)+2)
-		lines = append(lines, item.Doc.Lines[:insertAt]...)
-		lines = append(lines, model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent})
-		lines = append(lines, newLine)
-		lines = append(lines, item.Doc.Lines[insertAt:]...)
-		item.Doc.Lines = lines
-		return
-	}
-
-	// Key exists — find the end of the list and append
-	insertAt := keyIdx + 1
-	for insertAt < len(item.Doc.Lines) {
-		line := item.Doc.Lines[insertAt]
-		if line.Indent < 2 || (line.Key != "" && !strings.HasPrefix(line.Raw, "  -")) {
-			break
-		}
-		if strings.HasPrefix(strings.TrimSpace(line.Raw), "- ") {
-			insertAt++
-			continue
-		}
-		break
-	}
-
-	lines := make([]model.Line, 0, len(item.Doc.Lines)+1)
-	lines = append(lines, item.Doc.Lines[:insertAt]...)
-	lines = append(lines, newLine)
-	lines = append(lines, item.Doc.Lines[insertAt:]...)
-	item.Doc.Lines = lines
-}
-
-func readFloatField(item *model.Item, parent, key string) float64 {
-	if val, exists := getNestedField(item, parent, key); exists {
-		var f float64
-		fmt.Sscanf(val, "%f", &f)
-		return f
-	}
-	return 0
-}
-
-func readIntField(item *model.Item, parent, key string) int {
-	if val, exists := getNestedField(item, parent, key); exists {
-		var i int
-		fmt.Sscanf(val, "%d", &i)
-		return i
-	}
-	return 0
 }
 
 // executeStepWithSession dispatches to the appropriate step executor, with claude session reuse.
@@ -5192,14 +5096,14 @@ func shortenPath(p string) string {
 
 // ReviewGateInfo holds context for rendering a review gate box.
 type ReviewGateInfo struct {
-	ItemID        string
-	Title         string
-	GateType      string // "Plan Review", "Design Review", "UAT Review"
-	Iteration     int
+	ItemID         string
+	Title          string
+	GateType       string // "Plan Review", "Design Review", "UAT Review"
+	Iteration      int
 	Recommendation string // one-line recommendation from claude's review
 	ReviewDuration time.Duration
-	AcsPassed     int
-	AcsTotal      int
+	AcsPassed      int
+	AcsTotal       int
 	// BlockAutoProceed forces operator input even when the recommendation is
 	// positive — used when there's an objective failure signal (e.g., UAT
 	// auto-fails) that should never be silently overridden by claude's approval.
@@ -5995,19 +5899,27 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			sprintNetLOC += itemNetLOC
 
 			f := func(d time.Duration) string {
-				if d > 0 { return formatDuration(d) }
+				if d > 0 {
+					return formatDuration(d)
+				}
 				return "—"
 			}
 			fc := func(c float64) string {
-				if c > 0 { return fmt.Sprintf("$%.2f", c) }
+				if c > 0 {
+					return fmt.Sprintf("$%.2f", c)
+				}
 				return "—"
 			}
 			ft := func(in, out int) string {
-				if in == 0 && out == 0 { return "—" }
+				if in == 0 && out == 0 {
+					return "—"
+				}
 				return fmt.Sprintf("%s/%s/%s", formatTokens(in), formatTokens(out), formatTokens(in+out))
 			}
 			fl := func(n int) string {
-				if n == 0 { return "—" }
+				if n == 0 {
+					return "—"
+				}
 				return formatLOC(n)
 			}
 

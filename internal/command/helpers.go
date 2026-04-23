@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -155,4 +156,98 @@ func formatLOC(n int) string {
 		return fmt.Sprintf("%s%.1fK", sign, float64(n)/1_000)
 	}
 	return fmt.Sprintf("%s%.1fM", sign, float64(n)/1_000_000)
+}
+
+// readFloatField reads a nested field and parses it as float64; returns 0 if missing/unparseable.
+func readFloatField(item *model.Item, parent, key string) float64 {
+	if val, exists := getNestedField(item, parent, key); exists {
+		var f float64
+		fmt.Sscanf(val, "%f", &f)
+		return f
+	}
+	return 0
+}
+
+// readIntField reads a nested field and parses it as int; returns 0 if missing/unparseable.
+func readIntField(item *model.Item, parent, key string) int {
+	if val, exists := getNestedField(item, parent, key); exists {
+		var i int
+		fmt.Sscanf(val, "%d", &i)
+		return i
+	}
+	return 0
+}
+
+// appendListField appends a value to a list field under a parent block in the document.
+func appendListField(item *model.Item, parent, key, val string) {
+	if item.Doc == nil {
+		return
+	}
+
+	parentIdx := -1
+	keyIdx := -1
+	lastInBlock := -1
+	for i, line := range item.Doc.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+		}
+		if parentIdx >= 0 && i > parentIdx {
+			if line.Indent == 0 && !line.IsEmpty && line.Key != "" {
+				break
+			}
+			if line.Key == key && line.Indent > 0 {
+				keyIdx = i
+			}
+			lastInBlock = i
+		}
+	}
+
+	newLine := model.Line{
+		Raw:      fmt.Sprintf("  - %s", val),
+		Indent:   2,
+		BlockKey: parent,
+	}
+
+	if parentIdx < 0 {
+		item.Doc.Lines = append(item.Doc.Lines,
+			model.Line{Raw: "", IsEmpty: true},
+			model.Line{Raw: parent + ":", Key: parent},
+			model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent},
+			newLine,
+		)
+		return
+	}
+
+	if keyIdx < 0 {
+		insertAt := lastInBlock + 1
+		if insertAt <= parentIdx {
+			insertAt = parentIdx + 1
+		}
+		lines := make([]model.Line, 0, len(item.Doc.Lines)+2)
+		lines = append(lines, item.Doc.Lines[:insertAt]...)
+		lines = append(lines, model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent})
+		lines = append(lines, newLine)
+		lines = append(lines, item.Doc.Lines[insertAt:]...)
+		item.Doc.Lines = lines
+		return
+	}
+
+	insertAt := keyIdx + 1
+	for insertAt < len(item.Doc.Lines) {
+		line := item.Doc.Lines[insertAt]
+		if line.Indent < 2 || (line.Key != "" && !strings.HasPrefix(line.Raw, "  -")) {
+			break
+		}
+		if strings.HasPrefix(strings.TrimSpace(line.Raw), "- ") {
+			insertAt++
+			continue
+		}
+		break
+	}
+
+	lines := make([]model.Line, 0, len(item.Doc.Lines)+1)
+	lines = append(lines, item.Doc.Lines[:insertAt]...)
+	lines = append(lines, newLine)
+	lines = append(lines, item.Doc.Lines[insertAt:]...)
+	item.Doc.Lines = lines
 }
