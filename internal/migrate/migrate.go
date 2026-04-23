@@ -135,6 +135,41 @@ func detectChanges(item *model.Item, cfg *config.Config) []Change {
 		}
 	}
 
+	// Legacy time/cost tracking keys that should be renamed or dropped
+	for _, blockName := range []string{"time_tracking"} {
+		s, ok := sections[blockName]
+		if !ok {
+			continue
+		}
+		sawRename := false
+		for _, line := range s.lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			colonIdx := strings.Index(trimmed, ":")
+			if colonIdx <= 0 {
+				continue
+			}
+			key := trimmed[:colonIdx]
+			if _, renamed := legacyMetricRenames[key]; renamed {
+				if !sawRename {
+					changes = append(changes, Change{
+						Type:   "rename_metric_field",
+						Detail: fmt.Sprintf("rename legacy %s keys to new schema", blockName),
+					})
+					sawRename = true
+				}
+			}
+			if legacyMetricDrops[key] {
+				changes = append(changes, Change{
+					Type:   "drop_field",
+					Detail: fmt.Sprintf("drop %s.%s (superseded)", blockName, key),
+				})
+			}
+		}
+	}
+
 	// Missing modern fields
 	if _, ok := sections["delivery"]; !ok && cfg.Delivery != nil {
 		changes = append(changes, Change{Type: "add_field", Detail: "add delivery: section"})
@@ -228,6 +263,10 @@ func Canonical(item *model.Item, cfg *config.Config) string {
 	sections := extractSections(item.Doc)
 	body := extractBody(item.Doc)
 
+	// Rewrite legacy time/cost tracking field names in place before emission.
+	// Keeps existing items compatible with the SessionLog schema.
+	rewriteLegacyMetrics(sections)
+
 	b := &builder{
 		item:     item,
 		cfg:      cfg,
@@ -264,11 +303,11 @@ func Canonical(item *model.Item, cfg *config.Config) string {
 
 // builder accumulates canonical output lines.
 type builder struct {
-	item     *model.Item
-	cfg      *config.Config
-	sections map[string]*rawSection
-	lines    []string
-	emitted  map[string]bool
+	item         *model.Item
+	cfg          *config.Config
+	sections     map[string]*rawSection
+	lines        []string
+	emitted      map[string]bool
 	lastWasBlank bool
 }
 
@@ -581,6 +620,73 @@ func (b *builder) emitRaw(field string) {
 	for _, line := range s.lines {
 		b.add(line)
 	}
+}
+
+// legacyMetricRenames maps old time_tracking field names to their new names.
+// Applied in-place during Canonical emission so items re-save under the new
+// SessionLog schema on first touch. All renames target the time_tracking
+// block; work_tracking's canonical emitter strips unknown nested keys, so
+// any legacy work_tracking.ai_sessions data is lost on migration (this was
+// already the pre-existing behavior).
+var legacyMetricRenames = map[string]string{
+	"run_wall_seconds":    "process_time_seconds",
+	"ai_duration_seconds": "ai_time_seconds",
+	"run_count":           "turn_count",
+	"input_tokens":        "reg_input_tokens",
+	"output_tokens":       "reg_output_tokens",
+}
+
+// legacyMetricDrops are fields that were written by the old st run path and
+// are no longer meaningful under the new schema. `total_tokens` was an
+// ambiguous sum of regular + cache tokens at different pricing tiers — the
+// new schema tracks them separately.
+var legacyMetricDrops = map[string]bool{
+	"total_tokens": true,
+}
+
+// rewriteLegacyMetrics mutates time_tracking and work_tracking sections in
+// place, renaming legacy keys and dropping superseded ones. Idempotent:
+// running twice on an already-migrated item is a no-op.
+func rewriteLegacyMetrics(sections map[string]*rawSection) {
+	for _, name := range []string{"time_tracking"} {
+		s, ok := sections[name]
+		if !ok {
+			continue
+		}
+		s.lines = rewriteLegacyMetricLines(s.lines)
+	}
+}
+
+// rewriteLegacyMetricLines rewrites legacy keys in a block's raw lines.
+// Expects lines in the form "  key: value" (2-space indent) or "  key:"
+// (list header) or "  - ..." (list item).
+func rewriteLegacyMetricLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		indent := line[:len(line)-len(trimmed)]
+		// Skip comments and empties
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			out = append(out, line)
+			continue
+		}
+		// Extract key
+		key := ""
+		if colonIdx := strings.Index(trimmed, ":"); colonIdx > 0 {
+			key = trimmed[:colonIdx]
+		}
+		if legacyMetricDrops[key] {
+			continue // drop the line entirely
+		}
+		if newKey, renamed := legacyMetricRenames[key]; renamed {
+			// Rebuild line with new key, preserving rest (value + whitespace)
+			rest := trimmed[len(key):]
+			out = append(out, indent+newKey+rest)
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 func (b *builder) emitExtras() {

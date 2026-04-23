@@ -571,9 +571,12 @@ time_tracking:
 		t.Errorf("run 1 ai_cost_usd = %s, expected >= 0.10", aiCost1)
 	}
 
-	runCount1, _ := getNestedField(item1, "time_tracking", "run_count")
-	if runCount1 != "1" {
-		t.Errorf("run_count after run 1 = %q, want 1", runCount1)
+	// With the SessionLog rewire, turn_count increments per Claude step, not
+	// per st run invocation. This test runs 2 Claude steps (implement +
+	// code_review) per invocation, so turn_count is 2 after run 1.
+	turnCount1, _ := getNestedField(item1, "time_tracking", "turn_count")
+	if turnCount1 != "2" {
+		t.Errorf("turn_count after run 1 = %q, want 2", turnCount1)
 	}
 
 	// Check sessions were recorded
@@ -582,7 +585,7 @@ time_tracking:
 	}
 
 	// --- Run 2: advance again (another implement + code_review) ---
-	callNum = 10 // reset to get different session IDs
+	callNum = 10      // reset to get different session IDs
 	opts.Fresh = true // force re-execution of completed steps
 	code2 := Advance(s, cfg, "metrics-sprint", opts, engine)
 	// This will fail at "start" since item is already active, but the claude
@@ -601,9 +604,10 @@ time_tracking:
 		t.Errorf("ai_cost_usd did not accumulate: run1=%f, run2=%f", cost1, cost2)
 	}
 
-	runCount2, _ := getNestedField(item2, "time_tracking", "run_count")
-	if runCount2 != "2" {
-		t.Errorf("run_count after run 2 = %q, want 2", runCount2)
+	// 2 steps × 2 runs = 4 turn logs
+	turnCount2, _ := getNestedField(item2, "time_tracking", "turn_count")
+	if turnCount2 != "4" {
+		t.Errorf("turn_count after run 2 = %q, want 4", turnCount2)
 	}
 
 	// Check ai_sessions array grew
@@ -643,7 +647,7 @@ time_tracking:
 	t.Logf("=== Metrics Results ===")
 	t.Logf("AI cost:       %s", aiCost2)
 	t.Logf("AI cost (close): %s", totalAICost)
-	t.Logf("Run count:     %s", runCount2)
+	t.Logf("Turn count:    %s", turnCount2)
 	t.Logf("Sessions:      %d", len(item2.Sessions))
 	t.Logf("Total wall:    %s", totalWall)
 	t.Logf("Total AI time: %s", totalAI)
@@ -700,7 +704,7 @@ summary: Has a summary but no acceptance criteria
 			data, _ := json.Marshal(result)
 			return data, 0, nil
 		},
-		PromptUser: func(prompt string) (string, error) { return "y\n", nil },
+		PromptUser:    func(prompt string) (string, error) { return "y\n", nil },
 		ConfirmPrompt: func(prompt string) bool { return true },
 	}
 
@@ -744,7 +748,7 @@ acceptance_criteria:
 			data, _ := json.Marshal(result)
 			return data, 0, nil
 		},
-		PromptUser: func(prompt string) (string, error) { return "y\n", nil },
+		PromptUser:    func(prompt string) (string, error) { return "y\n", nil },
 		ConfirmPrompt: func(prompt string) bool { return true },
 	}
 

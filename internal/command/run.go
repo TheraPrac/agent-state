@@ -21,8 +21,8 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -90,8 +90,17 @@ type StepResult struct {
 	Duration     time.Duration `json:"duration"`
 	CostUSD      float64       `json:"cost_usd,omitempty"`
 	AIDurationMs int64         `json:"ai_duration_ms,omitempty"`
-	InputTokens  int           `json:"input_tokens,omitempty"`
-	OutputTokens int           `json:"output_tokens,omitempty"`
+
+	// Tokens. InputTokens is the legacy combined total (regular + cache reads +
+	// cache writes) and is retained for back-compat with existing ItemResult
+	// consumers. For metrics accrual via SessionLog we use the separated fields.
+	InputTokens     int    `json:"input_tokens,omitempty"`
+	OutputTokens    int    `json:"output_tokens,omitempty"`
+	RegInputTokens  int    `json:"reg_input_tokens,omitempty"`
+	CacheInTokens   int    `json:"cache_in_tokens,omitempty"`  // cache reads
+	CacheOutTokens  int    `json:"cache_out_tokens,omitempty"` // cache writes
+	Model           string `json:"model,omitempty"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
 // ItemResult captures the outcome of running one sprint item.
@@ -529,7 +538,7 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 				label = sp.Status
 			}
 			stats := fmt.Sprintf("[%d/%d done, %d active]", done, len(sp.Items), active)
-		fmt.Printf("  %-40s  %-24s  (%s)\n", sp.Title, stats, label)
+			fmt.Printf("  %-40s  %-24s  (%s)\n", sp.Title, stats, label)
 			fmt.Printf("    %s\n", sp.ID)
 
 			for _, itemID := range sp.Items {
@@ -1943,188 +1952,61 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	return result
 }
 
-// recordRunMetrics accumulates AI cost, AI duration, and run wall time on the item.
-// Each st run / st advance invocation adds to the running totals.
+// recordRunMetrics ships each Claude step in the result through SessionLog,
+// keeping st run and the Claude Code Stop hook on the same accumulator and
+// producing byte-identical time_tracking mutations for the same logical work.
+//
+// Non-claude steps (test, merge, deploy, etc.) are skipped — they don't have
+// token/cost data. ProcessMs for a claude step uses the step's wall-clock
+// duration; AIMs uses the model's reported duration_ms.
 func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 	localStore, err := store.New(cfg)
 	if err != nil {
 		return
 	}
-	item, ok := localStore.Get(itemID)
-	if !ok {
-		return
-	}
 
-	// Accumulate AI cost
-	if result.TotalCost > 0 {
-		prev := readFloatField(item, "time_tracking", "ai_cost_usd")
-		setNestedField(item, "time_tracking", "ai_cost_usd", fmt.Sprintf("%.4f", prev+result.TotalCost))
-	}
-
-	// Accumulate token counts
-	if result.InputTokens > 0 {
-		prev := readIntField(item, "time_tracking", "input_tokens")
-		setNestedField(item, "time_tracking", "input_tokens", fmt.Sprintf("%d", prev+result.InputTokens))
-	}
-	if result.OutputTokens > 0 {
-		prev := readIntField(item, "time_tracking", "output_tokens")
-		setNestedField(item, "time_tracking", "output_tokens", fmt.Sprintf("%d", prev+result.OutputTokens))
-	}
-	if result.InputTokens > 0 || result.OutputTokens > 0 {
-		prev := readIntField(item, "time_tracking", "total_tokens")
-		setNestedField(item, "time_tracking", "total_tokens", fmt.Sprintf("%d", prev+result.InputTokens+result.OutputTokens))
-	}
-
-	// Accumulate AI duration from all steps that report it (claude, plan, uat_review, etc.)
-	var aiDurationMs int64
 	for _, sr := range result.Steps {
-		aiDurationMs += sr.AIDurationMs
-	}
-	if aiDurationMs > 0 {
-		prev := readIntField(item, "time_tracking", "ai_duration_seconds")
-		setNestedField(item, "time_tracking", "ai_duration_seconds", fmt.Sprintf("%d", prev+int(aiDurationMs/1000)))
-	}
-
-	// Accumulate total run wall time
-	if result.Duration > 0 {
-		prev := readIntField(item, "time_tracking", "run_wall_seconds")
-		setNestedField(item, "time_tracking", "run_wall_seconds", fmt.Sprintf("%d", prev+int(result.Duration.Seconds())))
-	}
-
-	// Track number of st run invocations
-	prevRuns := readIntField(item, "time_tracking", "run_count")
-	setNestedField(item, "time_tracking", "run_count", fmt.Sprintf("%d", prevRuns+1))
-
-	// Append per-run stats to ai_sessions array (detailed provenance)
-	appendAISessionRecord(item, result)
-
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	agentID := cfg.AgentID()
-	if agentID != "" {
-		item.Doc.SetField("last_touched_by", agentID)
-	} else {
-		item.Doc.SetField("last_touched_by", "st-run")
-	}
-	localStore.Write(item)
-}
-
-// appendAISessionRecord adds a line to the work_tracking.ai_sessions list
-// with per-invocation stats: session ID, step, cost, duration, timestamp.
-func appendAISessionRecord(item *model.Item, result ItemResult) {
-	for _, sr := range result.Steps {
-		if sr.Type != "claude" || sr.CostUSD == 0 {
+		if sr.Type != "claude" {
 			continue
 		}
-		// Format: "cost:$X.XXXX duration:Xs in:N out:N step:<name> at:<timestamp>"
-		aiDur := time.Duration(sr.AIDurationMs) * time.Millisecond
-		record := fmt.Sprintf("cost:$%.4f duration:%s in:%d out:%d step:%s at:%s",
-			sr.CostUSD, aiDur.Round(time.Second),
-			sr.InputTokens, sr.OutputTokens,
-			sr.Step, time.Now().Format(time.RFC3339))
-
-		if item.WorkTracking == nil {
-			item.WorkTracking = make(map[string]interface{})
-		}
-
-		// Append to ai_sessions list in document
-		appendListField(item, "work_tracking", "ai_sessions", record)
-	}
-}
-
-// appendListField appends a value to a list field under a parent block in the document.
-func appendListField(item *model.Item, parent, key, val string) {
-	if item.Doc == nil {
-		return
-	}
-
-	// Find or create the parent block, then find or create the key as a list
-	parentIdx := -1
-	keyIdx := -1
-	lastInBlock := -1
-	for i, line := range item.Doc.Lines {
-		if line.Key == parent && line.Indent == 0 {
-			parentIdx = i
-		}
-		if parentIdx >= 0 && i > parentIdx {
-			if line.Indent == 0 && !line.IsEmpty && line.Key != "" {
-				break // left the parent block
-			}
-			if line.Key == key && line.Indent > 0 {
-				keyIdx = i
-			}
-			lastInBlock = i
-		}
-	}
-
-	newLine := model.Line{
-		Raw:      fmt.Sprintf("  - %s", val),
-		Indent:   2,
-		BlockKey: parent,
-	}
-
-	if parentIdx < 0 {
-		// Create parent + key + value
-		item.Doc.Lines = append(item.Doc.Lines,
-			model.Line{Raw: "", IsEmpty: true},
-			model.Line{Raw: parent + ":", Key: parent},
-			model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent},
-			newLine,
-		)
-		return
-	}
-
-	if keyIdx < 0 {
-		// Parent exists but key doesn't — insert at end of parent block
-		insertAt := lastInBlock + 1
-		if insertAt <= parentIdx {
-			insertAt = parentIdx + 1
-		}
-		lines := make([]model.Line, 0, len(item.Doc.Lines)+2)
-		lines = append(lines, item.Doc.Lines[:insertAt]...)
-		lines = append(lines, model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent})
-		lines = append(lines, newLine)
-		lines = append(lines, item.Doc.Lines[insertAt:]...)
-		item.Doc.Lines = lines
-		return
-	}
-
-	// Key exists — find the end of the list and append
-	insertAt := keyIdx + 1
-	for insertAt < len(item.Doc.Lines) {
-		line := item.Doc.Lines[insertAt]
-		if line.Indent < 2 || (line.Key != "" && !strings.HasPrefix(line.Raw, "  -")) {
-			break
-		}
-		if strings.HasPrefix(strings.TrimSpace(line.Raw), "- ") {
-			insertAt++
+		// Skip no-op records (e.g. parser failure with no tokens). Check the
+		// same separated fields the payload ships — keeps the guard aligned
+		// with payload semantics and avoids any coupling to the legacy
+		// combined InputTokens.
+		if sr.CostUSD == 0 &&
+			sr.RegInputTokens == 0 && sr.OutputTokens == 0 &&
+			sr.CacheInTokens == 0 && sr.CacheOutTokens == 0 {
 			continue
 		}
-		break
+		payload := SessionLogPayload{
+			SessionID:       sr.ClaudeSessionID,
+			Model:           sr.Model,
+			ProcessMs:       sr.Duration.Milliseconds(),
+			AIMs:            sr.AIDurationMs,
+			RegInputTokens:  sr.RegInputTokens,
+			RegOutputTokens: sr.OutputTokens,
+			CacheInTokens:   sr.CacheInTokens,
+			CacheOutTokens:  sr.CacheOutTokens,
+			CostUSD:         sr.CostUSD, // trusted from Claude envelope
+			ItemID:          itemID,
+			Step:            sr.Step,
+		}
+		SessionLog(localStore, cfg, payload)
 	}
-
-	lines := make([]model.Line, 0, len(item.Doc.Lines)+1)
-	lines = append(lines, item.Doc.Lines[:insertAt]...)
-	lines = append(lines, newLine)
-	lines = append(lines, item.Doc.Lines[insertAt:]...)
-	item.Doc.Lines = lines
 }
 
-func readFloatField(item *model.Item, parent, key string) float64 {
-	if val, exists := getNestedField(item, parent, key); exists {
-		var f float64
-		fmt.Sscanf(val, "%f", &f)
-		return f
+// resolveStepModel returns the model id st run is configured to use. Per-step
+// overrides (opts.Model) take precedence over the default. Currently st run
+// does not propagate the resolved model through the envelope, so this is the
+// best-effort attribution for st run's half of the tracker.
+func resolveStepModel(cfg *config.Config, opts RunOpts) string {
+	if opts.Model != "" {
+		return opts.Model
 	}
-	return 0
-}
-
-func readIntField(item *model.Item, parent, key string) int {
-	if val, exists := getNestedField(item, parent, key); exists {
-		var i int
-		fmt.Sscanf(val, "%d", &i)
-		return i
+	if cfg.Run != nil && cfg.Run.DefaultModel != "" {
+		return cfg.Run.DefaultModel
 	}
-	return 0
+	return ""
 }
 
 // executeStepWithSession dispatches to the appropriate step executor, with claude session reuse.
@@ -2254,8 +2136,13 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	sr.CostUSD = claudeResult.TotalCostUSD
 	sr.AIDurationMs = claudeResult.DurationMs
-	sr.InputTokens = claudeResult.Usage.InputTokens + claudeResult.Usage.CacheCreationInputTokens + claudeResult.Usage.CacheReadInputTokens
+	sr.RegInputTokens = claudeResult.Usage.InputTokens
+	sr.CacheInTokens = claudeResult.Usage.CacheReadInputTokens
+	sr.CacheOutTokens = claudeResult.Usage.CacheCreationInputTokens
+	sr.InputTokens = sr.RegInputTokens + sr.CacheInTokens + sr.CacheOutTokens // legacy combined
 	sr.OutputTokens = claudeResult.Usage.OutputTokens
+	sr.ClaudeSessionID = claudeResult.SessionID
+	sr.Model = resolveStepModel(cfg, opts)
 	sr.Output = truncate(claudeResult.Result, 500)
 	sr.FullOutput = claudeResult.Result
 
@@ -2293,8 +2180,13 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					}
 					sr.CostUSD = cr2.TotalCostUSD
 					sr.AIDurationMs = cr2.DurationMs
-					sr.InputTokens = cr2.Usage.InputTokens + cr2.Usage.CacheCreationInputTokens + cr2.Usage.CacheReadInputTokens
+					sr.RegInputTokens = cr2.Usage.InputTokens
+					sr.CacheInTokens = cr2.Usage.CacheReadInputTokens
+					sr.CacheOutTokens = cr2.Usage.CacheCreationInputTokens
+					sr.InputTokens = sr.RegInputTokens + sr.CacheInTokens + sr.CacheOutTokens // legacy combined
 					sr.OutputTokens = cr2.Usage.OutputTokens
+					sr.ClaudeSessionID = cr2.SessionID
+					sr.Model = resolveStepModel(cfg, opts)
 					sr.Output = truncate(cr2.Result, 500)
 					sr.FullOutput = cr2.Result
 					if exitCode2 == 0 && (cr2.Subtype == "" || cr2.Subtype == "success") {
@@ -5192,14 +5084,14 @@ func shortenPath(p string) string {
 
 // ReviewGateInfo holds context for rendering a review gate box.
 type ReviewGateInfo struct {
-	ItemID        string
-	Title         string
-	GateType      string // "Plan Review", "Design Review", "UAT Review"
-	Iteration     int
+	ItemID         string
+	Title          string
+	GateType       string // "Plan Review", "Design Review", "UAT Review"
+	Iteration      int
 	Recommendation string // one-line recommendation from claude's review
 	ReviewDuration time.Duration
-	AcsPassed     int
-	AcsTotal      int
+	AcsPassed      int
+	AcsTotal       int
 	// BlockAutoProceed forces operator input even when the recommendation is
 	// positive — used when there's an objective failure signal (e.g., UAT
 	// auto-fails) that should never be silently overridden by claude's approval.
@@ -5995,19 +5887,27 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 			sprintNetLOC += itemNetLOC
 
 			f := func(d time.Duration) string {
-				if d > 0 { return formatDuration(d) }
+				if d > 0 {
+					return formatDuration(d)
+				}
 				return "—"
 			}
 			fc := func(c float64) string {
-				if c > 0 { return fmt.Sprintf("$%.2f", c) }
+				if c > 0 {
+					return fmt.Sprintf("$%.2f", c)
+				}
 				return "—"
 			}
 			ft := func(in, out int) string {
-				if in == 0 && out == 0 { return "—" }
+				if in == 0 && out == 0 {
+					return "—"
+				}
 				return fmt.Sprintf("%s/%s/%s", formatTokens(in), formatTokens(out), formatTokens(in+out))
 			}
 			fl := func(n int) string {
-				if n == 0 { return "—" }
+				if n == 0 {
+					return "—"
+				}
 				return formatLOC(n)
 			}
 
