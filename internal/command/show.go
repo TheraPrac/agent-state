@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -113,15 +114,16 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 		}
 	}
 
-	renderTimeTracking(item)
+	renderTimeTracking(os.Stdout, item)
 
 	return 0
 }
 
 // renderTimeTracking prints a human-readable summary of time/cost/token/LOC
 // fields populated by SessionLog and st close. Only renders if the item has
-// at least one metric set — freshly-created items stay quiet.
-func renderTimeTracking(item *modelItemRef) {
+// at least one metric set — freshly-created items stay quiet. Writer is
+// injectable so tests can capture output.
+func renderTimeTracking(w io.Writer, item *modelItemRef) {
 	if item.TimeTracking == nil {
 		return
 	}
@@ -131,7 +133,9 @@ func renderTimeTracking(item *modelItemRef) {
 	regIn := readIntField(item, "time_tracking", "reg_input_tokens")
 	regOut := readIntField(item, "time_tracking", "reg_output_tokens")
 	cacheIn := readIntField(item, "time_tracking", "cache_in_tokens")
-	cacheOut := readIntField(item, "time_tracking", "cache_out_tokens")
+	cacheOut5m := readIntField(item, "time_tracking", "cache_out_tokens")
+	cacheOut1h := readIntField(item, "time_tracking", "cache_out_1h_tokens")
+	cacheOutTotal := cacheOut5m + cacheOut1h
 	procSec := readIntField(item, "time_tracking", "process_time_seconds")
 	aiSec := readIntField(item, "time_tracking", "ai_time_seconds")
 	workSec := readIntField(item, "time_tracking", "work_duration_seconds")
@@ -144,30 +148,39 @@ func renderTimeTracking(item *modelItemRef) {
 		return
 	}
 
-	fmt.Println("  time_tracking:")
+	fmt.Fprintln(w, "  time_tracking:")
 	if totalSec > 0 {
-		fmt.Printf("    total: %s\n", formatDuration(time.Duration(totalSec)*time.Second))
+		fmt.Fprintf(w, "    total: %s\n", formatDuration(time.Duration(totalSec)*time.Second))
 	}
 	if workSec > 0 {
-		fmt.Printf("    work:  %s\n", formatDuration(time.Duration(workSec)*time.Second))
+		fmt.Fprintf(w, "    work:  %s\n", formatDuration(time.Duration(workSec)*time.Second))
 	}
 	if procSec > 0 {
-		fmt.Printf("    process: %s  (ai: %s)\n",
+		fmt.Fprintf(w, "    process: %s  (ai: %s)\n",
 			formatDuration(time.Duration(procSec)*time.Second),
 			formatDuration(time.Duration(aiSec)*time.Second))
 	}
 	if cost > 0 {
-		fmt.Printf("    cost: $%.4f  (%d turns across %d sessions)\n", cost, turns, sessions)
+		// %.6f matches storage precision (session_log.go) so operators comparing
+		// st show against raw YAML see the same value.
+		fmt.Fprintf(w, "    cost: $%.6f  (%d turns across %d sessions)\n", cost, turns, sessions)
 	} else if turns > 0 {
-		fmt.Printf("    turns: %d across %d sessions\n", turns, sessions)
+		fmt.Fprintf(w, "    turns: %d across %d sessions\n", turns, sessions)
 	}
-	if regIn > 0 || regOut > 0 || cacheIn > 0 || cacheOut > 0 {
-		fmt.Printf("    tokens: %s in / %s out  (cache: %s read / %s write)\n",
-			formatTokens(regIn), formatTokens(regOut),
-			formatTokens(cacheIn), formatTokens(cacheOut))
+	if regIn > 0 || regOut > 0 || cacheIn > 0 || cacheOutTotal > 0 {
+		if cacheOut1h > 0 {
+			fmt.Fprintf(w, "    tokens: %s in / %s out  (cache: %s read / %s write = %s 5m + %s 1h)\n",
+				formatTokens(regIn), formatTokens(regOut),
+				formatTokens(cacheIn), formatTokens(cacheOutTotal),
+				formatTokens(cacheOut5m), formatTokens(cacheOut1h))
+		} else {
+			fmt.Fprintf(w, "    tokens: %s in / %s out  (cache: %s read / %s write)\n",
+				formatTokens(regIn), formatTokens(regOut),
+				formatTokens(cacheIn), formatTokens(cacheOutTotal))
+		}
 	}
 	if filesChanged > 0 {
-		fmt.Printf("    code:  %s (+%d / -%d across %d files)\n",
+		fmt.Fprintf(w, "    code:  %s (+%d / -%d across %d files)\n",
 			formatLOC(linesAdded-linesRemoved), linesAdded, linesRemoved, filesChanged)
 	}
 	// by_model breakdown — one line per model, preserving the raw provenance
@@ -184,7 +197,7 @@ func renderTimeTracking(item *modelItemRef) {
 				continue
 			}
 			if line.Indent == 2 && line.Key == "by_model" {
-				fmt.Println("    by_model:")
+				fmt.Fprintln(w, "    by_model:")
 				inBlock = true
 				continue
 			}
@@ -193,7 +206,7 @@ func renderTimeTracking(item *modelItemRef) {
 				continue
 			}
 			if inBlock {
-				fmt.Printf("      %s\n", line.Raw)
+				fmt.Fprintf(w, "      %s\n", line.Raw)
 			}
 		}
 	}

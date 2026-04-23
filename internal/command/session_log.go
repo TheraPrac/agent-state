@@ -401,6 +401,11 @@ func formatAITurnLine(p SessionLogPayload, cost float64, at string) string {
 		p.ProcessMs/1000, p.AIMs/1000,
 		p.RegInputTokens, p.RegOutputTokens,
 		p.CacheInTokens, p.CacheOutTokens))
+	if p.CacheOut1hTokens > 0 {
+		// Only emit the 1h field when non-zero — keeps legacy grep patterns
+		// that don't expect cache_out_1h from breaking.
+		sb.WriteString(fmt.Sprintf(" cache_out_1h:%d", p.CacheOut1hTokens))
+	}
 	if p.Files > 0 || p.LinesAdded > 0 || p.LinesRemoved > 0 {
 		sb.WriteString(fmt.Sprintf(" files:%d +%d -%d net:%d",
 			p.Files, p.LinesAdded, p.LinesRemoved, p.LinesAdded-p.LinesRemoved))

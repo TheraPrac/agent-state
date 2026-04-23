@@ -9,8 +9,8 @@
 //   - Standard interactive/agentic mode (not Batch API 50% discount)
 //   - Global endpoint (not US-only data residency 1.1x multiplier)
 //   - Not Fast mode (6x Opus 4.6 premium)
-//   - 5-minute prompt cache tier (cache_out_tokens rated at 1.25x).
-//     1-hour cache tier is tracked as issue I-370.
+//   - Both 5-minute (1.25x input) and 1-hour (2x input) prompt cache tiers
+//     are supported — pass the token counts to ComputeCost separately.
 package pricing
 
 import (

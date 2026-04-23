@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -41,7 +42,8 @@ type timeStats struct {
 	TotalRegInput     int                   `json:"total_reg_input_tokens"`
 	TotalRegOutput    int                   `json:"total_reg_output_tokens"`
 	TotalCacheIn      int                   `json:"total_cache_in_tokens"`
-	TotalCacheOut     int                   `json:"total_cache_out_tokens"`
+	TotalCacheOut     int                   `json:"total_cache_out_tokens"`    // 5m writes
+	TotalCacheOut1h   int                   `json:"total_cache_out_1h_tokens"` // 1h writes
 	TotalLinesAdded   int                   `json:"total_lines_added"`
 	TotalLinesRemoved int                   `json:"total_lines_removed"`
 	TotalFilesChanged int                   `json:"total_files_changed"`
@@ -119,36 +121,41 @@ func Stats(s *store.Store, cfg *config.Config, opts StatsOpts) int {
 
 	// Time/cost rollups
 	if data.Time != nil {
-		renderTimeStats(data.Time)
+		renderTimeStats(os.Stdout, data.Time)
 	}
 
 	return 0
 }
 
-func renderTimeStats(t *timeStats) {
-	fmt.Printf("\n\033[1m━━━ TIME & COST ━━━\033[0m\n")
-	fmt.Printf("  Items with metrics: %d\n", t.ItemsWithMetrics)
+// renderTimeStats prints the cross-item time/cost rollup. Writer is injectable
+// so tests can capture output. Cost fields use %.6f to match storage precision
+// in session_log.go — stops st stats readings from looking different than
+// the raw time_tracking.ai_cost_usd field.
+func renderTimeStats(w io.Writer, t *timeStats) {
+	fmt.Fprintf(w, "\n\033[1m━━━ TIME & COST ━━━\033[0m\n")
+	fmt.Fprintf(w, "  Items with metrics: %d\n", t.ItemsWithMetrics)
 	if t.ItemsWithMetrics == 0 {
 		return
 	}
-	fmt.Printf("  Total cost:      $%.4f\n", t.TotalCostUSD)
-	fmt.Printf("  Total turns:     %d across %d distinct sessions\n", t.TotalTurns, t.TotalSessions)
+	fmt.Fprintf(w, "  Total cost:      $%.6f\n", t.TotalCostUSD)
+	fmt.Fprintf(w, "  Total turns:     %d across %d distinct sessions\n", t.TotalTurns, t.TotalSessions)
 	if t.TotalProcessSecs > 0 {
-		fmt.Printf("  Process time:    %s  (ai: %s)\n",
+		fmt.Fprintf(w, "  Process time:    %s  (ai: %s)\n",
 			formatDuration(time.Duration(t.TotalProcessSecs)*time.Second),
 			formatDuration(time.Duration(t.TotalAISecs)*time.Second))
 	}
-	fmt.Printf("  Tokens in:       reg %s  +  cache %s\n",
+	fmt.Fprintf(w, "  Tokens in:       reg %s  +  cache %s\n",
 		formatTokens(t.TotalRegInput), formatTokens(t.TotalCacheIn))
-	fmt.Printf("  Tokens out:      %s  (cache writes: %s)\n",
-		formatTokens(t.TotalRegOutput), formatTokens(t.TotalCacheOut))
+	fmt.Fprintf(w, "  Tokens out:      %s  (cache writes: %s 5m + %s 1h)\n",
+		formatTokens(t.TotalRegOutput),
+		formatTokens(t.TotalCacheOut), formatTokens(t.TotalCacheOut1h))
 	if t.TotalFilesChanged > 0 {
-		fmt.Printf("  Code:            %s (+%d / -%d across %d files)\n",
+		fmt.Fprintf(w, "  Code:            %s (+%d / -%d across %d files)\n",
 			formatLOC(t.TotalLinesAdded-t.TotalLinesRemoved),
 			t.TotalLinesAdded, t.TotalLinesRemoved, t.TotalFilesChanged)
 	}
 	if len(t.ByModel) > 0 {
-		fmt.Println("  By model:")
+		fmt.Fprintln(w, "  By model:")
 		// Stable order: sort by cost desc
 		type kv struct {
 			k string
@@ -164,7 +171,7 @@ func renderTimeStats(t *timeStats) {
 			}
 		}
 		for _, p := range pairs {
-			fmt.Printf("    %-22s %d turns, $%.4f, %s in / %s out\n",
+			fmt.Fprintf(w, "    %-22s %d turns, $%.6f, %s in / %s out\n",
 				p.k, p.v.Turns, p.v.CostUSD,
 				formatTokens(p.v.RegInput), formatTokens(p.v.RegOutput))
 		}
@@ -195,6 +202,7 @@ func computeTimeStats(s *store.Store) *timeStats {
 		out.TotalRegOutput += readIntField(item, "time_tracking", "reg_output_tokens")
 		out.TotalCacheIn += readIntField(item, "time_tracking", "cache_in_tokens")
 		out.TotalCacheOut += readIntField(item, "time_tracking", "cache_out_tokens")
+		out.TotalCacheOut1h += readIntField(item, "time_tracking", "cache_out_1h_tokens")
 		out.TotalLinesAdded += readIntField(item, "time_tracking", "lines_added")
 		out.TotalLinesRemoved += readIntField(item, "time_tracking", "lines_removed")
 		out.TotalFilesChanged += readIntField(item, "time_tracking", "files_changed_count")
