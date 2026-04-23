@@ -911,6 +911,24 @@ implement step during st run.`,
 	})
 	root.AddCommand(queueCmd)
 
+	sessionCmd := &cobra.Command{
+		Use:   "session",
+		Short: "Manage session metrics",
+	}
+	sessionCmd.AddCommand(&cobra.Command{
+		Use:   "log",
+		Short: "Accrue per-turn metrics onto the stack-top item (reads JSON from stdin)",
+		Long: `Read a JSON SessionLogPayload from stdin and apply it to the stack-top
+item (or an explicit item_id). Called by the Claude Code Stop hook and by
+st run's metric recorder. Empty stack or missing item writes to
+sessions/orphan.log — metrics are never silently dropped.`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SessionLogCLI(appStore, appCfg, os.Stdin)
+		},
+	})
+	root.AddCommand(sessionCmd)
+
 	noteCmd := &cobra.Command{
 		Use:   "note",
 		Short: "Manage session notes",
