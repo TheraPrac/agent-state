@@ -54,7 +54,7 @@ func TestLookup_UnknownModelReturnsTypedError(t *testing.T) {
 func TestComputeCost_Opus47(t *testing.T) {
 	// 1M regular input  ($5) + 1M output ($25) + 1M cache read ($0.50) +
 	// 1M cache write ($6.25) = $36.75
-	cost, err := ComputeCost("claude-opus-4-7", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	cost, err := ComputeCost("claude-opus-4-7", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestComputeCost_Opus47(t *testing.T) {
 func TestComputeCost_Sonnet46(t *testing.T) {
 	// 100k input ($0.30) + 50k output ($0.75) + 10k cache read ($0.003) +
 	// 5k cache write ($0.01875) = $1.07175
-	cost, err := ComputeCost("claude-sonnet-4-6", 100_000, 50_000, 10_000, 5_000)
+	cost, err := ComputeCost("claude-sonnet-4-6", 100_000, 50_000, 10_000, 5_000, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestComputeCost_Sonnet46(t *testing.T) {
 
 func TestComputeCost_Haiku45(t *testing.T) {
 	// 1M input ($1) + 1M output ($5) = $6
-	cost, err := ComputeCost("claude-haiku-4-5", 1_000_000, 1_000_000, 0, 0)
+	cost, err := ComputeCost("claude-haiku-4-5", 1_000_000, 1_000_000, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestComputeCost_Haiku45(t *testing.T) {
 }
 
 func TestComputeCost_ZeroTokensReturnsZero(t *testing.T) {
-	cost, err := ComputeCost("claude-opus-4-7", 0, 0, 0, 0)
+	cost, err := ComputeCost("claude-opus-4-7", 0, 0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestComputeCost_UnknownModelReturnsError(t *testing.T) {
 	// Critical: unknown model must NOT silently return zero cost. Any transcript
 	// with a new Anthropic model must surface as an error so operators add it
 	// to the table rather than under-count spend forever.
-	cost, err := ComputeCost("claude-future-10-0", 1000, 500, 0, 0)
+	cost, err := ComputeCost("claude-future-10-0", 1000, 500, 0, 0, 0)
 	if err == nil {
 		t.Fatal("expected error for unknown model")
 	}
@@ -118,8 +118,8 @@ func TestComputeCost_UnknownModelReturnsError(t *testing.T) {
 
 func TestComputeCost_CacheReadCheaperThanRegularInput(t *testing.T) {
 	// Sanity: 1M cache reads must cost exactly 0.1x of 1M regular input for Opus
-	regCost, _ := ComputeCost("claude-opus-4-7", 1_000_000, 0, 0, 0)
-	cacheCost, _ := ComputeCost("claude-opus-4-7", 0, 0, 1_000_000, 0)
+	regCost, _ := ComputeCost("claude-opus-4-7", 1_000_000, 0, 0, 0, 0)
+	cacheCost, _ := ComputeCost("claude-opus-4-7", 0, 0, 1_000_000, 0, 0)
 	ratio := cacheCost / regCost
 	if math.Abs(ratio-0.1) > 1e-9 {
 		t.Errorf("cache_read should be 0.1x input; ratio = %.4f", ratio)
@@ -128,11 +128,34 @@ func TestComputeCost_CacheReadCheaperThanRegularInput(t *testing.T) {
 
 func TestComputeCost_CacheWriteMoreExpensiveThanRegularInput(t *testing.T) {
 	// Sanity: 1M cache writes (5m) must cost exactly 1.25x of 1M regular input
-	regCost, _ := ComputeCost("claude-sonnet-4-6", 1_000_000, 0, 0, 0)
-	cacheCost, _ := ComputeCost("claude-sonnet-4-6", 0, 0, 0, 1_000_000)
+	regCost, _ := ComputeCost("claude-sonnet-4-6", 1_000_000, 0, 0, 0, 0)
+	cacheCost, _ := ComputeCost("claude-sonnet-4-6", 0, 0, 0, 1_000_000, 0)
 	ratio := cacheCost / regCost
 	if math.Abs(ratio-1.25) > 1e-9 {
 		t.Errorf("cache_write (5m) should be 1.25x input; ratio = %.4f", ratio)
+	}
+}
+
+func TestComputeCost_1hCacheIsTwoTimesInput(t *testing.T) {
+	// Sanity: 1M 1-hour cache writes must cost exactly 2x of 1M regular input
+	regCost, _ := ComputeCost("claude-opus-4-7", 1_000_000, 0, 0, 0, 0)
+	cache1hCost, _ := ComputeCost("claude-opus-4-7", 0, 0, 0, 0, 1_000_000)
+	ratio := cache1hCost / regCost
+	if math.Abs(ratio-2.0) > 1e-9 {
+		t.Errorf("cache_write_1h should be 2x input; ratio = %.4f", ratio)
+	}
+}
+
+func TestComputeCost_5mAnd1hSumCorrectly(t *testing.T) {
+	// 100k 5m writes + 100k 1h writes on Sonnet 4.6:
+	// 100k * 3.75/MTok + 100k * 6/MTok = 0.375 + 0.6 = 0.975
+	cost, err := ComputeCost("claude-sonnet-4-6", 0, 0, 0, 100_000, 100_000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := 0.975
+	if math.Abs(cost-want) > 1e-9 {
+		t.Errorf("cost = %.6f, want %.6f", cost, want)
 	}
 }
 

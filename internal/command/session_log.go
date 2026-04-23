@@ -19,18 +19,26 @@ import (
 // (and rewired st run) sends to `st session log`. All token and duration fields
 // are for the single turn; the command accrues them onto the resolved item.
 type SessionLogPayload struct {
-	SessionID       string  `json:"session_id"`
-	Model           string  `json:"model"`
-	ProcessMs       int64   `json:"process_ms"`
-	AIMs            int64   `json:"ai_ms"`
-	RegInputTokens  int     `json:"reg_input_tokens"`
-	RegOutputTokens int     `json:"reg_output_tokens"`
-	CacheInTokens   int     `json:"cache_in_tokens"`
-	CacheOutTokens  int     `json:"cache_out_tokens"`
-	CostUSD         float64 `json:"cost_usd,omitempty"` // if 0, computed from tokens × pricing
-	Turn            int     `json:"turn,omitempty"`     // ordinal within session; informational
-	ItemID          string  `json:"item_id,omitempty"`  // if empty, resolved from stack top
-	Step            string  `json:"step,omitempty"`     // default "interactive"
+	SessionID       string `json:"session_id"`
+	Model           string `json:"model"`
+	ProcessMs       int64  `json:"process_ms"`
+	AIMs            int64  `json:"ai_ms"`
+	RegInputTokens  int    `json:"reg_input_tokens"`
+	RegOutputTokens int    `json:"reg_output_tokens"`
+	CacheInTokens   int    `json:"cache_in_tokens"`
+	// CacheOutTokens is the 5-minute cache write bucket (1.25x input rate).
+	// Existing producers that don't split by tier should send their total
+	// here; it's treated as all-5m and priced at 1.25x.
+	CacheOutTokens int `json:"cache_out_tokens"`
+	// CacheOut1hTokens is the 1-hour cache write bucket (2x input rate).
+	// When the producer can split by tier (Stop hook parses
+	// ephemeral_5m/1h_input_tokens), populate this field; pricing applies
+	// the 2x rate. Zero is safe — older producers still work.
+	CacheOut1hTokens int     `json:"cache_out_1h_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"` // if 0, computed from tokens × pricing
+	Turn             int     `json:"turn,omitempty"`     // ordinal within session; informational
+	ItemID           string  `json:"item_id,omitempty"`  // if empty, resolved from stack top
+	Step             string  `json:"step,omitempty"`     // default "interactive"
 
 	// Optional per-turn file diff info (populated by Stop hook once live).
 	// Recorded in the ai_turns line for provenance.
@@ -102,7 +110,7 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		computed, err := pricing.ComputeCost(
 			payload.Model,
 			payload.RegInputTokens, payload.RegOutputTokens,
-			payload.CacheInTokens, payload.CacheOutTokens,
+			payload.CacheInTokens, payload.CacheOutTokens, payload.CacheOut1hTokens,
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "session log: %v (tokens recorded without cost)\n", err)
@@ -125,13 +133,18 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_in_tokens")+payload.CacheInTokens))
 	setNestedField(item, "time_tracking", "cache_out_tokens",
 		fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_tokens")+payload.CacheOutTokens))
+	if payload.CacheOut1hTokens > 0 || readIntField(item, "time_tracking", "cache_out_1h_tokens") > 0 {
+		setNestedField(item, "time_tracking", "cache_out_1h_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheOut1hTokens))
+	}
 
 	// Derived totals — kept in the file so consumers don't need to compute
 	setNestedField(item, "time_tracking", "total_input_tokens",
 		fmt.Sprintf("%d",
 			readIntField(item, "time_tracking", "reg_input_tokens")+
 				readIntField(item, "time_tracking", "cache_in_tokens")+
-				readIntField(item, "time_tracking", "cache_out_tokens")))
+				readIntField(item, "time_tracking", "cache_out_tokens")+
+				readIntField(item, "time_tracking", "cache_out_1h_tokens")))
 	setNestedField(item, "time_tracking", "total_output_tokens",
 		fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")))
 
@@ -210,7 +223,7 @@ func upsertByModel(item *model.Item, p SessionLogPayload, cost float64) {
 	existing.RegIn += p.RegInputTokens
 	existing.RegOut += p.RegOutputTokens
 	existing.CacheIn += p.CacheInTokens
-	existing.CacheOut += p.CacheOutTokens
+	existing.CacheOut += p.CacheOutTokens + p.CacheOut1hTokens // aggregate total cache writes per model
 	existing.Cost += cost
 
 	line := formatByModelLine(p.Model, existing)
@@ -481,5 +494,5 @@ func writeOrphanLog(cfg *config.Config, p SessionLogPayload) error {
 
 func hasTokens(p SessionLogPayload) bool {
 	return p.RegInputTokens > 0 || p.RegOutputTokens > 0 ||
-		p.CacheInTokens > 0 || p.CacheOutTokens > 0
+		p.CacheInTokens > 0 || p.CacheOutTokens > 0 || p.CacheOut1hTokens > 0
 }

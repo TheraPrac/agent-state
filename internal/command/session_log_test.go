@@ -318,6 +318,35 @@ func TestSessionLog_ByModel_UnknownModelRecorded(t *testing.T) {
 	}
 }
 
+func TestSessionLog_1hCacheTierAccruedAndPriced(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
+
+	// Opus 4.7 rates: cache_5m=$6.25/MTok (1.25x input=$5), cache_1h=$10/MTok (2x).
+	// 100k 5m + 50k 1h = 100,000 * 6.25/M + 50,000 * 10/M = 0.625 + 0.5 = 1.125
+	p := SessionLogPayload{
+		SessionID: "s", Model: "claude-opus-4-7",
+		CacheOutTokens:   100_000, // 5m
+		CacheOut1hTokens: 50_000,  // 1h
+	}
+	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
+		t.Fatalf("exit=%d", code)
+	}
+	env.Reload(t)
+	item, _ := env.S.Get("T-003")
+
+	assertInt(t, item, "time_tracking", "cache_out_tokens", 100_000)
+	assertInt(t, item, "time_tracking", "cache_out_1h_tokens", 50_000)
+	// total_input_tokens = reg_in + cache_in + cache_out + cache_out_1h
+	assertInt(t, item, "time_tracking", "total_input_tokens", 150_000)
+
+	cost := readFloatField(item, "time_tracking", "ai_cost_usd")
+	want := 1.125
+	if abs(cost-want) > 1e-4 {
+		t.Errorf("ai_cost_usd = %.6f, want %.6f (5m@1.25x + 1h@2x)", cost, want)
+	}
+}
+
 func TestSessionLog_EmptySessionIDBucketsAsUnknown(t *testing.T) {
 	// Regression: turn_count must not exceed session_count. When a payload
 	// arrives with no SessionID we bucket it under "unknown" so the

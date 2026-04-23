@@ -76,11 +76,9 @@ func Lookup(model string) (Rate, error) {
 // regIn:  regular (uncached) input tokens
 // regOut: output tokens
 // cacheIn:  tokens read from cache (cache hits)
-// cacheOut: tokens written to cache (5-minute cache writes)
-//
-// 1-hour cache writes are not yet distinguished (see I-370); until that ships,
-// pass 1-hour cache writes as cacheOut and accept the 1.25x-vs-2x understatement.
-func ComputeCost(model string, regIn, regOut, cacheIn, cacheOut int) (float64, error) {
+// cacheOut5m: tokens written to the 5-minute cache (1.25x input rate)
+// cacheOut1h: tokens written to the 1-hour cache (2x input rate)
+func ComputeCost(model string, regIn, regOut, cacheIn, cacheOut5m, cacheOut1h int) (float64, error) {
 	r, err := Lookup(model)
 	if err != nil {
 		return 0, err
@@ -89,7 +87,8 @@ func ComputeCost(model string, regIn, regOut, cacheIn, cacheOut int) (float64, e
 	cost := float64(regIn)*r.Input/perToken +
 		float64(regOut)*r.Output/perToken +
 		float64(cacheIn)*r.CacheRead/perToken +
-		float64(cacheOut)*r.CacheWrite5m/perToken
+		float64(cacheOut5m)*r.CacheWrite5m/perToken +
+		float64(cacheOut1h)*r.CacheWrite1h/perToken
 	return cost, nil
 }
 
