@@ -2,7 +2,9 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -112,5 +114,100 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 		}
 	}
 
+	renderTimeTracking(os.Stdout, item)
+
 	return 0
+}
+
+// renderTimeTracking prints a human-readable summary of time/cost/token/LOC
+// fields populated by SessionLog and st close. Only renders if the item has
+// at least one metric set — freshly-created items stay quiet. Writer is
+// injectable so tests can capture output.
+func renderTimeTracking(w io.Writer, item *modelItemRef) {
+	if item.TimeTracking == nil {
+		return
+	}
+	turns := readIntField(item, "time_tracking", "turn_count")
+	sessions := readIntField(item, "time_tracking", "session_count")
+	cost := readFloatField(item, "time_tracking", "ai_cost_usd")
+	regIn := readIntField(item, "time_tracking", "reg_input_tokens")
+	regOut := readIntField(item, "time_tracking", "reg_output_tokens")
+	cacheIn := readIntField(item, "time_tracking", "cache_in_tokens")
+	cacheOut5m := readIntField(item, "time_tracking", "cache_out_tokens")
+	cacheOut1h := readIntField(item, "time_tracking", "cache_out_1h_tokens")
+	cacheOutTotal := cacheOut5m + cacheOut1h
+	procSec := readIntField(item, "time_tracking", "process_time_seconds")
+	aiSec := readIntField(item, "time_tracking", "ai_time_seconds")
+	workSec := readIntField(item, "time_tracking", "work_duration_seconds")
+	totalSec := readIntField(item, "time_tracking", "total_duration_seconds")
+	linesAdded := readIntField(item, "time_tracking", "lines_added")
+	linesRemoved := readIntField(item, "time_tracking", "lines_removed")
+	filesChanged := readIntField(item, "time_tracking", "files_changed_count")
+
+	if turns == 0 && cost == 0 && totalSec == 0 && filesChanged == 0 {
+		return
+	}
+
+	fmt.Fprintln(w, "  time_tracking:")
+	if totalSec > 0 {
+		fmt.Fprintf(w, "    total: %s\n", formatDuration(time.Duration(totalSec)*time.Second))
+	}
+	if workSec > 0 {
+		fmt.Fprintf(w, "    work:  %s\n", formatDuration(time.Duration(workSec)*time.Second))
+	}
+	if procSec > 0 {
+		fmt.Fprintf(w, "    process: %s  (ai: %s)\n",
+			formatDuration(time.Duration(procSec)*time.Second),
+			formatDuration(time.Duration(aiSec)*time.Second))
+	}
+	if cost > 0 {
+		// %.6f matches storage precision (session_log.go) so operators comparing
+		// st show against raw YAML see the same value.
+		fmt.Fprintf(w, "    cost: $%.6f  (%d turns across %d sessions)\n", cost, turns, sessions)
+	} else if turns > 0 {
+		fmt.Fprintf(w, "    turns: %d across %d sessions\n", turns, sessions)
+	}
+	if regIn > 0 || regOut > 0 || cacheIn > 0 || cacheOutTotal > 0 {
+		if cacheOut1h > 0 {
+			fmt.Fprintf(w, "    tokens: %s in / %s out  (cache: %s read / %s write = %s 5m + %s 1h)\n",
+				formatTokens(regIn), formatTokens(regOut),
+				formatTokens(cacheIn), formatTokens(cacheOutTotal),
+				formatTokens(cacheOut5m), formatTokens(cacheOut1h))
+		} else {
+			fmt.Fprintf(w, "    tokens: %s in / %s out  (cache: %s read / %s write)\n",
+				formatTokens(regIn), formatTokens(regOut),
+				formatTokens(cacheIn), formatTokens(cacheOutTotal))
+		}
+	}
+	if filesChanged > 0 {
+		fmt.Fprintf(w, "    code:  %s (+%d / -%d across %d files)\n",
+			formatLOC(linesAdded-linesRemoved), linesAdded, linesRemoved, filesChanged)
+	}
+	// by_model breakdown — one line per model, preserving the raw provenance
+	if wm := item.Doc; wm != nil {
+		var inBlock bool
+		var inTT bool
+		for _, line := range wm.Lines {
+			if line.Indent == 0 && line.Key != "" {
+				inTT = line.Key == "time_tracking"
+				inBlock = false
+				continue
+			}
+			if !inTT {
+				continue
+			}
+			if line.Indent == 2 && line.Key == "by_model" {
+				fmt.Fprintln(w, "    by_model:")
+				inBlock = true
+				continue
+			}
+			if line.Indent <= 2 && line.Key != "" && line.Key != "by_model" {
+				inBlock = false
+				continue
+			}
+			if inBlock {
+				fmt.Fprintf(w, "      %s\n", line.Raw)
+			}
+		}
+	}
 }
