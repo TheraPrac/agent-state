@@ -183,6 +183,68 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	}
 	root.AddCommand(tagCmd)
 
+	agentCmd := &cobra.Command{
+		Use:   "agent",
+		Short: "Manage local agent identity and auth",
+	}
+	agentBootstrapCmd := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Bootstrap AWS and GitHub credentials for an agent",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			name, _ := cmd.Flags().GetString("name")
+			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
+			skipGH, _ := cmd.Flags().GetBool("skip-gh")
+			rotateKey, _ := cmd.Flags().GetBool("rotate-key")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			owner, _ := cmd.Flags().GetString("owner")
+			port, _ := cmd.Flags().GetString("port")
+			skipInstall, _ := cmd.Flags().GetBool("skip-install")
+			exitCode = command.AgentBootstrap(appCfg, command.AgentBootstrapOpts{
+				Name: name, SkipAWS: skipAWS, SkipGH: skipGH, RotateKey: rotateKey,
+				DryRun: dryRun, Owner: owner, Port: port, SkipInstall: skipInstall,
+			})
+		},
+	}
+	agentBootstrapCmd.Flags().String("name", "", "agent name (default: derived agent id or agent-a)")
+	agentBootstrapCmd.Flags().Bool("skip-aws", false, "skip AWS bootstrap")
+	agentBootstrapCmd.Flags().Bool("skip-gh", false, "skip GitHub bootstrap")
+	agentBootstrapCmd.Flags().Bool("rotate-key", false, "rotate AWS access key")
+	agentBootstrapCmd.Flags().Bool("dry-run", false, "print AWS bootstrap actions without mutating AWS")
+	agentBootstrapCmd.Flags().String("owner", "", "GitHub owner/org for App install")
+	agentBootstrapCmd.Flags().String("port", "", "localhost callback port for GitHub bootstrap")
+	agentBootstrapCmd.Flags().Bool("skip-install", false, "skip GitHub App install step")
+	agentCmd.AddCommand(agentBootstrapCmd)
+
+	agentAuthCmd := &cobra.Command{
+		Use:   "auth",
+		Short: "Refresh agent AWS/GitHub auth and print shell exports",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			name, _ := cmd.Flags().GetString("name")
+			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
+			skipGH, _ := cmd.Flags().GetBool("skip-gh")
+			force, _ := cmd.Flags().GetBool("force")
+			exitCode = command.AgentAuth(appCfg, command.AgentAuthOpts{Name: name, SkipAWS: skipAWS, SkipGH: skipGH, Force: force})
+		},
+	}
+	agentAuthCmd.Flags().String("name", "", "agent name (default: derived agent id or agent-a)")
+	agentAuthCmd.Flags().Bool("skip-aws", false, "skip AWS auth")
+	agentAuthCmd.Flags().Bool("skip-gh", false, "skip GitHub auth")
+	agentAuthCmd.Flags().Bool("force", false, "ignore cached sessions")
+	agentCmd.AddCommand(agentAuthCmd)
+
+	agentListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List configured local agents",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentList(appCfg)
+		},
+	}
+	agentCmd.AddCommand(agentListCmd)
+	root.AddCommand(agentCmd)
+
 	// --- Workflow commands ---
 
 	startCmd := &cobra.Command{
