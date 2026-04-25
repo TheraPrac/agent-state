@@ -72,6 +72,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 
 	// Ensure git hooks are active on all configured repos
 	ensureHooksPath(cfg)
+	AgentAutoAuth(cfg, agentID)
 
 	// Create worktrees if configured
 	if cfg.Worktree != nil && cfg.Worktree.Enabled {
