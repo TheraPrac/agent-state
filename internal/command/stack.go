@@ -14,11 +14,11 @@ import (
 
 // StackEntry represents an item on the per-agent work stack.
 type StackEntry struct {
-	ID         string
-	Reason     string // why this was pushed (what blocked the parent)
-	PushedAt   string
-	PushedBy   string // agent ID
-	Repos      map[string]StackRepoState
+	ID       string
+	Reason   string // why this was pushed (what blocked the parent)
+	PushedAt string
+	PushedBy string // agent ID
+	Repos    map[string]StackRepoState
 }
 
 // StackRepoState tracks branch and last commit for a repo.
@@ -189,6 +189,19 @@ func StackShow(s *store.Store, cfg *config.Config) int {
 // Stack is ordered bottom-to-top (last element = top of stack).
 func LoadStack(cfg *config.Config) []StackEntry {
 	path := cfg.StackPath()
+	if cfg.AgentID() != "" {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			legacy := filepath.Join(cfg.Root(), ".as", "stack.yaml")
+			if _, legacyErr := os.Stat(legacy); legacyErr == nil {
+				path = legacy
+			}
+		}
+	}
+
+	return loadStackFile(path)
+}
+
+func loadStackFile(path string) []StackEntry {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

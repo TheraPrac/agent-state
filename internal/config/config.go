@@ -153,7 +153,7 @@ type PipelineStepConfig struct {
 	HealthURLs []string // multiple health URLs — all must pass
 	Timeout    int      // seconds, 0 = default 300
 	Artifacts  []string
-	WatchCI    bool     // if true, watch the latest GH Actions run on main before health checks
+	WatchCI    bool // if true, watch the latest GH Actions run on main before health checks
 }
 
 type EvidenceConfig struct {
@@ -178,10 +178,10 @@ type GitConfig struct {
 
 type WorktreeConfig struct {
 	Enabled   bool
-	BaseDir   string              // worktree root relative to config root (e.g. "worktrees")
-	ParentDir string              // parent of all repos (e.g. "/Users/x/Dev/project")
-	Repos     []string            // short repo names in default order (e.g. ["api", "web"])
-	RepoMap   map[string]string   // short name → directory name (e.g. "api" → "theraprac-api")
+	BaseDir   string            // worktree root relative to config root (e.g. "worktrees")
+	ParentDir string            // parent of all repos (e.g. "/Users/x/Dev/project")
+	Repos     []string          // short repo names in default order (e.g. ["api", "web"])
+	RepoMap   map[string]string // short name → directory name (e.g. "api" → "theraprac-api")
 }
 
 type GateConfig struct {
@@ -253,9 +253,18 @@ func (c *Config) IndexPath() string {
 	return filepath.Join(c.root, c.Paths.Index)
 }
 
-// AgentID returns the current agent identity from $AS_AGENT_ID.
+// AgentID returns the current agent identity.
+// $AS_AGENT_ID takes precedence; otherwise standard TheraPrac agent
+// workspaces derive identity from their parent directory.
 func (c *Config) AgentID() string {
-	return os.Getenv("AS_AGENT_ID")
+	if id := os.Getenv("AS_AGENT_ID"); id != "" {
+		return id
+	}
+	parent := filepath.Base(filepath.Dir(c.root))
+	if suffix := strings.TrimPrefix(parent, "theraprac-"); suffix != parent && strings.HasPrefix(suffix, "agent-") {
+		return suffix
+	}
+	return ""
 }
 
 // EpicsPath returns the path to the epics/sprints registry file.

@@ -261,20 +261,34 @@ func TestDiscoverViaStRootFromChild(t *testing.T) {
 }
 
 func TestAgentID(t *testing.T) {
-	cfg := Defaults()
+	t.Run("no_match", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "")
+		cfg := Defaults()
+		cfg.root = filepath.Join(t.TempDir(), "theraprac-workspace")
+		if id := cfg.AgentID(); id != "" {
+			t.Errorf("AgentID() = %q, want empty", id)
+		}
+	})
 
-	// Unset
-	os.Unsetenv("AS_AGENT_ID")
-	if id := cfg.AgentID(); id != "" {
-		t.Errorf("AgentID() = %q, want empty", id)
-	}
+	t.Run("env_override", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "agent-override")
+		cfg := Defaults()
+		cfg.root = filepath.Join(t.TempDir(), "theraprac-agent-a", "theraprac-workspace")
+		if id := cfg.AgentID(); id != "agent-override" {
+			t.Errorf("AgentID() = %q, want %q", id, "agent-override")
+		}
+	})
 
-	// Set
-	os.Setenv("AS_AGENT_ID", "agent-a")
-	defer os.Unsetenv("AS_AGENT_ID")
-	if id := cfg.AgentID(); id != "agent-a" {
-		t.Errorf("AgentID() = %q, want %q", id, "agent-a")
-	}
+	t.Run("path_derivation", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "")
+		for _, agent := range []string{"agent-a", "agent-b"} {
+			cfg := Defaults()
+			cfg.root = filepath.Join(t.TempDir(), "theraprac-"+agent, "theraprac-workspace")
+			if id := cfg.AgentID(); id != agent {
+				t.Errorf("AgentID() = %q, want %q", id, agent)
+			}
+		}
+	})
 }
 
 func TestEpicsPath(t *testing.T) {

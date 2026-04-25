@@ -2,6 +2,7 @@ package command
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -198,5 +199,43 @@ func TestStackPerAgent(t *testing.T) {
 	path = cfg.StackPath()
 	if !strings.HasSuffix(path, "stack.yaml") || strings.Contains(path, "stacks") {
 		t.Errorf("default path = %q", path)
+	}
+}
+
+func TestLoadStackLegacyFallback(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-a")
+
+	legacyPath := filepath.Join(cfg.Root(), ".as", "stack.yaml")
+	writeFile(t, legacyPath, `stack:
+  - id: T-001
+    reason: legacy stack entry
+    pushed_at: 2026-03-27T10:00:00-06:00
+    pushed_by: agent-a
+`)
+
+	entries := LoadStack(cfg)
+	if len(entries) != 1 {
+		t.Fatalf("legacy entries = %d, want 1", len(entries))
+	}
+	if entries[0].ID != "T-001" || entries[0].Reason != "legacy stack entry" {
+		t.Fatalf("legacy entry = %+v", entries[0])
+	}
+
+	if code := StackPush(s, cfg, "T-002", "new per-agent entry"); code != 0 {
+		t.Fatalf("StackPush returned %d", code)
+	}
+
+	perAgentPath := filepath.Join(cfg.Root(), ".as", "stacks", "agent-a.yaml")
+	if _, err := os.Stat(perAgentPath); err != nil {
+		t.Fatalf("expected per-agent stack at %s: %v", perAgentPath, err)
+	}
+
+	entries = LoadStack(cfg)
+	if len(entries) != 2 {
+		t.Fatalf("per-agent entries = %d, want 2", len(entries))
+	}
+	if entries[0].ID != "T-001" || entries[1].ID != "T-002" {
+		t.Errorf("per-agent stack = %+v", entries)
 	}
 }
