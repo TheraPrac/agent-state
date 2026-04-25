@@ -129,6 +129,8 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 		"ports: api=8180 web=3100 db=5532 mailpit=8125 stripe=12211",
 		"compose_project: theraprac_agent_b",
 		"docker_label: theraprac.agent=agent-b",
+		"registry:",
+		"workspace_config:",
 		"dry-run: no filesystem, git, Docker, or env changes will be made",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -249,6 +251,40 @@ func TestAgentWorkspaceDestroyRefusesDirtyRepos(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(agentsRoot, "theraprac-agent-e")); err != nil {
 		t.Fatalf("refused destroy should leave workspace: %v", err)
+	}
+}
+
+func TestPersistAgentWorkspaceConfigWritesRegistryAndLocalConfig(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	plan, err := buildAgentWorkspacePlan(cfg, "f", "feature/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistAgentWorkspaceConfig(plan); err != nil {
+		t.Fatalf("persistAgentWorkspaceConfig: %v", err)
+	}
+
+	for _, path := range []string{agentWorkspaceRegistryPath(plan), agentWorkspaceLocalConfigPath(plan)} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected config at %s: %v", path, err)
+		}
+		s := string(data)
+		for _, want := range []string{
+			"agent_id: agent-f",
+			"branch: feature/demo",
+			"compose_project: theraprac_agent_f",
+			"docker_label: theraprac.agent=agent-f",
+			"web: 3500",
+			"theraprac-api:",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s missing %q:\n%s", path, want, s)
+			}
+		}
 	}
 }
 

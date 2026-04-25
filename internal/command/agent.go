@@ -265,6 +265,8 @@ func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, full, repair bool)
 		plan.Ports.API, plan.Ports.Web, plan.Ports.DB, plan.Ports.Mailpit, plan.Ports.Stripe)
 	fmt.Printf("  compose_project: %s\n", plan.ComposeProject)
 	fmt.Printf("  docker_label: theraprac.agent=%s\n", plan.AgentID)
+	fmt.Printf("  registry: %s\n", agentWorkspaceRegistryPath(plan))
+	fmt.Printf("  workspace_config: %s\n", agentWorkspaceLocalConfigPath(plan))
 	fmt.Println("  env files: symlink from source repo when present; otherwise leave absent")
 	fmt.Println("  repos:")
 	for _, repo := range plan.Repos {
@@ -321,6 +323,9 @@ func applyAgentWorkspaceCreate(plan agentWorkspacePlan, repair bool) error {
 		}
 		symlinkEnv(repo.SourcePath, repo.TargetPath, ".env")
 		symlinkEnv(repo.SourcePath, repo.TargetPath, ".env.local")
+	}
+	if err := persistAgentWorkspaceConfig(plan); err != nil {
+		return err
 	}
 	return nil
 }
@@ -582,6 +587,47 @@ func symlinkEnv(sourceDir, targetDir, name string) {
 		return
 	}
 	_ = os.Symlink(source, target)
+}
+
+func persistAgentWorkspaceConfig(plan agentWorkspacePlan) error {
+	content := renderAgentWorkspaceConfig(plan)
+	for _, path := range []string{agentWorkspaceRegistryPath(plan), agentWorkspaceLocalConfigPath(plan)} {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func agentWorkspaceRegistryPath(plan agentWorkspacePlan) string {
+	return filepath.Join(plan.AgentsRoot, ".as", "agent-workspaces", plan.AgentID+".yaml")
+}
+
+func agentWorkspaceLocalConfigPath(plan agentWorkspacePlan) string {
+	return filepath.Join(plan.TargetDir, ".as", "agent-workspace.yaml")
+}
+
+func renderAgentWorkspaceConfig(plan agentWorkspacePlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "agent_id: %s\n", plan.AgentID)
+	fmt.Fprintf(&b, "path: %s\n", plan.TargetDir)
+	fmt.Fprintf(&b, "branch: %s\n", plan.Branch)
+	fmt.Fprintf(&b, "compose_project: %s\n", plan.ComposeProject)
+	fmt.Fprintf(&b, "docker_label: theraprac.agent=%s\n", plan.AgentID)
+	fmt.Fprintf(&b, "ports:\n")
+	fmt.Fprintf(&b, "  web: %d\n", plan.Ports.Web)
+	fmt.Fprintf(&b, "  api: %d\n", plan.Ports.API)
+	fmt.Fprintf(&b, "  db: %d\n", plan.Ports.DB)
+	fmt.Fprintf(&b, "  mailpit: %d\n", plan.Ports.Mailpit)
+	fmt.Fprintf(&b, "  stripe: %d\n", plan.Ports.Stripe)
+	fmt.Fprintf(&b, "repos:\n")
+	for _, repo := range plan.Repos {
+		fmt.Fprintf(&b, "  %s: %s\n", repo.Name, repo.TargetPath)
+	}
+	return b.String()
 }
 
 func yesNo(v bool) string {
