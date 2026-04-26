@@ -32,18 +32,23 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 	// the lock acquisition.
 	oldAgent := item.AssignedTo
 	var liveClaim string
+	// Captured under the flock so the changelog audit reflects the values
+	// that were actually cleared, not a pre-lock cached read.
+	oldHeritage := map[string]string{}
 
 	if err := s.Mutate(id, func(item *model.Item) error {
 		liveClaim = item.ClaimedBy
 		if item.AssignedTo != "" {
 			item.AssignedTo = ""
 			item.Doc.SetField("assigned_to", "")
-			// Clear any inherited heritage left from the previous claim
-			// so the next start writes a fresh meta block (or omits it).
+			// Capture and remove any inherited heritage from the previous
+			// claim. Removal (not blanking) keeps the next non-heritage
+			// start from inheriting stale empty meta keys.
 			for _, key := range []string{"parent_id", "root_id", "role", "spawned_by", "delegated_item"} {
-				if _, ok := item.Doc.GetNestedField("assigned_to_meta." + key); ok {
-					item.Doc.SetNestedField("assigned_to_meta."+key, "")
+				if v, ok := item.Doc.GetNestedField("assigned_to_meta." + key); ok && v != "" {
+					oldHeritage[key] = v
 				}
+				item.Doc.RemoveNestedField("assigned_to_meta." + key)
 			}
 		}
 		if item.ClaimedBy != "" {
@@ -70,6 +75,13 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 	changelog.Append(cfg, id, changelog.Entry{
 		Op: "release", Field: "assigned_to", OldValue: oldAgent,
 	})
+	for _, key := range []string{"parent_id", "root_id", "role", "spawned_by", "delegated_item"} {
+		if v, ok := oldHeritage[key]; ok {
+			changelog.Append(cfg, id, changelog.Entry{
+				Op: "release", Field: "assigned_to_meta." + key, OldValue: v,
+			})
+		}
+	}
 
 	if oldAgent != "" && oldClaim != "" {
 		fmt.Printf("Released %s — was assigned to %s, claimed by session %s\n", id, oldAgent, oldClaim)

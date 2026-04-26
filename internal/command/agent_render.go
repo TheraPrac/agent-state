@@ -8,7 +8,8 @@ import (
 // sub-agent heritage when present. Examples:
 //
 //	"agent-b"                              — no heritage
-//	"agent-b ← agent-a"                    — child of agent-a (root == parent)
+//	"agent-b ← agent-a"                    — child of agent-a, where root is
+//	                                         either unrecorded or equal to parent
 //	"agent-b ← agent-a (root: agent-x)"    — deeper chain (root differs from parent)
 //
 // Returns empty string when the item has no assignment.

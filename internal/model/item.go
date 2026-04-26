@@ -313,6 +313,66 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 	return false
 }
 
+// RemoveNestedField deletes a nested field by dotted-path (e.g.
+// "assigned_to_meta.parent_id"). If the parent block becomes empty after
+// removal, the parent is removed too so callers don't accumulate empty
+// section headers. Returns true if a line was removed.
+func (d *ParsedDocument) RemoveNestedField(path string) bool {
+	parts := strings.SplitN(path, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	parent, child := parts[0], parts[1]
+
+	parentIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+			break
+		}
+	}
+	if parentIdx < 0 {
+		return false
+	}
+
+	removed := false
+	end := parentIdx + 1
+	for end < len(d.Lines) {
+		line := d.Lines[end]
+		if line.Indent == 0 && !line.IsEmpty {
+			break
+		}
+		if line.Key == child && line.Indent > 0 && line.BlockKey == parent {
+			d.Lines = append(d.Lines[:end], d.Lines[end+1:]...)
+			removed = true
+			continue
+		}
+		end++
+	}
+
+	if !removed {
+		return false
+	}
+
+	// If the parent block has no remaining nested children, drop the
+	// parent header line as well.
+	hasChildren := false
+	for i := parentIdx + 1; i < len(d.Lines); i++ {
+		l := d.Lines[i]
+		if l.Indent == 0 && !l.IsEmpty {
+			break
+		}
+		if l.Indent > 0 && l.BlockKey == parent {
+			hasChildren = true
+			break
+		}
+	}
+	if !hasChildren {
+		d.Lines = append(d.Lines[:parentIdx], d.Lines[parentIdx+1:]...)
+	}
+	return true
+}
+
 // GetNestedField returns the value for a dotted-path field (e.g. "work_tracking.branch").
 func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
 	parts := strings.SplitN(path, ".", 2)

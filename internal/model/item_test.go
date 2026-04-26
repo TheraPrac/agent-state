@@ -5,6 +5,49 @@ import (
 	"testing"
 )
 
+func TestParsedDocumentRemoveNestedField(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+			{Raw: "assigned_to_meta:", Key: "assigned_to_meta"},
+			{Raw: "  parent_id: agent-a", Key: "parent_id", Value: "agent-a", Indent: 2, BlockKey: "assigned_to_meta"},
+			{Raw: "  role: reviewer", Key: "role", Value: "reviewer", Indent: 2, BlockKey: "assigned_to_meta"},
+			{Raw: "title: Test", Key: "title", Value: "Test"},
+		},
+	}
+
+	if !doc.RemoveNestedField("assigned_to_meta.parent_id") {
+		t.Fatal("RemoveNestedField should return true for existing key")
+	}
+	rendered := doc.String()
+	if strings.Contains(rendered, "parent_id:") {
+		t.Errorf("parent_id should be removed; got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "role: reviewer") {
+		t.Errorf("role should remain; got:\n%s", rendered)
+	}
+
+	// Removing the last child should also remove the now-empty parent
+	if !doc.RemoveNestedField("assigned_to_meta.role") {
+		t.Fatal("RemoveNestedField should return true for role")
+	}
+	rendered = doc.String()
+	if strings.Contains(rendered, "assigned_to_meta") {
+		t.Errorf("empty assigned_to_meta parent should be removed; got:\n%s", rendered)
+	}
+}
+
+func TestParsedDocumentRemoveNestedField_Missing(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: T-001", Key: "id", Value: "T-001"},
+		},
+	}
+	if doc.RemoveNestedField("assigned_to_meta.parent_id") {
+		t.Error("RemoveNestedField on missing key should return false")
+	}
+}
+
 func TestParsedDocumentSetField(t *testing.T) {
 	doc := &ParsedDocument{
 		Lines: []Line{

@@ -44,14 +44,13 @@ func resetIdentityEnv(t *testing.T) {
 	}
 }
 
+// newCfgRootedAt loads a config from <root>/.as/config.yaml. Callers must
+// have created that file first via mustTouchConfig — failure to load is a
+// test-setup error, not a runtime fallback.
 func newCfgRootedAt(t *testing.T, root string) *config.Config {
 	t.Helper()
 	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	if err != nil {
-		// LoadFrom requires an existing config; for these tests we don't
-		// need any nondefault project config — fall back to defaults but
-		// pin root via the discovery flow's expected layout. Touching the
-		// file with empty content satisfies LoadFrom.
 		t.Fatalf("LoadFrom: %v", err)
 	}
 	return cfg

@@ -284,10 +284,11 @@ func (i Identity) HasHeritage() bool {
 //
 // Heritage env vars (AS_AGENT_PARENT_ID, AS_AGENT_ROOT_ID,
 // AS_AGENT_SPAWNED_BY_SESSION, AS_AGENT_DELEGATED_ITEM, AS_AGENT_ROLE) are
-// layered on top regardless of how the ID was resolved. When any heritage
-// env var is set, Source is reported as "inherited" so the chain is obvious
-// in `st agent identity show`. RootID defaults to ParentID if unset, then to
-// ID if there is no parent.
+// layered on top regardless of how the ID was resolved. When any
+// parent/spawning marker is present (see HasHeritage — Role alone does NOT
+// count, since it can come from local-agent.yaml), Source is reported as
+// "inherited" so the chain is obvious in `st agent identity show`. RootID
+// defaults to ParentID if unset, then to ID if there is no parent.
 func (c *Config) Identity() Identity {
 	id := Identity{WorkspacePath: c.root}
 

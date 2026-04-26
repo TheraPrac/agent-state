@@ -492,6 +492,15 @@ func formatAITurnLine(p SessionLogPayload, cost float64, costSource string, at s
 		sb.WriteString(fmt.Sprintf(" files:%d +%d -%d net:%d",
 			p.Files, p.LinesAdded, p.LinesRemoved, p.LinesAdded-p.LinesRemoved))
 	}
+	if p.ParentID != "" {
+		sb.WriteString(fmt.Sprintf(" parent:%s", p.ParentID))
+	}
+	if p.RootID != "" {
+		sb.WriteString(fmt.Sprintf(" root:%s", p.RootID))
+	}
+	if p.Role != "" {
+		sb.WriteString(fmt.Sprintf(" role:%s", p.Role))
+	}
 	sb.WriteString(fmt.Sprintf(" step:%s at:%s", step, at))
 	return sb.String()
 }
