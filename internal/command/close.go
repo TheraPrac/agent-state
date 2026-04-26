@@ -239,6 +239,14 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// Auto-archive sprint and epic when all items are terminal.
 	autoArchiveSprintAndEpic(s, cfg, item.Sprint)
 
+	// Auto-finish the worktree when one exists. Best-effort: never blocks
+	// the close, never uses --force, prints a one-line retention warning
+	// when uncommitted/unpushed work would be lost. Sibling of the queue
+	// auto-remove and stack auto-pop above.
+	if cleaned, _ := TryAutoFinishWorktree(cfg, id); cleaned {
+		fmt.Printf("  also finished worktree\n")
+	}
+
 	return 0
 }
 

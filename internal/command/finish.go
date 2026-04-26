@@ -159,3 +159,67 @@ func gitOutputDir(dir string, args ...string) (string, error) {
 	out, err := cmd.Output()
 	return string(out), err
 }
+
+// TryAutoFinishWorktree is the close.go-friendly wrapper around the
+// per-id worktree cleanup. It mirrors the safety checks from Finish()
+// (no uncommitted changes, no unpushed commits) but never uses --force,
+// silently skips when worktree config is disabled or no worktree dir
+// exists, and returns (cleaned, retained) instead of an exit code.
+//
+// Closed items that left a worktree behind got abandoned in
+// theraprac-workspace/worktrees/<id>/ indefinitely; this hook closes
+// the loop so the operator doesn't have to remember `st finish` after
+// every close.
+func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retained bool) {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return false, false
+	}
+	baseDir := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir)
+	wtDir := filepath.Join(baseDir, id)
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		return false, false
+	}
+
+	// Pre-check: any repo with uncommitted or unpushed work blocks the
+	// auto path entirely — we never want to drop in-flight code on the
+	// floor when the operator's intent was just to close the item.
+	for _, repo := range cfg.Worktree.Repos {
+		repoDir := filepath.Join(wtDir, repo)
+		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+			continue
+		}
+		if out, err := gitOutputDir(repoDir, "status", "--porcelain"); err == nil && strings.TrimSpace(out) != "" {
+			fmt.Printf("  worktree %s/%s retained — uncommitted changes; run `st finish %s --force` after handling\n", id, repo, id)
+			return false, true
+		}
+		if out, err := gitOutputDir(repoDir, "log", "--oneline", "@{u}..HEAD"); err == nil && strings.TrimSpace(out) != "" {
+			fmt.Printf("  worktree %s/%s retained — unpushed commits; run `st finish %s --force` after pushing\n", id, repo, id)
+			return false, true
+		}
+	}
+
+	// Clean — remove each per-repo worktree + delete its branch.
+	// Mirrors finish.go's cleanup loop minus the --force fallback (auto
+	// path never forces; partial failure stays as retention).
+	for _, repo := range cfg.Worktree.Repos {
+		repoDir := filepath.Join(wtDir, repo)
+		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+			continue
+		}
+		branch, _ := gitOutputDir(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+		branch = strings.TrimSpace(branch)
+		mainRepoDir := resolveRepoDir(cfg, repo)
+		if err := gitCmdDir(mainRepoDir, "worktree", "remove", repoDir); err != nil {
+			fmt.Printf("  worktree %s/%s retained — `git worktree remove` failed; run `st finish %s --force`\n", id, repo, id)
+			return false, true
+		}
+		if branch != "" && branch != "main" && branch != "master" {
+			_ = gitCmdDir(mainRepoDir, "branch", "-d", branch)
+		}
+	}
+
+	// Remove the now-empty wt parent dir. Item lock is already released
+	// upstream in Close() (close.go:177), so we don't unlock here.
+	_ = os.RemoveAll(wtDir)
+	return true, false
+}
