@@ -253,18 +253,97 @@ func (c *Config) IndexPath() string {
 	return filepath.Join(c.root, c.Paths.Index)
 }
 
-// AgentID returns the current agent identity.
-// $AS_AGENT_ID takes precedence; otherwise standard TheraPrac agent
-// workspaces derive identity from their parent directory.
+// Identity describes the resolved agent identity for the current st invocation.
+// It captures both the executing agent (ID) and any parent/root heritage
+// inherited from a spawning agent so that work attribution and usage rollups
+// can credit the full chain.
+type Identity struct {
+	ID               string
+	DisplayName      string
+	Source           string // "env", "local-config", "path", "inherited", ""
+	WorkspacePath    string
+	ParentID         string
+	RootID           string
+	SpawnedBySession string
+	DelegatedItemID  string
+	Role             string
+}
+
+// HasHeritage reports whether this identity carries sub-agent heritage from
+// a spawning parent. Role alone (which can come from local-agent.yaml) does
+// not count — heritage requires at least one parent/spawning marker.
+func (i Identity) HasHeritage() bool {
+	return i.ParentID != "" || i.SpawnedBySession != "" || i.DelegatedItemID != ""
+}
+
+// Identity resolves the current agent identity using this precedence chain
+// for the ID field:
+//  1. $AS_AGENT_ID env var
+//  2. <root>/.as/local-agent.yaml (gitignored, per-workspace)
+//  3. parent directory named theraprac-agent-<suffix> (I-383 path derivation)
+//
+// Heritage env vars (AS_AGENT_PARENT_ID, AS_AGENT_ROOT_ID,
+// AS_AGENT_SPAWNED_BY_SESSION, AS_AGENT_DELEGATED_ITEM, AS_AGENT_ROLE) are
+// layered on top regardless of how the ID was resolved. When any
+// parent/spawning marker is present (see HasHeritage — Role alone does NOT
+// count, since it can come from local-agent.yaml), Source is reported as
+// "inherited" so the chain is obvious in `st agent identity show`. RootID
+// defaults to ParentID if unset, then to ID if there is no parent.
+func (c *Config) Identity() Identity {
+	id := Identity{WorkspacePath: c.root}
+
+	if envID := os.Getenv("AS_AGENT_ID"); envID != "" {
+		id.ID = envID
+		id.Source = "env"
+	} else if la, err := loadLocalAgent(c.root); err == nil && la.ID != "" {
+		id.ID = la.ID
+		id.DisplayName = la.DisplayName
+		id.Role = la.Role
+		id.Source = "local-config"
+	} else {
+		parent := filepath.Base(filepath.Dir(c.root))
+		if suffix := strings.TrimPrefix(parent, "theraprac-"); suffix != parent && strings.HasPrefix(suffix, "agent-") {
+			id.ID = suffix
+			id.Source = "path"
+		}
+	}
+
+	if v := os.Getenv("AS_AGENT_PARENT_ID"); v != "" {
+		id.ParentID = v
+	}
+	if v := os.Getenv("AS_AGENT_ROOT_ID"); v != "" {
+		id.RootID = v
+	}
+	if v := os.Getenv("AS_AGENT_SPAWNED_BY_SESSION"); v != "" {
+		id.SpawnedBySession = v
+	}
+	if v := os.Getenv("AS_AGENT_DELEGATED_ITEM"); v != "" {
+		id.DelegatedItemID = v
+	}
+	if v := os.Getenv("AS_AGENT_ROLE"); v != "" {
+		id.Role = v
+	}
+
+	if id.RootID == "" {
+		if id.ParentID != "" {
+			id.RootID = id.ParentID
+		} else {
+			id.RootID = id.ID
+		}
+	}
+
+	if id.HasHeritage() {
+		id.Source = "inherited"
+	}
+
+	return id
+}
+
+// AgentID returns the current agent identity ID. Equivalent to
+// c.Identity().ID; retained for backward compatibility with the many call
+// sites that only need the bare id.
 func (c *Config) AgentID() string {
-	if id := os.Getenv("AS_AGENT_ID"); id != "" {
-		return id
-	}
-	parent := filepath.Base(filepath.Dir(c.root))
-	if suffix := strings.TrimPrefix(parent, "theraprac-"); suffix != parent && strings.HasPrefix(suffix, "agent-") {
-		return suffix
-	}
-	return ""
+	return c.Identity().ID
 }
 
 // EpicsPath returns the path to the epics/sprints registry file.

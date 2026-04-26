@@ -48,8 +48,8 @@ func writeActiveWork(b *strings.Builder, s *store.Store) {
 	}
 	for _, item := range active {
 		line := fmt.Sprintf("- %s — %s", item.ID, item.Title)
-		if item.AssignedTo != "" {
-			line += fmt.Sprintf(" [%s]", item.AssignedTo)
+		if label := formatAssignment(item); label != "" {
+			line += fmt.Sprintf(" [%s]", label)
 		}
 		if stage := deliveryStage(item); stage != "" {
 			line += fmt.Sprintf(" stage: %s", stage)

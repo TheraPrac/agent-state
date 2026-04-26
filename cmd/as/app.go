@@ -251,6 +251,21 @@ YAML block scalars so multi-line values replace cleanly.`,
 	}
 	agentCmd.AddCommand(agentListCmd)
 
+	agentIdentityCmd := &cobra.Command{
+		Use:   "identity",
+		Short: "Inspect resolved agent identity",
+	}
+	agentIdentityShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print the resolved agent identity (id, source, parent/root heritage)",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentIdentityShow(appCfg)
+		},
+	}
+	agentIdentityCmd.AddCommand(agentIdentityShowCmd)
+	agentCmd.AddCommand(agentIdentityCmd)
+
 	agentWorkspaceCmd := &cobra.Command{
 		Use:   "workspace",
 		Short: "Create, inspect, and remove local agent workspaces",

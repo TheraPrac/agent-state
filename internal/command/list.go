@@ -51,8 +51,8 @@ func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
 			}
 		}
 		assigned := ""
-		if item.AssignedTo != "" {
-			assigned = fmt.Sprintf(" [%s]", item.AssignedTo)
+		if label := formatAssignment(item); label != "" {
+			assigned = fmt.Sprintf(" [%s]", label)
 		}
 
 		fmt.Printf("%-8s %-10s %s", item.ID, item.Status, item.Title)

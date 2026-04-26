@@ -261,6 +261,7 @@ func TestDiscoverViaStRootFromChild(t *testing.T) {
 }
 
 func TestAgentID(t *testing.T) {
+	clearHeritage(t)
 	t.Run("no_match", func(t *testing.T) {
 		t.Setenv("AS_AGENT_ID", "")
 		cfg := Defaults()
@@ -287,6 +288,143 @@ func TestAgentID(t *testing.T) {
 			if id := cfg.AgentID(); id != agent {
 				t.Errorf("AgentID() = %q, want %q", id, agent)
 			}
+		}
+	})
+}
+
+// clearHeritage zeros out all heritage env vars for the duration of a test
+// to keep parent tests from leaking into child subtests.
+func clearHeritage(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"AS_AGENT_ID",
+		"AS_AGENT_PARENT_ID",
+		"AS_AGENT_ROOT_ID",
+		"AS_AGENT_SPAWNED_BY_SESSION",
+		"AS_AGENT_DELEGATED_ITEM",
+		"AS_AGENT_ROLE",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+func writeLocalAgent(t *testing.T, root string, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, ".as"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".as", "local-agent.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdentity(t *testing.T) {
+	t.Run("local_config_no_env_no_path", func(t *testing.T) {
+		clearHeritage(t)
+		root := filepath.Join(t.TempDir(), "theraprac-workspace")
+		writeLocalAgent(t, root, "id: agent-from-config\ndisplay_name: Local Bob\nrole: worker\n")
+		cfg := Defaults()
+		cfg.root = root
+		got := cfg.Identity()
+		if got.ID != "agent-from-config" {
+			t.Errorf("ID = %q, want agent-from-config", got.ID)
+		}
+		if got.Source != "local-config" {
+			t.Errorf("Source = %q, want local-config", got.Source)
+		}
+		if got.DisplayName != "Local Bob" {
+			t.Errorf("DisplayName = %q", got.DisplayName)
+		}
+		if got.Role != "worker" {
+			t.Errorf("Role = %q", got.Role)
+		}
+		if got.RootID != got.ID {
+			t.Errorf("RootID = %q, want it to default to ID", got.RootID)
+		}
+	})
+
+	t.Run("env_overrides_local_config", func(t *testing.T) {
+		clearHeritage(t)
+		t.Setenv("AS_AGENT_ID", "agent-from-env")
+		root := filepath.Join(t.TempDir(), "theraprac-workspace")
+		writeLocalAgent(t, root, "id: agent-from-config\n")
+		cfg := Defaults()
+		cfg.root = root
+		got := cfg.Identity()
+		if got.ID != "agent-from-env" {
+			t.Errorf("ID = %q, want agent-from-env (env wins)", got.ID)
+		}
+		if got.Source != "env" {
+			t.Errorf("Source = %q, want env", got.Source)
+		}
+	})
+
+	t.Run("local_config_overrides_path", func(t *testing.T) {
+		clearHeritage(t)
+		root := filepath.Join(t.TempDir(), "theraprac-agent-a", "theraprac-workspace")
+		writeLocalAgent(t, root, "id: agent-explicit\n")
+		cfg := Defaults()
+		cfg.root = root
+		got := cfg.Identity()
+		if got.ID != "agent-explicit" {
+			t.Errorf("ID = %q, want agent-explicit (config beats path-derived agent-a)", got.ID)
+		}
+		if got.Source != "local-config" {
+			t.Errorf("Source = %q, want local-config", got.Source)
+		}
+	})
+
+	t.Run("inherited_heritage_marks_source", func(t *testing.T) {
+		clearHeritage(t)
+		t.Setenv("AS_AGENT_ID", "agent-child")
+		t.Setenv("AS_AGENT_PARENT_ID", "agent-a")
+		t.Setenv("AS_AGENT_ROLE", "reviewer")
+		t.Setenv("AS_AGENT_SPAWNED_BY_SESSION", "sess-parent-1")
+		t.Setenv("AS_AGENT_DELEGATED_ITEM", "I-100")
+		cfg := Defaults()
+		cfg.root = filepath.Join(t.TempDir(), "theraprac-workspace")
+		got := cfg.Identity()
+		if got.ID != "agent-child" {
+			t.Errorf("ID = %q", got.ID)
+		}
+		if got.Source != "inherited" {
+			t.Errorf("Source = %q, want inherited", got.Source)
+		}
+		if got.ParentID != "agent-a" || got.Role != "reviewer" {
+			t.Errorf("heritage missing: %+v", got)
+		}
+		if got.SpawnedBySession != "sess-parent-1" || got.DelegatedItemID != "I-100" {
+			t.Errorf("session/item heritage missing: %+v", got)
+		}
+		if got.RootID != "agent-a" {
+			t.Errorf("RootID = %q, want it to default to ParentID when unset", got.RootID)
+		}
+	})
+
+	t.Run("root_defaults_to_id_with_no_parent", func(t *testing.T) {
+		clearHeritage(t)
+		t.Setenv("AS_AGENT_ID", "agent-solo")
+		cfg := Defaults()
+		cfg.root = filepath.Join(t.TempDir(), "theraprac-workspace")
+		got := cfg.Identity()
+		if got.RootID != "agent-solo" {
+			t.Errorf("RootID = %q, want it to default to ID when no parent", got.RootID)
+		}
+		if got.HasHeritage() {
+			t.Errorf("HasHeritage() = true, want false")
+		}
+	})
+
+	t.Run("explicit_root_id_is_preserved", func(t *testing.T) {
+		clearHeritage(t)
+		t.Setenv("AS_AGENT_ID", "agent-grandchild")
+		t.Setenv("AS_AGENT_PARENT_ID", "agent-child")
+		t.Setenv("AS_AGENT_ROOT_ID", "agent-root")
+		cfg := Defaults()
+		cfg.root = filepath.Join(t.TempDir(), "theraprac-workspace")
+		got := cfg.Identity()
+		if got.RootID != "agent-root" {
+			t.Errorf("RootID = %q, want agent-root", got.RootID)
 		}
 	})
 }

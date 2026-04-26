@@ -51,6 +51,14 @@ type SessionLogPayload struct {
 	Files        int `json:"files,omitempty"`
 	LinesAdded   int `json:"lines_added,omitempty"`
 	LinesRemoved int `json:"lines_removed,omitempty"`
+
+	// Optional sub-agent heritage. Set when the producing turn ran inside
+	// a child agent spawned by a parent — preserves attribution so usage
+	// rollups can credit the parent/root chain. Omitted when the executing
+	// agent is the root.
+	ParentID string `json:"parent_id,omitempty"`
+	RootID   string `json:"root_id,omitempty"`
+	Role     string `json:"role,omitempty"`
 }
 
 // SessionLogCLI reads a JSON payload from stdin and applies it.
@@ -483,6 +491,15 @@ func formatAITurnLine(p SessionLogPayload, cost float64, costSource string, at s
 	if p.Files > 0 || p.LinesAdded > 0 || p.LinesRemoved > 0 {
 		sb.WriteString(fmt.Sprintf(" files:%d +%d -%d net:%d",
 			p.Files, p.LinesAdded, p.LinesRemoved, p.LinesAdded-p.LinesRemoved))
+	}
+	if p.ParentID != "" {
+		sb.WriteString(fmt.Sprintf(" parent:%s", p.ParentID))
+	}
+	if p.RootID != "" {
+		sb.WriteString(fmt.Sprintf(" root:%s", p.RootID))
+	}
+	if p.Role != "" {
+		sb.WriteString(fmt.Sprintf(" role:%s", p.Role))
 	}
 	sb.WriteString(fmt.Sprintf(" step:%s at:%s", step, at))
 	return sb.String()

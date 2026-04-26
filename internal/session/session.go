@@ -12,6 +12,11 @@ import (
 )
 
 // Session represents an active CLI session (one Claude Code run).
+//
+// Heritage fields (ParentAgentID, RootAgentID, Role, SpawnedBySession,
+// DelegatedItemID) are populated when this session inherits identity from a
+// spawning agent. They preserve attribution across parent → child agent
+// chains so usage rollups and claim tracking can credit the full lineage.
 type Session struct {
 	ID           string
 	StartedAt    time.Time
@@ -19,6 +24,12 @@ type Session struct {
 	Sprint       string
 	LastActive   time.Time
 	ClaimedItems []string
+
+	ParentAgentID    string
+	RootAgentID      string
+	Role             string
+	SpawnedBySession string
+	DelegatedItemID  string
 }
 
 // Manager provides session lifecycle operations.
@@ -92,6 +103,16 @@ func (m *Manager) Load(sessionID string) (*Session, error) {
 				s.Sprint = val
 			case "last_active":
 				s.LastActive = parseTime(val)
+			case "parent_agent_id":
+				s.ParentAgentID = val
+			case "root_agent_id":
+				s.RootAgentID = val
+			case "role":
+				s.Role = val
+			case "spawned_by_session":
+				s.SpawnedBySession = val
+			case "delegated_item":
+				s.DelegatedItemID = val
 			}
 		}
 	}
@@ -117,6 +138,21 @@ func (m *Manager) Save(s *Session) error {
 	if s.Sprint != "" {
 		b.WriteString(fmt.Sprintf("sprint: %s\n", s.Sprint))
 	}
+	if s.ParentAgentID != "" {
+		b.WriteString(fmt.Sprintf("parent_agent_id: %s\n", s.ParentAgentID))
+	}
+	if s.RootAgentID != "" {
+		b.WriteString(fmt.Sprintf("root_agent_id: %s\n", s.RootAgentID))
+	}
+	if s.Role != "" {
+		b.WriteString(fmt.Sprintf("role: %s\n", s.Role))
+	}
+	if s.SpawnedBySession != "" {
+		b.WriteString(fmt.Sprintf("spawned_by_session: %s\n", s.SpawnedBySession))
+	}
+	if s.DelegatedItemID != "" {
+		b.WriteString(fmt.Sprintf("delegated_item: %s\n", s.DelegatedItemID))
+	}
 	b.WriteString(fmt.Sprintf("last_active: %s\n", s.LastActive.Format(time.RFC3339)))
 	b.WriteString("claimed_items:\n")
 	if len(s.ClaimedItems) == 0 {
@@ -130,9 +166,28 @@ func (m *Manager) Save(s *Session) error {
 	return os.WriteFile(m.path(s.ID), []byte(b.String()), 0644)
 }
 
+// IdentitySpec carries optional sub-agent heritage fields when creating a
+// session via EnsureSessionWithIdentity. Mirrors config.Identity but is
+// declared here to avoid an import cycle (session ← config).
+type IdentitySpec struct {
+	AgentID          string
+	ParentAgentID    string
+	RootAgentID      string
+	Role             string
+	SpawnedBySession string
+	DelegatedItemID  string
+}
+
 // EnsureSession loads or creates a session for the given ID.
 // If the session doesn't exist, a new one is created with the current time.
 func (m *Manager) EnsureSession(sessionID, agentID string) (*Session, error) {
+	return m.EnsureSessionWithIdentity(sessionID, IdentitySpec{AgentID: agentID})
+}
+
+// EnsureSessionWithIdentity loads or creates a session, recording full
+// sub-agent heritage on creation. Existing sessions are returned unchanged
+// — heritage is only set on first creation.
+func (m *Manager) EnsureSessionWithIdentity(sessionID string, spec IdentitySpec) (*Session, error) {
 	s, err := m.Load(sessionID)
 	if err != nil {
 		return nil, err
@@ -143,10 +198,15 @@ func (m *Manager) EnsureSession(sessionID, agentID string) (*Session, error) {
 
 	now := time.Now()
 	s = &Session{
-		ID:        sessionID,
-		StartedAt: now,
-		AgentID:   agentID,
-		LastActive: now,
+		ID:               sessionID,
+		StartedAt:        now,
+		AgentID:          spec.AgentID,
+		ParentAgentID:    spec.ParentAgentID,
+		RootAgentID:      spec.RootAgentID,
+		Role:             spec.Role,
+		SpawnedBySession: spec.SpawnedBySession,
+		DelegatedItemID:  spec.DelegatedItemID,
+		LastActive:       now,
 	}
 	if err := m.Save(s); err != nil {
 		return nil, err

@@ -98,8 +98,8 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 		for _, item := range active {
 			stage := deliveryStage(item)
 			assigned := ""
-			if item.AssignedTo != "" {
-				assigned = fmt.Sprintf("  [%s]", item.AssignedTo)
+			if label := formatAssignment(item); label != "" {
+				assigned = fmt.Sprintf("  [%s]", label)
 			}
 			stageStr := ""
 			if stage != "" {
@@ -621,8 +621,8 @@ func statusSingle(s *store.Store, cfg *config.Config, id string) int {
 	fmt.Printf("  Type:     %s\n", item.Type)
 	fmt.Printf("  Status:   %s\n", item.Status)
 
-	if item.AssignedTo != "" {
-		fmt.Printf("  Assigned: %s\n", item.AssignedTo)
+	if label := formatAssignment(item); label != "" {
+		fmt.Printf("  Assigned: %s\n", label)
 	}
 	if item.Severity != "" {
 		fmt.Printf("  Severity: %s\n", item.Severity)

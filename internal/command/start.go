@@ -41,7 +41,8 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	}
 
 	// Check: not assigned to another agent
-	agentID := cfg.AgentID()
+	identity := cfg.Identity()
+	agentID := identity.ID
 	if item.AssignedTo != "" && item.AssignedTo != agentID {
 		fmt.Fprintf(os.Stderr, "%s is assigned to %s — use `as release %s` first\n", id, item.AssignedTo, id)
 		return 1
@@ -113,6 +114,25 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			item.AssignedTo = agentID
 		}
 
+		// Stamp parent/root heritage when this run inherited identity
+		// from a spawning agent. Only emit fields that are populated so
+		// non-heritage starts don't accumulate empty meta blocks.
+		if identity.ParentID != "" {
+			item.Doc.SetNestedField("assigned_to_meta.parent_id", identity.ParentID)
+			if identity.RootID != "" && identity.RootID != identity.ParentID {
+				item.Doc.SetNestedField("assigned_to_meta.root_id", identity.RootID)
+			}
+			if identity.Role != "" {
+				item.Doc.SetNestedField("assigned_to_meta.role", identity.Role)
+			}
+			if identity.SpawnedBySession != "" {
+				item.Doc.SetNestedField("assigned_to_meta.spawned_by", identity.SpawnedBySession)
+			}
+			if identity.DelegatedItemID != "" {
+				item.Doc.SetNestedField("assigned_to_meta.delegated_item", identity.DelegatedItemID)
+			}
+		}
+
 		if sessionID != "" {
 			item.ClaimedBy = sessionID
 			item.ClaimedAt = now
@@ -139,7 +159,15 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// otherwise hold a phantom claim against an item that never started.
 	if sessionID != "" {
 		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
-		if _, err := mgr.EnsureSession(sessionID, agentID); err != nil {
+		spec := session.IdentitySpec{
+			AgentID:          agentID,
+			ParentAgentID:    identity.ParentID,
+			RootAgentID:      identity.RootID,
+			Role:             identity.Role,
+			SpawnedBySession: identity.SpawnedBySession,
+			DelegatedItemID:  identity.DelegatedItemID,
+		}
+		if _, err := mgr.EnsureSessionWithIdentity(sessionID, spec); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not create session: %v\n", err)
 		}
 		if err := mgr.AddClaim(sessionID, id); err != nil {

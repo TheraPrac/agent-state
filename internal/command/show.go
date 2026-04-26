@@ -62,8 +62,8 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 		if stage != "" {
 			fmt.Printf("  (%s)", stage)
 		}
-		if item.AssignedTo != "" {
-			fmt.Printf("  [%s]", item.AssignedTo)
+		if label := formatAssignment(item); label != "" {
+			fmt.Printf("  [%s]", label)
 		}
 		fmt.Println()
 		return 0
@@ -80,6 +80,17 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	}
 	if item.AssignedTo != "" {
 		fmt.Printf("  assigned_to: %s\n", item.AssignedTo)
+		if item.Doc != nil {
+			if v, ok := item.Doc.GetNestedField("assigned_to_meta.parent_id"); ok && v != "" {
+				fmt.Printf("  assigned_to_parent: %s\n", v)
+			}
+			if v, ok := item.Doc.GetNestedField("assigned_to_meta.root_id"); ok && v != "" {
+				fmt.Printf("  assigned_to_root: %s\n", v)
+			}
+			if v, ok := item.Doc.GetNestedField("assigned_to_meta.role"); ok && v != "" {
+				fmt.Printf("  assigned_to_role: %s\n", v)
+			}
+		}
 	}
 	if item.Severity != "" {
 		fmt.Printf("  severity: %s\n", item.Severity)
