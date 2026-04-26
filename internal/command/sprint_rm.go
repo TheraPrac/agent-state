@@ -43,5 +43,6 @@ func SprintRm(s *store.Store, cfg *config.Config, sprintID, itemID string) int {
 	}
 
 	fmt.Printf("Removed %s from sprint %s\n", itemID, sprintID)
+	autoSync(s, fmt.Sprintf("st sprint rm: %s -= %s", sprintID, itemID))
 	return 0
 }

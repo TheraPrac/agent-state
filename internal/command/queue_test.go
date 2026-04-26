@@ -131,7 +131,7 @@ func TestQueueRm(t *testing.T) {
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 	QueueAdd(s, cfg, "T-002", QueueOpts{})
 
-	code := QueueRm(cfg, "T-001")
+	code := QueueRm(s, cfg, "T-001")
 	if code != 0 {
 		t.Fatalf("QueueRm returned %d", code)
 	}
@@ -143,8 +143,8 @@ func TestQueueRm(t *testing.T) {
 }
 
 func TestQueueRmNotFound(t *testing.T) {
-	_, cfg := setupTestEnv(t)
-	code := QueueRm(cfg, "T-999")
+	s, cfg := setupTestEnv(t)
+	code := QueueRm(s, cfg, "T-999")
 	if code != 1 {
 		t.Errorf("rm not found returned %d, want 1", code)
 	}
@@ -158,7 +158,7 @@ func TestQueueMove(t *testing.T) {
 	QueueAdd(s, cfg, "T-003", QueueOpts{})
 
 	// Move T-003 to position 1
-	code := QueueMove(cfg, "T-003", 1)
+	code := QueueMove(s, cfg, "T-003", 1)
 	if code != 0 {
 		t.Fatalf("QueueMove returned %d", code)
 	}
@@ -176,8 +176,8 @@ func TestQueueMove(t *testing.T) {
 }
 
 func TestQueueMoveNotFound(t *testing.T) {
-	_, cfg := setupTestEnv(t)
-	code := QueueMove(cfg, "T-999", 1)
+	s, cfg := setupTestEnv(t)
+	code := QueueMove(s, cfg, "T-999", 1)
 	if code != 1 {
 		t.Errorf("move not found returned %d, want 1", code)
 	}
@@ -195,7 +195,7 @@ func TestQueueApprove(t *testing.T) {
 	}
 
 	t.Setenv("AS_AGENT_ID", "")
-	code := QueueApprove(cfg, "T-001")
+	code := QueueApprove(s, cfg, "T-001")
 	if code != 0 {
 		t.Fatalf("QueueApprove returned %d", code)
 	}
@@ -207,8 +207,8 @@ func TestQueueApprove(t *testing.T) {
 }
 
 func TestQueueApproveNotFound(t *testing.T) {
-	_, cfg := setupTestEnv(t)
-	code := QueueApprove(cfg, "T-999")
+	s, cfg := setupTestEnv(t)
+	code := QueueApprove(s, cfg, "T-999")
 	if code != 1 {
 		t.Errorf("approve not found returned %d, want 1", code)
 	}

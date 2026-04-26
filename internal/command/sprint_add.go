@@ -74,5 +74,6 @@ func SprintAdd(s *store.Store, cfg *config.Config, sprintID string, itemIDs []st
 	}
 
 	fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
+	autoSync(s, fmt.Sprintf("st sprint add: %s += %d item(s)", sprintID, len(itemIDs)))
 	return 0
 }

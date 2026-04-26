@@ -1006,7 +1006,7 @@ implement step during st run.`,
 		Short: "Remove an item from the queue",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.QueueRm(appCfg, args[0])
+			exitCode = command.QueueRm(appStore, appCfg, args[0])
 		},
 	})
 	queueMoveCmd := &cobra.Command{
@@ -1020,7 +1020,7 @@ implement step during st run.`,
 				exitCode = 2
 				return
 			}
-			exitCode = command.QueueMove(appCfg, args[0], pos)
+			exitCode = command.QueueMove(appStore, appCfg, args[0], pos)
 		},
 	}
 	queueCmd.AddCommand(queueMoveCmd)
@@ -1029,7 +1029,7 @@ implement step during st run.`,
 		Short: "Approve an agent-proposed queue item",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.QueueApprove(appCfg, args[0])
+			exitCode = command.QueueApprove(appStore, appCfg, args[0])
 		},
 	})
 	queueCmd.AddCommand(&cobra.Command{

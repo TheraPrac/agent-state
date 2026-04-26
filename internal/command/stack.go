@@ -81,6 +81,7 @@ func StackPush(s *store.Store, cfg *config.Config, id string, reason string) int
 	if reason != "" {
 		fmt.Printf("  reason: %s\n", reason)
 	}
+	autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth))
 	return 0
 }
 
@@ -130,6 +131,7 @@ func StackPop(s *store.Store, cfg *config.Config) int {
 				title = " — " + item.Title
 			}
 			fmt.Printf("Returning to %s%s\n", top.ID, title)
+			autoSync(s, fmt.Sprintf("st pop: %s (returning to %s)", popped.ID, top.ID))
 			return 0
 		}
 		fmt.Printf("  %s also resolved — skipping\n", top.ID)
@@ -142,6 +144,7 @@ func StackPop(s *store.Store, cfg *config.Config) int {
 	}
 
 	fmt.Println("Stack is now empty")
+	autoSync(s, fmt.Sprintf("st pop: %s", popped.ID))
 	return 0
 }
 

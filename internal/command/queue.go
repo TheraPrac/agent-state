@@ -27,6 +27,21 @@ type QueueOpts struct {
 	Reason string
 }
 
+// autoSync commits + pushes any working-tree changes left by a state-mutating
+// command (queue/stack/sprint writes that touch .as/* files). Best-effort —
+// failures log to stderr but don't fail the caller. Without this, every
+// st-command write left the working tree dirty until the operator ran
+// `st sync` manually, which the session-stop hook then flagged on every
+// Stop event (I-415).
+func autoSync(s *store.Store, msg string) {
+	if s == nil {
+		return
+	}
+	if err := s.GitSync(msg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", err)
+	}
+}
+
 // --- Commands ---
 
 func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int {
@@ -69,6 +84,7 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 		status = " (pending approval)"
 	}
 	fmt.Printf("Added %s to queue at position %d%s\n", id, len(entries), status)
+	autoSync(s, fmt.Sprintf("st queue add: %s", id))
 	return 0
 }
 
@@ -143,7 +159,7 @@ func QueueNext(s *store.Store, cfg *config.Config) int {
 	return 0
 }
 
-func QueueRm(cfg *config.Config, id string) int {
+func QueueRm(s *store.Store, cfg *config.Config, id string) int {
 	removed, err := removeFromQueueSilently(cfg, id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
@@ -154,6 +170,7 @@ func QueueRm(cfg *config.Config, id string) int {
 		return 1
 	}
 	fmt.Printf("Removed %s from queue\n", id)
+	autoSync(s, fmt.Sprintf("st queue rm: %s", id))
 	return 0
 }
 
@@ -223,10 +240,11 @@ func QueuePrune(s *store.Store, cfg *config.Config) int {
 	for _, d := range dropped {
 		fmt.Printf("  - %s\n", d)
 	}
+	autoSync(s, fmt.Sprintf("st queue prune: dropped %d terminal item(s)", len(dropped)))
 	return 0
 }
 
-func QueueMove(cfg *config.Config, id string, position int) int {
+func QueueMove(s *store.Store, cfg *config.Config, id string, position int) int {
 	entries := LoadQueue(cfg)
 
 	idx := -1
@@ -263,10 +281,11 @@ func QueueMove(cfg *config.Config, id string, position int) int {
 		return 1
 	}
 	fmt.Printf("Moved %s to position %d\n", id, position)
+	autoSync(s, fmt.Sprintf("st queue move: %s -> %d", id, position))
 	return 0
 }
 
-func QueueApprove(cfg *config.Config, id string) int {
+func QueueApprove(s *store.Store, cfg *config.Config, id string) int {
 	entries := LoadQueue(cfg)
 	found := false
 	for i, e := range entries {
@@ -285,6 +304,7 @@ func QueueApprove(cfg *config.Config, id string) int {
 		return 1
 	}
 	fmt.Printf("Approved %s\n", id)
+	autoSync(s, fmt.Sprintf("st queue approve: %s", id))
 	return 0
 }
 
