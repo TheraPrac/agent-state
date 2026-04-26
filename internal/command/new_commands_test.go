@@ -471,7 +471,7 @@ func TestCloseRecordsChangelog(t *testing.T) {
 
 func TestUpdateRecordsChangelog(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
-	Update(s, cfg, "T-001", "title", "New title")
+	Update(s, cfg, "T-001", "title", "New title", UpdateModeValue)
 
 	entries, _ := changelog.Read(cfg, "T-001")
 	found := false

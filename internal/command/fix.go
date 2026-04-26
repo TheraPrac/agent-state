@@ -229,7 +229,7 @@ func fixDeliveryGate(s *store.Store, cfg *config.Config) int {
 		}
 
 		// Auto-fix: stamp as uat_approved (legacy item, already archived)
-		setNestedField(item, "delivery", "stage", cfg.Delivery.ArchiveGate)
+		item.SetNested("delivery", "stage", cfg.Delivery.ArchiveGate)
 		if err := s.Write(item); err != nil {
 			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
 			continue

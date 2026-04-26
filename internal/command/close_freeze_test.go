@@ -27,7 +27,7 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 	// Created is already set by writeItems to 2026-03-25T12:00:00; we just need started_at.
 	item, _ := env.S.Get("T-003")
 	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
-	setNestedField(item, "time_tracking", "started_at", startedAt)
+	item.SetNested("time_tracking", "started_at", startedAt)
 	if err := env.S.Write(item); err != nil {
 		t.Fatalf("seeding started_at: %v", err)
 	}

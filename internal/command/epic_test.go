@@ -447,7 +447,7 @@ func TestSetNestedFieldNew(t *testing.T) {
 		{Raw: "id: T-001", Key: "id", Value: "T-001"},
 	}
 
-	setNestedField(item, "time_tracking", "started_at", "2026-03-26T10:00:00-06:00")
+	item.SetNested("time_tracking", "started_at", "2026-03-26T10:00:00-06:00")
 
 	val, ok := getNestedField(item, "time_tracking", "started_at")
 	if !ok {
@@ -469,7 +469,7 @@ func TestSetNestedFieldUpdate(t *testing.T) {
 	}
 	item.TimeTracking["started_at"] = "old"
 
-	setNestedField(item, "time_tracking", "started_at", "new")
+	item.SetNested("time_tracking", "started_at", "new")
 
 	val, ok := getNestedField(item, "time_tracking", "started_at")
 	if !ok || val != "new" {

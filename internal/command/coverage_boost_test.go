@@ -398,7 +398,7 @@ func TestAppendToNestedListNewParent(t *testing.T) {
 		},
 	}
 
-	appendToNestedList(doc, "work_tracking", "commits", "abc123 fix bug")
+	doc.AppendToNestedList("work_tracking", "commits", "abc123 fix bug")
 
 	got := doc.String()
 	if !containsStr(got, "work_tracking:") || !containsStr(got, "commits:") || !containsStr(got, "- abc123 fix bug") {
@@ -416,7 +416,7 @@ func TestAppendToNestedListExistingParentNewKey(t *testing.T) {
 		},
 	}
 
-	appendToNestedList(doc, "work_tracking", "commits", "abc123")
+	doc.AppendToNestedList("work_tracking", "commits", "abc123")
 
 	got := doc.String()
 	if !containsStr(got, "  commits:") || !containsStr(got, "  - abc123") {
@@ -433,7 +433,7 @@ func TestAppendToNestedListReplaceEmptyMarker(t *testing.T) {
 		},
 	}
 
-	appendToNestedList(doc, "work_tracking", "commits", "def456")
+	doc.AppendToNestedList("work_tracking", "commits", "def456")
 
 	got := doc.String()
 	if containsStr(got, "- []") {
@@ -453,7 +453,7 @@ func TestAppendToNestedListAppend(t *testing.T) {
 		},
 	}
 
-	appendToNestedList(doc, "work_tracking", "commits", "second")
+	doc.AppendToNestedList("work_tracking", "commits", "second")
 
 	got := doc.String()
 	if !containsStr(got, "- first") || !containsStr(got, "- second") {
@@ -468,7 +468,7 @@ func TestCloseWithTimeTracking(t *testing.T) {
 	// Set started_at on T-003 (active task)
 	item, _ := s.Get("T-003")
 	started := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
-	setNestedField(item, "time_tracking", "started_at", started)
+	item.SetNested("time_tracking", "started_at", started)
 	s.Write(item)
 
 	code := Close(s, cfg, "T-003", "completed", CloseOpts{Force: true})

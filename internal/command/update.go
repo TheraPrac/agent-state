@@ -2,7 +2,9 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
@@ -10,7 +12,49 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
+// listFields are top-level fields stored as YAML lists. Multi-line values
+// for these fields are split into list items rather than block scalars.
+var listFields = map[string]bool{
+	"acceptance_criteria": true, "depends_on": true, "blocks": true,
+	"related_issues": true, "next_actions": true, "resolution": true,
+	"invariants": true, "doc_changes": true, "linked_plans": true,
+}
+
+// StdinIsPiped reports whether stdin is piped (non-interactive). Exposed
+// so the cobra layer can pick stdin mode automatically when the user
+// hasn't passed --stdin but redirected input.
+func StdinIsPiped() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+// UpdateMode controls how Update sources its value when the caller did
+// not pass a positional value argument.
+type UpdateMode int
+
+const (
+	// UpdateModeValue uses the provided value verbatim — used when the
+	// caller already has the value in hand (positional CLI arg).
+	UpdateModeValue UpdateMode = iota
+	// UpdateModeStdin reads the value from os.Stdin until EOF.
+	UpdateModeStdin
+	// UpdateModeEditor opens $EDITOR (falling back to stdin if unset).
+	UpdateModeEditor
+)
+
+// Update writes a field on an item. The value is sourced according to
+// mode: UpdateModeValue uses `value` directly, UpdateModeStdin reads
+// from stdin, UpdateModeEditor launches $EDITOR seeded with the current
+// value (and falls back to a stdin prompt if no editor is configured).
+//
+// Long-form fields (description, summary, context, notes) round-trip as
+// YAML block scalars so multi-line content replaces cleanly. List fields
+// (depends_on, acceptance_criteria, etc.) accept multi-line input as a
+// list replacement.
+func Update(s *store.Store, cfg *config.Config, id, field, value string, mode UpdateMode) int {
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
@@ -29,16 +73,36 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 		return 1
 	}
 
-	// List fields — replace entire block instead of appending
-	listFields := map[string]bool{
-		"acceptance_criteria": true, "depends_on": true, "blocks": true,
-		"related_issues": true, "next_actions": true, "resolution": true,
-		"invariants": true, "doc_changes": true, "linked_plans": true,
+	// Resolve the value source.
+	switch mode {
+	case UpdateModeStdin:
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reading stdin: %v\n", err)
+			return 1
+		}
+		value = strings.TrimRight(string(data), "\n")
+		if value == "" {
+			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
+			return 1
+		}
+	case UpdateModeEditor:
+		current, _ := item.Doc.GetField(field)
+		new, code, ok := readFromEditor(id, field, current)
+		if !ok {
+			return code
+		}
+		if new == current {
+			fmt.Println("No changes.")
+			return 0
+		}
+		value = new
 	}
 
 	var oldValue string
-	if listFields[field] && strings.Contains(value, "\n") {
-		// Multiline value = list replacement.
+	switch {
+	case listFields[field] && strings.Contains(value, "\n"):
+		// Multi-line value = list replacement.
 		// Preserve indentation — TrimSpace would destroy YAML structure
 		// for continuation lines (e.g., "  command:" under "- description:").
 		var lines []string
@@ -48,10 +112,13 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 			}
 		}
 		item.Doc.ReplaceList(field, lines)
-	} else if strings.Contains(field, ".") {
+	case strings.Contains(field, "."):
 		oldValue, _ = item.Doc.GetNestedField(field)
 		item.Doc.SetNestedField(field, value)
-	} else {
+	default:
+		// SetField transparently handles both single-line and multi-line
+		// values: multi-line writes a YAML block scalar (`key: |-`), and
+		// updates remove any prior block continuation lines.
 		oldValue, _ = item.Doc.GetField(field)
 		item.Doc.SetField(field, value)
 	}
@@ -76,4 +143,57 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string) int {
 		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
 	}
 	return 0
+}
+
+// readFromEditor seeds $EDITOR with the field's current value, runs it,
+// and returns the user-supplied content. Falls back to a stdin prompt
+// when $EDITOR is unset (useful for non-interactive agent contexts).
+// The returned bool is false on a hard error; in that case `code` is
+// the exit code to propagate.
+func readFromEditor(id, field, current string) (string, int, bool) {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		fmt.Fprintf(os.Stderr, "No $EDITOR set. Enter new value for %s (Ctrl+D to finish):\n", field)
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reading stdin: %v\n", err)
+			return "", 1, false
+		}
+		v := strings.TrimRight(string(data), "\n")
+		if v == "" {
+			fmt.Fprintln(os.Stderr, "empty input — no changes")
+			return "", 1, false
+		}
+		return v, 0, true
+	}
+
+	tmpFile, err := os.CreateTemp("", fmt.Sprintf("as-edit-%s-%s-*.txt", id, field))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creating temp file: %v\n", err)
+		return "", 1, false
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	tmpFile.WriteString(current)
+	tmpFile.Close()
+
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
+		return "", 1, false
+	}
+
+	data, err := os.ReadFile(tmpPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reading temp file: %v\n", err)
+		return "", 1, false
+	}
+	return strings.TrimRight(string(data), "\n"), 0, true
 }

@@ -668,6 +668,69 @@ acceptance_criteria:
 	}
 }
 
+// TestParseFencedCodeBlockNotFrontmatter is the I-394 regression test:
+// a description body containing a ```yaml fenced block whose body has
+// `type: warning` must NOT corrupt the item's top-level Type field.
+func TestParseFencedCodeBlockNotFrontmatter(t *testing.T) {
+	content := "id: T-304\n" +
+		"type: task\n" +
+		"status: queued\n" +
+		"created: 2026-04-23T20:04:53-07:00\n" +
+		"last_touched: 2026-04-23T20:06:22-07:00\n" +
+		"title: T-304 fixture\n" +
+		"description: ## Problem\n" +
+		"\n" +
+		"Example mailbox message:\n" +
+		"\n" +
+		"```yaml\n" +
+		"from: agent-a-1\n" +
+		"to: agent-a-2\n" +
+		"type: warning\n" +
+		"body: \"auth changed\"\n" +
+		"```\n" +
+		"\n" +
+		"After the fence — back to body.\n"
+
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Type != "task" {
+		t.Errorf("Type = %q after parsing fence content; want %q (fenced `type: warning` leaked into frontmatter)", item.Type, "task")
+	}
+}
+
+// TestParseFencedCodeBlockClosing verifies that the closing ``` line
+// flips the parser back into normal frontmatter mode so that a `---`
+// separator after the fence is honored as the body marker.
+func TestParseFencedCodeBlockClosing(t *testing.T) {
+	content := "id: T-FENCE\n" +
+		"type: task\n" +
+		"status: queued\n" +
+		"created: 2026-04-23T20:04:53-07:00\n" +
+		"last_touched: 2026-04-23T20:06:22-07:00\n" +
+		"title: closing fence test\n" +
+		"description: |-\n" +
+		"  ```yaml\n" +
+		"  type: warning\n" +
+		"  ```\n"
+
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.Type != "task" {
+		t.Errorf("Type = %q; want %q", item.Type, "task")
+	}
+	// Roundtrip preserves the fence content verbatim.
+	out := item.Doc.String()
+	if !strings.Contains(out, "```yaml") || !strings.Contains(out, "type: warning") {
+		t.Errorf("roundtrip lost fence content:\n%s", out)
+	}
+}
+
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

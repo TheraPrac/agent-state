@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -409,7 +410,7 @@ func TestCloseQueueAutoRemoveSilentOnUnqueuedItem(t *testing.T) {
 
 func TestUpdateHappy(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Update(s, cfg, "T-001", "title", "Updated title")
+	code := Update(s, cfg, "T-001", "title", "Updated title", UpdateModeValue)
 	if code != 0 {
 		t.Errorf("Update returned %d, want 0", code)
 	}
@@ -417,9 +418,38 @@ func TestUpdateHappy(t *testing.T) {
 
 func TestUpdateNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Update(s, cfg, "T-999", "title", "nope")
+	code := Update(s, cfg, "T-999", "title", "nope", UpdateModeValue)
 	if code != 1 {
 		t.Errorf("Update nonexistent returned %d, want 1", code)
+	}
+}
+
+// TestUpdateLongFormFieldReplaces is the I-385 regression at the
+// command boundary: setting a long-form field with multi-line content
+// twice must replace, not accumulate, body content.
+func TestUpdateLongFormFieldReplaces(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	first := "first paragraph\nfirst details"
+	second := "second paragraph\nsecond details"
+
+	if code := Update(s, cfg, "T-001", "description", first, UpdateModeValue); code != 0 {
+		t.Fatalf("first Update returned %d", code)
+	}
+	if code := Update(s, cfg, "T-001", "description", second, UpdateModeValue); code != 0 {
+		t.Fatalf("second Update returned %d", code)
+	}
+
+	item, ok := s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 disappeared")
+	}
+	out := item.Doc.String()
+	if strings.Contains(out, "first paragraph") {
+		t.Errorf("stale first value remains:\n%s", out)
+	}
+	if !strings.Contains(out, "second paragraph") {
+		t.Errorf("latest value missing:\n%s", out)
 	}
 }
 
@@ -702,7 +732,7 @@ func TestUpdateNoDoc(t *testing.T) {
 	// Get item and nil out doc to test error path
 	item, _ := s.Get("T-001")
 	item.Doc = nil
-	code := Update(s, cfg, "T-001", "title", "test")
+	code := Update(s, cfg, "T-001", "title", "test", UpdateModeValue)
 	// Will succeed because store re-reads — just exercises the path
 	_ = code
 }

@@ -86,7 +86,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			return 1
 		}
 		if branch != "" {
-			setNestedField(item, "work_tracking", "branch", branch)
+			item.SetNested("work_tracking", "branch", branch)
 		}
 	}
 
@@ -134,7 +134,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		item.TimeTracking = make(map[string]interface{})
 	}
 	item.TimeTracking["started_at"] = now
-	setNestedField(item, "time_tracking", "started_at", now)
+	item.SetNested("time_tracking", "started_at", now)
 
 	if err := s.Write(item); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)

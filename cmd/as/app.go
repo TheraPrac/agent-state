@@ -139,25 +139,32 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 
 	updateCmd := &cobra.Command{
 		Use:   "update <id> <field> [value]",
-		Short: "Update a field on an item",
-		Args:  cobra.RangeArgs(2, 3),
+		Short: "Update a field on an item (positional value, $EDITOR, or --stdin)",
+		Long: `Update a field on an item using one of three input modes:
+
+  st update <id> <field> <value>   # positional — set directly
+  st update <id> <field>           # no value — open $EDITOR seeded with current value
+  st update <id> <field> --stdin   # read new value from stdin (pipe or heredoc)
+
+Long-form fields (description, summary, context, notes) round-trip as
+YAML block scalars so multi-line values replace cleanly.`,
+		Args: cobra.RangeArgs(2, 3),
 		Run: func(cmd *cobra.Command, args []string) {
 			stdinFlag, _ := cmd.Flags().GetBool("stdin")
-			var value string
-			if stdinFlag {
-				data, _ := io.ReadAll(os.Stdin)
-				value = strings.TrimRight(string(data), "\n")
-			} else if len(args) >= 3 {
-				value = args[2]
-			} else {
-				fmt.Fprintln(os.Stderr, "usage: st update <id> <field> <value> or --stdin")
-				exitCode = 2
-				return
+			id, field := args[0], args[1]
+			switch {
+			case stdinFlag:
+				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
+			case len(args) >= 3:
+				exitCode = command.Update(appStore, appCfg, id, field, args[2], command.UpdateModeValue)
+			case command.StdinIsPiped():
+				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
+			default:
+				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeEditor)
 			}
-			exitCode = command.Update(appStore, appCfg, args[0], args[1], value)
 		},
 	}
-	updateCmd.Flags().Bool("stdin", false, "read value from stdin")
+	updateCmd.Flags().Bool("stdin", false, "read value from stdin instead of opening $EDITOR")
 	root.AddCommand(updateCmd)
 
 	checkCmd := &cobra.Command{
@@ -443,18 +450,6 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	testRecordCmd.Flags().String("skip", "", "mark a scope suite as intentionally skipped with the given reason (scope suites only)")
 	testRecordCmd.Flags().String("agent", "", "agent workspace/runtime to target when executing a suite")
 	root.AddCommand(testRecordCmd)
-
-	editCmd := &cobra.Command{
-		Use:   "edit <id> <field>",
-		Short: "Edit a field in $EDITOR, or read from stdin when piped",
-		Args:  cobra.ExactArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			stdinFlag, _ := cmd.Flags().GetBool("stdin")
-			exitCode = command.Edit(appStore, appCfg, args[0], args[1], stdinFlag)
-		},
-	}
-	editCmd.Flags().Bool("stdin", false, "read new value from stdin instead of opening $EDITOR")
-	root.AddCommand(editCmd)
 
 	revertCmd := &cobra.Command{
 		Use:   "revert <id> [step]",

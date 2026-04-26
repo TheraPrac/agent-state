@@ -199,13 +199,13 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 
 	// Update item summary
 	prSummary := buildPRSummary(cfg.ManifestDir(), id)
-	setNestedField(item, "manifest", "prs", prSummary)
+	item.SetNested("manifest", "prs", prSummary)
 
 	// Surface code stats on the item
-	setNestedField(item, "manifest", "files_changed", fmt.Sprintf("%d", stats.FilesChanged))
-	setNestedField(item, "manifest", "insertions", fmt.Sprintf("%d", stats.Insertions))
-	setNestedField(item, "manifest", "deletions", fmt.Sprintf("%d", stats.Deletions))
-	setNestedField(item, "manifest", "net_lines", fmt.Sprintf("%+d", stats.Insertions-stats.Deletions))
+	item.SetNested("manifest", "files_changed", fmt.Sprintf("%d", stats.FilesChanged))
+	item.SetNested("manifest", "insertions", fmt.Sprintf("%d", stats.Insertions))
+	item.SetNested("manifest", "deletions", fmt.Sprintf("%d", stats.Deletions))
+	item.SetNested("manifest", "net_lines", fmt.Sprintf("%+d", stats.Insertions-stats.Deletions))
 
 	// Build per-file change summary (most impactful files first)
 	var fileSummary []string
@@ -214,14 +214,14 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 		fileSummary = append(fileSummary, fmt.Sprintf("%s %s +%d/-%d (%+d) [%s]",
 			f.Action, f.Path, f.LinesAdded, f.LinesDeleted, net, f.Type))
 	}
-	setNestedField(item, "manifest", "file_details", strings.Join(fileSummary, "\n"))
+	item.SetNested("manifest", "file_details", strings.Join(fileSummary, "\n"))
 
 	// Record head SHA
-	setNestedField(item, "manifest", "head_sha", headSHA)
+	item.SetNested("manifest", "head_sha", headSHA)
 
 	// Record PR in work_tracking
 	prRef := fmt.Sprintf("%s#%d", opts.Repo, opts.PRNumber)
-	appendToNestedList(item.Doc, "work_tracking", "pr", prRef)
+	item.Doc.AppendToNestedList("work_tracking", "pr", prRef)
 
 	// Record test files written (files classified as "test")
 	var testFiles []string
@@ -245,7 +245,7 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	for _, tf := range testFiles {
 		if !seen[tf] {
 			seen[tf] = true
-			appendToNestedList(item.Doc, "testing_evidence", "tests_written", tf)
+			item.Doc.AppendToNestedList("testing_evidence", "tests_written", tf)
 		}
 	}
 
@@ -258,7 +258,7 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	}
 	if len(docFiles) > 0 {
 		for _, df := range docFiles {
-			appendToNestedList(item.Doc, "testing_evidence", "doc_changes", df)
+			item.Doc.AppendToNestedList("testing_evidence", "doc_changes", df)
 		}
 	}
 
@@ -271,7 +271,7 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 			if opts.FileExists(filepath.Join(repoDir, spec)) {
 				if !seen[spec] {
 					seen[spec] = true
-					appendToNestedList(item.Doc, "testing_evidence", "tests_written", spec)
+					item.Doc.AppendToNestedList("testing_evidence", "tests_written", spec)
 				}
 			}
 		}
@@ -281,7 +281,7 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	for _, suite := range scopeSuites {
 		current, _ := getNestedField(item, "testing_evidence", suite)
 		if current == "" || current == "null" {
-			setNestedField(item, "testing_evidence", suite, "required")
+			item.SetNested("testing_evidence", suite, "required")
 		}
 	}
 

@@ -94,8 +94,8 @@ func TestReconcileBranchPush(t *testing.T) {
 
 	// Set up an item at coding stage with a branch
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "coding")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "coding")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -120,8 +120,8 @@ func TestReconcileBranchPushDryRun(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "coding")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "coding")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -145,8 +145,8 @@ func TestReconcilePRState(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "pushed")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "pushed")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -171,8 +171,8 @@ func TestReconcileMergeState(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "pr_open")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "pr_open")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -246,7 +246,7 @@ func TestReconcileNoBranchSkips(t *testing.T) {
 
 	// Item at coding stage but no branch — should be skipped
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "coding")
+	item.SetNested("delivery", "stage", "coding")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -266,8 +266,8 @@ func TestReconcilePRStateMerged(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "pushed")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "pushed")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -291,8 +291,8 @@ func TestReconcilePRStateNoPR(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "pushed")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "pushed")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -311,8 +311,8 @@ func TestReconcileBranchNotOnRemote(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "coding")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "coding")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -330,8 +330,8 @@ func TestReconcileFullFlow(t *testing.T) {
 
 	// Set up item at coding with branch
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "coding")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "coding")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)
@@ -493,8 +493,8 @@ func TestReconcileDeployStateNoAWS(t *testing.T) {
 
 	// Set up merged item
 	item, _ := s.Get("T-001")
-	setNestedField(item, "delivery", "stage", "merged")
-	setNestedField(item, "work_tracking", "branch", "feat/T-001-test")
+	item.SetNested("delivery", "stage", "merged")
+	item.SetNested("work_tracking", "branch", "feat/T-001-test")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 	s.Write(item)

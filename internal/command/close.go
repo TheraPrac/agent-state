@@ -86,12 +86,12 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	item.Doc.SetField("last_touched", nowStr)
 
 	// Record completion time tracking
-	setNestedField(item, "time_tracking", "completed_at", nowStr)
+	item.SetNested("time_tracking", "completed_at", nowStr)
 
 	// total_duration_seconds = closed_at - created_at (calendar wall time from
 	// item creation, includes idle periods). Always computed.
 	if !item.Created.IsZero() {
-		setNestedField(item, "time_tracking", "total_duration_seconds",
+		item.SetNested("time_tracking", "total_duration_seconds",
 			fmt.Sprintf("%d", int(now.Sub(item.Created).Seconds())))
 	}
 
@@ -100,10 +100,10 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
 		if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
 			wallDur := now.Sub(t)
-			setNestedField(item, "time_tracking", "work_duration_seconds",
+			item.SetNested("time_tracking", "work_duration_seconds",
 				fmt.Sprintf("%d", int(wallDur.Seconds())))
-			setNestedField(item, "time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
-			setNestedField(item, "time_tracking", "total_wall_time", formatDuration(wallDur))
+			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
+			item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
 		}
 	}
 
@@ -121,23 +121,23 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		fmt.Sscanf(v, "%d", &aiSecs)
 	}
 	if aiSecs > 0 {
-		setNestedField(item, "time_tracking", "total_ai_time", formatDuration(time.Duration(aiSecs)*time.Second))
+		item.SetNested("time_tracking", "total_ai_time", formatDuration(time.Duration(aiSecs)*time.Second))
 	}
 
 	// AI cost summary
 	if aiCost, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok && aiCost != "" {
-		setNestedField(item, "time_tracking", "total_ai_cost_usd", aiCost)
+		item.SetNested("time_tracking", "total_ai_cost_usd", aiCost)
 	}
 
 	// Token totals
 	if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok && v != "" {
-		setNestedField(item, "time_tracking", "total_input_tokens", v)
+		item.SetNested("time_tracking", "total_input_tokens", v)
 	}
 	if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok && v != "" {
-		setNestedField(item, "time_tracking", "total_output_tokens", v)
+		item.SetNested("time_tracking", "total_output_tokens", v)
 	}
 	if v, ok := getNestedField(item, "time_tracking", "total_tokens"); ok && v != "" {
-		setNestedField(item, "time_tracking", "total_tokens_final", v)
+		item.SetNested("time_tracking", "total_tokens_final", v)
 	}
 
 	if opts.Reason != "" {
@@ -307,10 +307,10 @@ func freezeLOCSnapshot(s *store.Store, cfg *config.Config, item *modelItemRef, o
 		return
 	}
 
-	setNestedField(item, "time_tracking", "lines_added", fmt.Sprintf("%d", res.Totals.Added))
-	setNestedField(item, "time_tracking", "lines_removed", fmt.Sprintf("%d", res.Totals.Removed))
-	setNestedField(item, "time_tracking", "lines_net", fmt.Sprintf("%+d", res.Totals.Net))
-	setNestedField(item, "time_tracking", "files_changed_count", fmt.Sprintf("%d", res.Totals.Files))
+	item.SetNested("time_tracking", "lines_added", fmt.Sprintf("%d", res.Totals.Added))
+	item.SetNested("time_tracking", "lines_removed", fmt.Sprintf("%d", res.Totals.Removed))
+	item.SetNested("time_tracking", "lines_net", fmt.Sprintf("%+d", res.Totals.Net))
+	item.SetNested("time_tracking", "files_changed_count", fmt.Sprintf("%d", res.Totals.Files))
 
 	// lines_by_repo: one line per repo under time_tracking.by_repo
 	for _, r := range res.Repos {
@@ -324,7 +324,7 @@ func freezeLOCSnapshot(s *store.Store, cfg *config.Config, item *modelItemRef, o
 				}
 				return false
 			}, line) {
-			appendListField(item, "time_tracking", "by_repo", line)
+			item.Doc.AppendToNestedList("time_tracking", "by_repo", line)
 		}
 	}
 
@@ -334,7 +334,7 @@ func freezeLOCSnapshot(s *store.Store, cfg *config.Config, item *modelItemRef, o
 	for _, f := range res.Files {
 		line := fmt.Sprintf("%s %s %s +%d -%d (%+d) [%s]",
 			f.Repo, f.Action, f.Path, f.Added, f.Removed, f.Net, f.Type)
-		appendListField(item, "time_tracking", "files_changed", line)
+		item.Doc.AppendToNestedList("time_tracking", "files_changed", line)
 	}
 
 	for _, w := range res.Warnings {

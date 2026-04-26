@@ -2,64 +2,10 @@ package command
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/model"
 )
-
-// setNestedField writes a value into a nested map on the item and updates the Doc.
-// Example: setNestedField(item, "time_tracking", "started_at", "2026-03-26T10:00:00-06:00")
-func setNestedField(item *model.Item, parent, key, val string) {
-	// Update the in-memory map
-	m := nestedMap(item, parent)
-	if m != nil {
-		m[key] = val
-	}
-
-	// Update the document for roundtrip fidelity
-	if item.Doc == nil {
-		return
-	}
-
-	// Find the parent key line, then find or insert the nested key
-	parentIdx := -1
-	for i, line := range item.Doc.Lines {
-		if line.Key == parent && line.Indent == 0 {
-			parentIdx = i
-			break
-		}
-	}
-
-	if parentIdx < 0 {
-		// Parent not found — append parent and nested key
-		item.Doc.Lines = append(item.Doc.Lines,
-			model.Line{Raw: "", IsEmpty: true},
-			model.Line{Raw: parent + ":", Key: parent},
-			model.Line{Raw: "  " + key + ": " + val, Key: key, Indent: 2, BlockKey: parent},
-		)
-		return
-	}
-
-	// Search for existing nested key within the parent block
-	for i := parentIdx + 1; i < len(item.Doc.Lines); i++ {
-		line := item.Doc.Lines[i]
-		if line.Indent == 0 && !line.IsEmpty {
-			break // left the parent block
-		}
-		if line.Key == key && line.Indent > 0 && line.BlockKey == parent {
-			// Update existing
-			item.Doc.Lines[i].Raw = "  " + key + ": " + val
-			item.Doc.Lines[i].Value = val
-			return
-		}
-	}
-
-	// Not found in block — insert after parent line
-	newLine := model.Line{Raw: "  " + key + ": " + val, Key: key, Value: val, Indent: 2, BlockKey: parent}
-	after := parentIdx + 1
-	item.Doc.Lines = append(item.Doc.Lines[:after], append([]model.Line{newLine}, item.Doc.Lines[after:]...)...)
-}
 
 // getNestedField reads a value from a nested map on the item.
 func getNestedField(item *model.Item, parent, key string) (string, bool) {
@@ -178,76 +124,3 @@ func readIntField(item *model.Item, parent, key string) int {
 	return 0
 }
 
-// appendListField appends a value to a list field under a parent block in the document.
-func appendListField(item *model.Item, parent, key, val string) {
-	if item.Doc == nil {
-		return
-	}
-
-	parentIdx := -1
-	keyIdx := -1
-	lastInBlock := -1
-	for i, line := range item.Doc.Lines {
-		if line.Key == parent && line.Indent == 0 {
-			parentIdx = i
-		}
-		if parentIdx >= 0 && i > parentIdx {
-			if line.Indent == 0 && !line.IsEmpty && line.Key != "" {
-				break
-			}
-			if line.Key == key && line.Indent > 0 {
-				keyIdx = i
-			}
-			lastInBlock = i
-		}
-	}
-
-	newLine := model.Line{
-		Raw:      fmt.Sprintf("  - %s", val),
-		Indent:   2,
-		BlockKey: parent,
-	}
-
-	if parentIdx < 0 {
-		item.Doc.Lines = append(item.Doc.Lines,
-			model.Line{Raw: "", IsEmpty: true},
-			model.Line{Raw: parent + ":", Key: parent},
-			model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent},
-			newLine,
-		)
-		return
-	}
-
-	if keyIdx < 0 {
-		insertAt := lastInBlock + 1
-		if insertAt <= parentIdx {
-			insertAt = parentIdx + 1
-		}
-		lines := make([]model.Line, 0, len(item.Doc.Lines)+2)
-		lines = append(lines, item.Doc.Lines[:insertAt]...)
-		lines = append(lines, model.Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent})
-		lines = append(lines, newLine)
-		lines = append(lines, item.Doc.Lines[insertAt:]...)
-		item.Doc.Lines = lines
-		return
-	}
-
-	insertAt := keyIdx + 1
-	for insertAt < len(item.Doc.Lines) {
-		line := item.Doc.Lines[insertAt]
-		if line.Indent < 2 || (line.Key != "" && !strings.HasPrefix(line.Raw, "  -")) {
-			break
-		}
-		if strings.HasPrefix(strings.TrimSpace(line.Raw), "- ") {
-			insertAt++
-			continue
-		}
-		break
-	}
-
-	lines := make([]model.Line, 0, len(item.Doc.Lines)+1)
-	lines = append(lines, item.Doc.Lines[:insertAt]...)
-	lines = append(lines, newLine)
-	lines = append(lines, item.Doc.Lines[insertAt:]...)
-	item.Doc.Lines = lines
-}

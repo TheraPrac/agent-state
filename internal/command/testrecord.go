@@ -89,7 +89,7 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 			return 1
 		}
 		ev := fmt.Sprintf("skip: %s", opts.Skip)
-		setNestedField(item, "testing_evidence", suite, ev)
+		item.SetNested("testing_evidence", suite, ev)
 		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 		if err := s.Write(item); err != nil {
 			fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
@@ -124,7 +124,7 @@ func testRecordOnly(s *store.Store, cfg *config.Config, id, suite, sha string, i
 	now := time.Now()
 	ev := fmt.Sprintf("pass %s %s", sha, now.Format(time.RFC3339))
 
-	setNestedField(item, "testing_evidence", suite, ev)
+	item.SetNested("testing_evidence", suite, ev)
 	item.Doc.SetField("last_touched", now.Format(time.RFC3339))
 
 	if err := s.Write(item); err != nil {
@@ -227,7 +227,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	// If test failed, record failure and stop
 	if exitCode != 0 {
 		ev := fmt.Sprintf("fail %s %s evidence:%s", sha, now.Format(time.RFC3339), logURI)
-		setNestedField(item, "testing_evidence", suite, ev)
+		item.SetNested("testing_evidence", suite, ev)
 		item.Doc.SetField("last_touched", now.Format(time.RFC3339))
 		s.Write(item)
 
@@ -256,7 +256,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 
 	// Record pass
 	ev := fmt.Sprintf("pass %s %s evidence:%s", sha, now.Format(time.RFC3339), logURI)
-	setNestedField(item, "testing_evidence", suite, ev)
+	item.SetNested("testing_evidence", suite, ev)
 	item.Doc.SetField("last_touched", now.Format(time.RFC3339))
 
 	if err := s.Write(item); err != nil {

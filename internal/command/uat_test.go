@@ -16,10 +16,10 @@ func setupUATTestEnv(t *testing.T) (*store.Store, *config.Config) {
 
 	// Give T-003 test evidence and manifest
 	item, _ := s.Get("T-003")
-	setNestedField(item, "testing_evidence", "api_unit", "pass abc123 2026-03-27T10:00:00-06:00 evidence:s3://bucket/log.txt")
-	setNestedField(item, "testing_evidence", "api_lint", "pass abc123 2026-03-27T10:00:00-06:00")
-	setNestedField(item, "manifest", "prs", "api#42")
-	setNestedField(item, "delivery", "stage", "pr_open")
+	item.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27T10:00:00-06:00 evidence:s3://bucket/log.txt")
+	item.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27T10:00:00-06:00")
+	item.SetNested("manifest", "prs", "api#42")
+	item.SetNested("delivery", "stage", "pr_open")
 	item.AcceptanceCriteria = []string{
 		"API unit tests pass",
 		"PR manifest recorded",
@@ -88,7 +88,7 @@ func TestUATMissingEvidence(t *testing.T) {
 
 	// Remove test evidence
 	item, _ := s.Get("T-003")
-	setNestedField(item, "testing_evidence", "api_unit", "null")
+	item.SetNested("testing_evidence", "api_unit", "null")
 	s.Write(item)
 
 	opts := UATOpts{

@@ -139,7 +139,7 @@ func reconcileBranchPush(s *store.Store, cfg *config.Config, opts ReconcileOpts)
 			updates++
 			fmt.Printf("  %s: %s → pushed (branch %s found on remote)\n", item.ID, stage, branch)
 			if !opts.DryRun {
-				setNestedField(item, "delivery", "stage", "pushed")
+				item.SetNested("delivery", "stage", "pushed")
 				touchItem(item, cfg)
 				if err := s.Write(item); err != nil {
 					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
@@ -185,7 +185,7 @@ func reconcilePRState(s *store.Store, cfg *config.Config, opts ReconcileOpts) in
 			updates++
 			fmt.Printf("  %s: pushed → %s (PR %s)\n", item.ID, newStage, prState)
 			if !opts.DryRun {
-				setNestedField(item, "delivery", "stage", newStage)
+				item.SetNested("delivery", "stage", newStage)
 				// Store PR URLs if we found them
 				if len(prURLs) > 0 {
 					storePRURLs(item, prURLs)
@@ -219,7 +219,7 @@ func reconcileMergeState(s *store.Store, cfg *config.Config, opts ReconcileOpts)
 			updates++
 			fmt.Printf("  %s: pr_open → merged\n", item.ID)
 			if !opts.DryRun {
-				setNestedField(item, "delivery", "stage", "merged")
+				item.SetNested("delivery", "stage", "merged")
 				touchItem(item, cfg)
 				if err := s.Write(item); err != nil {
 					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
@@ -330,8 +330,8 @@ func reconcileDeployState(s *store.Store, cfg *config.Config, opts ReconcileOpts
 			updates++
 			fmt.Printf("  %s: merged → deployed_dev (all PRs deployed)\n", item.ID)
 			if !opts.DryRun {
-				setNestedField(item, "delivery", "stage", "deployed_dev")
-				setNestedField(item, "delivery", "deployed_date", time.Now().Format("2006-01-02"))
+				item.SetNested("delivery", "stage", "deployed_dev")
+				item.SetNested("delivery", "deployed_date", time.Now().Format("2006-01-02"))
 				touchItem(item, cfg)
 				if err := s.Write(item); err != nil {
 					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)

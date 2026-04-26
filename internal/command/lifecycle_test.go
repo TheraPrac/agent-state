@@ -141,7 +141,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 9: Update a field ===
-	code = Update(s, cfg, "T-005", "title", "Updated lifecycle task")
+	code = Update(s, cfg, "T-005", "title", "Updated lifecycle task", UpdateModeValue)
 	if code != 0 {
 		t.Fatalf("Update returned %d", code)
 	}

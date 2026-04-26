@@ -148,7 +148,7 @@ func TestEditNoEditor(t *testing.T) {
 	os.Unsetenv("EDITOR")
 	os.Unsetenv("VISUAL")
 
-	code := Edit(s, cfg, "T-001", "title", false)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
 	if code != 1 {
 		t.Errorf("Edit without $EDITOR returned %d, want 1", code)
 	}
@@ -156,7 +156,7 @@ func TestEditNoEditor(t *testing.T) {
 
 func TestEditNotFound(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
-	code := Edit(s, cfg, "T-999", "title", false)
+	code := Update(s, cfg, "T-999", "title", "", UpdateModeEditor)
 	if code != 1 {
 		t.Errorf("Edit not found returned %d, want 1", code)
 	}
@@ -166,7 +166,7 @@ func TestEditNoDoc(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 	item, _ := s.Get("T-001")
 	item.Doc = nil
-	code := Edit(s, cfg, "T-001", "title", false)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
 	if code != 1 {
 		t.Errorf("Edit no doc returned %d, want 1", code)
 	}
@@ -178,7 +178,7 @@ func TestEditNoChanges(t *testing.T) {
 	os.Setenv("EDITOR", "true")
 	defer os.Unsetenv("EDITOR")
 
-	code := Edit(s, cfg, "T-001", "title", false)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
 	if code != 0 {
 		t.Errorf("Edit no-change returned %d, want 0", code)
 	}
@@ -195,7 +195,7 @@ func TestEditFromStdinFlag(t *testing.T) {
 	w.Close()
 	defer func() { os.Stdin = oldStdin }()
 
-	code := Edit(s, cfg, "T-001", "title", true)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeStdin)
 	if code != 0 {
 		t.Errorf("Edit --stdin returned %d, want 0", code)
 	}
@@ -217,7 +217,7 @@ func TestEditFromStdinEmpty(t *testing.T) {
 	w.Close()
 	defer func() { os.Stdin = oldStdin }()
 
-	code := Edit(s, cfg, "T-001", "title", true)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeStdin)
 	if code != 1 {
 		t.Errorf("Edit --stdin with empty input returned %d, want 1", code)
 	}
@@ -234,7 +234,7 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	w.WriteString(input1)
 	w.Close()
 
-	code := Edit(s, cfg, "T-001", "acceptance_criteria", true)
+	code := Update(s, cfg, "T-001", "acceptance_criteria", "", UpdateModeStdin)
 	os.Stdin = oldStdin
 	if code != 0 {
 		t.Fatalf("first Edit --stdin returned %d, want 0", code)
@@ -247,7 +247,7 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	w2.WriteString(input2)
 	w2.Close()
 
-	code = Edit(s, cfg, "T-001", "acceptance_criteria", true)
+	code = Update(s, cfg, "T-001", "acceptance_criteria", "", UpdateModeStdin)
 	os.Stdin = oldStdin
 	if code != 0 {
 		t.Fatalf("second Edit --stdin returned %d, want 0", code)
@@ -413,7 +413,7 @@ func TestEditUsesVisual(t *testing.T) {
 	os.Setenv("VISUAL", "true")
 	defer os.Unsetenv("VISUAL")
 
-	code := Edit(s, cfg, "T-001", "title", false)
+	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
 	if code != 0 {
 		t.Errorf("Edit with VISUAL returned %d, want 0", code)
 	}

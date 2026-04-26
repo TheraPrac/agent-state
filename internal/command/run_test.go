@@ -1127,7 +1127,7 @@ func TestCloseGateRejectsSkippedDeploy(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
-	setNestedField(item, "delivery", "skipped_steps", "deploy_watch")
+	item.SetNested("delivery", "skipped_steps", "deploy_watch")
 	s.Write(item)
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
@@ -1148,7 +1148,7 @@ func TestCloseGateRejectsSkippedUAT(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
-	setNestedField(item, "delivery", "skipped_steps", "uat_review")
+	item.SetNested("delivery", "skipped_steps", "uat_review")
 	s.Write(item)
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
@@ -1187,7 +1187,7 @@ func TestCloseGateAllowsNonCriticalSkips(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
-	setNestedField(item, "delivery", "skipped_steps", "code_review")
+	item.SetNested("delivery", "skipped_steps", "code_review")
 	s.Write(item)
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
@@ -1206,7 +1206,7 @@ func TestCloseGateRejectsMultipleSkips(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
-	setNestedField(item, "delivery", "skipped_steps", "code_review,deploy_watch,smoke")
+	item.SetNested("delivery", "skipped_steps", "code_review,deploy_watch,smoke")
 	s.Write(item)
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}

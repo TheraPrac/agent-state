@@ -1583,8 +1583,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
 			if lastStep == "" || lastStep == "plan" {
 				fmt.Printf("[%s] Verification-only item (no code changes) — skipping to verify_tests\n", itemID)
-				setNestedField(item, "delivery", "last_completed_step", "merge")
-				setNestedField(item, "delivery", "stage", "verification")
+				item.SetNested("delivery", "last_completed_step", "merge")
+				item.SetNested("delivery", "stage", "verification")
 				item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 				localStore.Write(item)
 				localStore, _ = store.New(cfg)
@@ -1596,8 +1596,8 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// (still need deploy verification, smoke, UAT, and user approval)
 	if detectMergedPR(cfg, itemID, item) {
 		fmt.Printf("[%s] PR already merged — advancing to post-merge steps\n", itemID)
-		setNestedField(item, "delivery", "stage", "merged")
-		setNestedField(item, "delivery", "last_completed_step", "merge")
+		item.SetNested("delivery", "stage", "merged")
+		item.SetNested("delivery", "last_completed_step", "merge")
 		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 		localStore.Write(item)
 		// Reload and continue — the resume logic will skip to deploy_watch
@@ -1673,7 +1673,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		claudeSessionID = generateSessionID()
 		if progressStore, err := store.New(cfg); err == nil {
 			if progressItem, ok := progressStore.Get(itemID); ok {
-				setNestedField(progressItem, "delivery", "claude_session_id", claudeSessionID)
+				progressItem.SetNested("delivery", "claude_session_id", claudeSessionID)
 				progressStore.Write(progressItem)
 			}
 		}
@@ -1874,7 +1874,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 							fmt.Printf("[%s] Step %s OK after fix attempt %d (%s)\n", itemID, step.Name(), attempt, sr2.Duration.Round(time.Second))
 							if progressStore, err := store.New(cfg); err == nil {
 								if progressItem, ok := progressStore.Get(itemID); ok {
-									setNestedField(progressItem, "delivery", "last_completed_step", step.Name())
+									progressItem.SetNested("delivery", "last_completed_step", step.Name())
 									progressStore.Write(progressItem)
 								}
 							}
@@ -1932,7 +1932,7 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		// Record progress so we can resume from here if interrupted
 		if progressStore, err := store.New(cfg); err == nil {
 			if progressItem, ok := progressStore.Get(itemID); ok {
-				setNestedField(progressItem, "delivery", "last_completed_step", step.Name())
+				progressItem.SetNested("delivery", "last_completed_step", step.Name())
 				progressStore.Write(progressItem)
 			}
 		}
@@ -1983,9 +1983,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 						if pi, ok := ps.Get(itemID); ok {
 							existing, _ := getNestedField(pi, "delivery", "skipped_steps")
 							if existing == "" {
-								setNestedField(pi, "delivery", "skipped_steps", nextStep)
+								pi.SetNested("delivery", "skipped_steps", nextStep)
 							} else {
-								setNestedField(pi, "delivery", "skipped_steps", existing+","+nextStep)
+								pi.SetNested("delivery", "skipped_steps", existing+","+nextStep)
 							}
 							ps.Write(pi)
 						}
@@ -2301,8 +2301,8 @@ func executePR(s *store.Store, cfg *config.Config, itemID string, step config.Ru
 			fmt.Printf("[%s] No code changes — marking as no-op, skipping PR/test/deploy steps\n", itemID)
 			if localStore, err := store.New(cfg); err == nil {
 				if item, ok := localStore.Get(itemID); ok {
-					setNestedField(item, "delivery", "stage", "no_op")
-					setNestedField(item, "delivery", "last_completed_step", "smoke")
+					item.SetNested("delivery", "stage", "no_op")
+					item.SetNested("delivery", "last_completed_step", "smoke")
 					item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 					localStore.Write(item)
 				}
@@ -2771,9 +2771,9 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 			if approvalStore, err := store.New(cfg); err == nil {
 				if approvalItem, ok := approvalStore.Get(itemID); ok {
 					now := time.Now()
-					setNestedField(approvalItem, "delivery", "uat_approved_by", "user")
-					setNestedField(approvalItem, "delivery", "uat_approved_date", now.Format("2006-01-02"))
-					setNestedField(approvalItem, "delivery", "stage", "uat_approved")
+					approvalItem.SetNested("delivery", "uat_approved_by", "user")
+					approvalItem.SetNested("delivery", "uat_approved_date", now.Format("2006-01-02"))
+					approvalItem.SetNested("delivery", "stage", "uat_approved")
 					approvalItem.Doc.SetField("last_touched", now.Format(time.RFC3339))
 					approvalStore.Write(approvalItem)
 				}
@@ -3559,8 +3559,8 @@ func recordSession(s *store.Store, cfg *config.Config, itemID, sessionID, stepNa
 	updateListInDoc(item, "sessions", item.Sessions)
 
 	// Record in time_tracking which step used this session
-	setNestedField(item, "time_tracking", "last_session", sessionID)
-	setNestedField(item, "time_tracking", "last_step", stepName)
+	item.SetNested("time_tracking", "last_session", sessionID)
+	item.SetNested("time_tracking", "last_step", stepName)
 
 	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 	s.Write(item)
@@ -4438,8 +4438,8 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 		// so the pipeline continues with deploy verification, UAT, etc.
 		if detectMergedPR(cfg, itemID, item) {
 			fmt.Printf("[%s] PR already merged — advancing to post-merge steps\n", itemID)
-			setNestedField(item, "delivery", "stage", "merged")
-			setNestedField(item, "delivery", "last_completed_step", "merge")
+			item.SetNested("delivery", "stage", "merged")
+			item.SetNested("delivery", "last_completed_step", "merge")
 			item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
 			s.Write(item)
 			continue
@@ -5349,7 +5349,7 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	b.WriteString("     The heredoc MUST contain ONLY '- cmd:' lines. No prose, no markdown, no commentary.\n")
 	b.WriteString("   - Other fields: `st update " + itemID + " <field> <value>`\n")
 	b.WriteString("   Do NOT just list problems for the user to fix — resolve them yourself.\n")
-	b.WriteString("   Do NOT use `st edit` (requires interactive $EDITOR). Always use `--stdin`.\n\n")
+	b.WriteString("   Always use `--stdin` for multi-line values; never rely on $EDITOR in this prompt context.\n\n")
 	b.WriteString("3. Then produce a concise report for the user:\n")
 	b.WriteString("   - SCOPE — assessment (1 line)\n")
 	b.WriteString("   - APPROACH — assessment (1-2 lines)\n")
@@ -5474,7 +5474,7 @@ func buildFeedbackPrompt(itemID string, item *model.Item, gateType, userFeedback
 	b.WriteString("- Acceptance criteria: `cat <<'EOF' | st update " + itemID + " acceptance_criteria --stdin`\n")
 	b.WriteString("  The heredoc MUST contain ONLY '- cmd:' lines. No prose, no markdown, no commentary.\n")
 	b.WriteString("- Other fields: `st update " + itemID + " <field> <value>`\n")
-	b.WriteString("Do NOT use `st edit` (requires interactive $EDITOR). Always use `--stdin`.\n\n")
+	b.WriteString("Always use `--stdin` for multi-line values; never rely on $EDITOR in this prompt context.\n\n")
 	b.WriteString("After making changes, produce a brief summary of what you changed (2-3 lines max).\n")
 	b.WriteString("Do NOT produce a full review report — the review will re-run automatically after your changes.\n")
 	return b.String()

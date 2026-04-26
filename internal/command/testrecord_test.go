@@ -45,7 +45,7 @@ func TestTestRecordScopeSuite(t *testing.T) {
 	opts := testRecordOpts()
 
 	item, _ := s.Get("T-003")
-	setNestedField(item, "testing_evidence", "api_integration", "required")
+	item.SetNested("testing_evidence", "api_integration", "required")
 	s.Write(item)
 
 	code := TestRecord(s, cfg, "T-003", "api_integration", opts)

@@ -48,6 +48,7 @@ func File(path string) (*model.Item, error) {
 		currentBlock   string // accumulating multiline block content
 		blockIndent    int    // expected indent for block continuation
 		inBlock        bool
+		inFence        bool   // inside a markdown ``` fenced code block
 		nestKey        string // current nested parent key (e.g., "work_tracking")
 		currentList    []string
 		inListOfMaps   bool        // true when parsing list of objects (testing_evidence.runs)
@@ -69,6 +70,23 @@ func File(path string) (*model.Item, error) {
 			if ci := findInlineComment(trimmed); ci >= 0 {
 				line.Comment = strings.TrimSpace(trimmed[ci+1:])
 				trimmed = strings.TrimSpace(trimmed[:ci])
+			}
+		}
+
+		// Markdown fenced code block awareness. Inside a ``` fence, lines
+		// are opaque body content — never parsed as YAML, even if they
+		// happen to look like `key: value`. This prevents description-body
+		// content like ```yaml\ntype: warning\n``` from corrupting frontmatter.
+		if !inBlock {
+			isFence := strings.HasPrefix(trimmed, "```")
+			if inFence || isFence {
+				line.IsBlock = true
+				line.BlockKey = currentKey
+				doc.Lines = append(doc.Lines, line)
+				if isFence {
+					inFence = !inFence
+				}
+				continue
 			}
 		}
 

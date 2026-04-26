@@ -60,6 +60,47 @@ type Item struct {
 	Doc *ParsedDocument
 }
 
+// SetNested updates a nested string field on the item, keeping the
+// in-memory typed map and the parsed document in sync. It is the single
+// canonical write entry point for nested scalars used by command
+// handlers (st start, st run, st pr, etc.).
+//
+// The parent must be one of: work_tracking, delivery, testing_evidence,
+// time_tracking, manifest. Unknown parents are written to the document
+// only.
+func (it *Item) SetNested(parent, key, value string) {
+	switch parent {
+	case "work_tracking":
+		if it.WorkTracking == nil {
+			it.WorkTracking = make(map[string]interface{})
+		}
+		it.WorkTracking[key] = value
+	case "delivery":
+		if it.Delivery == nil {
+			it.Delivery = make(map[string]interface{})
+		}
+		it.Delivery[key] = value
+	case "testing_evidence":
+		if it.TestingEvidence == nil {
+			it.TestingEvidence = make(map[string]interface{})
+		}
+		it.TestingEvidence[key] = value
+	case "time_tracking":
+		if it.TimeTracking == nil {
+			it.TimeTracking = make(map[string]interface{})
+		}
+		it.TimeTracking[key] = value
+	case "manifest":
+		if it.Manifest == nil {
+			it.Manifest = make(map[string]interface{})
+		}
+		it.Manifest[key] = value
+	}
+	if it.Doc != nil {
+		it.Doc.SetNestedField(parent+"."+key, value)
+	}
+}
+
 // ParsedDocument retains the raw line structure of a file for lossless roundtrip.
 // The parser produces this, and the writer serializes from it.
 type ParsedDocument struct {
@@ -87,34 +128,59 @@ func NewParsedDocument() *ParsedDocument {
 }
 
 // SetField updates or inserts a scalar field value in the document.
+// For multi-line values, the field is rendered as a YAML block scalar
+// (`key: |-`) and previously-attached block continuation lines are
+// replaced. For single-line values where the existing field had block
+// continuation lines, those continuation lines are removed.
 // Returns true if the field was found and updated, false if inserted.
 func (d *ParsedDocument) SetField(key, value string) bool {
 	for i, line := range d.Lines {
 		if line.Key == key && line.Indent == 0 {
-			// Preserve inline comment if present
-			newRaw := key + ": " + value
-			if line.Comment != "" {
-				newRaw += "  # " + line.Comment
+			// Drop any existing block continuation lines under this key.
+			end := i + 1
+			for end < len(d.Lines) && d.Lines[end].IsBlock && d.Lines[end].BlockKey == key {
+				end++
 			}
-			d.Lines[i].Raw = newRaw
-			d.Lines[i].Value = value
+			newLines := buildScalarOrBlock(key, value, line.Comment)
+			tail := append([]Line{}, d.Lines[end:]...)
+			d.Lines = append(d.Lines[:i], append(newLines, tail...)...)
 			return true
 		}
 	}
 
 	// Not found — insert before body separator (---) or at end
-	newLine := Line{
-		Raw:   key + ": " + value,
-		Key:   key,
-		Value: value,
-	}
-	if idx := d.bodySeparatorIndex(); idx >= 0 {
-		d.Lines = append(d.Lines[:idx+1], d.Lines[idx:]...)
-		d.Lines[idx] = newLine
+	newLines := buildScalarOrBlock(key, value, "")
+	if idx := d.BodySeparatorIndex(); idx >= 0 {
+		tail := append([]Line{}, d.Lines[idx:]...)
+		d.Lines = append(d.Lines[:idx], append(newLines, tail...)...)
 	} else {
-		d.Lines = append(d.Lines, newLine)
+		d.Lines = append(d.Lines, newLines...)
 	}
 	return false
+}
+
+// buildScalarOrBlock produces the line(s) for a top-level field. A value
+// containing a newline is emitted as a block scalar; otherwise a single
+// `key: value` line. Inline comments are preserved on the key line.
+func buildScalarOrBlock(key, value, comment string) []Line {
+	if strings.Contains(value, "\n") {
+		header := Line{Raw: key + ": |-", Key: key}
+		if comment != "" {
+			header.Raw += "  # " + comment
+			header.Comment = comment
+		}
+		out := []Line{header}
+		for _, ln := range strings.Split(value, "\n") {
+			raw := "  " + ln
+			out = append(out, Line{Raw: raw, IsBlock: true, BlockKey: key, Indent: 2})
+		}
+		return out
+	}
+	raw := key + ": " + value
+	if comment != "" {
+		raw += "  # " + comment
+	}
+	return []Line{{Raw: raw, Key: key, Value: value, Comment: comment}}
 }
 
 // ReplaceList replaces an entire list field (key + all continuation lines)
@@ -205,7 +271,7 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 		// Parent not found — insert parent + child before body separator
 		parentLine := Line{Raw: parent + ":", Key: parent}
 		childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
-		if idx := d.bodySeparatorIndex(); idx >= 0 {
+		if idx := d.BodySeparatorIndex(); idx >= 0 {
 			tail := make([]Line, len(d.Lines[idx:]))
 			copy(tail, d.Lines[idx:])
 			d.Lines = append(d.Lines[:idx], append([]Line{parentLine, childLine}, tail...)...)
@@ -273,6 +339,85 @@ func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
 	return "", false
 }
 
+// AppendToNestedList appends a value to a list field nested under a parent
+// key (e.g. work_tracking.commits). If the parent or list doesn't exist,
+// they are created. New parent blocks are spliced before the body
+// separator (---) so they land in the frontmatter, not the markdown body.
+// If the existing list contains an empty marker (`- []` or `- [[]]`), the
+// marker is replaced with the new value rather than appended after it.
+func (d *ParsedDocument) AppendToNestedList(parent, key, value string) {
+	parentIdx := -1
+	keyIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == parent && line.Indent == 0 {
+			parentIdx = i
+		}
+		if parentIdx >= 0 && line.Key == key && line.Indent > 0 {
+			keyIdx = i
+		}
+	}
+
+	parentLine := Line{Raw: parent + ":", Key: parent}
+	keyLine := Line{Raw: "  " + key + ":", Key: key, Indent: 2, BlockKey: parent}
+	itemLine := Line{Raw: "  - " + value, IsList: true, Indent: 2, BlockKey: parent}
+
+	if parentIdx < 0 {
+		newLines := []Line{parentLine, keyLine, itemLine}
+		if idx := d.BodySeparatorIndex(); idx >= 0 {
+			tail := append([]Line{}, d.Lines[idx:]...)
+			d.Lines = append(d.Lines[:idx], append(newLines, tail...)...)
+		} else {
+			d.Lines = append(d.Lines, newLines...)
+		}
+		return
+	}
+
+	if keyIdx < 0 {
+		// Parent exists but key doesn't — insert key + first list item
+		// at the end of the parent's nested block.
+		insertAt := parentIdx + 1
+		for insertAt < len(d.Lines) {
+			line := d.Lines[insertAt]
+			if line.Indent > 0 || line.IsEmpty {
+				insertAt++
+				continue
+			}
+			break
+		}
+		newLines := []Line{keyLine, itemLine}
+		tail := append([]Line{}, d.Lines[insertAt:]...)
+		d.Lines = append(d.Lines[:insertAt], append(newLines, tail...)...)
+		return
+	}
+
+	// Key exists — find end of its list, replacing any empty marker.
+	insertAt := keyIdx + 1
+	for insertAt < len(d.Lines) {
+		line := d.Lines[insertAt]
+		if line.IsList && line.Indent >= 2 {
+			compact := strings.ReplaceAll(strings.ReplaceAll(line.Raw, " ", ""), "\t", "")
+			if compact == "-[]" || compact == "-[[]]" {
+				d.Lines[insertAt] = itemLine
+				return
+			}
+			insertAt++
+			continue
+		}
+		// Tolerate "- []" lines that the parser left without IsList
+		if line.Indent >= 2 && !line.IsEmpty {
+			compact := strings.ReplaceAll(strings.ReplaceAll(line.Raw, " ", ""), "\t", "")
+			if compact == "-[]" || compact == "-[[]]" {
+				d.Lines[insertAt] = itemLine
+				return
+			}
+		}
+		break
+	}
+
+	tail := append([]Line{}, d.Lines[insertAt:]...)
+	d.Lines = append(d.Lines[:insertAt], append([]Line{itemLine}, tail...)...)
+}
+
 // SetList replaces a top-level list field's items in the document.
 // It finds the key line, clears any inline value, removes old list items,
 // and inserts new "- item" lines. Returns true if the key was found.
@@ -287,7 +432,7 @@ func (d *ParsedDocument) SetList(key string, items []string) bool {
 	}
 	if keyIdx < 0 {
 		// Key not found — insert before body separator (---) or at end
-		insertIdx := d.bodySeparatorIndex()
+		insertIdx := d.BodySeparatorIndex()
 		var newLines []Line
 		newLines = append(newLines, Line{Raw: key + ":", Key: key})
 		if len(items) == 0 {
@@ -353,10 +498,10 @@ func (d *ParsedDocument) SetList(key string, items []string) bool {
 	return true
 }
 
-// bodySeparatorIndex returns the index of the first "---" line (body separator),
+// BodySeparatorIndex returns the index of the first "---" line (body separator),
 // or -1 if no separator exists. Used to insert new fields in the frontmatter
 // section rather than after the markdown body.
-func (d *ParsedDocument) bodySeparatorIndex() int {
+func (d *ParsedDocument) BodySeparatorIndex() int {
 	for i, line := range d.Lines {
 		if strings.TrimSpace(line.Raw) == "---" {
 			return i

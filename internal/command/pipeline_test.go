@@ -43,9 +43,9 @@ func setupPipelineTestEnv(t *testing.T) (*store.Store, *config.Config) {
 
 	// Give T-003 test evidence so gates pass
 	item, _ := s.Get("T-003")
-	setNestedField(item, "testing_evidence", "api_unit", "pass abc123 2026-03-27")
-	setNestedField(item, "testing_evidence", "api_lint", "pass abc123 2026-03-27")
-	setNestedField(item, "manifest", "prs", "api#42")
+	item.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27")
+	item.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27")
+	item.SetNested("manifest", "prs", "api#42")
 	s.Write(item)
 
 	return s, cfg
@@ -89,7 +89,7 @@ func TestMergeGateFail(t *testing.T) {
 
 	// Remove test evidence so gate fails
 	item, _ := s.Get("T-003")
-	setNestedField(item, "testing_evidence", "api_unit", "null")
+	item.SetNested("testing_evidence", "api_unit", "null")
 	s.Write(item)
 
 	code := Merge(s, cfg, "T-003", opts)

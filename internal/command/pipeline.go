@@ -131,8 +131,8 @@ func DeployCheck(s *store.Store, cfg *config.Config, id string, opts PipelineOpt
 		// No command — just health checks were enough (or nothing configured)
 		if len(healthURLs) > 0 {
 			now := time.Now()
-			setNestedField(item, "delivery", "stage", "deployed_dev")
-			setNestedField(item, "delivery", "deployed_date", now.Format("2006-01-02"))
+			item.SetNested("delivery", "stage", "deployed_dev")
+			item.SetNested("delivery", "deployed_date", now.Format("2006-01-02"))
 			item.Doc.SetField("last_touched", now.Format(time.RFC3339))
 			s.Write(item)
 			changelog.Append(cfg, id, changelog.Entry{
@@ -263,7 +263,7 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	}
 
 	if exitCode != 0 {
-		setNestedField(item, "delivery", stepName+"_evidence", logURI)
+		item.SetNested("delivery", stepName+"_evidence", logURI)
 		s.Write(item)
 		fmt.Fprintf(os.Stderr, "FAIL %s on %s (exit %d, %dms)\n", stepName, id, exitCode, duration.Milliseconds())
 		return 1
@@ -279,13 +279,13 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	}
 
 	// Record evidence URI and advance delivery stage
-	setNestedField(item, "delivery", stepName+"_evidence", logURI)
-	setNestedField(item, "delivery", "stage", nextStage)
+	item.SetNested("delivery", stepName+"_evidence", logURI)
+	item.SetNested("delivery", "stage", nextStage)
 	if stepName == "deploy_check" || nextStage == "deployed_dev" {
-		setNestedField(item, "delivery", "deployed_date", now.Format("2006-01-02"))
+		item.SetNested("delivery", "deployed_date", now.Format("2006-01-02"))
 	}
 	if postOutput != "" && stepName == "merge" {
-		setNestedField(item, "work_tracking", "merge_sha", postOutput)
+		item.SetNested("work_tracking", "merge_sha", postOutput)
 	}
 	item.Doc.SetField("last_touched", now.Format(time.RFC3339))
 
