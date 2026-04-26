@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type TestRecordOpts struct {
 	Run      bool   // execute the suite command (--run)
 	Coverage bool   // enforce per-file coverage (--coverage, requires --run)
 	Skip     string // mark scope suite as intentionally skipped with reason (--skip)
+	Agent    string // select an agent workspace/runtime explicitly (--agent)
+	Cwd      string // injectable cwd for runtime resolution tests
 	// Injectable for testing (nil = use real implementations)
 	GitHeadSHA func(repoDir string) (string, error)
 	RunCmd     func(command string) (output []byte, exitCode int, err error)
@@ -108,7 +111,7 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	}
 
 	// Get SHA from the repo this suite targets, not cwd
-	sha := getSHAForSuite(cfg, id, suite, opts)
+	sha := getSHAForSuite(cfg, id, suite, suiteCmd, opts)
 
 	if opts.Run {
 		return testRunMode(s, cfg, id, suite, suiteCmd, sha, item, opts)
@@ -144,7 +147,17 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		return 1
 	}
 
-	fmt.Printf("Running %s: %s\n", suite, suiteCmd)
+	cmd := suiteCmd
+	if runtime, ok, err := resolveTestAgentRuntime(cfg, opts, cmd); err != nil {
+		fmt.Fprintf(os.Stderr, "test runtime: %v\n", err)
+		return 1
+	} else if ok {
+		cmd = rewriteSuiteForAgentWorkspace(runtime, cmd)
+		cmd = injectAgentRuntimeEnv(runtime, cmd)
+		fmt.Printf("Running %s on %s: %s\n", suite, runtime.AgentID, cmd)
+	} else {
+		fmt.Printf("Running %s: %s\n", suite, cmd)
+	}
 	start := time.Now()
 
 	// Execute suite command — prefer worktree if one exists for this item.
@@ -153,10 +166,10 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	var exitCode int
 	var runErr error
 	if opts.RunCmd != nil {
-		output, exitCode, runErr = opts.RunCmd(suiteCmd)
+		output, exitCode, runErr = opts.RunCmd(cmd)
 	} else {
 		// Rewrite suite command to run from worktree if available
-		cmd := rewriteSuiteForWorktree(cfg, id, suiteCmd)
+		cmd = rewriteSuiteForWorktree(cfg, id, cmd)
 		output, exitCode, runErr = runCmdInDirStreaming(cfg.Root(), cmd)
 	}
 	duration := time.Since(start)
@@ -361,12 +374,24 @@ func enforceCoverage(cfg *config.Config, id, suite, sha, keyPrefix string, item 
 }
 
 // getSHAForSuite gets the HEAD SHA from the repo targeted by the suite.
-func getSHAForSuite(cfg *config.Config, itemID, suite string, opts TestRecordOpts) string {
+func getSHAForSuite(cfg *config.Config, itemID, suite, suiteCmd string, opts TestRecordOpts) string {
 	if opts.GitHeadSHA != nil {
 		return getSHA(opts)
 	}
 	// Determine repo from suite prefix (api_unit → api repo, web_e2e → web repo)
 	repo := strings.Split(suite, "_")[0]
+	if runtime, ok, err := resolveTestAgentRuntime(cfg, opts, suiteCmd); err == nil && ok {
+		if dir := runtime.RepoPaths[repoDirForSuiteRepo(repo)]; dir != "" {
+			out, err := runGit(dir, "rev-parse", "HEAD")
+			if err == nil {
+				sha := strings.TrimSpace(out)
+				if len(sha) > 7 {
+					sha = sha[:7]
+				}
+				return sha
+			}
+		}
+	}
 	// Find matching repo name in worktree config
 	if cfg.Worktree != nil {
 		for _, r := range cfg.Worktree.Repos {
@@ -384,6 +409,15 @@ func getSHAForSuite(cfg *config.Config, itemID, suite string, opts TestRecordOpt
 		}
 	}
 	return getSHA(opts)
+}
+
+func repoDirForSuiteRepo(repo string) string {
+	switch repo {
+	case "api", "web", "infra":
+		return "theraprac-" + repo
+	default:
+		return repo
+	}
 }
 
 func getSHA(opts TestRecordOpts) string {
@@ -624,6 +658,131 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 	}
 
 	return suiteCmd
+}
+
+type testAgentRuntime struct {
+	AgentID        string
+	WorkspaceDir   string
+	ComposeProject string
+	Ports          agentWorkspacePorts
+	RepoPaths      map[string]string
+}
+
+func resolveTestAgentRuntime(cfg *config.Config, opts TestRecordOpts, suiteCmd string) (testAgentRuntime, bool, error) {
+	if cfg == nil {
+		return testAgentRuntime{}, false, nil
+	}
+	if opts.Agent != "" {
+		plan, err := buildAgentWorkspacePlan(cfg, opts.Agent, "")
+		if err != nil {
+			return testAgentRuntime{}, false, err
+		}
+		return testRuntimeFromPlan(plan), true, nil
+	}
+
+	cwd := opts.Cwd
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return testAgentRuntime{}, false, err
+		}
+	}
+	agentID, ok := agentIDFromPath(cwd)
+	if !ok {
+		agentID, ok = agentIDFromPath(cfg.Root())
+	}
+	if !ok {
+		if !suiteNeedsAgentRuntime(suiteCmd) {
+			return testAgentRuntime{}, false, nil
+		}
+		return testAgentRuntime{}, false, fmt.Errorf("cannot resolve agent workspace from cwd; rerun with --agent <id>")
+	}
+	plan, err := buildAgentWorkspacePlan(cfg, agentID, "")
+	if err != nil {
+		return testAgentRuntime{}, false, err
+	}
+	return testRuntimeFromPlan(plan), true, nil
+}
+
+func suiteNeedsAgentRuntime(suiteCmd string) bool {
+	return strings.Contains(suiteCmd, "../theraprac-") || strings.Contains(suiteCmd, "../../theraprac-")
+}
+
+func testRuntimeFromPlan(plan agentWorkspacePlan) testAgentRuntime {
+	rt := testAgentRuntime{
+		AgentID:        plan.AgentID,
+		WorkspaceDir:   plan.TargetDir,
+		ComposeProject: plan.ComposeProject,
+		Ports:          plan.Ports,
+		RepoPaths:      map[string]string{},
+	}
+	for _, repo := range plan.Repos {
+		rt.RepoPaths[repo.Name] = repo.TargetPath
+	}
+	return rt
+}
+
+func agentIDFromPath(path string) (string, bool) {
+	clean := filepath.Clean(path)
+	for {
+		base := filepath.Base(clean)
+		if strings.HasPrefix(base, "theraprac-agent-") {
+			return strings.TrimPrefix(base, "theraprac-"), true
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			return "", false
+		}
+		clean = parent
+	}
+}
+
+func rewriteSuiteForAgentWorkspace(runtime testAgentRuntime, suiteCmd string) string {
+	for repo, path := range runtime.RepoPaths {
+		for _, pattern := range []string{
+			"cd ../" + repo,
+			"cd ../../" + repo,
+		} {
+			if strings.Contains(suiteCmd, pattern) {
+				return strings.Replace(suiteCmd, pattern, "cd "+shellQuote(path), 1)
+			}
+		}
+	}
+	return suiteCmd
+}
+
+func injectAgentRuntimeEnv(runtime testAgentRuntime, suiteCmd string) string {
+	env := map[string]string{
+		"AS_AGENT_ID":          runtime.AgentID,
+		"ST_AGENT_ID":          runtime.AgentID,
+		"THERAPRAC_AGENT_ID":   runtime.AgentID,
+		"COMPOSE_PROJECT_NAME": runtime.ComposeProject,
+		"THERAPRAC_WEB_PORT":   fmt.Sprintf("%d", runtime.Ports.Web),
+		"THERAPRAC_API_PORT":   fmt.Sprintf("%d", runtime.Ports.API),
+		"THERAPRAC_DB_PORT":    fmt.Sprintf("%d", runtime.Ports.DB),
+		"MAILPIT_PORT":         fmt.Sprintf("%d", runtime.Ports.Mailpit),
+		"STRIPE_WEBHOOK_PORT":  fmt.Sprintf("%d", runtime.Ports.Stripe),
+		"API_BASE_URL":         fmt.Sprintf("http://localhost:%d", runtime.Ports.API),
+		"NEXT_PUBLIC_API_URL":  fmt.Sprintf("http://localhost:%d", runtime.Ports.API),
+		"PLAYWRIGHT_BASE_URL":  fmt.Sprintf("http://localhost:%d", runtime.Ports.Web),
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, key := range keys {
+		fmt.Fprintf(&b, "%s=%s ", key, shellQuote(env[key]))
+	}
+	b.WriteString(suiteCmd)
+	return b.String()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func evidenceConfigFromCfg(cfg *config.Config) evidence.Config {

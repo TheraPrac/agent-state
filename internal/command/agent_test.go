@@ -3,6 +3,7 @@ package command
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -103,6 +104,190 @@ func TestAgentAutoAuthBestEffort(t *testing.T) {
 	}
 }
 
+func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "b", Branch: "main", Full: true, DryRun: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	for _, want := range []string{
+		"Agent workspace create plan: agent-b",
+		filepath.Join(agentsRoot, "theraprac-agent-b"),
+		"branch: main",
+		"theraprac-api",
+		"theraprac-web",
+		"theraprac-infra",
+		"theraprac-workspace",
+		"ports: api=8180 web=3100 db=5532 mailpit=8125 stripe=12211",
+		"compose_project: theraprac_agent_b",
+		"docker_label: theraprac.agent=agent-b",
+		"registry:",
+		"workspace_config:",
+		"dry-run: no filesystem, git, Docker, or env changes will be made",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("dry-run output missing %q:\n%s", want, stdout)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(agentsRoot, "theraprac-agent-b")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not create target, stat err=%v", err)
+	}
+}
+
+func TestAgentWorkspaceCreateDryRunDetectsPartialSymlink(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	target := filepath.Join(agentsRoot, "theraprac-agent-b")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/tmp/source-workspace", filepath.Join(target, "theraprac-workspace")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "agent-b", Branch: "main", Full: true, DryRun: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	if !strings.Contains(stdout, "theraprac-workspace") || !strings.Contains(stdout, "state=symlink") ||
+		!strings.Contains(stdout, "repair symlink -> independent clone") {
+		t.Fatalf("partial symlink not explained:\n%s", stdout)
+	}
+}
+
+func TestAgentWorkspaceStatusShowsIdentityPortsAndRepoState(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	target := filepath.Join(agentsRoot, "theraprac-agent-c", "theraprac-api")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceStatus(cfg, AgentWorkspaceStatusOpts{Agent: "c"})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceStatus returned %d", code)
+		}
+	})
+
+	for _, want := range []string{
+		"Agent workspace: agent-c",
+		"identity: agent-c",
+		"ports: api=8280 web=3200 db=5632 mailpit=8225 stripe=12311",
+		"compose: theraprac_agent_c",
+		"theraprac-api",
+		"service_health: unknown",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("status output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestAgentWorkspaceDestroyDryRunListsResources(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	target := filepath.Join(agentsRoot, "theraprac-agent-d")
+	if err := os.MkdirAll(filepath.Join(target, "theraprac-api"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceDestroy(cfg, AgentWorkspaceDestroyOpts{Agent: "d", DryRun: true})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceDestroy returned %d", code)
+		}
+	})
+
+	for _, want := range []string{
+		"Destroy agent workspace: agent-d",
+		target,
+		"compose project: theraprac_agent_d",
+		"label selector: theraprac.agent=agent-d",
+		"dry-run: no files, containers, networks, or volumes removed",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("destroy dry-run missing %q:\n%s", want, stdout)
+		}
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("dry-run should leave target in place: %v", err)
+	}
+}
+
+func TestAgentWorkspaceDestroyRefusesDirtyRepos(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	repo := filepath.Join(agentsRoot, "theraprac-agent-e", "theraprac-api")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "init")
+	writeFile(t, filepath.Join(repo, "dirty.txt"), "dirty\n")
+
+	code := AgentWorkspaceDestroy(cfg, AgentWorkspaceDestroyOpts{Agent: "e"})
+	if code == 0 {
+		t.Fatal("destroy should refuse dirty git repos")
+	}
+	if _, err := os.Stat(filepath.Join(agentsRoot, "theraprac-agent-e")); err != nil {
+		t.Fatalf("refused destroy should leave workspace: %v", err)
+	}
+}
+
+func TestPersistAgentWorkspaceConfigWritesRegistryAndLocalConfig(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	plan, err := buildAgentWorkspacePlan(cfg, "f", "feature/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistAgentWorkspaceConfig(plan); err != nil {
+		t.Fatalf("persistAgentWorkspaceConfig: %v", err)
+	}
+
+	for _, path := range []string{agentWorkspaceRegistryPath(plan), agentWorkspaceLocalConfigPath(plan)} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected config at %s: %v", path, err)
+		}
+		s := string(data)
+		for _, want := range []string{
+			"agent_id: agent-f",
+			"branch: feature/demo",
+			"compose_project: theraprac_agent_f",
+			"docker_label: theraprac.agent=agent-f",
+			"web: 3500",
+			"theraprac-api:",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s missing %q:\n%s", path, want, s)
+			}
+		}
+	}
+}
+
 func fakeAgentScripts(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -117,6 +302,15 @@ echo "AWS $*"
 echo "GH $*"
 `)
 	return dir
+}
+
+func runTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
 }
 
 func writeExecutable(t *testing.T, path, content string) {

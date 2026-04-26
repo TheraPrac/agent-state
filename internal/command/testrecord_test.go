@@ -227,6 +227,94 @@ func TestTestRunExecutionError(t *testing.T) {
 	}
 }
 
+func TestTestRunExplicitAgentRewritesRepoAndInjectsRuntime(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	cfg.Testing.RequiredSuites["api_unit"] = config.SuiteConfig{Command: "cd ../theraprac-api && make test-unit"}
+
+	var gotCmd string
+	opts := TestRecordOpts{
+		Run:   true,
+		Agent: "b",
+		GitHeadSHA: func(dir string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(command string) ([]byte, int, error) {
+			gotCmd = command
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	for _, want := range []string{
+		"AS_AGENT_ID='agent-b'",
+		"COMPOSE_PROJECT_NAME='theraprac_agent_b'",
+		"THERAPRAC_API_PORT='8180'",
+		"PLAYWRIGHT_BASE_URL='http://localhost:3100'",
+		"cd '" + filepath.Join(agentsRoot, "theraprac-agent-b", "theraprac-api") + "'",
+	} {
+		if !strings.Contains(gotCmd, want) {
+			t.Errorf("command missing %q:\n%s", want, gotCmd)
+		}
+	}
+}
+
+func TestTestRunResolvesAgentFromCwd(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	cfg.Testing.RequiredSuites["api_unit"] = config.SuiteConfig{Command: "cd ../theraprac-api && make test-unit"}
+	cwd := filepath.Join(agentsRoot, "theraprac-agent-c", "theraprac-workspace")
+
+	var gotCmd string
+	opts := TestRecordOpts{
+		Run: true,
+		Cwd: cwd,
+		GitHeadSHA: func(dir string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(command string) ([]byte, int, error) {
+			gotCmd = command
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !strings.Contains(gotCmd, "AS_AGENT_ID='agent-c'") || !strings.Contains(gotCmd, "THERAPRAC_API_PORT='8280'") {
+		t.Fatalf("command did not use agent-c runtime:\n%s", gotCmd)
+	}
+}
+
+func TestTestRunFailsWhenAgentRuntimeAmbiguous(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.RequiredSuites["api_unit"] = config.SuiteConfig{Command: "cd ../theraprac-api && make test-unit"}
+	opts := TestRecordOpts{
+		Run: true,
+		Cwd: t.TempDir(),
+		GitHeadSHA: func(dir string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(command string) ([]byte, int, error) {
+			return []byte("should not run"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 1 {
+		t.Fatalf("returned %d, want 1", code)
+	}
+}
+
 // --- Coverage enforcement ---
 
 func TestTestRunWithCoveragePass(t *testing.T) {
