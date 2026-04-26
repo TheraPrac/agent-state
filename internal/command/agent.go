@@ -346,6 +346,9 @@ func applyAgentWorkspaceCreate(plan agentWorkspacePlan, repair bool) error {
 	if err := persistAgentWorkspaceConfig(plan); err != nil {
 		return err
 	}
+	if err := linkClaudeContext(plan, repair); err != nil {
+		return fmt.Errorf("claude context: %w", err)
+	}
 	if err := dockerStartPostgres(plan.AgentID, plan.Ports.DB); err != nil {
 		return fmt.Errorf("postgres container: %w", err)
 	}
@@ -580,6 +583,95 @@ func portBlockForAgent(agentID string) agentWorkspacePorts {
 		Mailpit: 8025 + offset,
 		Stripe:  12111 + offset,
 	}
+}
+
+// linkClaudeContext wires the per-agent Claude Code context to the
+// committed claude-config and agent-memory inside the workspace repo.
+// Four idempotent symlinks are created so a fresh agent dir picks up the
+// shared CLAUDE.md, hooks, settings, and auto-memory:
+//
+//	<target>/CLAUDE.md             -> theraprac-workspace/claude-config/CLAUDE.md
+//	<target>/.claude/hooks         -> theraprac-workspace/claude-config/hooks
+//	<target>/.claude/settings.json -> theraprac-workspace/claude-config/settings.json
+//	~/.claude/projects/<encoded>/memory -> theraprac-workspace/agent-memory
+//
+// <encoded> is the absolute target dir with "/" replaced by "-", matching
+// Claude Code's per-cwd projects layout. A correct existing symlink is
+// left alone; a wrong one is replaced when repair is true.
+func linkClaudeContext(plan agentWorkspacePlan, repair bool) error {
+	workspaceDir := filepath.Join(plan.TargetDir, "theraprac-workspace")
+	claudeConfig := filepath.Join(workspaceDir, "claude-config")
+	agentMemory := filepath.Join(workspaceDir, "agent-memory")
+
+	for _, p := range []string{
+		filepath.Join(claudeConfig, "CLAUDE.md"),
+		filepath.Join(claudeConfig, "hooks"),
+		filepath.Join(claudeConfig, "settings.json"),
+		agentMemory,
+	} {
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("missing in workspace repo: %s: %w", p, err)
+		}
+	}
+
+	dotClaude := filepath.Join(plan.TargetDir, ".claude")
+	if err := os.MkdirAll(dotClaude, 0755); err != nil {
+		return err
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	encoded := strings.ReplaceAll(plan.TargetDir, "/", "-")
+	projectDir := filepath.Join(home, ".claude", "projects", encoded)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		return err
+	}
+
+	links := []struct{ link, target string }{
+		{filepath.Join(plan.TargetDir, "CLAUDE.md"), filepath.Join(claudeConfig, "CLAUDE.md")},
+		{filepath.Join(dotClaude, "hooks"), filepath.Join(claudeConfig, "hooks")},
+		{filepath.Join(dotClaude, "settings.json"), filepath.Join(claudeConfig, "settings.json")},
+		{filepath.Join(projectDir, "memory"), agentMemory},
+	}
+	for _, l := range links {
+		if err := ensureSymlink(l.link, l.target, repair); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureSymlink makes `link` point at `target`, creating it if missing,
+// leaving it alone if already correct, and replacing a wrong symlink only
+// when repair is true. A non-symlink at `link` is always an error so we
+// never overwrite operator data.
+func ensureSymlink(link, target string, repair bool) error {
+	info, err := os.Lstat(link)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		return os.Symlink(target, link)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%s exists and is not a symlink; remove it manually before re-running", link)
+	}
+	existing, err := os.Readlink(link)
+	if err != nil {
+		return err
+	}
+	if existing == target {
+		return nil
+	}
+	if !repair {
+		return fmt.Errorf("symlink %s points to %s, expected %s; rerun with --repair to replace", link, existing, target)
+	}
+	if err := os.Remove(link); err != nil {
+		return err
+	}
+	return os.Symlink(target, link)
 }
 
 func repoState(path string) string {

@@ -321,6 +321,83 @@ func writeExecutable(t *testing.T, path, content string) {
 	}
 }
 
+func TestLinkClaudeContext(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	target := filepath.Join(root, "theraprac-agent-z")
+	workspace := filepath.Join(target, "theraprac-workspace")
+	claudeConfig := filepath.Join(workspace, "claude-config")
+	if err := os.MkdirAll(filepath.Join(claudeConfig, "hooks"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "agent-memory"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(claudeConfig, "CLAUDE.md"), "# CLAUDE\n")
+	writeFile(t, filepath.Join(claudeConfig, "settings.json"), "{}\n")
+
+	plan := agentWorkspacePlan{TargetDir: target}
+
+	if err := linkClaudeContext(plan, false); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	// Idempotent: second call must not error and must not change anything.
+	if err := linkClaudeContext(plan, false); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	encoded := strings.ReplaceAll(target, "/", "-")
+	memoryLink := filepath.Join(home, ".claude", "projects", encoded, "memory")
+	expect := map[string]string{
+		filepath.Join(target, "CLAUDE.md"):              filepath.Join(claudeConfig, "CLAUDE.md"),
+		filepath.Join(target, ".claude", "hooks"):       filepath.Join(claudeConfig, "hooks"),
+		filepath.Join(target, ".claude", "settings.json"): filepath.Join(claudeConfig, "settings.json"),
+		memoryLink: filepath.Join(workspace, "agent-memory"),
+	}
+	for link, want := range expect {
+		got, err := os.Readlink(link)
+		if err != nil {
+			t.Fatalf("readlink %s: %v", link, err)
+		}
+		if got != want {
+			t.Errorf("symlink %s: got %s, want %s", link, got, want)
+		}
+	}
+
+	// Wrong target without --repair must fail.
+	bad := filepath.Join(target, "CLAUDE.md")
+	if err := os.Remove(bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(workspace, "agent-memory"), bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkClaudeContext(plan, false); err == nil {
+		t.Fatal("expected error when symlink points to wrong target without --repair")
+	}
+	if err := linkClaudeContext(plan, true); err != nil {
+		t.Fatalf("repair call: %v", err)
+	}
+	got, err := os.Readlink(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(claudeConfig, "CLAUDE.md") {
+		t.Errorf("repair did not fix CLAUDE.md symlink: got %s", got)
+	}
+
+	// Real file at the link path is always an error.
+	if err := os.Remove(bad); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, bad, "not a symlink")
+	if err := linkClaudeContext(plan, true); err == nil {
+		t.Fatal("expected error when link path holds a real file")
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
