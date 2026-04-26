@@ -331,11 +331,13 @@ YAML block scalars so multi-line values replace cleanly.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			slug, _ := cmd.Flags().GetString("slug")
 			repos, _ := cmd.Flags().GetStringSlice("repos")
-			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{Slug: slug, Repos: repos})
+			noPush, _ := cmd.Flags().GetBool("no-push")
+			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{Slug: slug, Repos: repos, NoPush: noPush})
 		},
 	}
 	startCmd.Flags().String("slug", "", "branch name slug")
 	startCmd.Flags().StringSlice("repos", nil, "repos to create worktrees for")
+	startCmd.Flags().Bool("no-push", false, "skip auto-push onto the work stack")
 	root.AddCommand(startCmd)
 
 	closeCmd := &cobra.Command{

@@ -18,8 +18,9 @@ import (
 
 // StartOpts holds flags for the start command.
 type StartOpts struct {
-	Slug  string   // branch slug (e.g. "uat-database-reset")
-	Repos []string // repos to create worktrees for (overrides config defaults)
+	Slug   string   // branch slug (e.g. "uat-database-reset")
+	Repos  []string // repos to create worktrees for (overrides config defaults)
+	NoPush bool     // skip the auto-push onto the work stack
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
@@ -188,6 +189,27 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	fmt.Printf("Started %s — %s\n", id, item.Title)
 	if agentID != "" {
 		fmt.Printf("  Assigned to: %s\n", agentID)
+	}
+
+	// Auto-push onto the work stack so the Stop hook attributes per-turn
+	// metrics to this item by default. Skip with --no-push for "set up the
+	// worktree but I'm not actively driving this yet" cases. Already-on-
+	// stack is treated as success since the user's intent (focus = id) is
+	// already satisfied.
+	if !opts.NoPush {
+		entries := LoadStack(cfg)
+		alreadyOnStack := false
+		for _, e := range entries {
+			if e.ID == id {
+				alreadyOnStack = true
+				break
+			}
+		}
+		if !alreadyOnStack {
+			if rc := StackPush(s, cfg, id, ""); rc != 0 {
+				fmt.Fprintf(os.Stderr, "warning: auto-push failed (rc=%d); run `st push %s` to attribute metrics\n", rc, id)
+			}
+		}
 	}
 	return 0
 }
