@@ -1,4 +1,11 @@
-.PHONY: build test clean install
+.PHONY: build test clean install install-wrapper
+
+# WRAPPER_PATH is where the per-agent dispatcher lands. The default
+# (~/bin/st) is in PATH ahead of /usr/local/bin on the developer machine,
+# so installing to it overrides the legacy /usr/local/bin/st without
+# needing sudo. Override on the command line if your setup differs:
+#   make install-wrapper WRAPPER_PATH=/usr/local/bin/st
+WRAPPER_PATH ?= $(HOME)/bin/st
 
 build:
 	go build -o bin/st ./cmd/as
@@ -9,9 +16,23 @@ test:
 clean:
 	rm -f bin/st
 
+# install builds bin/st in THIS clone — never touches another agent's binary.
+# The dispatcher at $(WRAPPER_PATH) (installed once via install-wrapper) picks
+# the right per-agent binary based on $$CLAUDE_PROJECT_DIR at runtime.
 install: build
-	@# Resolve symlinks — write directly to the final target
-	@target=$$(readlink /usr/local/bin/st 2>/dev/null || echo /usr/local/bin/st); \
-	rm -f "$$target"; \
-	cp bin/st "$$target"; \
-	xattr -cr "$$target" 2>/dev/null || true
+	@xattr -cr bin/st 2>/dev/null || true
+	@echo "Installed $(CURDIR)/bin/st"
+	@if [ ! -x "$(WRAPPER_PATH)" ]; then \
+	  echo ""; \
+	  echo "Note: dispatcher not found at $(WRAPPER_PATH)."; \
+	  echo "Run 'make install-wrapper' once so 'st' resolves per-agent."; \
+	fi
+
+# install-wrapper drops the per-agent dispatcher onto PATH. Run once per
+# machine; subsequent `make install` from any agent's clone is enough to
+# update that agent's binary.
+install-wrapper:
+	@mkdir -p $(dir $(WRAPPER_PATH))
+	install -m 755 scripts/st-dispatcher.sh $(WRAPPER_PATH)
+	@echo "Dispatcher installed at $(WRAPPER_PATH)"
+	@echo "Each agent's session resolves 'st' via $$CLAUDE_PROJECT_DIR/as/bin/st"
