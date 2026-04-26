@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -16,10 +17,13 @@ func setupPRTestEnv(t *testing.T) (*store.Store, *config.Config) {
 	s, cfg := setupTestEnv(t)
 
 	// Make T-003 active with testing_evidence structure
-	item, _ := s.Get("T-003")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	// Add testing config
 	cfg.Testing = &config.TestingConfig{

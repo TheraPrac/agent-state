@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 )
@@ -52,12 +53,16 @@ func TestStartRejectsClaimedItem(t *testing.T) {
 	mgr.AddClaim("other-session", "T-001")
 
 	// Set claimed_by on the item
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "other-session"
-	item.ClaimedAt = time.Now().Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "other-session")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	claimedAt := time.Now().Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "other-session"
+		it.ClaimedAt = claimedAt
+		it.Doc.SetField("claimed_by", "other-session")
+		it.Doc.SetField("claimed_at", claimedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// Try to start with a different session
 	os.Setenv("AS_SESSION_ID", "my-session")
@@ -81,12 +86,16 @@ func TestStartTakesOverStaleClaim(t *testing.T) {
 	mgr.Save(staleSession)
 
 	// Set claimed_by on the item
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "stale-session"
-	item.ClaimedAt = time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "stale-session")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	staleClaimedAt := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "stale-session"
+		it.ClaimedAt = staleClaimedAt
+		it.Doc.SetField("claimed_by", "stale-session")
+		it.Doc.SetField("claimed_at", staleClaimedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// Start with a new session — should take over
 	os.Setenv("AS_SESSION_ID", "new-session")
@@ -97,7 +106,7 @@ func TestStartTakesOverStaleClaim(t *testing.T) {
 		t.Fatalf("Start over stale claim returned %d, want 0", code)
 	}
 
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	if item.ClaimedBy != "new-session" {
 		t.Errorf("ClaimedBy = %q, want %q", item.ClaimedBy, "new-session")
 	}
@@ -111,12 +120,16 @@ func TestStartAllowsSameSession(t *testing.T) {
 	mgr.EnsureSession("my-session", "agent")
 	mgr.AddClaim("my-session", "T-001")
 
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "my-session"
-	item.ClaimedAt = time.Now().Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "my-session")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	myClaimedAt := time.Now().Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "my-session"
+		it.ClaimedAt = myClaimedAt
+		it.Doc.SetField("claimed_by", "my-session")
+		it.Doc.SetField("claimed_at", myClaimedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// Same session should be able to start
 	os.Setenv("AS_SESSION_ID", "my-session")
@@ -216,19 +229,23 @@ func TestReleaseClaimOnly(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Set claim without agent assignment
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "some-session"
-	item.ClaimedAt = time.Now().Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "some-session")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	someClaimedAt := time.Now().Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "some-session"
+		it.ClaimedAt = someClaimedAt
+		it.Doc.SetField("claimed_by", "some-session")
+		it.Doc.SetField("claimed_at", someClaimedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	code := Release(s, cfg, "T-001")
 	if code != 0 {
 		t.Fatalf("Release claim-only returned %d, want 0", code)
 	}
 
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	if item.ClaimedBy != "" {
 		t.Errorf("ClaimedBy should be cleared, got %q", item.ClaimedBy)
 	}
@@ -256,19 +273,23 @@ func TestSprintRecoverReleasesStale(t *testing.T) {
 	stale.ClaimedItems = []string{"T-001"}
 	mgr.Save(stale)
 
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "stale-sess"
-	item.ClaimedAt = time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "stale-sess")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	staleAt := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "stale-sess"
+		it.ClaimedAt = staleAt
+		it.Doc.SetField("claimed_by", "stale-sess")
+		it.Doc.SetField("claimed_at", staleAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	code := SprintRecover(s, cfg, sprintID)
 	if code != 0 {
 		t.Fatalf("SprintRecover returned %d, want 0", code)
 	}
 
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	if item.ClaimedBy != "" {
 		t.Errorf("ClaimedBy should be cleared, got %q", item.ClaimedBy)
 	}
@@ -290,12 +311,16 @@ func TestSprintRecoverSkipsFresh(t *testing.T) {
 	mgr.EnsureSession("fresh-sess", "agent")
 	mgr.AddClaim("fresh-sess", "T-001")
 
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "fresh-sess"
-	item.ClaimedAt = time.Now().Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "fresh-sess")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	freshAt := time.Now().Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "fresh-sess"
+		it.ClaimedAt = freshAt
+		it.Doc.SetField("claimed_by", "fresh-sess")
+		it.Doc.SetField("claimed_at", freshAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	code := SprintRecover(s, cfg, sprintID)
 	if code != 0 {
@@ -303,7 +328,7 @@ func TestSprintRecoverSkipsFresh(t *testing.T) {
 	}
 
 	// Fresh claim should remain
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	if item.ClaimedBy != "fresh-sess" {
 		t.Errorf("fresh claim should remain, ClaimedBy = %q", item.ClaimedBy)
 	}

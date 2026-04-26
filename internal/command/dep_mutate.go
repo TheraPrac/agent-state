@@ -42,21 +42,18 @@ func DepAdd(s *store.Store, cfg *config.Config, id, depID string) int {
 		}
 	}
 
-	// Add forward edge: id depends_on depID
-	item.DependsOn = append(item.DependsOn, depID)
-	updateListInDoc(item, "depends_on", item.DependsOn)
-
-	// Add inverse edge: depID blocks id
-	dep.Blocks = append(dep.Blocks, id)
-	updateListInDoc(dep, "blocks", dep.Blocks)
-
-	// Write both
-	if err := s.Write(item); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
-		return 1
-	}
-	if err := s.Write(dep); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", depID, err)
+	if err := s.MutateMany([]string{id, depID}, func(items map[string]*model.Item) error {
+		it := items[id]
+		dp := items[depID]
+		// Forward edge
+		it.DependsOn = append(it.DependsOn, depID)
+		updateListInDoc(it, "depends_on", it.DependsOn)
+		// Inverse edge
+		dp.Blocks = append(dp.Blocks, id)
+		updateListInDoc(dp, "blocks", dp.Blocks)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "writing dep edges %s -> %s: %v\n", id, depID, err)
 		return 1
 	}
 
@@ -97,40 +94,43 @@ func DepRm(s *store.Store, cfg *config.Config, id, depID string) int {
 		return 1
 	}
 
-	// Remove forward edge
+	// Pre-flight on cached state for a fast user-error message.
 	found := false
-	var newDeps []string
 	for _, d := range item.DependsOn {
 		if d == depID {
 			found = true
-		} else {
-			newDeps = append(newDeps, d)
+			break
 		}
 	}
 	if !found {
 		fmt.Fprintf(os.Stderr, "%s does not depend on %s\n", id, depID)
 		return 1
 	}
-	item.DependsOn = newDeps
-	updateListInDoc(item, "depends_on", item.DependsOn)
 
-	// Remove inverse edge
-	var newBlocks []string
-	for _, b := range dep.Blocks {
-		if b != id {
-			newBlocks = append(newBlocks, b)
+	if err := s.MutateMany([]string{id, depID}, func(items map[string]*model.Item) error {
+		it := items[id]
+		dp := items[depID]
+
+		var newDeps []string
+		for _, d := range it.DependsOn {
+			if d != depID {
+				newDeps = append(newDeps, d)
+			}
 		}
-	}
-	dep.Blocks = newBlocks
-	updateListInDoc(dep, "blocks", dep.Blocks)
+		it.DependsOn = newDeps
+		updateListInDoc(it, "depends_on", it.DependsOn)
 
-	// Write both
-	if err := s.Write(item); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
-		return 1
-	}
-	if err := s.Write(dep); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", depID, err)
+		var newBlocks []string
+		for _, b := range dp.Blocks {
+			if b != id {
+				newBlocks = append(newBlocks, b)
+			}
+		}
+		dp.Blocks = newBlocks
+		updateListInDoc(dp, "blocks", dp.Blocks)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "writing dep edges %s -> %s: %v\n", id, depID, err)
 		return 1
 	}
 

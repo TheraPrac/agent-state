@@ -7,6 +7,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -15,17 +16,20 @@ func setupUATTestEnv(t *testing.T) (*store.Store, *config.Config) {
 	s, cfg := setupPRTestEnv(t) // active T-003, testing config
 
 	// Give T-003 test evidence and manifest
-	item, _ := s.Get("T-003")
-	item.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27T10:00:00-06:00 evidence:s3://bucket/log.txt")
-	item.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27T10:00:00-06:00")
-	item.SetNested("manifest", "prs", "api#42")
-	item.SetNested("delivery", "stage", "pr_open")
-	item.AcceptanceCriteria = []string{
-		"API unit tests pass",
-		"PR manifest recorded",
-		"cmd:echo hello",
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27T10:00:00-06:00 evidence:s3://bucket/log.txt")
+		it.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27T10:00:00-06:00")
+		it.SetNested("manifest", "prs", "api#42")
+		it.SetNested("delivery", "stage", "pr_open")
+		it.AcceptanceCriteria = []string{
+			"API unit tests pass",
+			"PR manifest recorded",
+			"cmd:echo hello",
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
 	}
-	s.Write(item)
 
 	return s, cfg
 }
@@ -87,9 +91,12 @@ func TestUATMissingEvidence(t *testing.T) {
 	s, cfg := setupUATTestEnv(t)
 
 	// Remove test evidence
-	item, _ := s.Get("T-003")
-	item.SetNested("testing_evidence", "api_unit", "null")
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "api_unit", "null")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	opts := UATOpts{
 		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("ok"), 0, nil },
@@ -124,9 +131,12 @@ func TestUATCmdCriterionFail(t *testing.T) {
 	s, cfg := setupUATTestEnv(t)
 
 	// Change cmd criterion to something that fails
-	item, _ := s.Get("T-003")
-	item.AcceptanceCriteria = []string{"cmd:exit 1"}
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"cmd:exit 1"}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	opts := UATOpts{
 		RunCmd: func(cmd string) ([]byte, int, error) {
@@ -144,9 +154,12 @@ func TestUATCmdCriterionFail(t *testing.T) {
 func TestUATManualCriteria(t *testing.T) {
 	s, cfg := setupUATTestEnv(t)
 
-	item, _ := s.Get("T-003")
-	item.AcceptanceCriteria = []string{"User can see the modal"}
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"User can see the modal"}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	opts := UATOpts{
 		RunCmd:  func(cmd string) ([]byte, int, error) { return nil, 0, nil },
@@ -173,9 +186,12 @@ func TestUATItemNotFound(t *testing.T) {
 func TestUATNoAcceptanceCriteria(t *testing.T) {
 	s, cfg := setupUATTestEnv(t)
 
-	item, _ := s.Get("T-003")
-	item.AcceptanceCriteria = nil
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.AcceptanceCriteria = nil
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	opts := UATOpts{
 		RunCmd:  func(cmd string) ([]byte, int, error) { return nil, 0, nil },

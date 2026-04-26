@@ -11,6 +11,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -289,15 +290,20 @@ func TestAdvanceNoItems(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
 	// Make both items terminal
-	item1, _ := s.Get("T-001")
-	item1.Doc.SetField("status", "completed")
-	item1.Status = "completed"
-	s.Write(item1)
-
-	item2, _ := s.Get("T-002")
-	item2.Doc.SetField("status", "completed")
-	item2.Status = "completed"
-	s.Write(item2)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "completed")
+		it.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
+	if err := s.Mutate("T-002", func(it *model.Item) error {
+		it.Doc.SetField("status", "completed")
+		it.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-002: %v", err)
+	}
 
 	code := Advance(s, cfg, "test-sprint", RunOpts{}, mockRunEngine(true))
 	if code != 0 {
@@ -829,10 +835,13 @@ func TestIsEligible(t *testing.T) {
 	}
 
 	// Make T-001 completed — not eligible
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "completed")
-	item.Status = "completed"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "completed")
+		it.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 	s2, _ := store.New(cfg)
 	if isEligible(s2, cfg, "T-001") {
 		t.Error("completed T-001 should not be eligible")
@@ -896,10 +905,13 @@ func TestInjectGHPRContext(t *testing.T) {
 func TestUATReviewApprove(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "uat_review"}
 	step.SetName("uat_review")
@@ -932,10 +944,13 @@ func TestUATReviewApprove(t *testing.T) {
 func TestUATReviewReject(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "uat_review"}
 	step.SetName("uat_review")
@@ -966,10 +981,13 @@ func TestUATReviewReject(t *testing.T) {
 func TestUATReviewFeedbackThenApprove(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "uat_review"}
 	step.SetName("uat_review")
@@ -1019,10 +1037,13 @@ func TestUATReviewFeedbackThenApprove(t *testing.T) {
 func TestUATReviewInteractiveEscapeHatch(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "uat_review"}
 	step.SetName("uat_review")
@@ -1076,10 +1097,13 @@ func TestUATReviewInteractiveEscapeHatch(t *testing.T) {
 func TestUATReviewInteractiveThenReject(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "uat_review"}
 	step.SetName("uat_review")
@@ -1124,11 +1148,14 @@ func TestUATReviewInteractiveThenReject(t *testing.T) {
 func TestCloseGateRejectsSkippedDeploy(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	item.SetNested("delivery", "skipped_steps", "deploy_watch")
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		it.SetNested("delivery", "skipped_steps", "deploy_watch")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
 	step.SetName("close")
@@ -1145,11 +1172,14 @@ func TestCloseGateRejectsSkippedDeploy(t *testing.T) {
 func TestCloseGateRejectsSkippedUAT(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	item.SetNested("delivery", "skipped_steps", "uat_review")
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		it.SetNested("delivery", "skipped_steps", "uat_review")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
 	step.SetName("close")
@@ -1166,10 +1196,13 @@ func TestCloseGateRejectsSkippedUAT(t *testing.T) {
 func TestCloseGateAllowsNoSkips(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
 	step.SetName("close")
@@ -1184,11 +1217,14 @@ func TestCloseGateAllowsNoSkips(t *testing.T) {
 func TestCloseGateAllowsNonCriticalSkips(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	item.SetNested("delivery", "skipped_steps", "code_review")
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		it.SetNested("delivery", "skipped_steps", "code_review")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
 	step.SetName("close")
@@ -1203,11 +1239,14 @@ func TestCloseGateAllowsNonCriticalSkips(t *testing.T) {
 func TestCloseGateRejectsMultipleSkips(t *testing.T) {
 	s, cfg := setupRunTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	item.SetNested("delivery", "skipped_steps", "code_review,deploy_watch,smoke")
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		it.SetNested("delivery", "skipped_steps", "code_review,deploy_watch,smoke")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	step := config.RunStepDef{Type: "close", Resolution: "completed"}
 	step.SetName("close")

@@ -1583,11 +1583,12 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
 			if lastStep == "" || lastStep == "plan" {
 				fmt.Printf("[%s] Verification-only item (no code changes) — skipping to verify_tests\n", itemID)
-				item.SetNested("delivery", "last_completed_step", "merge")
-				item.SetNested("delivery", "stage", "verification")
-				item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-				localStore.Write(item)
-				localStore, _ = store.New(cfg)
+				_ = localStore.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "last_completed_step", "merge")
+					item.SetNested("delivery", "stage", "verification")
+					item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+					return nil
+				})
 			}
 		}
 	}
@@ -1596,12 +1597,12 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	// (still need deploy verification, smoke, UAT, and user approval)
 	if detectMergedPR(cfg, itemID, item) {
 		fmt.Printf("[%s] PR already merged — advancing to post-merge steps\n", itemID)
-		item.SetNested("delivery", "stage", "merged")
-		item.SetNested("delivery", "last_completed_step", "merge")
-		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-		localStore.Write(item)
-		// Reload and continue — the resume logic will skip to deploy_watch
-		localStore, _ = store.New(cfg)
+		_ = localStore.Mutate(itemID, func(item *model.Item) error {
+			item.SetNested("delivery", "stage", "merged")
+			item.SetNested("delivery", "last_completed_step", "merge")
+			item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+			return nil
+		})
 	}
 
 	// Start the item if not already active (creates worktrees + claims)
@@ -1615,19 +1616,21 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		wtBase := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir, itemID)
 		if _, err := os.Stat(wtBase); os.IsNotExist(err) {
 			fmt.Printf("[%s] Active item with missing worktree — recreating\n", itemID)
-			item.Doc.SetField("status", tc.StartStatus)
-			item.Status = tc.StartStatus
+			// Hoist session claim removal before Mutate (external side-effect)
 			if item.ClaimedBy != "" {
 				mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
 				_ = mgr.RemoveClaim(item.ClaimedBy, itemID)
+			}
+			store.UnlockItem(cfg, itemID)
+			_ = localStore.Mutate(itemID, func(item *model.Item) error {
+				item.Doc.SetField("status", tc.StartStatus)
+				item.Status = tc.StartStatus
 				item.ClaimedBy = ""
 				item.ClaimedAt = ""
 				item.Doc.SetField("claimed_by", "")
 				item.Doc.SetField("claimed_at", "")
-			}
-			store.UnlockItem(cfg, itemID)
-			localStore.Write(item)
-			localStore, _ = store.New(cfg)
+				return nil
+			})
 			item, _ = localStore.Get(itemID)
 		}
 	}
@@ -1671,11 +1674,12 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	isNewSession := claudeSessionID == ""
 	if isNewSession {
 		claudeSessionID = generateSessionID()
+		newSessionID := claudeSessionID
 		if progressStore, err := store.New(cfg); err == nil {
-			if progressItem, ok := progressStore.Get(itemID); ok {
-				progressItem.SetNested("delivery", "claude_session_id", claudeSessionID)
-				progressStore.Write(progressItem)
-			}
+			_ = progressStore.Mutate(itemID, func(item *model.Item) error {
+				item.SetNested("delivery", "claude_session_id", newSessionID)
+				return nil
+			})
 		}
 	}
 	claudeStepCount := 0
@@ -1742,12 +1746,12 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 		// Status can drift if a previous fix attempt or concurrent
 		// process changed it.
 		if refreshStore, err := store.New(cfg); err == nil {
-			if refreshItem, ok := refreshStore.Get(itemID); ok {
-				if refreshItem.Status != "active" {
-					refreshItem.Status = "active"
-					refreshStore.Write(refreshItem)
-					localStore, _ = store.New(cfg)
-				}
+			if refreshItem, ok := refreshStore.Get(itemID); ok && refreshItem.Status != "active" {
+				_ = refreshStore.Mutate(itemID, func(item *model.Item) error {
+					item.Status = "active"
+					return nil
+				})
+				localStore, _ = store.New(cfg)
 			}
 		}
 
@@ -1873,10 +1877,11 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 						if sr2.Passed {
 							fmt.Printf("[%s] Step %s OK after fix attempt %d (%s)\n", itemID, step.Name(), attempt, sr2.Duration.Round(time.Second))
 							if progressStore, err := store.New(cfg); err == nil {
-								if progressItem, ok := progressStore.Get(itemID); ok {
-									progressItem.SetNested("delivery", "last_completed_step", step.Name())
-									progressStore.Write(progressItem)
-								}
+								completedStep := step.Name()
+								_ = progressStore.Mutate(itemID, func(item *model.Item) error {
+									item.SetNested("delivery", "last_completed_step", completedStep)
+									return nil
+								})
 							}
 							localStore, _ = store.New(cfg)
 							fixed = true
@@ -1931,10 +1936,11 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 		// Record progress so we can resume from here if interrupted
 		if progressStore, err := store.New(cfg); err == nil {
-			if progressItem, ok := progressStore.Get(itemID); ok {
-				progressItem.SetNested("delivery", "last_completed_step", step.Name())
-				progressStore.Write(progressItem)
-			}
+			completedStep := step.Name()
+			_ = progressStore.Mutate(itemID, func(item *model.Item) error {
+				item.SetNested("delivery", "last_completed_step", completedStep)
+				return nil
+			})
 		}
 
 		// Reload store after each step (other steps may have modified the item)
@@ -1980,15 +1986,15 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 					})
 					// Record skipped step on item so close gate can reject
 					if ps, err := store.New(cfg); err == nil {
-						if pi, ok := ps.Get(itemID); ok {
+						_ = ps.Mutate(itemID, func(pi *model.Item) error {
 							existing, _ := getNestedField(pi, "delivery", "skipped_steps")
 							if existing == "" {
 								pi.SetNested("delivery", "skipped_steps", nextStep)
 							} else {
 								pi.SetNested("delivery", "skipped_steps", existing+","+nextStep)
 							}
-							ps.Write(pi)
-						}
+							return nil
+						})
 					}
 					i++ // advance past the skipped step
 				case "abort":
@@ -2300,12 +2306,12 @@ func executePR(s *store.Store, cfg *config.Config, itemID string, step config.Ru
 		if hasNoBranchCommits(cfg, itemID) {
 			fmt.Printf("[%s] No code changes — marking as no-op, skipping PR/test/deploy steps\n", itemID)
 			if localStore, err := store.New(cfg); err == nil {
-				if item, ok := localStore.Get(itemID); ok {
+				_ = localStore.Mutate(itemID, func(item *model.Item) error {
 					item.SetNested("delivery", "stage", "no_op")
 					item.SetNested("delivery", "last_completed_step", "smoke")
 					item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-					localStore.Write(item)
-				}
+					return nil
+				})
 			}
 			sr.Passed = true
 			sr.Output = "no-op item (zero commits)"
@@ -2769,14 +2775,16 @@ func executeUATReview(s *store.Store, cfg *config.Config, itemID, sprintID strin
 		if choice == "1" {
 			// Record UAT approval on item
 			if approvalStore, err := store.New(cfg); err == nil {
-				if approvalItem, ok := approvalStore.Get(itemID); ok {
-					now := time.Now()
-					approvalItem.SetNested("delivery", "uat_approved_by", "user")
-					approvalItem.SetNested("delivery", "uat_approved_date", now.Format("2006-01-02"))
-					approvalItem.SetNested("delivery", "stage", "uat_approved")
-					approvalItem.Doc.SetField("last_touched", now.Format(time.RFC3339))
-					approvalStore.Write(approvalItem)
-				}
+				now := time.Now()
+				approvedDate := now.Format("2006-01-02")
+				lastTouched := now.Format(time.RFC3339)
+				_ = approvalStore.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "uat_approved_by", "user")
+					item.SetNested("delivery", "uat_approved_date", approvedDate)
+					item.SetNested("delivery", "stage", "uat_approved")
+					item.Doc.SetField("last_touched", lastTouched)
+					return nil
+				})
 			}
 			sr.Passed = true
 			return sr
@@ -3160,9 +3168,11 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 	}
 	if p, err := plan.Load(cfg.PlansDir(), itemID); err == nil && p != nil && p.Approved {
 		// Plan sidecar exists and is approved — sync flag to item and skip
-		item.PlanApproved = true
-		item.Doc.SetField("plan_approved", "true")
-		s.Write(item)
+		_ = s.Mutate(itemID, func(item *model.Item) error {
+			item.PlanApproved = true
+			item.Doc.SetField("plan_approved", "true")
+			return nil
+		})
 		sr.Passed = true
 		return sr
 	}
@@ -3414,19 +3424,23 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		fmt.Println()
 	}
 
-	item.PlanApproved = true
-	item.Doc.SetField("plan_approved", "true")
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	s3.Write(item)
+	_ = s3.Mutate(itemID, func(item *model.Item) error {
+		item.PlanApproved = true
+		item.Doc.SetField("plan_approved", "true")
+		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		return nil
+	})
 
 	// Create plan sidecar if one doesn't exist (st prep creates them, st run should too)
 	if !plan.Exists(cfg.PlansDir(), itemID) {
+		// Reload item to get latest state for sidecar construction
+		latestItem, _ := s3.Get(itemID)
 		p := &plan.Plan{
 			Approved:   true,
 			ApprovedAt: plan.Now(),
-			Approach:   item.Summary,
-			ACs:        item.AcceptanceCriteria,
-			ScopeRepos: inferReposFromItem(cfg, item),
+			Approach:   latestItem.Summary,
+			ACs:        latestItem.AcceptanceCriteria,
+			ScopeRepos: inferReposFromItem(cfg, latestItem),
 			Revisions: []plan.Revision{
 				{Timestamp: plan.Now(), Summary: "Plan approved via st run"},
 			},
@@ -3435,8 +3449,10 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 
 		// Set scope_repos on item if not already set
 		if len(p.ScopeRepos) > 0 {
-			item.Doc.SetField("scope_repos", strings.Join(p.ScopeRepos, ", "))
-			s3.Write(item)
+			_ = s3.Mutate(itemID, func(item *model.Item) error {
+				item.Doc.SetField("scope_repos", strings.Join(p.ScopeRepos, ", "))
+				return nil
+			})
 		}
 	}
 
@@ -3549,21 +3565,18 @@ func planMissingFields(needsSummary, needsACs bool) string {
 
 // recordSession appends a session ID to the item's sessions list.
 func recordSession(s *store.Store, cfg *config.Config, itemID, sessionID, stepName string) {
-	item, ok := s.Get(itemID)
-	if !ok {
-		return
-	}
+	_ = s.Mutate(itemID, func(item *model.Item) error {
+		// Append to sessions list
+		item.Sessions = append(item.Sessions, sessionID)
+		updateListInDoc(item, "sessions", item.Sessions)
 
-	// Append to sessions list
-	item.Sessions = append(item.Sessions, sessionID)
-	updateListInDoc(item, "sessions", item.Sessions)
+		// Record in time_tracking which step used this session
+		item.SetNested("time_tracking", "last_session", sessionID)
+		item.SetNested("time_tracking", "last_step", stepName)
 
-	// Record in time_tracking which step used this session
-	item.SetNested("time_tracking", "last_session", sessionID)
-	item.SetNested("time_tracking", "last_step", stepName)
-
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	s.Write(item)
+		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		return nil
+	})
 }
 
 // --- Prompt and args ---
@@ -4388,21 +4401,22 @@ func releaseItem(cfg *config.Config, itemID string) {
 	// Do NOT reset status to start. The work (code, PR, tests) is preserved.
 	fmt.Printf("[%s] Releasing claim for retry (keeping status: %s)\n", itemID, item.Status)
 
-	// Clear claim
+	// Hoist session claim removal before Mutate (external side-effect)
 	if item.ClaimedBy != "" {
 		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
 		_ = mgr.RemoveClaim(item.ClaimedBy, itemID)
-		item.ClaimedBy = ""
-		item.ClaimedAt = ""
-		item.Doc.SetField("claimed_by", "")
-		item.Doc.SetField("claimed_at", "")
 	}
 
 	// Keep plan_approved if it was set — the user already approved the design.
 	// Only the plan step itself should set/clear this flag.
-
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-	localStore.Write(item)
+	_ = localStore.Mutate(itemID, func(item *model.Item) error {
+		item.ClaimedBy = ""
+		item.ClaimedAt = ""
+		item.Doc.SetField("claimed_by", "")
+		item.Doc.SetField("claimed_at", "")
+		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		return nil
+	})
 
 	// Release item lock so GitPull stops protecting it
 	store.UnlockItem(cfg, itemID)
@@ -4438,10 +4452,12 @@ func recoverStaleItems(s *store.Store, cfg *config.Config, sprintItems []string)
 		// so the pipeline continues with deploy verification, UAT, etc.
 		if detectMergedPR(cfg, itemID, item) {
 			fmt.Printf("[%s] PR already merged — advancing to post-merge steps\n", itemID)
-			item.SetNested("delivery", "stage", "merged")
-			item.SetNested("delivery", "last_completed_step", "merge")
-			item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-			s.Write(item)
+			_ = s.Mutate(itemID, func(item *model.Item) error {
+				item.SetNested("delivery", "stage", "merged")
+				item.SetNested("delivery", "last_completed_step", "merge")
+				item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+				return nil
+			})
 			continue
 		}
 

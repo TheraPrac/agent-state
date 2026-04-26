@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -42,11 +43,14 @@ func setupPipelineTestEnv(t *testing.T) (*store.Store, *config.Config) {
 	}
 
 	// Give T-003 test evidence so gates pass
-	item, _ := s.Get("T-003")
-	item.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27")
-	item.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27")
-	item.SetNested("manifest", "prs", "api#42")
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "api_unit", "pass abc123 2026-03-27")
+		it.SetNested("testing_evidence", "api_lint", "pass abc123 2026-03-27")
+		it.SetNested("manifest", "prs", "api#42")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	return s, cfg
 }
@@ -88,9 +92,12 @@ func TestMergeGateFail(t *testing.T) {
 	opts := mockPipelineOpts(t)
 
 	// Remove test evidence so gate fails
-	item, _ := s.Get("T-003")
-	item.SetNested("testing_evidence", "api_unit", "null")
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "api_unit", "null")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	code := Merge(s, cfg, "T-003", opts)
 	if code != 1 {

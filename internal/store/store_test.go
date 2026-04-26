@@ -203,7 +203,7 @@ func TestWrite(t *testing.T) {
 	item.Doc.SetField("status", "active")
 	item.Status = "active"
 
-	if err := s.Write(item); err != nil {
+	if err := s.write(item); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestMove(t *testing.T) {
 	item.Status = "completed"
 	item.Doc.SetField("status", "completed")
 
-	if err := s.Write(item); err != nil {
+	if err := s.write(item); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 

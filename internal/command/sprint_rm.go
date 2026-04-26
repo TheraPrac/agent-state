@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -24,11 +25,12 @@ func SprintRm(s *store.Store, cfg *config.Config, sprintID, itemID string) int {
 	}
 
 	// Clear the item's sprint field
-	item, ok := s.Get(itemID)
-	if ok && item.Doc != nil {
-		item.Doc.SetField("sprint", "")
-		item.Sprint = ""
-		if err := s.Write(item); err != nil {
+	if _, ok := s.Get(itemID); ok {
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			item.Doc.SetField("sprint", "")
+			item.Sprint = ""
+			return nil
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "writing %s: %v\n", itemID, err)
 			return 1
 		}

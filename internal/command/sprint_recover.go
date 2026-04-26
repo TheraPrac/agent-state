@@ -7,6 +7,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -46,21 +47,23 @@ func SprintRecover(s *store.Store, cfg *config.Config, sprintID string) int {
 			fmt.Printf("  Released stale claim: %s (claimed by %s, last active %s)\n",
 				itemID, item.ClaimedBy, age)
 
-			// Clear from session
+			// Clear from session (external call — hoisted out of Mutate)
 			_ = mgr.RemoveClaim(item.ClaimedBy, itemID)
 
-			// Clear from item
-			item.ClaimedBy = ""
-			item.ClaimedAt = ""
-			item.Doc.SetField("claimed_by", "")
-			item.Doc.SetField("claimed_at", "")
-			if err := s.Write(item); err != nil {
+			// Clear from item atomically
+			if err := s.Mutate(itemID, func(item *model.Item) error {
+				item.ClaimedBy = ""
+				item.ClaimedAt = ""
+				item.Doc.SetField("claimed_by", "")
+				item.Doc.SetField("claimed_at", "")
+				return nil
+			}); err != nil {
 				fmt.Fprintf(os.Stderr, "writing %s: %v\n", itemID, err)
 				continue
 			}
 
 			changelog.Append(cfg, itemID, changelog.Entry{
-				Op: "recover", Field: "claimed_by", OldValue: item.ClaimedBy,
+				Op: "recover", Field: "claimed_by", OldValue: "",
 				Reason: "stale claim released by sprint recover",
 			})
 			released++

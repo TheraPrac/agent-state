@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
@@ -42,29 +43,41 @@ func fixRequiredFields(s *store.Store, cfg *config.Config) int {
 			continue
 		}
 
-		modified := false
+		// Determine which fields need inserting before taking the lock.
+		var missingFields []string
 		for _, field := range tc.RequiredFields {
-			if validate.HasField(item.Doc, field) {
-				continue
+			if !validate.HasField(item.Doc, field) {
+				missingFields = append(missingFields, field)
 			}
-
-			switch field {
-			case "depends_on", "blocks":
-				item.Doc.SetList(field, []string{})
-			case "severity":
-				item.Doc.SetField(field, "medium")
-			default:
-				item.Doc.SetField(field, "")
-			}
-			modified = true
-			fixed++
-			fmt.Printf("  \033[33m⟳\033[0m %s: inserted missing field %q\n", item.ID, field)
+		}
+		if len(missingFields) == 0 {
+			continue
 		}
 
-		if modified {
-			if err := s.Write(item); err != nil {
-				fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+		itemID := item.ID
+		fieldsToInsert := missingFields
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			for _, field := range fieldsToInsert {
+				if validate.HasField(item.Doc, field) {
+					continue
+				}
+				switch field {
+				case "depends_on", "blocks":
+					item.Doc.SetList(field, []string{})
+				case "severity":
+					item.Doc.SetField(field, "medium")
+				default:
+					item.Doc.SetField(field, "")
+				}
 			}
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
+			continue
+		}
+		for _, field := range missingFields {
+			fixed++
+			fmt.Printf("  \033[33m⟳\033[0m %s: inserted missing field %q\n", itemID, field)
 		}
 	}
 	return fixed
@@ -85,21 +98,32 @@ func fixStaleDeps(s *store.Store, cfg *config.Config) int {
 			continue
 		}
 
+		itemID := item.ID
+		capturedDeps := newDeps
+		capturedBlocks := newBlocks
+		capturedDepsChanged := depsChanged
+		capturedBlocksChanged := blocksChanged
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			if capturedDepsChanged {
+				item.DependsOn = capturedDeps
+				item.Doc.SetList("depends_on", capturedDeps)
+			}
+			if capturedBlocksChanged {
+				item.Blocks = capturedBlocks
+				item.Doc.SetList("blocks", capturedBlocks)
+			}
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
+			continue
+		}
 		if depsChanged {
-			item.DependsOn = newDeps
-			item.Doc.SetList("depends_on", newDeps)
 			fixed++
-			fmt.Printf("  \033[33m⟳\033[0m %s: normalized depends_on slugs\n", item.ID)
+			fmt.Printf("  \033[33m⟳\033[0m %s: normalized depends_on slugs\n", itemID)
 		}
 		if blocksChanged {
-			item.Blocks = newBlocks
-			item.Doc.SetList("blocks", newBlocks)
 			fixed++
-			fmt.Printf("  \033[33m⟳\033[0m %s: normalized blocks slugs\n", item.ID)
-		}
-
-		if err := s.Write(item); err != nil {
-			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+			fmt.Printf("  \033[33m⟳\033[0m %s: normalized blocks slugs\n", itemID)
 		}
 	}
 	return fixed
@@ -151,8 +175,16 @@ func fixReciprocalDeps(s *store.Store, cfg *config.Config) int {
 		}
 
 		for id := range dirty {
-			item := items[id]
-			if err := s.Write(item); err != nil {
+			dirtyItem := items[id]
+			capturedBlocks := append([]string(nil), dirtyItem.Blocks...)
+			capturedDependsOn := append([]string(nil), dirtyItem.DependsOn...)
+			if err := s.Mutate(id, func(item *model.Item) error {
+				item.Blocks = capturedBlocks
+				item.Doc.SetList("blocks", capturedBlocks)
+				item.DependsOn = capturedDependsOn
+				item.Doc.SetList("depends_on", capturedDependsOn)
+				return nil
+			}); err != nil {
 				fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", id, err)
 			}
 		}
@@ -189,13 +221,16 @@ func fixDanglingDeps(s *store.Store, cfg *config.Config) int {
 		}
 
 		if removed {
-			item.DependsOn = cleanDeps
-			if len(cleanDeps) == 0 {
-				item.Doc.SetList("depends_on", []string{})
-			} else {
-				item.Doc.SetList("depends_on", cleanDeps)
-			}
-			if err := s.Write(item); err != nil {
+			capturedCleanDeps := cleanDeps
+			if err := s.Mutate(id, func(item *model.Item) error {
+				item.DependsOn = capturedCleanDeps
+				if len(capturedCleanDeps) == 0 {
+					item.Doc.SetList("depends_on", []string{})
+				} else {
+					item.Doc.SetList("depends_on", capturedCleanDeps)
+				}
+				return nil
+			}); err != nil {
 				fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", id, err)
 			}
 		}
@@ -229,9 +264,13 @@ func fixDeliveryGate(s *store.Store, cfg *config.Config) int {
 		}
 
 		// Auto-fix: stamp as uat_approved (legacy item, already archived)
-		item.SetNested("delivery", "stage", cfg.Delivery.ArchiveGate)
-		if err := s.Write(item); err != nil {
-			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+		itemID := item.ID
+		archiveGate := cfg.Delivery.ArchiveGate
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			item.SetNested("delivery", "stage", archiveGate)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
 			continue
 		}
 		fixed++

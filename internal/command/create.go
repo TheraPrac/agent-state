@@ -120,27 +120,33 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	item.TimeTracking = make(map[string]interface{})
 	item.Manifest = make(map[string]interface{})
 
-	if err := s.Write(item); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+	if err := s.Create(item); err != nil {
+		fmt.Fprintf(os.Stderr, "creating %s: %v\n", id, err)
 		return 1
 	}
 
-	// Assign to sprint if requested
+	// Assign to sprint if requested. Sprint registry I/O is hoisted
+	// out of the Mutate closure (it touches a different file).
 	if opts.Sprint != "" {
 		r, err := registry.Load(cfg.EpicsPath())
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "warning: could not load registry for sprint assignment: %v\n", err)
-		} else if err := r.SprintAddItems(opts.Sprint, []string{id}); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not add to sprint: %v\n", err)
-		} else {
-			sp, _ := r.SprintByID(opts.Sprint)
-			item.Sprint = opts.Sprint
-			item.Doc.SetField("sprint", opts.Sprint)
-			if sp != nil && sp.Epic != "" {
-				item.Epic = sp.Epic
-				item.Doc.SetField("epic", sp.Epic)
+		default:
+			if err := r.SprintAddItems(opts.Sprint, []string{id}); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not add to sprint: %v\n", err)
+				break
 			}
-			_ = s.Write(item)
+			sp, _ := r.SprintByID(opts.Sprint)
+			_ = s.Mutate(id, func(it *model.Item) error {
+				it.Sprint = opts.Sprint
+				it.Doc.SetField("sprint", opts.Sprint)
+				if sp != nil && sp.Epic != "" {
+					it.Epic = sp.Epic
+					it.Doc.SetField("epic", sp.Epic)
+				}
+				return nil
+			})
 			if err := r.Save(cfg.EpicsPath()); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not save registry: %v\n", err)
 			}

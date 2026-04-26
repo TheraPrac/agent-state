@@ -14,6 +14,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
@@ -131,10 +132,14 @@ func DeployCheck(s *store.Store, cfg *config.Config, id string, opts PipelineOpt
 		// No command — just health checks were enough (or nothing configured)
 		if len(healthURLs) > 0 {
 			now := time.Now()
-			item.SetNested("delivery", "stage", "deployed_dev")
-			item.SetNested("delivery", "deployed_date", now.Format("2006-01-02"))
-			item.Doc.SetField("last_touched", now.Format(time.RFC3339))
-			s.Write(item)
+			if err := s.Mutate(id, func(item *model.Item) error {
+				item.SetNested("delivery", "stage", "deployed_dev")
+				item.SetNested("delivery", "deployed_date", now.Format("2006-01-02"))
+				return nil
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+				return 1
+			}
 			changelog.Append(cfg, id, changelog.Entry{
 				Op: "deploy_checked", Field: "delivery.stage", NewValue: "deployed_dev",
 			})
@@ -173,7 +178,6 @@ func Smoke(s *store.Store, cfg *config.Config, id string, opts PipelineOpts) int
 // --- Shared runner ---
 
 func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage string, stepCfg *config.PipelineStepConfig, opts PipelineOpts) int {
-	item, _ := s.Get(id)
 	runCmd := opts.RunCmd
 	if runCmd == nil {
 		// Always execute from workspace root so relative paths in config work
@@ -263,8 +267,10 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	}
 
 	if exitCode != 0 {
-		item.SetNested("delivery", stepName+"_evidence", logURI)
-		s.Write(item)
+		_ = s.Mutate(id, func(item *model.Item) error {
+			item.SetNested("delivery", stepName+"_evidence", logURI)
+			return nil
+		})
 		fmt.Fprintf(os.Stderr, "FAIL %s on %s (exit %d, %dms)\n", stepName, id, exitCode, duration.Milliseconds())
 		return 1
 	}
@@ -279,17 +285,21 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 	}
 
 	// Record evidence URI and advance delivery stage
-	item.SetNested("delivery", stepName+"_evidence", logURI)
-	item.SetNested("delivery", "stage", nextStage)
-	if stepName == "deploy_check" || nextStage == "deployed_dev" {
-		item.SetNested("delivery", "deployed_date", now.Format("2006-01-02"))
-	}
-	if postOutput != "" && stepName == "merge" {
-		item.SetNested("work_tracking", "merge_sha", postOutput)
-	}
-	item.Doc.SetField("last_touched", now.Format(time.RFC3339))
-
-	if err := s.Write(item); err != nil {
+	// Capture loop variables for closure use.
+	capturedLogURI := logURI
+	capturedPostOutput := postOutput
+	capturedNow := now
+	if err := s.Mutate(id, func(item *model.Item) error {
+		item.SetNested("delivery", stepName+"_evidence", capturedLogURI)
+		item.SetNested("delivery", "stage", nextStage)
+		if stepName == "deploy_check" || nextStage == "deployed_dev" {
+			item.SetNested("delivery", "deployed_date", capturedNow.Format("2006-01-02"))
+		}
+		if capturedPostOutput != "" && stepName == "merge" {
+			item.SetNested("work_tracking", "merge_sha", capturedPostOutput)
+		}
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}

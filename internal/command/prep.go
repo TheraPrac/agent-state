@@ -365,21 +365,25 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				return "rejected"
 			}
 
-			// Update item
+			// Update item — reload store first so the local s is fresh,
+			// then use Mutate so the approval is written atomically.
 			s, _ = store.New(cfg)
 			item, _ = s.Get(itemID)
-			item.PlanApproved = true
-			item.Doc.SetField("plan_approved", "true")
-			// Set scope_repos as a field
-			if len(p.ScopeRepos) > 0 {
-				item.Doc.SetField("scope_repos", strings.Join(p.ScopeRepos, ", "))
-			}
-			// Ensure ACs are on the item
-			if len(item.AcceptanceCriteria) == 0 && len(p.ACs) > 0 {
-				item.Doc.ReplaceList("acceptance_criteria", p.ACs)
-			}
-			item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
-			if err := s.Write(item); err != nil {
+			capturedScopeRepos := append([]string(nil), p.ScopeRepos...)
+			capturedACs := append([]string(nil), p.ACs...)
+			if err := s.Mutate(itemID, func(item *model.Item) error {
+				item.PlanApproved = true
+				item.Doc.SetField("plan_approved", "true")
+				// Set scope_repos as a field
+				if len(capturedScopeRepos) > 0 {
+					item.Doc.SetField("scope_repos", strings.Join(capturedScopeRepos, ", "))
+				}
+				// Ensure ACs are on the item
+				if len(item.AcceptanceCriteria) == 0 && len(capturedACs) > 0 {
+					item.Doc.ReplaceList("acceptance_criteria", capturedACs)
+				}
+				return nil
+			}); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] ERROR: failed to save plan approval: %v\n", itemID, err)
 				return "rejected"
 			}

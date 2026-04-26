@@ -202,9 +202,13 @@ func (s *Store) NextID(itemType string) (string, error) {
 	return fmt.Sprintf("%s-%03d", prefix, maxNum+1), nil
 }
 
-// Write persists an item to disk using its ParsedDocument for lossless output.
-// It updates last_touched and last_touched_by automatically.
-func (s *Store) Write(item *model.Item) error {
+// write persists an item to disk using its ParsedDocument for lossless
+// output. It is package-private — external callers must go through
+// Mutate (for existing items) or Create (for new items) so every
+// public write path holds a flock and re-reads under the lock. write
+// is retained for the package-internal store_test.go and git_test.go
+// fixtures that need the legacy single-shot path.
+func (s *Store) write(item *model.Item) error {
 	if item.Doc == nil {
 		return fmt.Errorf("item %s has no ParsedDocument", item.ID)
 	}

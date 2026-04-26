@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/testutil"
 )
 
@@ -25,12 +26,15 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 
 	// Bootstrap T-003 with a started_at roughly 2 hours ago and an older created_at.
 	// Created is already set by writeItems to 2026-03-25T12:00:00; we just need started_at.
-	item, _ := env.S.Get("T-003")
 	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
-	item.SetNested("time_tracking", "started_at", startedAt)
-	if err := env.S.Write(item); err != nil {
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", startedAt)
+		return nil
+	}); err != nil {
 		t.Fatalf("seeding started_at: %v", err)
 	}
+	item, _ := env.S.Get("T-003")
+	_ = item
 
 	// Worktree config + fake git returning a known 3-file diff in one repo.
 	tmp := t.TempDir()

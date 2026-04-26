@@ -139,10 +139,12 @@ func reconcileBranchPush(s *store.Store, cfg *config.Config, opts ReconcileOpts)
 			updates++
 			fmt.Printf("  %s: %s → pushed (branch %s found on remote)\n", item.ID, stage, branch)
 			if !opts.DryRun {
-				item.SetNested("delivery", "stage", "pushed")
-				touchItem(item, cfg)
-				if err := s.Write(item); err != nil {
-					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+				itemID := item.ID
+				if err := s.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "stage", "pushed")
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
 				}
 			}
 		}
@@ -185,14 +187,17 @@ func reconcilePRState(s *store.Store, cfg *config.Config, opts ReconcileOpts) in
 			updates++
 			fmt.Printf("  %s: pushed → %s (PR %s)\n", item.ID, newStage, prState)
 			if !opts.DryRun {
-				item.SetNested("delivery", "stage", newStage)
-				// Store PR URLs if we found them
-				if len(prURLs) > 0 {
-					storePRURLs(item, prURLs)
-				}
-				touchItem(item, cfg)
-				if err := s.Write(item); err != nil {
-					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+				itemID := item.ID
+				capturedStage := newStage
+				capturedURLs := prURLs
+				if err := s.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "stage", capturedStage)
+					if len(capturedURLs) > 0 {
+						storePRURLs(item, capturedURLs)
+					}
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
 				}
 			}
 		}
@@ -219,10 +224,12 @@ func reconcileMergeState(s *store.Store, cfg *config.Config, opts ReconcileOpts)
 			updates++
 			fmt.Printf("  %s: pr_open → merged\n", item.ID)
 			if !opts.DryRun {
-				item.SetNested("delivery", "stage", "merged")
-				touchItem(item, cfg)
-				if err := s.Write(item); err != nil {
-					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+				itemID := item.ID
+				if err := s.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "stage", "merged")
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
 				}
 			}
 		}
@@ -265,10 +272,13 @@ func reconcileArchive(s *store.Store, cfg *config.Config, opts ReconcileOpts) in
 		if !opts.DryRun {
 			// Backfill completed timestamp if missing
 			if item.Completed == nil {
+				itemID := item.ID
 				nowStr := time.Now().Format(time.RFC3339)
-				item.Doc.SetField("completed", nowStr)
-				if err := s.Write(item); err != nil {
-					fmt.Fprintf(os.Stderr, "  error backfilling completed on %s: %v\n", item.ID, err)
+				if err := s.Mutate(itemID, func(item *model.Item) error {
+					item.Doc.SetField("completed", nowStr)
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "  error backfilling completed on %s: %v\n", itemID, err)
 				}
 			}
 			if err := s.Move(item.ID); err != nil {
@@ -330,11 +340,14 @@ func reconcileDeployState(s *store.Store, cfg *config.Config, opts ReconcileOpts
 			updates++
 			fmt.Printf("  %s: merged → deployed_dev (all PRs deployed)\n", item.ID)
 			if !opts.DryRun {
-				item.SetNested("delivery", "stage", "deployed_dev")
-				item.SetNested("delivery", "deployed_date", time.Now().Format("2006-01-02"))
-				touchItem(item, cfg)
-				if err := s.Write(item); err != nil {
-					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", item.ID, err)
+				itemID := item.ID
+				deployedDate := time.Now().Format("2006-01-02")
+				if err := s.Mutate(itemID, func(item *model.Item) error {
+					item.SetNested("delivery", "stage", "deployed_dev")
+					item.SetNested("delivery", "deployed_date", deployedDate)
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
 				}
 			}
 		}

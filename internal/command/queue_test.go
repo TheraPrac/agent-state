@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/model"
 )
 
 func TestQueueAddShow(t *testing.T) {
@@ -258,11 +260,12 @@ func TestQueuePruneDropsTerminalItems(t *testing.T) {
 	QueueAdd(s, cfg, "T-003", QueueOpts{})
 
 	// Mark T-001 as completed (terminal); T-002 + T-003 stay queued/active.
-	t001, _ := s.Get("T-001")
-	t001.Status = "completed"
-	t001.Doc.SetField("status", "completed")
-	if err := s.Write(t001); err != nil {
-		t.Fatalf("write: %v", err)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Status = "completed"
+		it.Doc.SetField("status", "completed")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
 	}
 
 	code := QueuePrune(s, cfg)

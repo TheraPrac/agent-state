@@ -9,6 +9,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -100,31 +101,35 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 	}
 
 	var oldValue string
-	switch {
-	case listFields[field] && strings.Contains(value, "\n"):
-		// Multi-line value = list replacement.
-		// Preserve indentation — TrimSpace would destroy YAML structure
-		// for continuation lines (e.g., "  command:" under "- description:").
-		var lines []string
-		for _, line := range strings.Split(value, "\n") {
-			if strings.TrimSpace(line) != "" {
-				lines = append(lines, line)
+	mutateErr := s.Mutate(id, func(item *model.Item) error {
+		switch {
+		case listFields[field] && strings.Contains(value, "\n"):
+			// Multi-line value = list replacement.
+			// Preserve indentation — TrimSpace would destroy YAML
+			// structure for continuation lines (e.g., "  command:"
+			// under "- description:").
+			var lines []string
+			for _, line := range strings.Split(value, "\n") {
+				if strings.TrimSpace(line) != "" {
+					lines = append(lines, line)
+				}
 			}
+			item.Doc.ReplaceList(field, lines)
+		case strings.Contains(field, "."):
+			oldValue, _ = item.Doc.GetNestedField(field)
+			item.Doc.SetNestedField(field, value)
+		default:
+			// SetField transparently handles both single-line and
+			// multi-line values: multi-line writes a YAML block
+			// scalar (`key: |-`), and updates remove any prior
+			// block continuation lines.
+			oldValue, _ = item.Doc.GetField(field)
+			item.Doc.SetField(field, value)
 		}
-		item.Doc.ReplaceList(field, lines)
-	case strings.Contains(field, "."):
-		oldValue, _ = item.Doc.GetNestedField(field)
-		item.Doc.SetNestedField(field, value)
-	default:
-		// SetField transparently handles both single-line and multi-line
-		// values: multi-line writes a YAML block scalar (`key: |-`), and
-		// updates remove any prior block continuation lines.
-		oldValue, _ = item.Doc.GetField(field)
-		item.Doc.SetField(field, value)
-	}
-
-	if err := s.Write(item); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+		return nil
+	})
+	if mutateErr != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, mutateErr)
 		return 1
 	}
 

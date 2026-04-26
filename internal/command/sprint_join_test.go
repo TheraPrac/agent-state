@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -127,12 +128,16 @@ func TestSprintLeaveReleasesClaims(t *testing.T) {
 	sess.ClaimedItems = []string{"T-001"}
 	mgr.Save(sess)
 
-	item, _ := s.Get("T-001")
-	item.ClaimedBy = "test-session-123"
-	item.ClaimedAt = time.Now().Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "test-session-123")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s.Write(item)
+	leaveClaimedAt := time.Now().Format(time.RFC3339)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "test-session-123"
+		it.ClaimedAt = leaveClaimedAt
+		it.Doc.SetField("claimed_by", "test-session-123")
+		it.Doc.SetField("claimed_at", leaveClaimedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// Leave
 	code := SprintLeave(s, cfg)
@@ -711,12 +716,14 @@ func TestSprintRecoverPrunesSessions(t *testing.T) {
 	mgr.Save(sess)
 
 	// Also set claim on item
-	item, _ := s1.Get("T-001")
-	item.ClaimedBy = "stale-session"
-	item.ClaimedAt = time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
-	item.Doc.SetField("claimed_by", "stale-session")
-	item.Doc.SetField("claimed_at", item.ClaimedAt)
-	s1.Write(item)
+	staleAt := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+	_ = s1.Mutate("T-001", func(it *model.Item) error {
+		it.ClaimedBy = "stale-session"
+		it.ClaimedAt = staleAt
+		it.Doc.SetField("claimed_by", "stale-session")
+		it.Doc.SetField("claimed_at", staleAt)
+		return nil
+	})
 
 	// Recover
 	s2, _ := store.New(cfg1)

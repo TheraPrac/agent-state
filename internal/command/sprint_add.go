@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -49,14 +50,18 @@ func SprintAdd(s *store.Store, cfg *config.Config, sprintID string, itemIDs []st
 		if item.Sprint == sprintID {
 			continue // already set
 		}
-		item.Doc.SetField("sprint", sprintID)
-		item.Sprint = sprintID
-		// Also set epic if not already set
-		if item.Epic == "" && sp.Epic != "" {
-			item.Doc.SetField("epic", sp.Epic)
-			item.Epic = sp.Epic
-		}
-		if err := s.Write(item); err != nil {
+		capturedSprintID := sprintID
+		capturedEpicID := sp.Epic
+		if err := s.Mutate(id, func(item *model.Item) error {
+			item.Doc.SetField("sprint", capturedSprintID)
+			item.Sprint = capturedSprintID
+			// Also set epic if not already set
+			if item.Epic == "" && capturedEpicID != "" {
+				item.Doc.SetField("epic", capturedEpicID)
+				item.Epic = capturedEpicID
+			}
+			return nil
+		}); err != nil {
 			fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 			return 1
 		}

@@ -93,12 +93,15 @@ func TestReconcileBranchPush(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Set up an item at coding stage with a branch
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "coding")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// Inject mock: branch always exists on remote
 	opts := ReconcileOpts{BranchCheck: func(cfg *config.Config, branch string) bool { return true }}
@@ -109,7 +112,7 @@ func TestReconcileBranchPush(t *testing.T) {
 	}
 
 	// Verify stage advanced
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	if stage != "pushed" {
 		t.Errorf("stage = %q, want pushed", stage)
@@ -119,12 +122,15 @@ func TestReconcileBranchPush(t *testing.T) {
 func TestReconcileBranchPushDryRun(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "coding")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{DryRun: true, BranchCheck: func(cfg *config.Config, branch string) bool { return true }}
 
@@ -134,7 +140,7 @@ func TestReconcileBranchPushDryRun(t *testing.T) {
 	}
 
 	// Stage should NOT advance in dry-run
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	if stage != "coding" {
 		t.Errorf("dry-run should not change stage, got %q", stage)
@@ -144,12 +150,15 @@ func TestReconcileBranchPushDryRun(t *testing.T) {
 func TestReconcilePRState(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "pushed")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "pushed")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{PRFetch: func(cfg *config.Config, branch string) (string, []string) {
 		return "OPEN", []string{"https://github.com/org/repo/pull/1"}
@@ -160,7 +169,7 @@ func TestReconcilePRState(t *testing.T) {
 		t.Errorf("expected 1 update, got %d", n)
 	}
 
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	if stage != "pr_open" {
 		t.Errorf("stage = %q, want pr_open", stage)
@@ -170,12 +179,15 @@ func TestReconcilePRState(t *testing.T) {
 func TestReconcileMergeState(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "pr_open")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "pr_open")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{PRFetch: func(cfg *config.Config, branch string) (string, []string) {
 		return "MERGED", []string{"https://github.com/org/repo/pull/1"}
@@ -186,7 +198,7 @@ func TestReconcileMergeState(t *testing.T) {
 		t.Errorf("expected 1 update, got %d", n)
 	}
 
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	if stage != "merged" {
 		t.Errorf("stage = %q, want merged", stage)
@@ -197,13 +209,16 @@ func TestReconcileArchive(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Set T-002 to completed status (it starts as queued in test env)
-	item, _ := s.Get("T-002")
-	if item == nil {
+	if _, ok := s.Get("T-002"); !ok {
 		t.Skip("T-002 not in test env")
 	}
-	item.Doc.SetField("status", "completed")
-	item.Status = "completed"
-	s.Write(item)
+	if err := s.Mutate("T-002", func(it *model.Item) error {
+		it.Doc.SetField("status", "completed")
+		it.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-002: %v", err)
+	}
 
 	// Reload store to pick up the status change
 	s, _ = store.New(cfg)
@@ -223,10 +238,13 @@ func TestReconcileArchive(t *testing.T) {
 func TestReconcileArchiveDryRun(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-002")
-	item.Doc.SetField("status", "completed")
-	item.Status = "completed"
-	s.Write(item)
+	if err := s.Mutate("T-002", func(it *model.Item) error {
+		it.Doc.SetField("status", "completed")
+		it.Status = "completed"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-002: %v", err)
+	}
 	s, _ = store.New(cfg)
 
 	n := reconcileArchive(s, cfg, ReconcileOpts{DryRun: true})
@@ -245,11 +263,14 @@ func TestReconcileNoBranchSkips(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Item at coding stage but no branch — should be skipped
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "coding")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{BranchCheck: func(cfg *config.Config, branch string) bool {
 		t.Error("should not be called for item without branch")
@@ -265,12 +286,15 @@ func TestReconcileNoBranchSkips(t *testing.T) {
 func TestReconcilePRStateMerged(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "pushed")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "pushed")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{PRFetch: func(cfg *config.Config, branch string) (string, []string) {
 		return "MERGED", []string{"https://github.com/org/repo/pull/1"}
@@ -280,7 +304,7 @@ func TestReconcilePRStateMerged(t *testing.T) {
 	if n != 1 {
 		t.Errorf("expected 1 update, got %d", n)
 	}
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	if stage != "merged" {
 		t.Errorf("pushed → merged: got %q", stage)
@@ -290,12 +314,15 @@ func TestReconcilePRStateMerged(t *testing.T) {
 func TestReconcilePRStateNoPR(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "pushed")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "pushed")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{PRFetch: func(cfg *config.Config, branch string) (string, []string) {
 		return "", nil
@@ -310,12 +337,15 @@ func TestReconcilePRStateNoPR(t *testing.T) {
 func TestReconcileBranchNotOnRemote(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "coding")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{BranchCheck: func(cfg *config.Config, branch string) bool { return false }}
 
@@ -329,12 +359,15 @@ func TestReconcileFullFlow(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Set up item at coding with branch
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "coding")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	opts := ReconcileOpts{
 		ToolCheck:   func(name string) bool { return true },
@@ -349,7 +382,7 @@ func TestReconcileFullFlow(t *testing.T) {
 	}
 
 	// After full reconcile: coding → pushed → merged (skipping pr_open because PR already merged)
-	item, _ = s.Get("T-001")
+	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
 	// Phase 0 advances to pushed, Phase 1 finds merged PR → advances to merged
 	if stage != "pushed" && stage != "merged" {
@@ -492,12 +525,15 @@ func TestReconcileDeployStateNoAWS(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Set up merged item
-	item, _ := s.Get("T-001")
-	item.SetNested("delivery", "stage", "merged")
-	item.SetNested("work_tracking", "branch", "feat/T-001-test")
-	item.Doc.SetField("status", "active")
-	item.Status = "active"
-	s.Write(item)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "merged")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
 
 	// No PRs on the item → nothing to check → no updates
 	n := reconcileDeployState(s, cfg, ReconcileOpts{DryRun: true})

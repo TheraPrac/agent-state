@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -83,17 +84,19 @@ func SprintLeave(s *store.Store, cfg *config.Config) int {
 
 	// Release all claims held by this session
 	for _, itemID := range sess.ClaimedItems {
-		item, ok := s.Get(itemID)
-		if !ok {
+		if _, ok := s.Get(itemID); !ok {
 			continue
 		}
-		if item.ClaimedBy == sessionID {
-			item.ClaimedBy = ""
-			item.ClaimedAt = ""
-			item.Doc.SetField("claimed_by", "")
-			item.Doc.SetField("claimed_at", "")
-			_ = s.Write(item)
-		}
+		capturedSessionID := sessionID
+		_ = s.Mutate(itemID, func(item *model.Item) error {
+			if item.ClaimedBy == capturedSessionID {
+				item.ClaimedBy = ""
+				item.ClaimedAt = ""
+				item.Doc.SetField("claimed_by", "")
+				item.Doc.SetField("claimed_at", "")
+			}
+			return nil
+		})
 	}
 	sess.ClaimedItems = nil
 

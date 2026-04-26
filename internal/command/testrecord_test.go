@@ -12,6 +12,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
 	"github.com/jfinlinson/agent-state/internal/manifest"
+	"github.com/jfinlinson/agent-state/internal/model"
 )
 
 func testRecordOpts() TestRecordOpts {
@@ -44,16 +45,19 @@ func TestTestRecordScopeSuite(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	opts := testRecordOpts()
 
-	item, _ := s.Get("T-003")
-	item.SetNested("testing_evidence", "api_integration", "required")
-	s.Write(item)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "api_integration", "required")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
 
 	code := TestRecord(s, cfg, "T-003", "api_integration", opts)
 	if code != 0 {
 		t.Fatalf("TestRecord returned %d, want 0", code)
 	}
 
-	item, _ = s.Get("T-003")
+	item, _ := s.Get("T-003")
 	ev, ok := getNestedField(item, "testing_evidence", "api_integration")
 	if !ok || !strings.HasPrefix(ev, "pass") {
 		t.Errorf("testing_evidence.api_integration = %q, want pass ...", ev)

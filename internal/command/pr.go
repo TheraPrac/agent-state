@@ -10,6 +10,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/manifest"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -197,40 +198,24 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 		return 1
 	}
 
-	// Update item summary
+	// Precompute values needed in the Mutate closure (external calls already done above).
 	prSummary := buildPRSummary(cfg.ManifestDir(), id)
-	item.SetNested("manifest", "prs", prSummary)
 
-	// Surface code stats on the item
-	item.SetNested("manifest", "files_changed", fmt.Sprintf("%d", stats.FilesChanged))
-	item.SetNested("manifest", "insertions", fmt.Sprintf("%d", stats.Insertions))
-	item.SetNested("manifest", "deletions", fmt.Sprintf("%d", stats.Deletions))
-	item.SetNested("manifest", "net_lines", fmt.Sprintf("%+d", stats.Insertions-stats.Deletions))
-
-	// Build per-file change summary (most impactful files first)
 	var fileSummary []string
 	for _, f := range files {
 		net := f.LinesAdded - f.LinesDeleted
 		fileSummary = append(fileSummary, fmt.Sprintf("%s %s +%d/-%d (%+d) [%s]",
 			f.Action, f.Path, f.LinesAdded, f.LinesDeleted, net, f.Type))
 	}
-	item.SetNested("manifest", "file_details", strings.Join(fileSummary, "\n"))
 
-	// Record head SHA
-	item.SetNested("manifest", "head_sha", headSHA)
-
-	// Record PR in work_tracking
 	prRef := fmt.Sprintf("%s#%d", opts.Repo, opts.PRNumber)
-	item.Doc.AppendToNestedList("work_tracking", "pr", prRef)
 
-	// Record test files written (files classified as "test")
 	var testFiles []string
 	for _, f := range files {
 		if f.Type == "test" && f.Action != "D" {
 			testFiles = append(testFiles, f.Path)
 		}
 	}
-	// Also record expected test files for app files (1:1 mapping)
 	for _, f := range files {
 		if f.Type == "app" && f.Action != "D" {
 			if tf := testFileFor(f.Path); tf != "" {
@@ -240,54 +225,93 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 			}
 		}
 	}
-	// Deduplicate
-	seen := make(map[string]bool)
+	// Deduplicate test files
+	seenTests := make(map[string]bool)
+	var dedupedTestFiles []string
 	for _, tf := range testFiles {
-		if !seen[tf] {
-			seen[tf] = true
-			item.Doc.AppendToNestedList("testing_evidence", "tests_written", tf)
+		if !seenTests[tf] {
+			seenTests[tf] = true
+			dedupedTestFiles = append(dedupedTestFiles, tf)
 		}
 	}
 
-	// Record doc changes
 	var docFiles []string
 	for _, f := range files {
 		if f.Type == "doc" && f.Action != "D" {
 			docFiles = append(docFiles, f.Path)
 		}
 	}
-	if len(docFiles) > 0 {
-		for _, df := range docFiles {
-			item.Doc.AppendToNestedList("testing_evidence", "doc_changes", df)
-		}
-	}
 
-	// Record E2E spec coverage
+	var e2eSpecs []string
 	for _, f := range files {
 		if f.Action == "D" {
 			continue
 		}
 		if spec := e2eSpecFor(f.Path); spec != "" {
 			if opts.FileExists(filepath.Join(repoDir, spec)) {
-				if !seen[spec] {
-					seen[spec] = true
-					item.Doc.AppendToNestedList("testing_evidence", "tests_written", spec)
+				if !seenTests[spec] {
+					seenTests[spec] = true
+					e2eSpecs = append(e2eSpecs, spec)
 				}
 			}
 		}
 	}
 
-	// Mark scope suites as required in testing_evidence
-	for _, suite := range scopeSuites {
-		current, _ := getNestedField(item, "testing_evidence", suite)
-		if current == "" || current == "null" {
-			item.SetNested("testing_evidence", suite, "required")
+	// Capture loop variables for closure.
+	capturedPRSummary := prSummary
+	capturedStats := stats
+	capturedFileSummary := fileSummary
+	capturedHeadSHA := headSHA
+	capturedPRRef := prRef
+	capturedDedupedTestFiles := dedupedTestFiles
+	capturedDocFiles := docFiles
+	capturedE2ESpecs := e2eSpecs
+	capturedScopeSuites := scopeSuites
+
+	if err := s.Mutate(id, func(item *model.Item) error {
+		// Update item summary
+		item.SetNested("manifest", "prs", capturedPRSummary)
+
+		// Surface code stats on the item
+		item.SetNested("manifest", "files_changed", fmt.Sprintf("%d", capturedStats.FilesChanged))
+		item.SetNested("manifest", "insertions", fmt.Sprintf("%d", capturedStats.Insertions))
+		item.SetNested("manifest", "deletions", fmt.Sprintf("%d", capturedStats.Deletions))
+		item.SetNested("manifest", "net_lines", fmt.Sprintf("%+d", capturedStats.Insertions-capturedStats.Deletions))
+
+		// Per-file change summary
+		item.SetNested("manifest", "file_details", strings.Join(capturedFileSummary, "\n"))
+
+		// Record head SHA
+		item.SetNested("manifest", "head_sha", capturedHeadSHA)
+
+		// Record PR in work_tracking
+		item.Doc.AppendToNestedList("work_tracking", "pr", capturedPRRef)
+
+		// Record test files written
+		for _, tf := range capturedDedupedTestFiles {
+			item.Doc.AppendToNestedList("testing_evidence", "tests_written", tf)
 		}
-	}
 
-	item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		// Record doc changes
+		for _, df := range capturedDocFiles {
+			item.Doc.AppendToNestedList("testing_evidence", "doc_changes", df)
+		}
 
-	if err := s.Write(item); err != nil {
+		// Record E2E spec coverage
+		for _, spec := range capturedE2ESpecs {
+			item.Doc.AppendToNestedList("testing_evidence", "tests_written", spec)
+		}
+
+		// Mark scope suites as required in testing_evidence
+		for _, suite := range capturedScopeSuites {
+			current, _ := getNestedField(item, "testing_evidence", suite)
+			if current == "" || current == "null" {
+				item.SetNested("testing_evidence", suite, "required")
+			}
+		}
+
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}

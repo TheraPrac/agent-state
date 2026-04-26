@@ -80,81 +80,88 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	now := time.Now()
 	nowStr := now.Format(time.RFC3339)
 
-	item.Doc.SetField("status", resolution)
-	item.Status = resolution
-	item.Doc.SetField("completed", nowStr)
-	item.Doc.SetField("last_touched", nowStr)
-
-	// Record completion time tracking
-	item.SetNested("time_tracking", "completed_at", nowStr)
-
-	// total_duration_seconds = closed_at - created_at (calendar wall time from
-	// item creation, includes idle periods). Always computed.
-	if !item.Created.IsZero() {
-		item.SetNested("time_tracking", "total_duration_seconds",
-			fmt.Sprintf("%d", int(now.Sub(item.Created).Seconds())))
-	}
-
-	// work_duration_seconds = closed_at - started_at (from when work was first
-	// activated). Coexists with legacy wall_time_hours for back-compat readers.
-	if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
-		if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
-			wallDur := now.Sub(t)
-			item.SetNested("time_tracking", "work_duration_seconds",
-				fmt.Sprintf("%d", int(wallDur.Seconds())))
-			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
-			item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
-		}
-	}
-
-	// Freeze LOC snapshot. Runs the same logic as st files and captures the
-	// totals into time_tracking + a per-file list into work_tracking.files_changed.
-	// Failures become warnings — close must not fail because git is being weird.
-	freezeLOCSnapshot(s, cfg, item, opts.FilesOpts)
-
-	// Total AI time — prefer the new ai_time_seconds field (SessionLog output);
-	// fall back to legacy ai_duration_seconds so pre-rewire items keep working.
-	var aiSecs int
-	if v, ok := getNestedField(item, "time_tracking", "ai_time_seconds"); ok && v != "" {
-		fmt.Sscanf(v, "%d", &aiSecs)
-	} else if v, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); ok && v != "" {
-		fmt.Sscanf(v, "%d", &aiSecs)
-	}
-	if aiSecs > 0 {
-		item.SetNested("time_tracking", "total_ai_time", formatDuration(time.Duration(aiSecs)*time.Second))
-	}
-
-	// AI cost summary
-	if aiCost, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok && aiCost != "" {
-		item.SetNested("time_tracking", "total_ai_cost_usd", aiCost)
-	}
-
-	// Token totals
-	if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok && v != "" {
-		item.SetNested("time_tracking", "total_input_tokens", v)
-	}
-	if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok && v != "" {
-		item.SetNested("time_tracking", "total_output_tokens", v)
-	}
-	if v, ok := getNestedField(item, "time_tracking", "total_tokens"); ok && v != "" {
-		item.SetNested("time_tracking", "total_tokens_final", v)
-	}
-
-	if opts.Reason != "" {
-		item.Doc.SetField("resolution", opts.Reason)
-	}
-
-	// Clear session claim
+	// Hoist the session-manager external call out of the Mutate closure
+	// (Mutate's contract: no I/O beyond the item file inside fn).
 	if item.ClaimedBy != "" {
 		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
 		_ = mgr.RemoveClaim(item.ClaimedBy, id)
-		item.ClaimedBy = ""
-		item.ClaimedAt = ""
-		item.Doc.SetField("claimed_by", "")
-		item.Doc.SetField("claimed_at", "")
 	}
 
-	if err := s.Write(item); err != nil {
+	if err := s.Mutate(id, func(item *model.Item) error {
+		item.Doc.SetField("status", resolution)
+		item.Status = resolution
+		item.Doc.SetField("completed", nowStr)
+		item.Doc.SetField("last_touched", nowStr)
+
+		// Record completion time tracking
+		item.SetNested("time_tracking", "completed_at", nowStr)
+
+		// total_duration_seconds = closed_at - created_at (calendar wall
+		// time from item creation, includes idle periods). Always computed.
+		if !item.Created.IsZero() {
+			item.SetNested("time_tracking", "total_duration_seconds",
+				fmt.Sprintf("%d", int(now.Sub(item.Created).Seconds())))
+		}
+
+		// work_duration_seconds = closed_at - started_at (from when work
+		// was first activated). Coexists with legacy wall_time_hours for
+		// back-compat readers.
+		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
+			if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
+				wallDur := now.Sub(t)
+				item.SetNested("time_tracking", "work_duration_seconds",
+					fmt.Sprintf("%d", int(wallDur.Seconds())))
+				item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
+				item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
+			}
+		}
+
+		// Freeze LOC snapshot. ComputeFileChanges (inside the helper) hits
+		// git, which is read-only and item-independent, so running it
+		// under the lock is acceptable. Failures become warnings.
+		freezeLOCSnapshot(s, cfg, item, opts.FilesOpts)
+
+		// Total AI time — prefer the new ai_time_seconds field
+		// (SessionLog output); fall back to legacy ai_duration_seconds so
+		// pre-rewire items keep working.
+		var aiSecs int
+		if v, ok := getNestedField(item, "time_tracking", "ai_time_seconds"); ok && v != "" {
+			fmt.Sscanf(v, "%d", &aiSecs)
+		} else if v, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); ok && v != "" {
+			fmt.Sscanf(v, "%d", &aiSecs)
+		}
+		if aiSecs > 0 {
+			item.SetNested("time_tracking", "total_ai_time", formatDuration(time.Duration(aiSecs)*time.Second))
+		}
+
+		// AI cost summary
+		if aiCost, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok && aiCost != "" {
+			item.SetNested("time_tracking", "total_ai_cost_usd", aiCost)
+		}
+
+		// Token totals
+		if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok && v != "" {
+			item.SetNested("time_tracking", "total_input_tokens", v)
+		}
+		if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok && v != "" {
+			item.SetNested("time_tracking", "total_output_tokens", v)
+		}
+		if v, ok := getNestedField(item, "time_tracking", "total_tokens"); ok && v != "" {
+			item.SetNested("time_tracking", "total_tokens_final", v)
+		}
+
+		if opts.Reason != "" {
+			item.Doc.SetField("resolution", opts.Reason)
+		}
+
+		if item.ClaimedBy != "" {
+			item.ClaimedBy = ""
+			item.ClaimedAt = ""
+			item.Doc.SetField("claimed_by", "")
+			item.Doc.SetField("claimed_at", "")
+		}
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}

@@ -38,6 +38,10 @@ func UnlockItem(cfg *config.Config, itemID string) {
 }
 
 // LockedItems returns all currently locked item IDs.
+//
+// Skips files with the `.lock` suffix — those belong to the
+// flock-based Mutate path (a separate concurrency mechanism), not the
+// pipeline-active marker that LockItem/UnlockItem maintain.
 func LockedItems(cfg *config.Config) []string {
 	dir := LocksDir(cfg)
 	entries, err := os.ReadDir(dir)
@@ -46,9 +50,11 @@ func LockedItems(cfg *config.Config) []string {
 	}
 	var ids []string
 	for _, e := range entries {
-		if !e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			ids = append(ids, e.Name())
+		name := e.Name()
+		if e.IsDir() || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".lock") {
+			continue
 		}
+		ids = append(ids, name)
 	}
 	return ids
 }

@@ -97,8 +97,7 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		return 0
 	}
 
-	item, ok := s.Get(itemID)
-	if !ok {
+	if _, ok := s.Get(itemID); !ok {
 		// Item not found — treat as orphan rather than error; the alternative
 		// is silent data loss.
 		if err := writeOrphanLog(cfg, payload); err != nil {
@@ -135,103 +134,113 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		costSource = CostSourceUnknown
 	}
 
-	// Accrue aggregate fields
-	item.SetNested("time_tracking", "process_time_seconds",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "process_time_seconds")+int(payload.ProcessMs/1000)))
-	item.SetNested("time_tracking", "ai_time_seconds",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "ai_time_seconds")+int(payload.AIMs/1000)))
-
-	item.SetNested("time_tracking", "reg_input_tokens",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_input_tokens")+payload.RegInputTokens))
-	item.SetNested("time_tracking", "reg_output_tokens",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")+payload.RegOutputTokens))
-	if payload.ReasoningTokens > 0 || readIntField(item, "time_tracking", "reasoning_tokens") > 0 {
-		item.SetNested("time_tracking", "reasoning_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "reasoning_tokens")+payload.ReasoningTokens))
-	}
-	item.SetNested("time_tracking", "cache_in_tokens",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_in_tokens")+payload.CacheInTokens))
-	item.SetNested("time_tracking", "cache_out_tokens",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_tokens")+payload.CacheOutTokens))
-	if payload.CacheOut1hTokens > 0 || readIntField(item, "time_tracking", "cache_out_1h_tokens") > 0 {
-		item.SetNested("time_tracking", "cache_out_1h_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheOut1hTokens))
-	}
-
-	// Derived totals — kept in the file so consumers don't need to compute
-	item.SetNested("time_tracking", "total_input_tokens",
-		fmt.Sprintf("%d",
-			readIntField(item, "time_tracking", "reg_input_tokens")+
-				readIntField(item, "time_tracking", "cache_in_tokens")+
-				readIntField(item, "time_tracking", "cache_out_tokens")+
-				readIntField(item, "time_tracking", "cache_out_1h_tokens")))
-	item.SetNested("time_tracking", "total_output_tokens",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")))
-	if payload.TotalTokens > 0 || readIntField(item, "time_tracking", "total_tokens") > 0 {
-		item.SetNested("time_tracking", "total_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "total_tokens")+payload.TotalTokens))
-	}
-
-	if cost > 0 {
-		// 6-decimal precision matches by_model cost precision so the two
-		// aggregates don't drift apart across round-trips. See formatByModelLine.
-		item.SetNested("time_tracking", "ai_cost_usd",
-			fmt.Sprintf("%.6f", readFloatField(item, "time_tracking", "ai_cost_usd")+cost))
-	}
-	if costSource != "" {
-		item.SetNested("time_tracking", "last_cost_source", costSource)
-		if costSource == CostSourceUnknown {
-			item.SetNested("time_tracking", "unknown_cost_turns",
-				fmt.Sprintf("%d", readIntField(item, "time_tracking", "unknown_cost_turns")+1))
-		}
-	}
-
-	item.SetNested("time_tracking", "turn_count",
-		fmt.Sprintf("%d", readIntField(item, "time_tracking", "turn_count")+1))
-
-	// session_count: recompute from distinct session ids in ai_turns (walk-based
-	// for correctness; list is typically small). A new session_id triggers +1.
-	// An empty SessionID is bucketed as "unknown" so the invariant
-	// `session_count >= 1 whenever turn_count >= 1` always holds even if the
-	// Claude envelope fails to provide a session_id.
-	sid := payload.SessionID
-	if sid == "" {
-		sid = "unknown"
-	}
-	seen := seenSessionIDs(item)
-	if !seen[sid] {
-		item.SetNested("time_tracking", "session_count",
-			fmt.Sprintf("%d", len(seen)+1))
-	}
-
-	// Bookkeeping
-	if payload.SessionID != "" {
-		item.SetNested("time_tracking", "last_session", payload.SessionID)
-	}
-	if payload.Model != "" {
-		item.SetNested("time_tracking", "last_model", payload.Model)
-	}
-	if payload.Provider != "" {
-		item.SetNested("time_tracking", "last_provider", payload.Provider)
-	}
-	now := time.Now().Format(time.RFC3339)
-	item.SetNested("time_tracking", "last_touched", now)
+	// Capture computed values for the Mutate closure (cost computation is
+	// done above — pure arithmetic, no I/O — so it's safe to run before
+	// acquiring the lock).
+	capturedCost := cost
+	capturedCostSource := costSource
+	capturedNow := time.Now().Format(time.RFC3339)
 	toucher := cfg.AgentID()
 	if toucher == "" {
 		toucher = "stop-hook"
 	}
-	item.SetNested("time_tracking", "last_touched_by", toucher)
+	capturedToucher := toucher
+	capturedTurnLine := formatAITurnLine(payload, capturedCost, capturedCostSource, capturedNow)
 
-	// Append per-turn provenance line
-	item.Doc.AppendToNestedList("time_tracking", "ai_turns", formatAITurnLine(payload, cost, costSource, now))
+	if err := s.Mutate(itemID, func(item *model.Item) error {
+		// Accrue aggregate fields (re-reads from fresh disk copy inside lock)
+		item.SetNested("time_tracking", "process_time_seconds",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "process_time_seconds")+int(payload.ProcessMs/1000)))
+		item.SetNested("time_tracking", "ai_time_seconds",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "ai_time_seconds")+int(payload.AIMs/1000)))
 
-	// Upsert per-provider/model aggregate. Historical entries without Provider
-	// keep their model-only key for backwards compatibility.
-	if payload.Model != "" {
-		upsertByModel(item, payload, cost, costSource)
-	}
+		item.SetNested("time_tracking", "reg_input_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_input_tokens")+payload.RegInputTokens))
+		item.SetNested("time_tracking", "reg_output_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")+payload.RegOutputTokens))
+		if payload.ReasoningTokens > 0 || readIntField(item, "time_tracking", "reasoning_tokens") > 0 {
+			item.SetNested("time_tracking", "reasoning_tokens",
+				fmt.Sprintf("%d", readIntField(item, "time_tracking", "reasoning_tokens")+payload.ReasoningTokens))
+		}
+		item.SetNested("time_tracking", "cache_in_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_in_tokens")+payload.CacheInTokens))
+		item.SetNested("time_tracking", "cache_out_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_tokens")+payload.CacheOutTokens))
+		if payload.CacheOut1hTokens > 0 || readIntField(item, "time_tracking", "cache_out_1h_tokens") > 0 {
+			item.SetNested("time_tracking", "cache_out_1h_tokens",
+				fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheOut1hTokens))
+		}
 
-	if err := s.Write(item); err != nil {
+		// Derived totals — kept in the file so consumers don't need to compute
+		item.SetNested("time_tracking", "total_input_tokens",
+			fmt.Sprintf("%d",
+				readIntField(item, "time_tracking", "reg_input_tokens")+
+					readIntField(item, "time_tracking", "cache_in_tokens")+
+					readIntField(item, "time_tracking", "cache_out_tokens")+
+					readIntField(item, "time_tracking", "cache_out_1h_tokens")))
+		item.SetNested("time_tracking", "total_output_tokens",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")))
+		if payload.TotalTokens > 0 || readIntField(item, "time_tracking", "total_tokens") > 0 {
+			item.SetNested("time_tracking", "total_tokens",
+				fmt.Sprintf("%d", readIntField(item, "time_tracking", "total_tokens")+payload.TotalTokens))
+		}
+
+		if capturedCost > 0 {
+			// 6-decimal precision matches by_model cost precision so the two
+			// aggregates don't drift apart across round-trips. See formatByModelLine.
+			item.SetNested("time_tracking", "ai_cost_usd",
+				fmt.Sprintf("%.6f", readFloatField(item, "time_tracking", "ai_cost_usd")+capturedCost))
+		}
+		if capturedCostSource != "" {
+			item.SetNested("time_tracking", "last_cost_source", capturedCostSource)
+			if capturedCostSource == CostSourceUnknown {
+				item.SetNested("time_tracking", "unknown_cost_turns",
+					fmt.Sprintf("%d", readIntField(item, "time_tracking", "unknown_cost_turns")+1))
+			}
+		}
+
+		item.SetNested("time_tracking", "turn_count",
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "turn_count")+1))
+
+		// session_count: recompute from distinct session ids in ai_turns (walk-based
+		// for correctness; list is typically small). A new session_id triggers +1.
+		// An empty SessionID is bucketed as "unknown" so the invariant
+		// `session_count >= 1 whenever turn_count >= 1` always holds even if the
+		// Claude envelope fails to provide a session_id.
+		sid := payload.SessionID
+		if sid == "" {
+			sid = "unknown"
+		}
+		seen := seenSessionIDs(item)
+		if !seen[sid] {
+			item.SetNested("time_tracking", "session_count",
+				fmt.Sprintf("%d", len(seen)+1))
+		}
+
+		// Bookkeeping
+		if payload.SessionID != "" {
+			item.SetNested("time_tracking", "last_session", payload.SessionID)
+		}
+		if payload.Model != "" {
+			item.SetNested("time_tracking", "last_model", payload.Model)
+		}
+		if payload.Provider != "" {
+			item.SetNested("time_tracking", "last_provider", payload.Provider)
+		}
+		item.SetNested("time_tracking", "last_touched", capturedNow)
+		item.SetNested("time_tracking", "last_touched_by", capturedToucher)
+
+		// Append per-turn provenance line
+		item.Doc.AppendToNestedList("time_tracking", "ai_turns", capturedTurnLine)
+
+		// Upsert per-provider/model aggregate. Historical entries without Provider
+		// keep their model-only key for backwards compatibility.
+		if payload.Model != "" {
+			upsertByModel(item, payload, capturedCost, capturedCostSource)
+		}
+
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "session log: writing %s: %v\n", itemID, err)
 		return 1
 	}

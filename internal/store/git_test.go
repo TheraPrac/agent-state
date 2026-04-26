@@ -83,7 +83,7 @@ func TestGitSyncHappy(t *testing.T) {
 	// Make a change
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
-	s.Write(item)
+	s.write(item)
 
 	err := s.GitSync("test update")
 	if err != nil {
@@ -133,7 +133,7 @@ func TestGitSyncWithPushNoRemote(t *testing.T) {
 	// Make a change
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
-	s.Write(item)
+	s.write(item)
 
 	// Will fail on push (no remote) — should return error
 	err := s.GitSync("test push")
@@ -192,7 +192,7 @@ func TestWriteNilDoc(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc = nil
 
-	err := s.Write(item)
+	err := s.write(item)
 	if err == nil {
 		t.Error("Write nil doc should error")
 	}

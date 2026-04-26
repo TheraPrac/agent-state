@@ -9,6 +9,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -35,10 +36,10 @@ func Commit(s *store.Store, cfg *config.Config, id, message string) int {
 
 	commitLine := fmt.Sprintf("%s %s: %s", now[:10], sha, message)
 
-	// Add to work_tracking.commits in the document
-	item.Doc.AppendToNestedList("work_tracking", "commits", commitLine)
-
-	if err := s.Write(item); err != nil {
+	if err := s.Mutate(id, func(it *model.Item) error {
+		it.Doc.AppendToNestedList("work_tracking", "commits", commitLine)
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}

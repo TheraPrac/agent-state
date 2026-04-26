@@ -11,6 +11,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -74,48 +75,26 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	ensureHooksPath(cfg)
 	AgentAutoAuth(cfg, agentID)
 
-	// Create worktrees if configured
+	// Create worktrees if configured. Hoisted out of Mutate — git/fs
+	// side effects don't belong inside the lock holder.
+	var branch string
 	if cfg.Worktree != nil && cfg.Worktree.Enabled {
 		if opts.Slug == "" {
 			fmt.Fprintln(os.Stderr, "--slug is required when worktree integration is enabled")
 			return 2
 		}
-		branch, err := createWorktrees(cfg, id, item.Type, opts)
+		var err error
+		branch, err = createWorktrees(cfg, id, item.Type, opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "creating worktrees: %v\n", err)
 			return 1
 		}
-		if branch != "" {
-			item.SetNested("work_tracking", "branch", branch)
-		}
 	}
-
-	// Transition
-	item.Doc.SetField("status", tc.ActiveStatus)
-	item.Status = tc.ActiveStatus
 
 	now := time.Now().Format(time.RFC3339)
-	item.Doc.SetField("last_touched", now)
-	if agentID != "" {
-		item.Doc.SetField("last_touched_by", agentID)
-	} else {
-		item.Doc.SetField("last_touched_by", "user")
-	}
 
-	if agentID != "" {
-		item.Doc.SetField("assigned_to", agentID)
-		item.AssignedTo = agentID
-	}
-
-	// Set session claim
+	// Record session claim in session file (external to item file).
 	if sessionID != "" {
-		now := time.Now().Format(time.RFC3339)
-		item.ClaimedBy = sessionID
-		item.ClaimedAt = now
-		item.Doc.SetField("claimed_by", sessionID)
-		item.Doc.SetField("claimed_at", now)
-
-		// Record session claim in session file
 		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
 		if _, err := mgr.EnsureSession(sessionID, agentID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not create session: %v\n", err)
@@ -123,20 +102,45 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		if err := mgr.AddClaim(sessionID, id); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not record claim: %v\n", err)
 		}
-
-		// Add to sessions list
-		item.Sessions = append(item.Sessions, sessionID)
-		updateListInDoc(item, "sessions", item.Sessions)
 	}
 
-	// Record started_at in time_tracking
-	if item.TimeTracking == nil {
-		item.TimeTracking = make(map[string]interface{})
-	}
-	item.TimeTracking["started_at"] = now
-	item.SetNested("time_tracking", "started_at", now)
+	if err := s.Mutate(id, func(item *model.Item) error {
+		if branch != "" {
+			item.SetNested("work_tracking", "branch", branch)
+		}
 
-	if err := s.Write(item); err != nil {
+		item.Doc.SetField("status", tc.ActiveStatus)
+		item.Status = tc.ActiveStatus
+
+		item.Doc.SetField("last_touched", now)
+		if agentID != "" {
+			item.Doc.SetField("last_touched_by", agentID)
+		} else {
+			item.Doc.SetField("last_touched_by", "user")
+		}
+
+		if agentID != "" {
+			item.Doc.SetField("assigned_to", agentID)
+			item.AssignedTo = agentID
+		}
+
+		if sessionID != "" {
+			item.ClaimedBy = sessionID
+			item.ClaimedAt = now
+			item.Doc.SetField("claimed_by", sessionID)
+			item.Doc.SetField("claimed_at", now)
+
+			item.Sessions = append(item.Sessions, sessionID)
+			updateListInDoc(item, "sessions", item.Sessions)
+		}
+
+		if item.TimeTracking == nil {
+			item.TimeTracking = make(map[string]interface{})
+		}
+		item.TimeTracking["started_at"] = now
+		item.SetNested("time_tracking", "started_at", now)
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}

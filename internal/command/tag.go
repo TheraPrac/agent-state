@@ -23,51 +23,60 @@ func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 		return 1
 	}
 
-	switch action {
-	case "add":
-		// Check for duplicates
-		for _, t := range item.Tags {
-			if t == tag {
-				fmt.Fprintf(os.Stderr, "%s already has tag %q\n", id, tag)
-				return 1
-			}
-		}
-		item.Tags = append(item.Tags, tag)
-		updateTagsInDoc(item)
-
-		changelog.Append(cfg, id, changelog.Entry{
-			Op: "tag_add", Field: "tags", NewValue: tag,
-		})
-
-	case "rm":
-		found := false
-		var newTags []string
-		for _, t := range item.Tags {
-			if t == tag {
-				found = true
-			} else {
-				newTags = append(newTags, t)
-			}
-		}
-		if !found {
-			fmt.Fprintf(os.Stderr, "%s does not have tag %q\n", id, tag)
-			return 1
-		}
-		item.Tags = newTags
-		updateTagsInDoc(item)
-
-		changelog.Append(cfg, id, changelog.Entry{
-			Op: "tag_rm", Field: "tags", OldValue: tag,
-		})
-
-	default:
+	if action != "add" && action != "rm" {
 		fmt.Fprintf(os.Stderr, "unknown action %q — use 'add' or 'rm'\n", action)
 		return 2
 	}
 
-	if err := s.Write(item); err != nil {
+	preflightErr := func() int {
+		switch action {
+		case "add":
+			for _, t := range item.Tags {
+				if t == tag {
+					fmt.Fprintf(os.Stderr, "%s already has tag %q\n", id, tag)
+					return 1
+				}
+			}
+		case "rm":
+			for _, t := range item.Tags {
+				if t == tag {
+					return 0
+				}
+			}
+			fmt.Fprintf(os.Stderr, "%s does not have tag %q\n", id, tag)
+			return 1
+		}
+		return 0
+	}()
+	if preflightErr != 0 {
+		return preflightErr
+	}
+
+	if err := s.Mutate(id, func(it *model.Item) error {
+		switch action {
+		case "add":
+			it.Tags = append(it.Tags, tag)
+		case "rm":
+			var kept []string
+			for _, t := range it.Tags {
+				if t != tag {
+					kept = append(kept, t)
+				}
+			}
+			it.Tags = kept
+		}
+		updateTagsInDoc(it)
+		return nil
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
+	}
+
+	switch action {
+	case "add":
+		changelog.Append(cfg, id, changelog.Entry{Op: "tag_add", Field: "tags", NewValue: tag})
+	case "rm":
+		changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: "tags", OldValue: tag})
 	}
 
 	fmt.Printf("Tag %s %s on %s\n", action, tag, id)

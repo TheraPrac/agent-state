@@ -109,7 +109,7 @@ func TestWriteNewItem(t *testing.T) {
 		Manifest:        make(map[string]interface{}),
 	}
 
-	if err := s.Write(item); err != nil {
+	if err := s.write(item); err != nil {
 		t.Fatalf("Write new item: %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestWriteNoDirectoryMapping(t *testing.T) {
 	item.Doc.SetField("id", "X-001")
 	item.Doc.SetField("type", "nonexistent")
 
-	err := s.Write(item)
+	err := s.write(item)
 	if err == nil {
 		t.Error("Write for unmapped type should fail")
 	}
