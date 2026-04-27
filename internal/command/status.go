@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,11 +43,18 @@ type StatusOpts struct {
 	All       bool
 	Completed bool
 	Check     bool
+	NoRefresh bool   // I-380: skip the auto-pull (for scripts/CI/hot loops)
 	Tag       string // filter queued tasks by tag
 	Epic      string // filter queued tasks by epic ID
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
+	// I-380: refresh from origin BEFORE rendering so a stale local clone
+	// can't show phantom "active" items that have already been archived
+	// upstream. Banner surfaces non-trivial outcomes; on a successful
+	// pull, reload the store so the dashboard reflects new state.
+	s = refreshAndReload(s, cfg, opts.NoRefresh, os.Stdout)
+
 	if id != "" {
 		return statusSingle(s, cfg, id)
 	}
@@ -60,6 +68,44 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 		// Completed is NOT included in -a; use -d explicitly
 	}
 	return statusDashboard(s, cfg, opts)
+}
+
+// refreshAndReload calls store.RefreshWorkspace (unless skipped), prints a
+// one-line banner for non-trivial outcomes, and reloads the store after a
+// Pulled outcome so subsequent rendering sees fresh state.
+//
+// Returns the (possibly new) store. The original store is returned
+// unchanged when refresh is skipped, fails, or finds the workspace already
+// up to date.
+func refreshAndReload(s *store.Store, cfg *config.Config, skip bool, w io.Writer) *store.Store {
+	if skip {
+		return s
+	}
+	return applyRefreshResult(s, cfg, store.RefreshWorkspace(cfg), w)
+}
+
+// applyRefreshResult prints the banner for a RefreshResult and, on a
+// Pulled outcome, reloads the store so the caller sees newly-pulled
+// items. Split from refreshAndReload so tests can drive each outcome
+// without needing a real git setup.
+func applyRefreshResult(s *store.Store, cfg *config.Config, res store.RefreshResult, w io.Writer) *store.Store {
+	switch res.Outcome {
+	case store.RefreshDisabled, store.RefreshUpToDate:
+		// Silent: nothing to report.
+	case store.RefreshPulled:
+		fmt.Fprintf(w, "%s↻ pulled %d commit(s) from origin%s\n", cDim, res.PulledCount, cReset)
+		// Reload store so the dashboard sees newly-pulled items.
+		if reloaded, err := store.New(cfg); err == nil {
+			s = reloaded
+		}
+	case store.RefreshDiverged:
+		fmt.Fprintf(w, "%s⚠ local diverged from origin — run `git pull --rebase`%s\n", cYellow, cReset)
+	case store.RefreshBlocked:
+		fmt.Fprintf(w, "%s⚠ uncommitted changes blocked refresh — commit or stash%s\n", cYellow, cReset)
+	case store.RefreshOffline:
+		fmt.Fprintf(w, "%s⊘ offline — showing last-known-good state%s\n", cRed, cReset)
+	}
+	return s
 }
 
 func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {

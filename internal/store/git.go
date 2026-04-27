@@ -1,10 +1,12 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -231,6 +233,126 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 		restoreLockedItems(snap)
 	}
 	return nil
+}
+
+// RefreshOutcome describes how a RefreshWorkspace call resolved.
+type RefreshOutcome int
+
+const (
+	RefreshDisabled RefreshOutcome = iota // git config nil — feature off
+	RefreshUpToDate                       // fetch ok, no new commits
+	RefreshPulled                         // fast-forwarded N commits
+	RefreshDiverged                       // local has commits not on remote (ff-only refused)
+	RefreshBlocked                        // uncommitted changes prevented ff
+	RefreshOffline                        // fetch failed (network/auth/timeout)
+)
+
+// RefreshResult is the structured outcome of RefreshWorkspace, used by
+// callers (e.g. st status) to render a banner explaining what happened
+// and to decide whether to reload the store.
+type RefreshResult struct {
+	Outcome     RefreshOutcome
+	PulledCount int   // commits fast-forwarded when Outcome == RefreshPulled
+	Err         error // last underlying error (for diagnostics; not always set)
+}
+
+// refreshFetchTimeout caps the network round-trip so a flaky remote
+// can't hang `st status`. Fetch failure → RefreshOffline; the caller
+// renders against last-known-good local state.
+const refreshFetchTimeout = 10 * time.Second
+
+// RefreshWorkspace updates the workspace clone from origin, returning a
+// structured outcome that callers can render. Unlike GitPull it always
+// attempts the refresh (gated only by `cfg.Git != nil`, not AutoPush) —
+// the contract of `st status` is "show me the current state," and an
+// operator running it has explicitly asked for the network round-trip.
+//
+// Sequence:
+//  1. Acquire the workspace git lock (concurrent st processes serialize).
+//  2. Snapshot any locked-item files (in-flight pipeline state) so the
+//     pull cannot overwrite them, mirroring GitPull's protection.
+//  3. `git fetch origin` with a timeout — fetch failure → RefreshOffline.
+//  4. Inspect ahead/behind counts:
+//       - ahead > 0: RefreshDiverged (caller must `git pull --rebase`).
+//       - behind == 0: RefreshUpToDate (silent success).
+//       - behind > 0 with uncommitted blockers: RefreshBlocked.
+//       - behind > 0 otherwise: `git pull --ff-only`. Success →
+//         RefreshPulled (PulledCount = behind). Failure → RefreshBlocked.
+//  5. Restore locked-item snapshots.
+//
+// Never auto-stashes, auto-rebases, or pushes. Operator intervention
+// required for divergence and blocked states — banners surface them.
+func RefreshWorkspace(cfg *config.Config) RefreshResult {
+	if cfg.Git == nil {
+		return RefreshResult{Outcome: RefreshDisabled}
+	}
+
+	root := cfg.ItemDir()
+
+	unlock, err := acquireGitLock(root)
+	if err != nil {
+		// Another st process holds the lock — treat as offline rather than
+		// blocking the user; they'll get fresh state on the next call.
+		return RefreshResult{Outcome: RefreshOffline, Err: err}
+	}
+	defer unlock()
+
+	lockedSnapshots := snapshotLockedItems(cfg, root)
+	defer restoreLockedItems(lockedSnapshots)
+
+	// 1. Fetch with timeout. Network/auth failure → offline.
+	ctx, cancel := context.WithTimeout(context.Background(), refreshFetchTimeout)
+	defer cancel()
+	if err := gitCmdContext(ctx, root, "fetch", "--quiet", "origin"); err != nil {
+		return RefreshResult{Outcome: RefreshOffline, Err: err}
+	}
+
+	// 2. Ahead/behind counts vs. upstream.
+	behind, behindErr := gitCountCommits(root, "HEAD..@{upstream}")
+	ahead, aheadErr := gitCountCommits(root, "@{upstream}..HEAD")
+	if behindErr != nil || aheadErr != nil {
+		// No upstream configured (or branch not tracking). Treat as up-to-date
+		// rather than scaring the user — there's nothing to pull from.
+		return RefreshResult{Outcome: RefreshUpToDate}
+	}
+
+	if ahead > 0 {
+		return RefreshResult{Outcome: RefreshDiverged}
+	}
+	if behind == 0 {
+		return RefreshResult{Outcome: RefreshUpToDate}
+	}
+
+	// 3. Pull. ff-only refuses if uncommitted changes conflict with
+	// the merge or any other non-ff condition surfaces — surface as Blocked.
+	if err := gitCmdQuiet(root, "pull", "--ff-only"); err != nil {
+		return RefreshResult{Outcome: RefreshBlocked, Err: err}
+	}
+
+	return RefreshResult{Outcome: RefreshPulled, PulledCount: behind}
+}
+
+// gitCountCommits runs `git rev-list --count <range>` and parses the
+// result. Returns 0 + error if the range can't be evaluated (e.g. no
+// upstream configured).
+func gitCountCommits(dir, revRange string) (int, error) {
+	out, err := gitOutput(dir, "rev-list", "--count", revRange)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// gitCmdContext runs git with a context (timeout-capable). Uses
+// exec.CommandContext so the process is killed when the context expires.
+func gitCmdContext(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	return cmd.Run()
 }
 
 func gitCmd(dir string, args ...string) error {

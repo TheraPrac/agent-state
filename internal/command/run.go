@@ -372,10 +372,17 @@ type RunStatusOpts struct {
 	ShowAll bool
 	// ClosedOnly shows only archived/completed epics and sprints.
 	ClosedOnly bool
+	// NoRefresh skips the pre-render workspace pull (I-380).
+	NoRefresh bool
 }
 
 // RunStatus shows the pipeline progress for all items in active sprints.
 func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
+	// I-380: same auto-refresh contract as `st status` — operator running
+	// `st run status` is asking for the current state of in-flight pipelines,
+	// so a stale clone would silently misreport sprint progress.
+	s = refreshAndReload(s, cfg, opts.NoRefresh, os.Stdout)
+
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
 		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
