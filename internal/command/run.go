@@ -5639,10 +5639,7 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		sprintIDs = []string{sprintID}
 	}
 
-	var epicWall, epicAI time.Duration
-	var epicCost float64
-	var epicInTok, epicOutTok int
-	var epicNetLOC int
+	var epicTotal ItemMetrics
 
 	for _, sid := range sprintIDs {
 		sprint, err := reg.SprintByID(sid)
@@ -5657,14 +5654,25 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 		}
 		fmt.Printf("\n  %-40s%s\n", sprint.Title, marker)
 
-		var sprintWall, sprintAI time.Duration
-		var sprintCost float64
-		var sprintInTok, sprintOutTok int
-		var sprintNetLOC int
-		sprintDone, sprintTotal := 0, 0
+		var sprintTotal ItemMetrics
+		sprintDone, sprintItemCount := 0, 0
+		now := time.Now()
+
+		dashIfEmpty := func(s string) string {
+			if s == "" {
+				return "—"
+			}
+			return s
+		}
+		fc := func(c float64) string {
+			if c > 0 {
+				return fmt.Sprintf("$%.2f", c)
+			}
+			return "—"
+		}
 
 		for _, itemID := range sprint.Items {
-			sprintTotal++
+			sprintItemCount++
 			item, ok := s.Get(itemID)
 			if !ok {
 				fmt.Printf("  %-8s %-22s\n", itemID, "(not found)")
@@ -5673,17 +5681,16 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 
 			// Determine status
 			status := item.Status
-			if cfg.IsTerminalStatus(item.Type, item.Status) {
+			isDone := cfg.IsTerminalStatus(item.Type, item.Status)
+			if isDone {
 				status = "done"
 				sprintDone++
 			}
 
-			// Session values (this run only) and total values (accumulated)
+			// Session-only cost (this run): the per-step results from `st run`
+			// expose a fresh-cost slice that's independent of accumulated
+			// time_tracking. ItemMetrics covers the accumulated total.
 			var sessCost float64
-			var totalWall, totalAI time.Duration
-			var totalCostItem float64
-			var itemInTok, itemOutTok int
-
 			if isCurrent {
 				for _, r := range results {
 					if r.ItemID == itemID {
@@ -5707,134 +5714,41 @@ func printCompletionReport(results []ItemResult, sprintID string, totalDuration 
 				}
 			}
 
-			// Accumulated totals from time_tracking
-			if v, ok := getNestedField(item, "time_tracking", "process_time_seconds"); ok {
-				var secs int
-				fmt.Sscanf(v, "%d", &secs)
-				totalWall = time.Duration(secs) * time.Second
-			} else if v, ok := getNestedField(item, "time_tracking", "run_wall_seconds"); ok {
-				var secs int
-				fmt.Sscanf(v, "%d", &secs)
-				totalWall = time.Duration(secs) * time.Second
-			}
-			if v, ok := getNestedField(item, "time_tracking", "ai_time_seconds"); ok {
-				var secs int
-				fmt.Sscanf(v, "%d", &secs)
-				totalAI = time.Duration(secs) * time.Second
-			} else if v, ok := getNestedField(item, "time_tracking", "ai_duration_seconds"); ok {
-				var secs int
-				fmt.Sscanf(v, "%d", &secs)
-				totalAI = time.Duration(secs) * time.Second
-			}
-			if v, ok := getNestedField(item, "time_tracking", "ai_cost_usd"); ok {
-				fmt.Sscanf(v, "%f", &totalCostItem)
-			}
-			if v, ok := getNestedField(item, "time_tracking", "total_input_tokens"); ok {
-				fmt.Sscanf(v, "%d", &itemInTok)
-			} else {
-				itemInTok = readIntField(item, "time_tracking", "reg_input_tokens") +
-					readIntField(item, "time_tracking", "cache_in_tokens") +
-					readIntField(item, "time_tracking", "cache_out_tokens") +
-					readIntField(item, "time_tracking", "cache_out_1h_tokens")
-			}
-			if itemInTok == 0 {
-				if v, ok := getNestedField(item, "time_tracking", "input_tokens"); ok {
-					fmt.Sscanf(v, "%d", &itemInTok)
-				}
-			}
-			if v, ok := getNestedField(item, "time_tracking", "total_output_tokens"); ok {
-				fmt.Sscanf(v, "%d", &itemOutTok)
-			} else {
-				itemOutTok = readIntField(item, "time_tracking", "reg_output_tokens")
-			}
-			if itemOutTok == 0 {
-				if v, ok := getNestedField(item, "time_tracking", "output_tokens"); ok {
-					fmt.Sscanf(v, "%d", &itemOutTok)
-				}
-			}
-
-			// Net LOC from PR manifest
-			var itemNetLOC int
-			if m, err := manifest.Load(cfg.ManifestDir(), itemID); err == nil {
-				for _, pr := range m.PRs {
-					itemNetLOC += pr.CodeStats.Insertions - pr.CodeStats.Deletions
-				}
-			}
-
-			sprintWall += totalWall
-			sprintAI += totalAI
-			sprintCost += totalCostItem
-			sprintInTok += itemInTok
-			sprintOutTok += itemOutTok
-			sprintNetLOC += itemNetLOC
-
-			f := func(d time.Duration) string {
-				if d > 0 {
-					return formatDuration(d)
-				}
-				return "—"
-			}
-			fc := func(c float64) string {
-				if c > 0 {
-					return fmt.Sprintf("$%.2f", c)
-				}
-				return "—"
-			}
-			ft := func(in, out int) string {
-				if in == 0 && out == 0 {
-					return "—"
-				}
-				return fmt.Sprintf("%s/%s/%s", formatTokens(in), formatTokens(out), formatTokens(in+out))
-			}
-			fl := func(n int) string {
-				if n == 0 {
-					return "—"
-				}
-				return formatLOC(n)
-			}
+			metrics := ExtractItemMetrics(item, cfg.ManifestDir(), now, isDone)
+			cols := metrics.FormatColumns()
+			sprintTotal = sprintTotal.Add(metrics)
 
 			fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s  %10s\n",
 				itemID, truncate(status, 22),
-				f(totalWall), f(totalAI), fc(totalCostItem), ft(itemInTok, itemOutTok), fl(itemNetLOC), fc(sessCost))
+				dashIfEmpty(cols.ProcessTime), dashIfEmpty(cols.AITime),
+				dashIfEmpty(cols.Cost), dashIfEmpty(cols.Tokens), dashIfEmpty(cols.LOC),
+				fc(sessCost))
 		}
 
 		// Sprint subtotal
-		sprintTokStr := "—"
-		if sprintInTok > 0 || sprintOutTok > 0 {
-			sprintTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(sprintInTok), formatTokens(sprintOutTok), formatTokens(sprintInTok+sprintOutTok))
-		}
-		sprintLOCStr := "—"
-		if sprintNetLOC != 0 {
-			sprintLOCStr = formatLOC(sprintNetLOC)
-		}
+		sprintCols := sprintTotal.FormatColumns()
 		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s\n", "",
-			fmt.Sprintf("%d/%d done", sprintDone, sprintTotal),
-			formatDuration(sprintWall), formatDuration(sprintAI),
-			fmt.Sprintf("$%.2f", sprintCost), sprintTokStr, sprintLOCStr)
+			fmt.Sprintf("%d/%d done", sprintDone, sprintItemCount),
+			dashIfEmpty(sprintCols.ProcessTime), dashIfEmpty(sprintCols.AITime),
+			dashIfEmpty(sprintCols.Cost), dashIfEmpty(sprintCols.Tokens), dashIfEmpty(sprintCols.LOC))
 
-		epicWall += sprintWall
-		epicAI += sprintAI
-		epicCost += sprintCost
-		epicInTok += sprintInTok
-		epicOutTok += sprintOutTok
-		epicNetLOC += sprintNetLOC
+		epicTotal = epicTotal.Add(sprintTotal)
 	}
 
 	// Epic total
 	if epic != nil && len(sprintIDs) > 1 {
-		epicTokStr := "—"
-		if epicInTok > 0 || epicOutTok > 0 {
-			epicTokStr = fmt.Sprintf("%s/%s/%s", formatTokens(epicInTok), formatTokens(epicOutTok), formatTokens(epicInTok+epicOutTok))
-		}
-		epicLOCStr := "—"
-		if epicNetLOC != 0 {
-			epicLOCStr = formatLOC(epicNetLOC)
+		epicCols := epicTotal.FormatColumns()
+		dashIfEmpty := func(s string) string {
+			if s == "" {
+				return "—"
+			}
+			return s
 		}
 		fmt.Printf("\n  %s\n", sep)
 		fmt.Printf("  %-8s %-22s  %12s  %12s  %10s  %21s  %10s\n",
 			"TOTAL", truncate(epic.Title, 22),
-			formatDuration(epicWall), formatDuration(epicAI),
-			fmt.Sprintf("$%.2f", epicCost), epicTokStr, epicLOCStr)
+			dashIfEmpty(epicCols.ProcessTime), dashIfEmpty(epicCols.AITime),
+			dashIfEmpty(epicCols.Cost), dashIfEmpty(epicCols.Tokens), dashIfEmpty(epicCols.LOC))
 	}
 	fmt.Printf("  %s\n\n", sep)
 }

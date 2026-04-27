@@ -9,11 +9,15 @@ import (
 	"github.com/jfinlinson/agent-state/internal/model"
 )
 
-// ItemMetrics is the rolled-up per-item view of time/cost/tokens/LOC.
-// Every "how is this item doing" surface — st status, st run status,
-// st show — reads it through ExtractItemMetrics so the surfaces can't
-// drift. Fields stay zero when the underlying data is absent; callers
-// use HasMetrics to decide whether to render anything.
+// ItemMetrics is the rolled-up per-item view of time/cost/tokens/LOC used
+// for the one-line summary surfaces — st status's active-work/recent rows,
+// statusSingle's "Metrics:" line, and the per-item rows of st run status.
+// Both surfaces extract through ExtractItemMetrics so the summary lines
+// can't drift. (st show's renderTimeTracking is a deliberately richer
+// detailed-block view that surfaces fields ItemMetrics doesn't carry —
+// turn_count, by_provider_model, files_changed_count, etc. — and stays
+// independent on purpose.) Fields stay zero when the underlying data is
+// absent; callers use HasMetrics to decide whether to render anything.
 type ItemMetrics struct {
 	Wall         time.Duration
 	ProcessTime  time.Duration
@@ -66,9 +70,13 @@ func ExtractItemMetrics(item *model.Item, manifestDir string, now time.Time, isD
 		m.AITime = time.Duration(secs * float64(time.Second))
 	}
 
-	// Cost
+	// Cost — typed map first; fall through to doc walker for partially-
+	// populated items (matches the same dual-path pattern as tokens below).
 	if tt := item.TimeTracking; tt != nil {
 		m.CostUSD = floatField(tt, "ai_cost_usd")
+	}
+	if m.CostUSD == 0 {
+		m.CostUSD = readFloatField(item, "time_tracking", "ai_cost_usd")
 	}
 
 	// Tokens — typed TimeTracking map is the canonical source after parse;

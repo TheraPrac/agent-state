@@ -303,3 +303,35 @@ func TestStatusSingleNoMetricLineWhenAbsent(t *testing.T) {
 		t.Errorf("statusSingle rendered Metrics line for item with no time_tracking:\n%s", out)
 	}
 }
+
+// TestPipelineStepLabelDoneAfterFinalStep guards finding #2 of the PR #41
+// review: when the pipeline is fully complete (last_completed_step matches
+// the final step name), the label must not echo the final step as if it
+// were still pending — should say "done" instead.
+func TestPipelineStepLabelDoneAfterFinalStep(t *testing.T) {
+	steps := []string{"build", "test", "merge", "deploy"}
+
+	doneItem := &model.Item{Doc: nil}
+	// Use SetNested via a real item so getNestedField finds delivery fields.
+	d := &model.Item{}
+	d.SetNested("delivery", "last_completed_step", "deploy")
+	if got := pipelineStepLabel(d, steps); !strings.HasPrefix(got, "done") {
+		t.Errorf("pipelineStepLabel after final step = %q, want 'done...'", got)
+	}
+
+	// Sanity: a still-in-progress item should NOT report "done".
+	mid := &model.Item{}
+	mid.SetNested("delivery", "last_completed_step", "build")
+	if got := pipelineStepLabel(mid, steps); got == "done" || strings.HasPrefix(got, "done · ") {
+		t.Errorf("pipelineStepLabel after build = %q, expected next step (test)", got)
+	}
+
+	// And a clamp still kicks in cleanly when no last_completed_step is set —
+	// should return the first step, not "done".
+	first := &model.Item{}
+	if got := pipelineStepLabel(first, steps); got != "build" {
+		t.Errorf("pipelineStepLabel with no last_completed_step = %q, want 'build'", got)
+	}
+
+	_ = doneItem
+}

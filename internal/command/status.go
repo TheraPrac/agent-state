@@ -777,7 +777,8 @@ func printActivePipeline(s *store.Store, cfg *config.Config, w io.Writer) {
 }
 
 // pipelineStepLabel returns "step (stage)" for the next-pending pipeline step
-// of an item, or just the stage when no step is computable.
+// of an item, or just the stage when no step is computable. When all steps
+// are complete, returns "done" rather than the just-completed last step.
 func pipelineStepLabel(item *model.Item, stepNames []string) string {
 	stage, _ := getNestedField(item, "delivery", "stage")
 	lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
@@ -797,7 +798,12 @@ func pipelineStepLabel(item *model.Item, stepNames []string) string {
 		}
 	}
 	if nextIdx >= len(stepNames) {
-		nextIdx = len(stepNames) - 1
+		// All pipeline steps complete — say so rather than echoing the
+		// just-completed final step as if still in progress.
+		if stage != "" {
+			return fmt.Sprintf("done · %s", stage)
+		}
+		return "done"
 	}
 	step := stepNames[nextIdx]
 	if stage != "" && stage != step {
