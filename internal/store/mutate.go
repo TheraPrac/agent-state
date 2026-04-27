@@ -22,6 +22,13 @@ var ErrLockTimeout = errors.New("flock acquire timed out")
 // not exist at the moment Mutate / MutateMany tries to lock it.
 var ErrItemMissing = errors.New("item file missing")
 
+// ErrAlreadyClaimed is the sentinel callers return from a Mutate
+// closure when an item's claimed_by field already names a different,
+// live session — the caller decided it would be unsafe to overwrite.
+// T-310: lets `st start` and friends do an atomic compare-and-claim
+// inside Mutate without inventing a per-call error type.
+var ErrAlreadyClaimed = errors.New("already claimed")
+
 // LockTimeout is the maximum time Mutate will wait for an exclusive
 // flock on an item's lock file. The default of 30 seconds covers a slow
 // concurrent writer; tests override it for fast failure.

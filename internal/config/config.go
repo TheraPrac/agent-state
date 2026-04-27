@@ -452,6 +452,14 @@ func (c *Config) SessionsDir() string {
 	return filepath.Join(c.root, ".as", "sessions")
 }
 
+// AgentsDir returns the path to the per-process agent registration
+// directory (.as/agents/). Each live st run / st start writes a
+// <agent-id>.yaml here on startup; the file is removed on clean exit
+// and swept on the next startup if the PID is dead. T-311.
+func (c *Config) AgentsDir() string {
+	return filepath.Join(c.root, ".as", "agents")
+}
+
 // StaleClaimTTL returns the stale claim threshold in seconds.
 // Defaults to 7200 (2 hours) if not configured.
 func (c *Config) StaleClaimTTL() int {

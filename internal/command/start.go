@@ -1,6 +1,7 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
@@ -15,6 +17,74 @@ import (
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// isSessionLive reports whether the given session id corresponds to a
+// process that is still running. T-310 + T-311: the agent registry is
+// the authoritative source — a session whose owning process has exited
+// has no live registration. Falls back to session-manager TTL when the
+// registry has no entry for the session (older sessions that predate
+// T-311 wiring, or environments where Register isn't called).
+func isSessionLive(cfg *config.Config, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if pid, ok := agentPIDForSession(cfg, sessionID); ok {
+		return agent.IsPIDLive(pid)
+	}
+	mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+	sess, _ := mgr.Load(sessionID)
+	if sess == nil {
+		return false
+	}
+	return !mgr.IsStale(sess)
+}
+
+// agentPIDForSession scans .as/agents/ for a registration whose
+// session_id matches and returns its recorded PID. The agent registry
+// is the source of truth for who's alive in this workspace.
+func agentPIDForSession(cfg *config.Config, sessionID string) (int, bool) {
+	regs, err := agent.ListRegistrations(cfg)
+	if err != nil {
+		return 0, false
+	}
+	for _, r := range regs {
+		if r.SessionID == sessionID {
+			return r.PID, true
+		}
+	}
+	return 0, false
+}
+
+// sessionLiveProbe is the SessionLive function passed to
+// store.SweepStaleClaims. It defers to isSessionLive so the sweep uses
+// the same liveness contract as the in-Mutate compare-and-claim:
+// agent registry first (PID-backed), then session-manager TTL fallback.
+func sessionLiveProbe(cfg *config.Config) func(string) bool {
+	return func(sessionID string) bool {
+		return isSessionLive(cfg, sessionID)
+	}
+}
+
+// primeClaimState runs the two cross-process sweeps that the new
+// claim-via-Mutate flow depends on. Best-effort: errors are logged
+// but do not block the calling command — a failed sweep just means
+// stale claims/registrations linger until the next attempt.
+//
+// Sequence matters:
+//  1. agent.Sweep first removes registration files for dead PIDs.
+//  2. store.SweepStaleClaims then sees a clean registry and can
+//     correctly mark unowned claims as releasable (with TTL fallback
+//     for sessions that predate agent registration).
+func primeClaimState(s *store.Store, cfg *config.Config) {
+	if _, err := agent.Sweep(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: agent sweep: %v\n", err)
+	}
+	if released, err := store.SweepStaleClaims(s, cfg, sessionLiveProbe(cfg)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: stale-claim sweep: %v\n", err)
+	} else if len(released) > 0 {
+		fmt.Fprintf(os.Stderr, "released stale claims on: %s\n", strings.Join(released, ", "))
+	}
+}
 
 // StartOpts holds flags for the start command.
 type StartOpts struct {
@@ -24,6 +94,13 @@ type StartOpts struct {
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
+	// T-310 + T-311: refresh the cross-process state before doing anything
+	// claim-related. The agent registry sweep clears dead-PID entries; the
+	// stale-claim sweep then releases items whose claimed_by names a
+	// session whose process is gone. After sweeping, our claim attempt
+	// can find a free item that the registry would have flagged as taken.
+	primeClaimState(s, cfg)
+
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
@@ -57,20 +134,33 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		return 1
 	}
 
-	// Check: not already claimed by another live session
+	// T-311: register this process before claiming, so a concurrent
+	// `st start` can see us as a live owner via the registry. Cleanup
+	// is deferred so the registration file disappears on clean exit
+	// regardless of which return path Start takes.
+	_, agentCleanup, regErr := agent.Register(cfg, agent.Options{
+		BaseAgentID:      identity.ID,
+		ParentAgentID:    identity.ParentID,
+		RootAgentID:      identity.RootID,
+		Role:             identity.Role,
+		SessionID:        cfg.SessionID(),
+		SpawnedBySession: identity.SpawnedBySession,
+		Scope:            "item:" + id,
+	})
+	if regErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: agent registration: %v\n", regErr)
+	}
+	defer agentCleanup()
+
+	// Pre-flight (advisory): fast-fail when an obviously-live claim
+	// belongs to someone else. The authoritative compare-and-claim
+	// happens inside the Mutate below — this short-circuit just avoids
+	// creating worktrees in the common "already taken" case. T-310.
 	sessionID := cfg.SessionID()
-	if item.ClaimedBy != "" && item.ClaimedBy != sessionID {
-		// Check if the claiming session is stale
-		mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
-		claimingSession, _ := mgr.Load(item.ClaimedBy)
-		if claimingSession != nil && !mgr.IsStale(claimingSession) {
-			fmt.Fprintf(os.Stderr, "%s is claimed by session %s (since %s)\n", id, item.ClaimedBy, item.ClaimedAt)
-			fmt.Fprintln(os.Stderr, "use `st release` to clear the claim, or wait for the session to expire")
-			return 1
-		}
-		// Stale or dead session — clear the old claim
-		fmt.Printf("  Releasing stale claim from session %s\n", item.ClaimedBy)
-		_ = mgr.RemoveClaim(item.ClaimedBy, id)
+	if item.ClaimedBy != "" && item.ClaimedBy != sessionID && isSessionLive(cfg, item.ClaimedBy) {
+		fmt.Fprintf(os.Stderr, "%s is claimed by session %s (since %s)\n", id, item.ClaimedBy, item.ClaimedAt)
+		fmt.Fprintln(os.Stderr, "use `st release` to clear the claim, or wait for the session to expire")
+		return 1
 	}
 
 	// Ensure git hooks are active on all configured repos
@@ -96,6 +186,19 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	now := time.Now().Format(time.RFC3339)
 
 	if err := s.Mutate(id, func(item *model.Item) error {
+		// Authoritative claim check inside the lock. A concurrent st start
+		// that won the race (or a stale claim that was reclaimed between
+		// the pre-flight and now) shows up here as a live mismatch — we
+		// refuse to overwrite. T-310.
+		if item.ClaimedBy != "" && item.ClaimedBy != sessionID {
+			if isSessionLive(cfg, item.ClaimedBy) {
+				return store.ErrAlreadyClaimed
+			}
+			// Dead session — record that we're reclaiming so the operator
+			// understands the prior claim was stale, not deliberately lost.
+			fmt.Printf("  Releasing stale claim from session %s\n", item.ClaimedBy)
+		}
+
 		if branch != "" {
 			item.SetNested("work_tracking", "branch", branch)
 		}
@@ -151,6 +254,11 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		item.SetNested("time_tracking", "started_at", now)
 		return nil
 	}); err != nil {
+		if errors.Is(err, store.ErrAlreadyClaimed) {
+			fmt.Fprintf(os.Stderr, "%s was claimed by another live process while we prepared the worktree\n", id)
+			fmt.Fprintln(os.Stderr, "no agent-state changes were committed; clean up unused worktree manually if needed")
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
 		return 1
 	}
