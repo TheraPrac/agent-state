@@ -150,7 +150,9 @@ func TestAgentWorkspaceCreateDryRunDetectsPartialSymlink(t *testing.T) {
 	if err := os.MkdirAll(target, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/tmp/source-workspace", filepath.Join(target, "theraprac-workspace")); err != nil {
+	// theraprac-api is NOT a shared-symlink repo, so a stray symlink should
+	// be flagged for repair into an independent clone.
+	if err := os.Symlink("/tmp/source-api", filepath.Join(target, "theraprac-api")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,9 +165,80 @@ func TestAgentWorkspaceCreateDryRunDetectsPartialSymlink(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(stdout, "theraprac-workspace") || !strings.Contains(stdout, "state=symlink") ||
+	if !strings.Contains(stdout, "theraprac-api") || !strings.Contains(stdout, "state=symlink") ||
 		!strings.Contains(stdout, "repair symlink -> independent clone") {
 		t.Fatalf("partial symlink not explained:\n%s", stdout)
+	}
+}
+
+// I-418: theraprac-workspace is shared across agents via symlink. The plan
+// output must reflect that a symlink IS the expected end state, not a
+// "partial" condition needing repair into an independent clone.
+func TestAgentWorkspaceCreatePlanShowsSharedWorkspaceSymlink(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "agent-c", Branch: "main", Full: true, DryRun: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	// Absent state should plan to create the symlink.
+	wantSubstrings := []string{
+		"theraprac-workspace",
+		"state=absent",
+		"create symlink -> ../theraprac-workspace",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("plan output missing %q:\n%s", want, stdout)
+		}
+	}
+	// Independent-clone wording must NOT appear for the workspace.
+	if strings.Contains(stdout, "theraprac-workspace") &&
+		strings.Contains(stdout, "repair symlink -> independent clone") {
+		// only fail if that wording sits on the workspace row; check by line
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.Contains(line, "theraprac-workspace") &&
+				strings.Contains(line, "independent clone") {
+				t.Errorf("workspace row should not say 'independent clone':\n%s", line)
+			}
+		}
+	}
+}
+
+// I-418: when the workspace symlink already exists and points correctly,
+// the plan should describe a verify (no-op), not a repair.
+func TestAgentWorkspaceCreatePlanVerifiesCorrectSymlink(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	target := filepath.Join(agentsRoot, "theraprac-agent-c")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../theraprac-workspace", filepath.Join(target, "theraprac-workspace")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "agent-c", Branch: "main", Full: true, DryRun: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	for _, want := range []string{"theraprac-workspace", "state=symlink", "verify symlink -> ../theraprac-workspace"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("plan output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

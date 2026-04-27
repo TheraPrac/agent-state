@@ -55,6 +55,15 @@ var agentWorkspaceRepos = []string{
 	"theraprac-workspace",
 }
 
+// sharedSymlinkRepos lists repos that are NOT cloned into each agent's
+// workspace — instead, the agent dir gets a symlink to a single canonical
+// sibling clone. theraprac-workspace holds shared agent-state, so giving
+// each agent its own clone causes push/rebase contention (I-418). The
+// canonical clone lives at <agentsRoot>/<name>.
+var sharedSymlinkRepos = map[string]bool{
+	"theraprac-workspace": true,
+}
+
 func AgentBootstrap(cfg *config.Config, opts AgentBootstrapOpts) int {
 	name := resolveAgentName(cfg, opts.Name)
 	dir, err := agentScriptsDir(cfg)
@@ -288,14 +297,29 @@ func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, full, repair bool)
 	fmt.Println("  env files: copy from source repo and overlay per-agent ports (DB_PORT, SERVER_PORT, API_BASE_URL, PORT)")
 	fmt.Println("  repos:")
 	for _, repo := range plan.Repos {
-		action := "clone"
-		switch repo.State {
-		case "git":
-			action = "repair/check"
-		case "symlink":
-			action = "repair symlink -> independent clone"
-		case "dir":
-			action = "refuse unless empty/non-git directory is reviewed"
+		var action string
+		if sharedSymlinkRepos[repo.Name] {
+			switch repo.State {
+			case "absent":
+				action = "create symlink -> ../" + repo.Name
+			case "symlink":
+				action = "verify symlink -> ../" + repo.Name
+			case "git":
+				action = "refuse: existing clone (use --repair to replace with symlink)"
+			default:
+				action = "refuse: " + repo.State
+			}
+		} else {
+			switch repo.State {
+			case "git":
+				action = "repair/check"
+			case "symlink":
+				action = "repair symlink -> independent clone"
+			case "dir":
+				action = "refuse unless empty/non-git directory is reviewed"
+			default:
+				action = "clone"
+			}
 		}
 		fmt.Printf("    %-20s state=%-8s action=%-38s target=%s\n",
 			repo.Name, repo.State, action, repo.TargetPath)
@@ -310,6 +334,12 @@ func applyAgentWorkspaceCreate(plan agentWorkspacePlan, repair bool) error {
 		return err
 	}
 	for _, repo := range plan.Repos {
+		if sharedSymlinkRepos[repo.Name] {
+			if err := ensureSharedSymlink(repo, plan.AgentsRoot, repair); err != nil {
+				return err
+			}
+			continue
+		}
 		switch repo.State {
 		case "git":
 			if _, err := runGit(repo.TargetPath, "fetch", "origin"); err != nil {
@@ -672,6 +702,51 @@ func ensureSymlink(link, target string, repair bool) error {
 		return err
 	}
 	return os.Symlink(target, link)
+}
+
+// ensureSharedSymlink makes <agentDir>/<repo.Name> a symlink to the
+// canonical sibling clone at <agentsRoot>/<repo.Name>. Used for repos in
+// sharedSymlinkRepos (currently theraprac-workspace) so all agents read
+// and write the same .git, eliminating push/rebase contention (I-418).
+func ensureSharedSymlink(repo agentWorkspaceRepoPlan, agentsRoot string, repair bool) error {
+	canonical := filepath.Join(agentsRoot, repo.Name)
+	if !isGitDir(canonical) {
+		return fmt.Errorf("%s: canonical clone missing at %s — bootstrap it first", repo.Name, canonical)
+	}
+	rel := filepath.Join("..", repo.Name)
+	switch repo.State {
+	case "absent":
+		return os.Symlink(rel, repo.TargetPath)
+	case "symlink":
+		current, err := os.Readlink(repo.TargetPath)
+		if err != nil {
+			return fmt.Errorf("%s readlink: %w", repo.Name, err)
+		}
+		// Resolve to absolute for comparison.
+		currentAbs := current
+		if !filepath.IsAbs(currentAbs) {
+			currentAbs = filepath.Join(filepath.Dir(repo.TargetPath), current)
+		}
+		currentAbs = filepath.Clean(currentAbs)
+		if currentAbs == filepath.Clean(canonical) {
+			return nil
+		}
+		if !repair {
+			return fmt.Errorf("%s symlink points to %s, expected %s; rerun with --repair", repo.Name, current, rel)
+		}
+		if err := os.Remove(repo.TargetPath); err != nil {
+			return err
+		}
+		return os.Symlink(rel, repo.TargetPath)
+	case "git", "dir", "file":
+		if !repair {
+			return fmt.Errorf("%s already exists as %s at %s; rerun with --repair to replace with a symlink", repo.Name, repo.State, repo.TargetPath)
+		}
+		// With --repair, refuse to delete a non-empty git clone — operator must remove it deliberately.
+		return fmt.Errorf("%s exists as %s at %s; --repair refuses to delete a clone — remove manually if intended", repo.Name, repo.State, repo.TargetPath)
+	default:
+		return fmt.Errorf("%s unexpected state %s", repo.Name, repo.State)
+	}
 }
 
 func repoState(path string) string {
