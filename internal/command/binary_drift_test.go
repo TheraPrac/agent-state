@@ -4,12 +4,30 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 )
+
+// reapedPID returns a PID that's guaranteed dead at the time of return:
+// fork /usr/bin/true (or echo as a fallback), wait for it to exit, then
+// the OS may eventually recycle the slot but won't until something else
+// races for it. Reliable on macOS and Linux without depending on
+// platform-specific PID-ceiling assumptions.
+func reapedPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("/usr/bin/true")
+	if _, err := exec.LookPath("/usr/bin/true"); err != nil {
+		cmd = exec.Command("/bin/echo")
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("spawning /usr/bin/true to capture a dead PID: %v", err)
+	}
+	return cmd.ProcessState.Pid()
+}
 
 // Drift detection (I-404 follow-up): when two or more LIVE agents
 // (PID alive in registry) report different st commits, status must
@@ -99,11 +117,10 @@ func TestBinaryDriftSkipsDeadAgents(t *testing.T) {
 	cfg := newDriftTestCfg(t)
 	// Live agent on commit A.
 	writeAgentRegistrationYAML(t, cfg.AgentsDir(), "agent-a-1", "aaaa1111", os.Getpid())
-	// Dead agent on commit B (PID 1 is init/launchd; we use a guaranteed-dead
-	// PID by picking a very high one. PID 999999 is reliably absent on
-	// developer macOS; if false-positive concerns arise, swap in a PID
-	// known to never have been allocated in the test sandbox.)
-	writeAgentRegistrationYAML(t, cfg.AgentsDir(), "agent-b-1", "bbbb2222", 999999)
+	// Dead agent on commit B — fork /usr/bin/true and wait, capture its
+	// reaped PID. Cross-platform safe (vs. picking a high PID that may
+	// be valid on Linux's larger pid space).
+	writeAgentRegistrationYAML(t, cfg.AgentsDir(), "agent-b-1", "bbbb2222", reapedPID(t))
 
 	var buf bytes.Buffer
 	printBinaryDriftWarning(cfg, &buf)

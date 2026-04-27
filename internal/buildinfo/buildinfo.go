@@ -2,12 +2,14 @@
 // the runtime can report which build is running and detect drift between
 // per-agent binaries (I-404 follow-up).
 //
-// The vars are populated via -ldflags at `make install` time. Consumers
-// import this package and read the exported strings; nothing else writes
-// to them. When the binary is built without ldflags (e.g., `go build`
-// without the make wrapper, or `go test`), the defaults below apply and
-// drift detection treats the binary as "unstamped" — visible in status
-// output but not flagged as a divergence.
+// The vars are populated via -ldflags at build time — both `make build`
+// and `make install` set them, since `install` depends on `build`.
+// Consumers import this package and read the exported strings; nothing
+// else writes to them. When the binary is built without the make
+// wrapper (e.g., raw `go build`, or `go test` linking the main package),
+// the defaults below apply and drift detection treats the binary as
+// "unstamped" — visible in status output as `<unstamped>` so the
+// operator knows to rebuild via the wrapper.
 package buildinfo
 
 // Version is the human-readable release tag, bumped manually with
