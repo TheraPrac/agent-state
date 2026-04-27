@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/buildinfo"
 	"github.com/jfinlinson/agent-state/internal/command"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/session"
@@ -1276,12 +1277,26 @@ Kinds:
 
 	versionCmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print version",
+		Short: "Print version + build identity",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("st 0.6.0")
+			short, _ := cmd.Flags().GetBool("short")
+			if short {
+				// Stable, parseable form for scripts: "<commit> <dirty>"
+				fmt.Printf("%s %s\n", buildinfo.Commit, buildinfo.Dirty)
+				exitCode = 0
+				return
+			}
+			dirtyMark := ""
+			if buildinfo.Dirty == "1" {
+				dirtyMark = " (dirty)"
+			}
+			fmt.Printf("st %s\n", buildinfo.Version)
+			fmt.Printf("commit: %s%s\n", buildinfo.Commit, dirtyMark)
+			fmt.Printf("built:  %s\n", buildinfo.Built)
 			exitCode = 0
 		},
 	}
+	versionCmd.Flags().Bool("short", false, "print commit + dirty flag only (machine-readable)")
 	root.AddCommand(versionCmd)
 
 	initCmd := &cobra.Command{

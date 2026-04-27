@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/buildinfo"
 	"github.com/jfinlinson/agent-state/internal/config"
 )
 
@@ -38,6 +39,12 @@ type Registration struct {
 	SessionID        string `yaml:"session_id,omitempty"`
 	Role             string `yaml:"role,omitempty"`
 	SpawnedBySession string `yaml:"spawned_by_session,omitempty"`
+	// Commit is the as-repo SHA that this process's binary was built
+	// from (via -ldflags into internal/buildinfo). Recorded so
+	// `st status` can detect drift between parallel agents that built
+	// from different main commits — the "did agent-a forget to make
+	// install after the merge?" check.
+	Commit string `yaml:"commit,omitempty"`
 }
 
 // Options carry the inputs Register needs that aren't on the Config.
@@ -99,6 +106,7 @@ func Register(cfg *config.Config, opts Options) (*Registration, func(), error) {
 		SessionID:        opts.SessionID,
 		Role:             opts.Role,
 		SpawnedBySession: opts.SpawnedBySession,
+		Commit:           buildinfo.Commit,
 	}
 
 	path := filepath.Join(dir, id+".yaml")
@@ -273,6 +281,9 @@ func writeRegistration(path string, reg *Registration) error {
 	if reg.SpawnedBySession != "" {
 		fmt.Fprintf(&b, "spawned_by_session: %s\n", reg.SpawnedBySession)
 	}
+	if reg.Commit != "" {
+		fmt.Fprintf(&b, "commit: %s\n", reg.Commit)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
@@ -313,6 +324,8 @@ func parseRegistration(body []byte) (*Registration, error) {
 			reg.Role = val
 		case "spawned_by_session":
 			reg.SpawnedBySession = val
+		case "commit":
+			reg.Commit = val
 		}
 	}
 	if reg.AgentID == "" {

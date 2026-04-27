@@ -242,3 +242,58 @@ func TestListRegistrationsSkipsBadFiles(t *testing.T) {
 		t.Errorf("expected 1 good reg, got %d: %+v", len(regs), regs)
 	}
 }
+
+// I-404 follow-up: registration round-trips the build commit so
+// `st status` can detect drift between parallel agents.
+func TestRegistrationRoundTripsCommit(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+	reg := &Registration{
+		AgentID: "agent-x-1",
+		Root:    "agent-x",
+		PID:     12345,
+		Started: "2026-04-27T10:00:00Z",
+		Commit:  "abcdef1234567890abcdef1234567890abcdef12",
+	}
+	path := filepath.Join(cfg.AgentsDir(), "agent-x-1.yaml")
+	if err := os.MkdirAll(cfg.AgentsDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRegistration(path, reg); err != nil {
+		t.Fatalf("writeRegistration: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "commit: abcdef1234567890abcdef1234567890abcdef12") {
+		t.Errorf("yaml missing commit line: %s", string(body))
+	}
+	got, err := parseRegistration(body)
+	if err != nil {
+		t.Fatalf("parseRegistration: %v", err)
+	}
+	if got.Commit != reg.Commit {
+		t.Errorf("Commit roundtrip: got %q, want %q", got.Commit, reg.Commit)
+	}
+}
+
+// Older registration files (pre-instrumentation) had no commit field.
+// They must still parse cleanly with an empty Commit string so drift
+// detection treats them as "<unstamped>" rather than crashing.
+func TestRegistrationParsesWithoutCommit(t *testing.T) {
+	body := []byte(`agent_id: agent-old-1
+root: agent-old
+pid: 9999
+started: 2026-04-25T08:00:00Z
+`)
+	got, err := parseRegistration(body)
+	if err != nil {
+		t.Fatalf("parseRegistration: %v", err)
+	}
+	if got.Commit != "" {
+		t.Errorf("expected empty Commit for legacy reg, got %q", got.Commit)
+	}
+	if got.AgentID != "agent-old-1" {
+		t.Errorf("AgentID parse failed: %q", got.AgentID)
+	}
+}

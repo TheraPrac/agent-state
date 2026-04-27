@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/buildinfo"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -132,6 +134,11 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 	fmt.Printf("%s%d issues%s  ", cRed, issueCount, cReset)
 	fmt.Printf("%s%d queued%s  ", cCyan, queuedCount, cReset)
 	fmt.Printf("%s%d archived%s\n\n", cDim, archivedCount, cReset)
+
+	// Binary drift warning: if two or more live agents are registered
+	// with different st commit hashes, surface it before the work
+	// listing so operators rebuild before iterating further.
+	printBinaryDriftWarning(cfg, os.Stdout)
 
 	// Active work
 	active := s.List(store.StatusFilter("active"))
@@ -880,4 +887,63 @@ func padRight(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-len(runes))
+}
+
+// printBinaryDriftWarning surfaces a banner when two or more live agents
+// (PID still alive in the registry) are running st binaries built from
+// different commits. Common cause: agent-X merged a change to as/ but
+// agent-Y forgot to `cd <agent-y>/as && git pull && make install` after
+// the merge — both agents are technically functional, but agent-Y is
+// running stale code. The warning lists each commit + which agents are
+// on it so the operator knows which clone(s) need a rebuild.
+//
+// Silent in three cases: only one live agent, all live agents on the
+// same commit, or every live agent is unstamped (built without ldflags
+// so we have nothing to compare). When at least one agent IS stamped
+// and another is unstamped, the warning fires: the unstamped agent's
+// "<unstamped>" group counts as a distinct bucket so the operator
+// knows to rebuild.
+func printBinaryDriftWarning(cfg *config.Config, w io.Writer) {
+	regs, err := agent.ListRegistrations(cfg)
+	if err != nil || len(regs) < 2 {
+		return
+	}
+	// Group live agents by their Commit value.
+	byCommit := map[string][]string{}
+	for _, r := range regs {
+		if !agent.IsPIDLive(r.PID) {
+			continue
+		}
+		c := r.Commit
+		if c == "" || c == "unknown" {
+			c = "<unstamped>"
+		}
+		byCommit[c] = append(byCommit[c], r.AgentID)
+	}
+	// One commit (or zero live) → nothing to surface.
+	if len(byCommit) < 2 {
+		return
+	}
+	// Sort commits for stable output.
+	commits := make([]string, 0, len(byCommit))
+	for c := range byCommit {
+		commits = append(commits, c)
+	}
+	sort.Strings(commits)
+
+	fmt.Fprintf(w, "%s⚠ st binary drift between live agents:%s\n", cYellow, cReset)
+	for _, c := range commits {
+		ids := byCommit[c]
+		sort.Strings(ids)
+		short := c
+		if len(short) > 8 && short != "<unstamped>" {
+			short = short[:8]
+		}
+		marker := ""
+		if c == buildinfo.Commit {
+			marker = " (this binary)"
+		}
+		fmt.Fprintf(w, "  %s%s%s%s — %s\n", cBold, short, cReset, marker, strings.Join(ids, ", "))
+	}
+	fmt.Fprintf(w, "  %sFix: in each diverged agent's clone, run `cd <agent>/as && git pull && make install`%s\n\n", cDim, cReset)
 }
