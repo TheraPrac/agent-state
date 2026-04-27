@@ -94,6 +94,44 @@ else
   fail "agent-a unbuilt → got '$out'"
 fi
 
+# --- Case 8: ST_ROOT pinned to agent's workspace on PWD walk-up (I-418) ---
+# Replace agent-b's binary with one that echoes the ST_ROOT it received,
+# so we can verify the dispatcher exported the right value before exec.
+cat > "$TMP/theraprac-agents/theraprac-agent-b/as/bin/st" <<'EOF'
+#!/bin/bash
+echo "$ST_ROOT"
+EOF
+chmod +x "$TMP/theraprac-agents/theraprac-agent-b/as/bin/st"
+out=$(cd "$TMP/theraprac-agents/theraprac-agent-b" && env -i HOME="$HOME" PATH="$PATH" bash "$PATCHED" 2>&1)
+# macOS resolves $TMP under /var to /private/var via $(pwd) in the dispatcher,
+# so canonicalize the expected path through the same cd/pwd to compare.
+expected=$(cd "$TMP/theraprac-agents/theraprac-agent-b" && pwd -P)/theraprac-workspace
+if [ "$out" = "$expected" ]; then
+  pass "PWD agent-b → ST_ROOT pinned to agent-b/theraprac-workspace"
+else
+  fail "ST_ROOT pinning → got '$out', want '$expected'"
+fi
+
+# --- Case 9: install-dispatcher.sh produces a working ~/bin/st (I-419) ---
+INSTALLER="$SCRIPT_DIR/install-dispatcher.sh"
+if [ ! -x "$INSTALLER" ]; then
+  fail "installer $INSTALLER not executable"
+else
+  TARGET="$TMP/installed-st"
+  WRAPPER_PATH="$TARGET" bash "$INSTALLER" >/dev/null 2>&1
+  if [ -x "$TARGET" ]; then
+    pass "install-dispatcher.sh wrote $TARGET"
+  else
+    fail "install-dispatcher.sh did not produce executable $TARGET"
+  fi
+  # Idempotent: second run must succeed (overwrites cleanly)
+  if WRAPPER_PATH="$TARGET" bash "$INSTALLER" >/dev/null 2>&1; then
+    pass "install-dispatcher.sh idempotent on re-run"
+  else
+    fail "install-dispatcher.sh failed on second run"
+  fi
+fi
+
 echo
 if [ $FAIL -ne 0 ]; then
   echo "SOME TESTS FAILED"
