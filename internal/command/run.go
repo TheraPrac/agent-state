@@ -2004,6 +2004,18 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			break
 		}
 
+		// T-313: poll mailbox between steps. Banner-only kinds keep the
+		// pipeline running; alert/pause halt before the next step starts.
+		// Mail is consumed (moved to archive) as a side effect of the
+		// poll, so the next iteration sees only newly-arrived messages.
+		if i+1 < len(pipeline) {
+			if pollAndSurfaceMail(cfg) {
+				fmt.Fprintf(os.Stderr, "[%s] aborting pipeline — blocking mail received\n", itemID)
+				releaseItem(cfg, itemID)
+				return result
+			}
+		}
+
 		// Check for pause (Ctrl+C or breakpoint) between steps
 		if i+1 < len(pipeline) {
 			nextStep := pipeline[i+1].Name()

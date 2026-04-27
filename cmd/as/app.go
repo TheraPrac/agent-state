@@ -1146,6 +1146,82 @@ sessions/orphan.log — metrics are never silently dropped.`,
 	})
 	root.AddCommand(noteCmd)
 
+	// --- Mailbox (T-313) ---
+
+	mailCmd := &cobra.Command{
+		Use:   "mail",
+		Short: "Inter-agent mailbox: send/list/show/archive messages between live agents",
+	}
+
+	mailSendCmd := &cobra.Command{
+		Use:   "send <to>",
+		Short: "Write a message into <to>'s mailbox",
+		Long: `Send a kind-tagged message to another agent's mailbox. Surfaced
+to the recipient by st run's between-step poll, or via st mail list.
+
+Kinds:
+  warning    informational FYI, may affect your work
+  need_help  I'm blocked, someone pick up
+  request    code review, opinion, etc.
+  alert      stop everything, critical issue
+  pause      stop touching this repo (force-push imminent, schema change)
+  resume     OK to continue`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			kind, _ := cmd.Flags().GetString("kind")
+			body, _ := cmd.Flags().GetString("body")
+			item, _ := cmd.Flags().GetString("item")
+			from, _ := cmd.Flags().GetString("from")
+			exitCode = command.MailSend(appStore, appCfg, args[0], command.MailSendOpts{
+				Kind: kind, Body: body, Item: item, From: from,
+			})
+		},
+	}
+	mailSendCmd.Flags().String("kind", "", "message kind (warning|need_help|request|alert|pause|resume)")
+	mailSendCmd.Flags().String("body", "", "message body")
+	mailSendCmd.Flags().String("item", "", "related item id (optional)")
+	mailSendCmd.Flags().String("from", "", "override sender id (default: this agent)")
+	_ = mailSendCmd.MarkFlagRequired("kind")
+	_ = mailSendCmd.MarkFlagRequired("body")
+	mailCmd.AddCommand(mailSendCmd)
+
+	mailListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List pending mail (default: this agent)",
+		Run: func(cmd *cobra.Command, args []string) {
+			recipient, _ := cmd.Flags().GetString("agent")
+			exitCode = command.MailList(appCfg, command.MailListOpts{Agent: recipient})
+		},
+	}
+	mailListCmd.Flags().String("agent", "", "recipient (default: this agent)")
+	mailCmd.AddCommand(mailListCmd)
+
+	mailShowCmd := &cobra.Command{
+		Use:   "show <id>",
+		Short: "Print one message (does NOT consume)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			recipient, _ := cmd.Flags().GetString("agent")
+			exitCode = command.MailShow(appCfg, recipient, args[0])
+		},
+	}
+	mailShowCmd.Flags().String("agent", "", "recipient (default: this agent)")
+	mailCmd.AddCommand(mailShowCmd)
+
+	mailArchiveCmd := &cobra.Command{
+		Use:   "archive <id>",
+		Short: "Move a pending message to archive (read receipt)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			recipient, _ := cmd.Flags().GetString("agent")
+			exitCode = command.MailArchive(appStore, appCfg, recipient, args[0])
+		},
+	}
+	mailArchiveCmd.Flags().String("agent", "", "recipient (default: this agent)")
+	mailCmd.AddCommand(mailArchiveCmd)
+
+	root.AddCommand(mailCmd)
+
 	// --- Maintenance ---
 
 	syncCmd := &cobra.Command{
