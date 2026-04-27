@@ -342,7 +342,10 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	}
 	branch := fmt.Sprintf("%s/%s-%s", prefix, id, opts.Slug)
 
-	baseDir := filepath.Join(cfg.Root(), wt.BaseDir)
+	// I-407: WorktreeBase resolves to <agent-root>/worktrees, not
+	// <workspace>/worktrees, so each agent's worktrees are physically
+	// distinct (workspace is symlinked across agents per I-418).
+	baseDir := cfg.WorktreeBase()
 	workDir := filepath.Join(baseDir, id)
 	parentDir := wt.ParentDir
 	if parentDir == "" {

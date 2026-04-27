@@ -460,6 +460,33 @@ func (c *Config) AgentsDir() string {
 	return filepath.Join(c.root, ".as", "agents")
 }
 
+// WorktreeBase returns the directory under which `<id>` worktree dirs live
+// for this agent. I-407: placed under the agent root (one level up from
+// the workspace) rather than inside the workspace itself, because the
+// workspace is symlinked across agents (I-418). Putting worktrees under
+// the workspace would mean agent-a and agent-b share a single physical
+// worktree dir and collide on any item id. Returns "" when worktree
+// integration is disabled.
+func (c *Config) WorktreeBase() string {
+	if c.Worktree == nil || !c.Worktree.Enabled {
+		return ""
+	}
+	agentRoot := filepath.Dir(c.root)
+	return filepath.Join(agentRoot, c.Worktree.BaseDir)
+}
+
+// WorktreeBaseLegacy returns the pre-I-407 worktree location (under the
+// workspace, shared across agents via the I-418 symlink). Used by
+// finish/close as a fallback when an old worktree predates the I-407
+// fix and needs to be cleaned up from its original location. Returns
+// "" when worktree integration is disabled.
+func (c *Config) WorktreeBaseLegacy() string {
+	if c.Worktree == nil || !c.Worktree.Enabled {
+		return ""
+	}
+	return filepath.Join(c.root, c.Worktree.BaseDir)
+}
+
 // StaleClaimTTL returns the stale claim threshold in seconds.
 // Defaults to 7200 (2 hours) if not configured.
 func (c *Config) StaleClaimTTL() int {

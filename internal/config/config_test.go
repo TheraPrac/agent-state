@@ -596,3 +596,51 @@ testing:
 		t.Errorf("Artifacts = %v", sc.Artifacts)
 	}
 }
+
+// I-407: WorktreeBase places <id> dirs under the agent root (one level
+// up from the workspace), not inside the workspace itself. Workspace is
+// symlinked across agents (I-418); placing worktrees in the workspace
+// would mean every agent shares one physical worktree dir.
+func TestWorktreeBasePlacesUnderAgentRoot(t *testing.T) {
+	cfg := &Config{
+		root: "/Users/jfinlinson/Dev/theraprac-agents/theraprac-agent-b/theraprac-workspace",
+		Worktree: &WorktreeConfig{
+			Enabled: true,
+			BaseDir: "worktrees",
+		},
+	}
+	got := cfg.WorktreeBase()
+	want := "/Users/jfinlinson/Dev/theraprac-agents/theraprac-agent-b/worktrees"
+	if got != want {
+		t.Errorf("WorktreeBase() = %q, want %q (must be agent-root + base_dir, not workspace + base_dir)", got, want)
+	}
+}
+
+func TestWorktreeBaseDisabled(t *testing.T) {
+	cfg := &Config{root: "/some/path"}
+	if got := cfg.WorktreeBase(); got != "" {
+		t.Errorf("WorktreeBase() with nil Worktree config = %q, want empty", got)
+	}
+	cfg.Worktree = &WorktreeConfig{Enabled: false, BaseDir: "worktrees"}
+	if got := cfg.WorktreeBase(); got != "" {
+		t.Errorf("WorktreeBase() with Enabled=false = %q, want empty", got)
+	}
+}
+
+// I-407 migration: WorktreeBaseLegacy returns the pre-fix shared
+// workspace location so finish/close can clean up old worktrees that
+// predate the fix.
+func TestWorktreeBaseLegacyReturnsWorkspaceLocation(t *testing.T) {
+	cfg := &Config{
+		root: "/Users/jfinlinson/Dev/theraprac-agents/theraprac-agent-b/theraprac-workspace",
+		Worktree: &WorktreeConfig{
+			Enabled: true,
+			BaseDir: "worktrees",
+		},
+	}
+	got := cfg.WorktreeBaseLegacy()
+	want := "/Users/jfinlinson/Dev/theraprac-agents/theraprac-agent-b/theraprac-workspace/worktrees"
+	if got != want {
+		t.Errorf("WorktreeBaseLegacy() = %q, want %q (pre-I-407 location: workspace + base_dir)", got, want)
+	}
+}

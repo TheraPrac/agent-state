@@ -434,8 +434,11 @@ func TestStartCreatesWorktreeWithGitRepo(t *testing.T) {
 	os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("# test"), 0644)
 	initTestGitRepo(t, repoDir)
 
-	// Use a relative BaseDir under the config root
-	os.MkdirAll(filepath.Join(root, "worktrees"), 0755)
+	// I-407: WorktreeBase is now <agent-root>/worktrees (one level up
+	// from cfg.Root()), not <workspace>/worktrees. The test's parentDir
+	// is the agent root in this layout.
+	agentRoot := filepath.Dir(root)
+	os.MkdirAll(filepath.Join(agentRoot, "worktrees"), 0755)
 	cfg.Worktree = &config.WorktreeConfig{
 		Enabled:   true,
 		BaseDir:   "worktrees",
@@ -450,13 +453,13 @@ func TestStartCreatesWorktreeWithGitRepo(t *testing.T) {
 	}
 
 	// Verify worktree was created
-	expectedWtPath := filepath.Join(root, "worktrees", "T-001", "test-repo")
+	expectedWtPath := filepath.Join(agentRoot, "worktrees", "T-001", "test-repo")
 	if _, err := os.Stat(expectedWtPath); err != nil {
 		t.Errorf("worktree not created at %s: %v", expectedWtPath, err)
 	}
 
 	// Verify .workinfo was created
-	workinfoPath := filepath.Join(root, "worktrees", "T-001", ".workinfo")
+	workinfoPath := filepath.Join(agentRoot, "worktrees", "T-001", ".workinfo")
 	data, err := os.ReadFile(workinfoPath)
 	if err != nil {
 		t.Fatalf("reading .workinfo: %v", err)

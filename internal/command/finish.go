@@ -24,7 +24,7 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 		return 1
 	}
 
-	baseDir := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir)
+	baseDir := cfg.WorktreeBase()
 
 	if opts.ListAll {
 		return listWorktrees(baseDir)
@@ -37,9 +37,19 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 
 	wtDir := filepath.Join(baseDir, id)
 
+	// I-407 migration: if the new agent-root location is empty but the
+	// legacy <workspace>/worktrees/<id> dir exists (created before I-407
+	// landed), clean it up from there. New worktrees always use the
+	// new location.
 	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "worktree directory not found: %s\n", wtDir)
-		return 1
+		legacy := filepath.Join(cfg.WorktreeBaseLegacy(), id)
+		if _, err := os.Stat(legacy); err == nil {
+			fmt.Fprintf(os.Stderr, "note: cleaning legacy worktree at %s (pre-I-407)\n", legacy)
+			wtDir = legacy
+		} else {
+			fmt.Fprintf(os.Stderr, "worktree directory not found: %s\n", wtDir)
+			return 1
+		}
 	}
 
 	// For each repo in the worktree
@@ -174,10 +184,15 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
 		return false, false
 	}
-	baseDir := filepath.Join(cfg.Root(), cfg.Worktree.BaseDir)
-	wtDir := filepath.Join(baseDir, id)
+	wtDir := filepath.Join(cfg.WorktreeBase(), id)
 	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
-		return false, false
+		// I-407 migration: try the pre-fix shared-workspace location
+		// before giving up. Lets old worktrees auto-clean on close.
+		legacy := filepath.Join(cfg.WorktreeBaseLegacy(), id)
+		if _, err := os.Stat(legacy); os.IsNotExist(err) {
+			return false, false
+		}
+		wtDir = legacy
 	}
 
 	// Pre-check: any repo with uncommitted or unpushed work blocks the
