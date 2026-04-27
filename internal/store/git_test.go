@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -195,6 +196,212 @@ func TestWriteNilDoc(t *testing.T) {
 	err := s.write(item)
 	if err == nil {
 		t.Error("Write nil doc should error")
+	}
+}
+
+// --- RefreshWorkspace (I-380) ---
+
+// setupRefreshTestRepo builds a bare repo + clone wired through cfg for
+// RefreshWorkspace to operate on. Returns (cloneDir, originDir, cfg).
+// The clone has tasks/ and a single committed item file so cfg.ItemDir()
+// resolves correctly.
+func setupRefreshTestRepo(t *testing.T) (string, string, *config.Config) {
+	t.Helper()
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin.git")
+	clone := filepath.Join(tmp, "clone")
+
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+		}
+	}
+
+	if err := os.MkdirAll(origin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(origin, "init", "--bare", "--initial-branch=main")
+
+	// Seed: clone, add an item, commit, push.
+	runGit(tmp, "clone", origin, "clone")
+	if err := os.MkdirAll(filepath.Join(clone, "tasks"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "tasks", "T-001-seed.md"), []byte("id: T-001\ntype: task\nstatus: queued\n\ntitle: seed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(clone, "add", "-A")
+	runGit(clone, "commit", "-m", "seed")
+	runGit(clone, "push", "origin", "main")
+
+	// .as/config.yaml so config.Load discovers the clone.
+	if err := os.MkdirAll(filepath.Join(clone, ".as"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(clone)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	return clone, origin, cfg
+}
+
+func TestRefreshWorkspaceDisabled(t *testing.T) {
+	clone, _, cfg := setupRefreshTestRepo(t)
+	_ = clone
+	cfg.Git = nil
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshDisabled {
+		t.Fatalf("outcome = %v, want RefreshDisabled", res.Outcome)
+	}
+}
+
+func TestRefreshWorkspaceUpToDate(t *testing.T) {
+	_, _, cfg := setupRefreshTestRepo(t)
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshUpToDate {
+		t.Fatalf("outcome = %v, want RefreshUpToDate (err=%v)", res.Outcome, res.Err)
+	}
+	if res.PulledCount != 0 {
+		t.Errorf("PulledCount = %d, want 0", res.PulledCount)
+	}
+}
+
+func TestRefreshWorkspacePulled(t *testing.T) {
+	clone, origin, cfg := setupRefreshTestRepo(t)
+	tmp := filepath.Dir(clone)
+	other := filepath.Join(tmp, "other")
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Push 2 new commits via a sibling clone, then refresh the original.
+	runGit(tmp, "clone", origin, "other")
+	for i := 0; i < 2; i++ {
+		path := filepath.Join(other, "tasks", "extra.md")
+		if err := os.WriteFile(path, []byte("id: T-002\nbody"+strconv.Itoa(i)+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(other, "add", "-A")
+		runGit(other, "commit", "-m", "more"+strconv.Itoa(i))
+	}
+	runGit(other, "push", "origin", "main")
+
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshPulled {
+		t.Fatalf("outcome = %v, want RefreshPulled (err=%v)", res.Outcome, res.Err)
+	}
+	if res.PulledCount != 2 {
+		t.Errorf("PulledCount = %d, want 2", res.PulledCount)
+	}
+}
+
+func TestRefreshWorkspaceDiverged(t *testing.T) {
+	clone, _, cfg := setupRefreshTestRepo(t)
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Create a local commit not on origin.
+	if err := os.WriteFile(filepath.Join(clone, "tasks", "local.md"), []byte("id: T-LOCAL\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(clone, "add", "-A")
+	runGit(clone, "commit", "-m", "local-only")
+
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshDiverged {
+		t.Fatalf("outcome = %v, want RefreshDiverged (err=%v)", res.Outcome, res.Err)
+	}
+}
+
+func TestRefreshWorkspaceBlocked(t *testing.T) {
+	clone, origin, cfg := setupRefreshTestRepo(t)
+	tmp := filepath.Dir(clone)
+	other := filepath.Join(tmp, "other")
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Origin advances by modifying the seed file.
+	runGit(tmp, "clone", origin, "other")
+	if err := os.WriteFile(filepath.Join(other, "tasks", "T-001-seed.md"), []byte("id: T-001\nremote-version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(other, "add", "-A")
+	runGit(other, "commit", "-m", "remote-edit")
+	runGit(other, "push", "origin", "main")
+
+	// Local has uncommitted changes to the same file → ff-only refuses.
+	if err := os.WriteFile(filepath.Join(clone, "tasks", "T-001-seed.md"), []byte("id: T-001\nlocal-uncommitted\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshBlocked {
+		t.Fatalf("outcome = %v, want RefreshBlocked (err=%v)", res.Outcome, res.Err)
+	}
+}
+
+func TestRefreshWorkspaceOffline(t *testing.T) {
+	clone, _, cfg := setupRefreshTestRepo(t)
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Point origin at a non-existent path so fetch fails.
+	runGit(clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere.git"))
+
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshOffline {
+		t.Fatalf("outcome = %v, want RefreshOffline (err=%v)", res.Outcome, res.Err)
+	}
+}
+
+func TestRefreshWorkspaceFetchTimeout(t *testing.T) {
+	// Smoke: just verify the constant is sane (non-zero, finite). A real
+	// timeout test would need a slow remote — covered indirectly by
+	// TestRefreshWorkspaceOffline (immediate-fail case uses the same path).
+	if refreshFetchTimeout <= 0 {
+		t.Fatalf("refreshFetchTimeout must be positive, got %v", refreshFetchTimeout)
 	}
 }
 

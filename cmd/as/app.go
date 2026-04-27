@@ -52,8 +52,23 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			if !appCfg.Discovered {
 				return fmt.Errorf("no st project found (looked up from %s)\n\n  Run `st init` to create one, add a .st-root file, or set $ST_ROOT", dir)
 			}
-			// Auto-pull latest changes before scanning items
-			_ = store.GitPull(appCfg)
+			// Auto-pull latest changes before scanning items.
+			// I-380: status owns its own RefreshWorkspace call so it can show
+			// a banner reflecting the outcome — skip the silent pre-run pull
+			// here to avoid the double-pull and let status's banner be
+			// authoritative. `st run status` follows the same convention.
+			switch cmd.Name() {
+			case "status":
+				// handled inside command.Status via refreshAndReload
+			case "run":
+				if len(args) >= 1 && args[0] == "status" {
+					// st run status — handled inside command.RunStatus
+					break
+				}
+				_ = store.GitPull(appCfg)
+			default:
+				_ = store.GitPull(appCfg)
+			}
 
 			appStore, err = store.New(appCfg)
 			if err != nil {
@@ -504,10 +519,11 @@ YAML block scalars so multi-line values replace cleanly.`,
 			check, _ := cmd.Flags().GetBool("check")
 			tag, _ := cmd.Flags().GetString("tag")
 			epic, _ := cmd.Flags().GetString("epic")
+			noRefresh, _ := cmd.Flags().GetBool("no-refresh")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
-				Tag: tag, Epic: epic,
+				Tag: tag, Epic: epic, NoRefresh: noRefresh,
 			})
 		},
 	}
@@ -519,6 +535,7 @@ YAML block scalars so multi-line values replace cleanly.`,
 	statusCmd.Flags().BoolP("check", "c", false, "run validation checks")
 	statusCmd.Flags().String("tag", "", "filter queued tasks by tag")
 	statusCmd.Flags().String("epic", "", "filter queued tasks by epic ID")
+	statusCmd.Flags().Bool("no-refresh", false, "skip the auto-pull from origin (for scripts/CI/hot loops)")
 	root.AddCommand(statusCmd)
 
 	statsCmd := &cobra.Command{
@@ -830,11 +847,13 @@ lets you pick one, validates the plan, and starts execution.`,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 1 && args[0] == "status" {
+				noRefresh, _ := cmd.Flags().GetBool("no-refresh")
 				exitCode = command.RunStatus(appStore, appCfg, command.RunStatusOpts{
 					RunningOnly: runningOnly,
 					ID:          statusID,
 					ShowAll:     showAll,
 					ClosedOnly:  closedOnly,
+					NoRefresh:   noRefresh,
 				})
 			} else if len(args) == 0 && item != "" {
 				exitCode = command.RunItem(appStore, appCfg, item, opts, engine)
@@ -856,6 +875,7 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().String("id", "", "with 'status': show only this epic or sprint (by slug)")
 	runCmd.Flags().Bool("all", false, "with 'status': show all epics/sprints including archived")
 	runCmd.Flags().BoolP("closed", "c", false, "with 'status': show only closed/archived epics and sprints")
+	runCmd.Flags().Bool("no-refresh", false, "with 'status': skip the auto-pull from origin (for scripts/CI/hot loops)")
 	root.AddCommand(runCmd)
 
 	prepCmd := &cobra.Command{
