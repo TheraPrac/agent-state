@@ -1,30 +1,66 @@
 #!/bin/bash
-# st-dispatcher: per-agent binary selection (I-404).
+# st-dispatcher: per-agent binary selection (I-404, I-428).
 #
 # Each agent has its own as clone at theraprac-agents/theraprac-agent-<x>/as
-# with bin/st built from `make` in that clone. This dispatcher resolves to
-# that binary so each agent's `st` command runs ITS own build — no cross-
-# agent clobbering when multiple agents are working on st CLI code in
-# parallel.
+# with bin/st built from `make` in that clone. Each item in flight may also
+# have a per-item worktree at <agent>/worktrees/<id>/as with its own bin/st.
+# This dispatcher resolves to the right binary so each agent's `st` command
+# runs ITS own build — and, while iterating on st-CLI items, picks up the
+# worktree's freshly-built binary instead of the stale agent-root one.
 #
 # Resolution order:
-#   1. $CLAUDE_PROJECT_DIR/as/bin/st (when an agent's hook context propagates
+#   1. Worktree preference (I-428): when PWD is inside
+#      <agent>/worktrees/<id>/, prefer <agent>/worktrees/<id>/as/bin/st if it
+#      exists. Goes ahead of CLAUDE_PROJECT_DIR so the hook-exported env var
+#      (which points at the agent root, not the worktree) doesn't pin every
+#      iteration to the stale main-checkout binary.
+#   2. $CLAUDE_PROJECT_DIR/as/bin/st (when an agent's hook context propagates
 #      the env var)
-#   2. Walk up from $PWD looking for a theraprac-agents/theraprac-agent-<x>
+#   3. Walk up from $PWD looking for a theraprac-agents/theraprac-agent-<x>
 #      ancestor; use that agent's as clone (covers Bash subshells where
 #      CLAUDE_PROJECT_DIR is not exported). When this path matches, ST_ROOT
 #      is pinned to that agent's workspace so the binary's cwd-walk fallback
 #      doesn't cross-route to a sibling agent's clone (I-418).
-#   3. Legacy /Users/jfinlinson/Dev/as/bin/st (operator-direct / fallback)
+#   4. Legacy /Users/jfinlinson/Dev/as/bin/st (operator-direct / fallback)
 
 set -e
 
-# 1. Explicit env var
+# 1. Worktree preference: walk up looking for <agent>/worktrees/<id>/.
+#    First match wins; if the worktree's bin/st exists, use it. If the
+#    worktree exists but no binary has been built there yet, break out
+#    silently and fall through to the agent-root binary below.
+dir=$(pwd)
+while [ "$dir" != "/" ]; do
+  parent=$(dirname "$dir")
+  if [ "$(basename "$parent")" = "worktrees" ]; then
+    grandparent=$(dirname "$parent")
+    case "$(basename "$grandparent")" in
+      theraprac-agent-*)
+        candidate="$dir/as/bin/st"
+        if [ -x "$candidate" ]; then
+          # Pin ST_ROOT to the agent's workspace (same reason as the
+          # agent-root branch below).
+          export ST_ROOT="$grandparent/theraprac-workspace"
+          exec "$candidate" "$@"
+        fi
+        # Worktree detected, no binary built — break out of step 1 and
+        # let the rest of the chain (CLAUDE_PROJECT_DIR, then agent-root
+        # walk-up, then legacy) resolve normally. In production the hook
+        # exports CLAUDE_PROJECT_DIR=<this agent>, so step 2 lands on the
+        # agent's main bin/st.
+        break
+        ;;
+    esac
+  fi
+  dir="$parent"
+done
+
+# 2. Explicit env var
 if [ -n "$CLAUDE_PROJECT_DIR" ] && [ -x "$CLAUDE_PROJECT_DIR/as/bin/st" ]; then
   exec "$CLAUDE_PROJECT_DIR/as/bin/st" "$@"
 fi
 
-# 2. Walk up from PWD to find an agent root
+# 3. Walk up from PWD to find an agent root
 dir=$(pwd)
 while [ "$dir" != "/" ]; do
   parent=$(dirname "$dir")
@@ -46,7 +82,7 @@ while [ "$dir" != "/" ]; do
   dir="$parent"
 done
 
-# 3. Legacy fallback
+# 4. Legacy fallback
 LEGACY="/Users/jfinlinson/Dev/as/bin/st"
 if [ -x "$LEGACY" ]; then
   exec "$LEGACY" "$@"
