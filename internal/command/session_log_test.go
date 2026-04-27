@@ -133,6 +133,10 @@ func TestSessionLog_EmptyStackWritesOrphanLog(t *testing.T) {
 }
 
 func TestSessionLog_MissingItemWritesOrphanLog(t *testing.T) {
+	// I-414: this is the second path that writes orphan.log (item-not-found,
+	// distinct from the empty-stack path). Pin the agent id so the orphan
+	// attribution is verified here too.
+	t.Setenv("AS_AGENT_ID", "agent-test")
 	env := testutil.NewEnv(t)
 	// Stack points to an item that doesn't exist
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-999"}})
@@ -142,8 +146,12 @@ func TestSessionLog_MissingItemWritesOrphanLog(t *testing.T) {
 		t.Fatalf("expected 0 (soft-fail to orphan), got %d", code)
 	}
 	orphanPath := filepath.Join(env.Cfg.SessionsDir(), "orphan.log")
-	if _, err := os.Stat(orphanPath); err != nil {
+	data, err := os.ReadFile(orphanPath)
+	if err != nil {
 		t.Fatalf("orphan.log expected: %v", err)
+	}
+	if !strings.Contains(string(data), `"agent_id":"agent-test"`) {
+		t.Errorf("orphan.log missing agent_id attribution on missing-item path: %s", string(data))
 	}
 }
 
