@@ -58,11 +58,13 @@ type metaReport struct {
 // result. Missing log file is not an error — emits "no meta-work
 // recorded" (text) or an empty report (JSON).
 //
-// Per the I-369 (Option C) decision, when subagent metrics are RouterID-
-// targeted to the parent's item they don't land here at all; only true
-// orphan turns (no item on stack, no rollup target) appear. So the
-// "meta-work" surface really is the between-item / pre-stack-push
-// deliberation overhead.
+// Per the I-369 (Option C) decision, when subagent metrics are
+// RollupItemID-targeted to a parent item that EXISTS, they don't land
+// here — they accrue on the parent's time_tracking. They DO land here
+// when (a) no item id is resolvable at all, or (b) the resolved item id
+// can't be found in the store (item-not-found fallback). So the
+// "meta-work" surface is between-item deliberation plus orphaned
+// subagent turns whose target item has since been archived/renamed.
 func StatsMeta(cfg *config.Config, opts StatsMetaOpts) int {
 	// Validate flags up front so a bad --since/--by surfaces a usage error
 	// even when there's no orphan.log to read yet.
@@ -85,7 +87,7 @@ func StatsMeta(cfg *config.Config, opts StatsMetaOpts) int {
 	f, err := os.Open(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return emptyReport(opts)
+			return emptyReport(opts, groupBy)
 		}
 		fmt.Fprintf(os.Stderr, "stats meta: opening %s: %v\n", logPath, err)
 		return 1
@@ -118,11 +120,16 @@ func StatsMeta(cfg *config.Config, opts StatsMetaOpts) int {
 	return 0
 }
 
-func emptyReport(opts StatsMetaOpts) int {
+// emptyReport prints the "no meta-work recorded" surface (text) or an
+// empty report (JSON). The caller passes the resolved groupBy so the
+// JSON shape stays consistent with what a populated run would emit
+// (e.g. --by reason --json on an empty log returns group_by:"reason",
+// not the default).
+func emptyReport(opts StatsMetaOpts, groupBy string) int {
 	if opts.JSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(metaReport{GroupBy: "agent", Rows: []metaRow{}})
+		_ = enc.Encode(metaReport{GroupBy: groupBy, Rows: []metaRow{}})
 		return 0
 	}
 	fmt.Println("no meta-work recorded")
@@ -157,14 +164,24 @@ func resolveSinceCutoff(raw string, now time.Time) (time.Time, error) {
 }
 
 // parseDurationFlexible accepts time.ParseDuration's grammar (ns/us/ms/s/m/h)
-// plus a "<n>d" suffix for days, since CLI users expect "7d".
+// plus a "<n>d" prefix for days, since CLI users expect "7d" and "1d12h".
+// "1d12h" is rewritten to "36h" before handing to time.ParseDuration so
+// mixed days+hours expressions parse cleanly.
 func parseDurationFlexible(s string) (time.Duration, error) {
-	if strings.HasSuffix(s, "d") {
+	// Find a "<digits>d" prefix at the start of the string. If found,
+	// convert it to hours and prepend the rest.
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end > 0 && end < len(s) && s[end] == 'd' {
 		var days int
-		if _, err := fmt.Sscanf(s, "%dd", &days); err != nil || days < 0 {
-			return 0, fmt.Errorf("could not parse %q as Nd days", s)
+		if _, err := fmt.Sscanf(s[:end], "%d", &days); err != nil || days < 0 {
+			return 0, fmt.Errorf("could not parse leading %q as Nd days", s[:end+1])
 		}
-		return time.Duration(days) * 24 * time.Hour, nil
+		rest := s[end+1:]
+		expanded := fmt.Sprintf("%dh%s", days*24, rest)
+		return time.ParseDuration(expanded)
 	}
 	return time.ParseDuration(s)
 }
@@ -175,9 +192,11 @@ func parseDurationFlexible(s string) (time.Duration, error) {
 func parseOrphanLog(r io.Reader) ([]orphanLogEntry, error) {
 	var out []orphanLogEntry
 	sc := bufio.NewScanner(r)
-	// orphan.log lines can include a long ai_turns provenance string in
-	// the embedded payload; bump the buffer to 1MB so legitimate lines
-	// don't trip Scanner's 64KB default.
+	// Realistic orphan-log entries (a SessionLogPayload + a few headers)
+	// are well under 64KB. Bump the buffer to 1MB anyway as a defensive
+	// guardrail in case SessionLogPayload grows new fields or a producer
+	// concatenates output unexpectedly — at the limit we still skip the
+	// over-long line cleanly via sc.Err() below rather than aborting.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	lineNo := 0
 	for sc.Scan() {

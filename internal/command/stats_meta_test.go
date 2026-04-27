@@ -270,6 +270,78 @@ func TestStatsMeta_MalformedLineSkipped(t *testing.T) {
 	}
 }
 
+// Regression for /code-review finding: parseDurationFlexible used to
+// reject mixed expressions like "1d12h" because the d-suffix check was
+// all-or-nothing. After the fix, "1d12h" parses as 36h and "2d3h30m"
+// parses as 51h30m.
+func TestParseDurationFlexible_MixedUnits(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"7d", 7 * 24 * time.Hour},
+		{"24h", 24 * time.Hour},
+		{"30m", 30 * time.Minute},
+		{"1d12h", 36 * time.Hour},
+		{"2d3h30m", 51*time.Hour + 30*time.Minute},
+		{"0d", 0},
+	}
+	for _, c := range cases {
+		got, err := parseDurationFlexible(c.in)
+		if err != nil {
+			t.Errorf("%q: unexpected error %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q: got %v, want %v", c.in, got, c.want)
+		}
+	}
+	// Negative cases stay rejected.
+	for _, bad := range []string{"huh?", "1week", "-3d"} {
+		if _, err := parseDurationFlexible(bad); err == nil {
+			t.Errorf("%q should have errored", bad)
+		}
+	}
+}
+
+// Regression for /code-review finding: emptyReport used to hardcode
+// GroupBy:"agent" regardless of opts.By. After the fix, --by reason
+// --json on a missing log returns group_by:"reason".
+func TestStatsMeta_EmptyReportPreservesGroupBy(t *testing.T) {
+	env := testutil.NewEnv(t)
+	out := captureStdout(t, func() {
+		StatsMeta(env.Cfg, StatsMetaOpts{By: "reason", JSON: true})
+	})
+	var r metaReport
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if r.GroupBy != "reason" {
+		t.Errorf("group_by on empty log with --by reason = %q, want 'reason'", r.GroupBy)
+	}
+}
+
+// Regression: log exists but --since window drops every entry — should
+// behave like an empty log (no error, "no meta-work recorded" text).
+func TestStatsMeta_AllEntriesFilteredOut(t *testing.T) {
+	env := testutil.NewEnv(t)
+	dir := env.Cfg.SessionsDir()
+	// One ancient entry well outside any normal window.
+	writeOrphan(t, dir, "agent-a",
+		time.Now().Add(-365*24*time.Hour).UTC().Format(time.RFC3339),
+		SessionLogPayload{Model: "x", ProcessMs: 1000, CostUSD: 0.01, CostSource: CostSourceProvided})
+
+	out := captureStdout(t, func() {
+		code := StatsMeta(env.Cfg, StatsMetaOpts{Since: "1d"})
+		if code != 0 {
+			t.Fatalf("exit=%d on filtered-empty, want 0", code)
+		}
+	})
+	if !strings.Contains(out, "no meta-work recorded") {
+		t.Errorf("expected 'no meta-work recorded' when all filtered, got: %s", out)
+	}
+}
+
 func TestStatsMeta_TextRendersHeaderAndRows(t *testing.T) {
 	env := testutil.NewEnv(t)
 	dir := env.Cfg.SessionsDir()
