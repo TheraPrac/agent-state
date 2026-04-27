@@ -555,6 +555,14 @@ func seenSessionIDs(item *model.Item) map[string]bool {
 
 // writeOrphanLog appends a single JSON line to cfg.SessionsDir()/orphan.log.
 // Never silently drops metrics.
+//
+// I-414: each entry is tagged with the agent id resolved at write time,
+// so meta-work (between-item deliberation, exploration, anything that
+// orphans because no item is on the stack) bucketizes per agent rather
+// than flattening across the whole workspace. Stats queries like
+// "how much overhead did agent-b accumulate this week" can group by
+// the agent_id field. Sub-agent heritage (ParentID/RootID/Role) is
+// preserved on the embedded payload for downstream rollup.
 func writeOrphanLog(cfg *config.Config, p SessionLogPayload) error {
 	dir := cfg.SessionsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -567,14 +575,16 @@ func writeOrphanLog(cfg *config.Config, p SessionLogPayload) error {
 	}
 	defer f.Close()
 
-	// Inject orphan timestamp before marshaling
+	// Inject orphan timestamp + agent attribution before marshaling
 	type orphanRecord struct {
 		At      string            `json:"at"`
+		AgentID string            `json:"agent_id,omitempty"`
 		Reason  string            `json:"reason"`
 		Payload SessionLogPayload `json:"payload"`
 	}
 	rec := orphanRecord{
 		At:      time.Now().Format(time.RFC3339),
+		AgentID: cfg.AgentID(),
 		Reason:  "no_item_on_stack_or_item_missing",
 		Payload: p,
 	}

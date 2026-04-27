@@ -100,6 +100,9 @@ func TestSessionLog_SessionCountTracksDistinctIDs(t *testing.T) {
 }
 
 func TestSessionLog_EmptyStackWritesOrphanLog(t *testing.T) {
+	// I-414: pin the agent id explicitly so the orphan-log attribution
+	// assertion below has a known non-empty value to check against.
+	t.Setenv("AS_AGENT_ID", "agent-test")
 	env := testutil.NewEnv(t)
 	// No stack entries
 
@@ -121,6 +124,11 @@ func TestSessionLog_EmptyStackWritesOrphanLog(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "no_item_on_stack") {
 		t.Errorf("orphan.log missing reason: %s", string(data))
+	}
+	// I-414: every orphan entry must be tagged with the agent that
+	// produced it so meta-work bucketizes per-agent for stats queries.
+	if !strings.Contains(string(data), `"agent_id":"agent-test"`) {
+		t.Errorf("orphan.log missing agent_id=agent-test attribution: %s", string(data))
 	}
 }
 
