@@ -60,6 +60,7 @@ type RunOpts struct {
 	PermissionMode string
 	StepFilter     string // --step: advance up to this step name
 	Fresh          bool   // --fresh: ignore saved progress, restart pipeline from step 0
+	NoCoordination bool   // --no-coordination: skip the T-314 coordination block injection (tests/minimal prompts)
 }
 
 // RunEngine holds injectable dependencies for run/advance.
@@ -2199,6 +2200,15 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 
 	// Always inject full item context so claude never has to rediscover
 	prompt += buildItemContext(s, cfg, itemID, worktreeDir)
+
+	// T-314: prepend a coordination block so Claude knows who else is
+	// alive in the workspace and what mail just arrived for it. The
+	// surfaced messages are CONSUMED here (moved to archive) — one-time
+	// delivery per the read/send asymmetry. Skip when --no-coordination
+	// is set (mostly for tests).
+	if !opts.NoCoordination {
+		prompt += buildCoordinationBlock(s, cfg, cfg.Identity().ID, itemID)
+	}
 
 	// Per-step budget override
 	stepOpts := opts

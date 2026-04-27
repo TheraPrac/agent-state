@@ -836,6 +836,7 @@ lets you pick one, validates the plan, and starts execution.`,
 			statusID, _ := cmd.Flags().GetString("id")
 			showAll, _ := cmd.Flags().GetBool("all")
 			closedOnly, _ := cmd.Flags().GetBool("closed")
+			noCoord, _ := cmd.Flags().GetBool("no-coordination")
 			opts := command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
@@ -844,6 +845,7 @@ lets you pick one, validates the plan, and starts execution.`,
 				Model:          model,
 				PermissionMode: permMode,
 				Fresh:          fresh,
+				NoCoordination: noCoord,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 1 && args[0] == "status" {
@@ -876,6 +878,7 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().Bool("all", false, "with 'status': show all epics/sprints including archived")
 	runCmd.Flags().BoolP("closed", "c", false, "with 'status': show only closed/archived epics and sprints")
 	runCmd.Flags().Bool("no-refresh", false, "with 'status': skip the auto-pull from origin (for scripts/CI/hot loops)")
+	runCmd.Flags().Bool("no-coordination", false, "skip the T-314 multi-agent coordination block in claude prompts (tests/minimal prompts)")
 	root.AddCommand(runCmd)
 
 	prepCmd := &cobra.Command{
