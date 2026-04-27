@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
@@ -27,6 +28,27 @@ import (
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// registerRunProcess writes an agent registration for this `st run`
+// process so the workspace has a durable record of who's alive and
+// what they own. Returns a cleanup func suitable for defer. T-311.
+func registerRunProcess(cfg *config.Config, scope string) func() {
+	identity := cfg.Identity()
+	_, cleanup, err := agent.Register(cfg, agent.Options{
+		BaseAgentID:      identity.ID,
+		ParentAgentID:    identity.ParentID,
+		RootAgentID:      identity.RootID,
+		Role:             identity.Role,
+		SessionID:        cfg.SessionID(),
+		SpawnedBySession: identity.SpawnedBySession,
+		Scope:            scope,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: agent registration: %v\n", err)
+		return func() {}
+	}
+	return cleanup
+}
 
 // RunOpts holds flags for the run/advance commands.
 type RunOpts struct {
@@ -130,6 +152,10 @@ func DefaultRunEngine() RunEngine {
 
 // RunInteractive shows available sprints and lets the user pick one to run.
 func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine RunEngine) int {
+	cleanup := registerRunProcess(cfg, "interactive")
+	defer cleanup()
+	primeClaimState(s, cfg)
+
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
 		fmt.Fprintln(os.Stderr, "no run.pipeline configured — define run.step_order and run.steps in config")
@@ -1188,6 +1214,10 @@ func autoParallelism(s *store.Store, cfg *config.Config, itemIDs []string) int {
 }
 
 func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, engine RunEngine) int {
+	cleanup := registerRunProcess(cfg, "item:"+itemID)
+	defer cleanup()
+	primeClaimState(s, cfg)
+
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
 		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
@@ -1220,6 +1250,10 @@ func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, en
 
 // Run executes a full autonomous sprint loop.
 func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engine RunEngine) int {
+	cleanup := registerRunProcess(cfg, "sprint:"+sprintID)
+	defer cleanup()
+	primeClaimState(s, cfg)
+
 	// Load sprint and validate
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
