@@ -563,6 +563,33 @@ YAML block scalars so multi-line values replace cleanly.`,
 	}
 	statsCmd.Flags().Bool("json", false, "output as JSON")
 	statsCmd.Flags().Bool("time", false, "include time tracking")
+
+	// st stats meta — T-327: per-agent meta-work readout from orphan.log.
+	statsMetaCmd := &cobra.Command{
+		Use:   "meta",
+		Short: "Show meta-work (orphan-log turns) grouped by agent or reason",
+		Long: "Reads .as/sessions/orphan.log and aggregates per-agent " +
+			"deliberation/between-item turns. Use --agent self to filter to " +
+			"the calling agent; --since 7d for a time window.",
+		Run: func(cmd *cobra.Command, args []string) {
+			agent, _ := cmd.Flags().GetString("agent")
+			since, _ := cmd.Flags().GetString("since")
+			by, _ := cmd.Flags().GetString("by")
+			jsonF, _ := cmd.Flags().GetBool("json")
+			exitCode = command.StatsMeta(appCfg, command.StatsMetaOpts{
+				Agent: agent,
+				Since: since,
+				By:    by,
+				JSON:  jsonF,
+			})
+		},
+	}
+	statsMetaCmd.Flags().String("agent", "", "filter to one agent id (or 'self' for the calling agent)")
+	statsMetaCmd.Flags().String("since", "", "time window like '7d', '24h', '30m' (empty = all time)")
+	statsMetaCmd.Flags().String("by", "agent", "group by 'agent' (default) or 'reason'")
+	statsMetaCmd.Flags().Bool("json", false, "output as JSON")
+	statsCmd.AddCommand(statsMetaCmd)
+
 	root.AddCommand(statsCmd)
 
 	depCmd := &cobra.Command{
