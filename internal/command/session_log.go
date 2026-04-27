@@ -82,15 +82,27 @@ func SessionLogCLI(s *store.Store, cfg *config.Config, stdin io.Reader) int {
 }
 
 // SessionLog applies a per-turn metrics payload to the resolved item.
-// If payload.ItemID is empty, the stack top is used. If the stack is empty,
-// the payload is appended to the orphan log and 0 is returned (never dropped).
 //
-// This is the ONE accumulator both producers (Claude Code Stop hook and
-// st run's recordRunMetrics) call. Schema lives in the item's time_tracking
-// block; per-turn provenance goes to work_tracking.ai_turns.
+// ItemID resolution priority:
+//  1. Explicit payload.ItemID — caller knows exactly where this turn belongs.
+//  2. payload.RootID (T-330) — when set, a Task-tool subagent is reporting
+//     and its work rolls up to the spawning agent's root item per the I-369
+//     decision (Option C, rollup with provenance). RootID beats stack top
+//     because a subagent firing after its parent has popped would otherwise
+//     orphan the metrics; routing via RootID keeps them on the right item.
+//  3. Stack top — the working assumption for a parent agent's own turn.
+//  4. Orphan log — never silently dropped.
+//
+// This is the ONE accumulator both producers (Claude Code Stop hook,
+// SubagentStop hook, st run's recordRunMetrics) call. Schema lives in the
+// item's time_tracking block; per-turn provenance — including parent:/root:/role:
+// when populated — goes to work_tracking.ai_turns.
 func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) int {
 	// Resolve target item
 	itemID := payload.ItemID
+	if itemID == "" {
+		itemID = payload.RootID
+	}
 	if itemID == "" {
 		entries := LoadStack(cfg)
 		if len(entries) > 0 {

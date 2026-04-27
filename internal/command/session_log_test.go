@@ -504,6 +504,109 @@ func TestSessionLogCLI_InvalidJSONIsError(t *testing.T) {
 	}
 }
 
+// T-330: SubagentStop hook will populate RootID on every subagent payload
+// per the I-369 (Option C) decision so cost rolls up to the spawning
+// agent's root item even when the parent's stack has shifted by the time
+// the subagent finishes. The accumulator's ItemID resolution must honor
+// RootID before falling through to stack-top.
+func TestSessionLog_RoutesViaRootID(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Stack top is T-001, but the subagent payload says RootID=T-003.
+	// Metrics MUST land on T-003 — that's the spawning agent's root.
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-001"}})
+
+	p := SessionLogPayload{
+		SessionID:       "subagent-sess",
+		ParentID:        "parent-sess",
+		RootID:          "T-003",
+		Role:            "code-reviewer",
+		Model:           "claude-haiku-4-5",
+		RegInputTokens:  2000,
+		RegOutputTokens: 400,
+	}
+	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
+		t.Fatalf("SessionLog exit=%d", code)
+	}
+
+	env.Reload(t)
+
+	// Metrics on T-003 (the RootID target).
+	target, _ := env.S.Get("T-003")
+	assertInt(t, target, "time_tracking", "reg_input_tokens", 2000)
+	assertInt(t, target, "time_tracking", "reg_output_tokens", 400)
+	assertInt(t, target, "time_tracking", "turn_count", 1)
+
+	// Stack-top item T-001 must be untouched.
+	other, _ := env.S.Get("T-001")
+	if got := readIntField(other, "time_tracking", "reg_input_tokens"); got != 0 {
+		t.Errorf("T-001 reg_input_tokens = %d, want 0 (RootID should override stack-top)", got)
+	}
+
+	// The per-turn line preserves heritage so drill-down (T-327) can
+	// group by role/parent.
+	raw, err := os.ReadFile(filepath.Join(env.Root, "tasks", "T-003-active.md"))
+	if err != nil {
+		t.Fatalf("read T-003: %v", err)
+	}
+	for _, want := range []string{"role:code-reviewer", "parent:parent-sess", "root:T-003"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("ai_turns line missing %q. File:\n%s", want, string(raw))
+		}
+	}
+}
+
+// Sanity: the existing stack-top routing still wins when RootID is empty
+// (i.e., the parent agent's own Stop hook firing — non-subagent path).
+func TestSessionLog_RootIDFallthroughWhenEmpty(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
+
+	p := SessionLogPayload{
+		// No ParentID/RootID/Role — this is a regular parent-agent turn.
+		SessionID:      "regular-sess",
+		Model:          "claude-opus-4-7",
+		RegInputTokens: 100,
+	}
+	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
+		t.Fatalf("SessionLog exit=%d", code)
+	}
+	env.Reload(t)
+	item, _ := env.S.Get("T-003")
+	assertInt(t, item, "time_tracking", "reg_input_tokens", 100)
+}
+
+// Explicit ItemID still wins over RootID when both are set — caller-known
+// attribution beats subagent rollup heuristic.
+func TestSessionLog_ExplicitItemIDBeatsRootID(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-001"}})
+
+	p := SessionLogPayload{
+		ItemID:         "T-002",
+		RootID:         "T-003",
+		SessionID:      "sess",
+		Model:          "claude-haiku-4-5",
+		RegInputTokens: 50,
+	}
+	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
+		t.Fatalf("SessionLog exit=%d", code)
+	}
+	env.Reload(t)
+
+	want, _ := env.S.Get("T-002")
+	assertInt(t, want, "time_tracking", "reg_input_tokens", 50)
+
+	for _, otherID := range []string{"T-001", "T-003"} {
+		other, _ := env.S.Get(otherID)
+		if other == nil {
+			continue
+		}
+		if got := readIntField(other, "time_tracking", "reg_input_tokens"); got != 0 {
+			t.Errorf("%s should be untouched, got reg_input_tokens=%d", otherID, got)
+		}
+	}
+}
+
 // --- helpers ---
 
 func assertInt(t *testing.T, item *model.Item, parent, key string, want int) {
