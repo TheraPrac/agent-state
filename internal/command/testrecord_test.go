@@ -298,6 +298,64 @@ func TestTestRunResolvesAgentFromCwd(t *testing.T) {
 	}
 }
 
+// I-400: when an item has an active worktree, st test --run must run
+// against the worktree (feature branch), not the agent-root checkout (main).
+// Otherwise a passing main-branch test produces misleading PASS evidence
+// for a PR whose feature-branch tests would have failed.
+func TestTestRunPrefersWorktreeOverAgentRoot(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	cfg.Testing.RequiredSuites["api_unit"] = config.SuiteConfig{Command: "cd ../theraprac-api && make test-unit"}
+
+	// Configure worktree integration and create the worktree dir on disk
+	// for T-003 — the active item used in setupPRTestEnv.
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"theraprac-api"},
+	}
+	worktreePath := filepath.Join(cfg.Root(), "worktrees", "T-003", "theraprac-api")
+	if err := os.MkdirAll(worktreePath, 0755); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+
+	var gotCmd string
+	opts := TestRecordOpts{
+		Run:   true,
+		Agent: "b",
+		GitHeadSHA: func(dir string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(command string) ([]byte, int, error) {
+			gotCmd = command
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+
+	// The cd should target the worktree, NOT the agent-root checkout.
+	wantCd := "cd " + worktreePath
+	if !strings.Contains(gotCmd, wantCd) {
+		t.Errorf("command did not cd to worktree path:\nwant substring: %q\ngot: %s", wantCd, gotCmd)
+	}
+	agentRootRepo := filepath.Join(agentsRoot, "theraprac-agent-b", "theraprac-api")
+	if strings.Contains(gotCmd, "cd '"+agentRootRepo+"'") {
+		t.Errorf("command cd'd to agent-root checkout instead of worktree:\n%s", gotCmd)
+	}
+	// Agent runtime env vars must still be injected.
+	for _, want := range []string{"AS_AGENT_ID='agent-b'", "THERAPRAC_API_PORT='8280'"} {
+		if !strings.Contains(gotCmd, want) {
+			t.Errorf("command missing env var %q:\n%s", want, gotCmd)
+		}
+	}
+}
+
 func TestTestRunFailsWhenAgentRuntimeAmbiguous(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	cfg.Testing.RequiredSuites["api_unit"] = config.SuiteConfig{Command: "cd ../theraprac-api && make test-unit"}

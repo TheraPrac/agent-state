@@ -152,6 +152,13 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	}
 
 	cmd := suiteCmd
+	// I-400: when the item has an active worktree, the test must run against
+	// the feature branch checkout, not the agent-root main branch. Worktree
+	// rewrite runs FIRST so its absolute cd path replaces "cd ../theraprac-X"
+	// before the agent-workspace rewrite can substitute the agent-root path.
+	// Both rewrites match the same `cd ../repo` patterns; whichever fires
+	// first wins, and the other becomes a no-op for that cd.
+	cmd = rewriteSuiteForWorktree(cfg, id, cmd)
 	if runtime, ok, err := resolveTestAgentRuntime(cfg, opts, cmd); err != nil {
 		fmt.Fprintf(os.Stderr, "test runtime: %v\n", err)
 		return 1
@@ -164,16 +171,14 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	}
 	start := time.Now()
 
-	// Execute suite command — prefer worktree if one exists for this item.
-	// Stream output to stderr so the user (and activity tracker) sees progress.
+	// Execute suite command. Stream output to stderr so the user (and
+	// activity tracker) sees progress.
 	var output []byte
 	var exitCode int
 	var runErr error
 	if opts.RunCmd != nil {
 		output, exitCode, runErr = opts.RunCmd(cmd)
 	} else {
-		// Rewrite suite command to run from worktree if available
-		cmd = rewriteSuiteForWorktree(cfg, id, cmd)
 		output, exitCode, runErr = runCmdInDirStreaming(cfg.Root(), cmd)
 	}
 	duration := time.Since(start)
