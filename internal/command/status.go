@@ -15,6 +15,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -48,6 +49,14 @@ type StatusOpts struct {
 	NoRefresh bool   // I-380: skip the auto-pull (for scripts/CI/hot loops)
 	Tag       string // filter queued tasks by tag
 	Epic      string // filter queued tasks by epic ID
+
+	// Sprints renders the tabular epic→sprint→item progress view (the
+	// surface formerly served by `st run status`). T-325: one entry point.
+	Sprints       bool
+	SprintsID     string // filter to a single epic or sprint slug
+	SprintsAll    bool   // include archived
+	SprintsClosed bool   // only closed/archived
+	SprintsRunning bool  // only sprints with a running pipeline
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
@@ -62,6 +71,17 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 	}
 	if opts.Check {
 		return Check(s, cfg, false, false)
+	}
+	if opts.Sprints {
+		// T-325: `st status --sprints` is the unified entry point for the
+		// tabular epic/sprint progress view. `st run status` aliases here.
+		return RunStatus(s, cfg, RunStatusOpts{
+			RunningOnly: opts.SprintsRunning,
+			ID:          opts.SprintsID,
+			ShowAll:     opts.SprintsAll,
+			ClosedOnly:  opts.SprintsClosed,
+			NoRefresh:   true, // refresh already happened above
+		})
 	}
 	if opts.All {
 		opts.Issues = true
@@ -140,6 +160,12 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 	// listing so operators rebuild before iterating further.
 	printBinaryDriftWarning(cfg, os.Stdout)
 
+	// Pipeline section — when an `st run` is in flight, surface the
+	// running item + its current step + the rolled-up metric line at
+	// the top so the operator sees what's burning tokens right now
+	// without having to switch to `st status --sprints`.
+	printActivePipeline(s, cfg, os.Stdout)
+
 	// Active work
 	active := s.List(store.StatusFilter("active"))
 	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
@@ -148,6 +174,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 	if len(active) == 0 {
 		fmt.Printf("  %s(none)%s\n", cDim, cReset)
 	} else {
+		now := time.Now()
 		for _, item := range active {
 			stage := deliveryStage(item)
 			assigned := ""
@@ -159,6 +186,9 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 				stageStr = fmt.Sprintf("  (%s)", stage)
 			}
 			fmt.Printf("  %s%-8s%s %s%s%s\n", cBold, item.ID, cReset, item.Title, stageStr, assigned)
+			if line := ExtractItemMetrics(item, cfg.ManifestDir(), now, false).FormatLine(); line != "" {
+				fmt.Printf("           %s%s%s\n", cDim, line, cReset)
+			}
 		}
 	}
 	fmt.Println()
@@ -630,12 +660,16 @@ func printRecent(s *store.Store, cfg *config.Config) {
 	if len(recent) == 0 {
 		fmt.Printf("  %s(none)%s\n", cDim, cReset)
 	} else {
+		now := time.Now()
 		for _, item := range recent {
 			completed := ""
 			if item.Completed != nil {
 				completed = item.Completed.Format("2006-01-02")
 			}
 			fmt.Printf("  %-8s  %s  %s\n", item.ID, completed, truncate(item.Title, 60))
+			if line := ExtractItemMetrics(item, cfg.ManifestDir(), now, true).FormatLine(); line != "" {
+				fmt.Printf("           %s%s%s\n", cDim, line, cReset)
+			}
 		}
 	}
 	fmt.Println()
@@ -659,6 +693,123 @@ func printCompleted(s *store.Store, cfg *config.Config) {
 		fmt.Printf("  %-8s  %-10s  %s  %s\n", item.ID, item.Status, date, item.Title)
 	}
 	fmt.Printf("\n  %d items\n\n", len(completed))
+}
+
+// printActivePipeline renders a PIPELINE section listing items currently in
+// flight (claimed by a non-stale session, or touched in the last 60s while
+// not terminal). Silent when no items qualify, so the section disappears
+// for normal idle dashboards.
+//
+// The per-step state comes from item.Delivery's last_completed_step, the
+// same field RunStatus uses, so the two surfaces stay in sync.
+func printActivePipeline(s *store.Store, cfg *config.Config, w io.Writer) {
+	pipeline := cfg.RunPipeline()
+	stepNames := make([]string, len(pipeline))
+	for i, step := range pipeline {
+		stepNames[i] = step.Name()
+	}
+
+	mgr := session.NewManager(cfg.SessionsDir(), time.Duration(cfg.StaleClaimTTL())*time.Second)
+	sessions, _ := mgr.ListSessions()
+	liveSessions := map[string]*session.Session{}
+	for _, sess := range sessions {
+		if mgr.IsStale(sess) {
+			continue
+		}
+		for _, claimed := range sess.ClaimedItems {
+			liveSessions[claimed] = sess
+		}
+	}
+
+	now := time.Now()
+	type pipelineRow struct {
+		Item    *model.Item
+		Sess    *session.Session
+		Reason  string // "claimed" or "active"
+	}
+	var rows []pipelineRow
+	for _, item := range s.All() {
+		if isTerminal(item, cfg) {
+			continue
+		}
+		if item.ClaimedBy != "" {
+			rows = append(rows, pipelineRow{Item: item, Sess: liveSessions[item.ID], Reason: "claimed"})
+			continue
+		}
+		if lt, ok := item.Doc.GetField("last_touched"); ok {
+			if touched, err := time.Parse(time.RFC3339, lt); err == nil {
+				if now.Sub(touched) < 60*time.Second && len(stepNames) > 0 {
+					if stage, _ := getNestedField(item, "delivery", "stage"); stage != "" {
+						rows = append(rows, pipelineRow{Item: item, Reason: "active"})
+					}
+				}
+			}
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Item.ID < rows[j].Item.ID })
+
+	fmt.Fprintf(w, "%s━━━ PIPELINE ━━━%s\n", cBoldW, cReset)
+	for _, row := range rows {
+		stepLabel := pipelineStepLabel(row.Item, stepNames)
+		owner := row.Item.ClaimedBy
+		if row.Sess != nil && row.Sess.AgentID != "" {
+			owner = row.Sess.AgentID
+		}
+		ownerStr := ""
+		if owner != "" {
+			ownerStr = fmt.Sprintf("  [%s]", owner)
+		}
+		marker := "▶"
+		if row.Reason == "active" {
+			marker = "○"
+		}
+		fmt.Fprintf(w, "  %s%s%s  %s%-8s%s  %s  (%s)%s\n",
+			cMagenta, marker, cReset, cBold, row.Item.ID, cReset,
+			truncate(row.Item.Title, 50), stepLabel, ownerStr)
+		if line := ExtractItemMetrics(row.Item, cfg.ManifestDir(), now, false).FormatLine(); line != "" {
+			fmt.Fprintf(w, "       %s%s%s\n", cDim, line, cReset)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+// pipelineStepLabel returns "step (stage)" for the next-pending pipeline step
+// of an item, or just the stage when no step is computable. When all steps
+// are complete, returns "done" rather than the just-completed last step.
+func pipelineStepLabel(item *model.Item, stepNames []string) string {
+	stage, _ := getNestedField(item, "delivery", "stage")
+	lastStep, _ := getNestedField(item, "delivery", "last_completed_step")
+	if len(stepNames) == 0 {
+		if stage != "" {
+			return stage
+		}
+		return "running"
+	}
+	nextIdx := 0
+	if lastStep != "" {
+		for i, n := range stepNames {
+			if n == lastStep {
+				nextIdx = i + 1
+				break
+			}
+		}
+	}
+	if nextIdx >= len(stepNames) {
+		// All pipeline steps complete — say so rather than echoing the
+		// just-completed final step as if still in progress.
+		if stage != "" {
+			return fmt.Sprintf("done · %s", stage)
+		}
+		return "done"
+	}
+	step := stepNames[nextIdx]
+	if stage != "" && stage != step {
+		return fmt.Sprintf("%s · %s", step, stage)
+	}
+	return step
 }
 
 // --- Single item view ---
@@ -726,6 +877,11 @@ func statusSingle(s *store.Store, cfg *config.Config, id string) int {
 			path = rel
 		}
 		fmt.Printf("  File:     %s\n", path)
+	}
+
+	isDone := cfg.IsTerminalStatus(item.Type, item.Status)
+	if line := ExtractItemMetrics(item, cfg.ManifestDir(), time.Now(), isDone).FormatLine(); line != "" {
+		fmt.Printf("  Metrics:  %s\n", line)
 	}
 
 	if item.Summary != "" {

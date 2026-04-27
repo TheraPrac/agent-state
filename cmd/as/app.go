@@ -521,10 +521,18 @@ YAML block scalars so multi-line values replace cleanly.`,
 			tag, _ := cmd.Flags().GetString("tag")
 			epic, _ := cmd.Flags().GetString("epic")
 			noRefresh, _ := cmd.Flags().GetBool("no-refresh")
+			sprints, _ := cmd.Flags().GetBool("sprints")
+			sprintsID, _ := cmd.Flags().GetString("id")
+			sprintsAll, _ := cmd.Flags().GetBool("sprints-all")
+			sprintsClosed, _ := cmd.Flags().GetBool("sprints-closed")
+			sprintsRunning, _ := cmd.Flags().GetBool("sprints-running")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
 				Tag: tag, Epic: epic, NoRefresh: noRefresh,
+				Sprints: sprints, SprintsID: sprintsID,
+				SprintsAll: sprintsAll, SprintsClosed: sprintsClosed,
+				SprintsRunning: sprintsRunning,
 			})
 		},
 	}
@@ -537,6 +545,11 @@ YAML block scalars so multi-line values replace cleanly.`,
 	statusCmd.Flags().String("tag", "", "filter queued tasks by tag")
 	statusCmd.Flags().String("epic", "", "filter queued tasks by epic ID")
 	statusCmd.Flags().Bool("no-refresh", false, "skip the auto-pull from origin (for scripts/CI/hot loops)")
+	statusCmd.Flags().Bool("sprints", false, "show tabular epic/sprint progress view (T-325; replaces `st run status`)")
+	statusCmd.Flags().String("id", "", "with --sprints: filter to a single epic or sprint by slug")
+	statusCmd.Flags().Bool("sprints-all", false, "with --sprints: include archived")
+	statusCmd.Flags().Bool("sprints-closed", false, "with --sprints: only closed/archived")
+	statusCmd.Flags().Bool("sprints-running", false, "with --sprints: only sprints with a running pipeline")
 	root.AddCommand(statusCmd)
 
 	statsCmd := &cobra.Command{
@@ -850,6 +863,10 @@ lets you pick one, validates the plan, and starts execution.`,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 1 && args[0] == "status" {
+				// T-325: `st run status` is now a thin alias for
+				// `st status --sprints`. Print a one-line notice (so muscle
+				// memory eventually retrains) and call the same renderer.
+				fmt.Fprintln(os.Stderr, "Note: `st run status` is now `st status --sprints` (alias preserved).")
 				noRefresh, _ := cmd.Flags().GetBool("no-refresh")
 				exitCode = command.RunStatus(appStore, appCfg, command.RunStatusOpts{
 					RunningOnly: runningOnly,
