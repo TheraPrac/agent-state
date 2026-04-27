@@ -30,9 +30,8 @@ install: build
 
 # install-wrapper drops the per-agent dispatcher onto PATH. Run once per
 # machine; subsequent `make install` from any agent's clone is enough to
-# update that agent's binary.
+# update that agent's binary. Delegates to scripts/install-dispatcher.sh
+# so the same install logic is reachable without make (e.g. from a
+# bootstrap script on a fresh machine).
 install-wrapper:
-	@mkdir -p $(dir $(WRAPPER_PATH))
-	install -m 755 scripts/st-dispatcher.sh $(WRAPPER_PATH)
-	@echo "Dispatcher installed at $(WRAPPER_PATH)"
-	@echo "Each agent's session resolves 'st' via $$CLAUDE_PROJECT_DIR/as/bin/st"
+	@WRAPPER_PATH="$(WRAPPER_PATH)" bash scripts/install-dispatcher.sh

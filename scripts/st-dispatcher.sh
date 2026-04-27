@@ -12,7 +12,9 @@
 #      the env var)
 #   2. Walk up from $PWD looking for a theraprac-agents/theraprac-agent-<x>
 #      ancestor; use that agent's as clone (covers Bash subshells where
-#      CLAUDE_PROJECT_DIR is not exported)
+#      CLAUDE_PROJECT_DIR is not exported). When this path matches, ST_ROOT
+#      is pinned to that agent's workspace so the binary's cwd-walk fallback
+#      doesn't cross-route to a sibling agent's clone (I-418).
 #   3. Legacy /Users/jfinlinson/Dev/as/bin/st (operator-direct / fallback)
 
 set -e
@@ -31,6 +33,11 @@ while [ "$dir" != "/" ]; do
       theraprac-agent-*)
         candidate="$dir/as/bin/st"
         if [ -x "$candidate" ]; then
+          # Pin ST_ROOT to this agent's workspace so the binary's cwd-walk
+          # fallback in discover() doesn't cross-route to a sibling agent's
+          # clone (I-418). Workspace is a symlink to the canonical clone,
+          # but the per-agent path keeps path-derived identity correct.
+          export ST_ROOT="$dir/theraprac-workspace"
           exec "$candidate" "$@"
         fi
         ;;
