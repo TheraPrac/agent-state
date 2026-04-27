@@ -56,9 +56,25 @@ type SessionLogPayload struct {
 	// a child agent spawned by a parent — preserves attribution so usage
 	// rollups can credit the parent/root chain. Omitted when the executing
 	// agent is the root.
+	//
+	// ParentID and RootID are AGENT-IDENTITY values (e.g. "agent-a"),
+	// matching Identity.ParentID / Identity.RootID and Session.ParentAgentID
+	// / Session.RootAgentID across the rest of the codebase. They appear in
+	// the per-turn ai_turns line as "parent:<agent>" / "root:<agent>" for
+	// provenance only — do NOT use them as a routing key. The routing target
+	// is RollupItemID below.
 	ParentID string `json:"parent_id,omitempty"`
 	RootID   string `json:"root_id,omitempty"`
 	Role     string `json:"role,omitempty"`
+
+	// RollupItemID is the target item id this turn rolls up to (T-330). The
+	// SubagentStop hook resolves it to the spawning agent's stack-top item
+	// before shipping the payload, implementing the I-369 (Option C)
+	// decision: subagent metrics accumulate on the parent's root item, with
+	// per-turn provenance preserved via ParentID / RootID / Role above.
+	// Distinct from RootID specifically to avoid overloading the agent-id
+	// chain field with item-id semantics.
+	RollupItemID string `json:"rollup_item_id,omitempty"`
 }
 
 // SessionLogCLI reads a JSON payload from stdin and applies it.
@@ -85,23 +101,28 @@ func SessionLogCLI(s *store.Store, cfg *config.Config, stdin io.Reader) int {
 //
 // ItemID resolution priority:
 //  1. Explicit payload.ItemID — caller knows exactly where this turn belongs.
-//  2. payload.RootID (T-330) — when set, a Task-tool subagent is reporting
-//     and its work rolls up to the spawning agent's root item per the I-369
-//     decision (Option C, rollup with provenance). RootID beats stack top
-//     because a subagent firing after its parent has popped would otherwise
-//     orphan the metrics; routing via RootID keeps them on the right item.
+//  2. payload.RollupItemID (T-330) — when set, a Task-tool subagent is
+//     reporting and its work rolls up to the spawning agent's root item
+//     per the I-369 (Option C) decision. Beats stack top because a
+//     subagent firing after its parent has popped would otherwise orphan
+//     the metrics; explicit rollup keeps them on the right item even
+//     across stack churn.
 //  3. Stack top — the working assumption for a parent agent's own turn.
 //  4. Orphan log — never silently dropped.
 //
+// ParentID / RootID / Role on the payload are AGENT-CHAIN provenance
+// (agent-id-typed), not routing keys. They surface in the ai_turns line
+// for downstream drill-down (T-327's `st stats meta --by role`).
+//
 // This is the ONE accumulator both producers (Claude Code Stop hook,
 // SubagentStop hook, st run's recordRunMetrics) call. Schema lives in the
-// item's time_tracking block; per-turn provenance — including parent:/root:/role:
-// when populated — goes to work_tracking.ai_turns.
+// item's time_tracking block; per-turn provenance goes to
+// work_tracking.ai_turns.
 func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) int {
 	// Resolve target item
 	itemID := payload.ItemID
 	if itemID == "" {
-		itemID = payload.RootID
+		itemID = payload.RollupItemID
 	}
 	if itemID == "" {
 		entries := LoadStack(cfg)

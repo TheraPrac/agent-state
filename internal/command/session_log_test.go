@@ -504,22 +504,27 @@ func TestSessionLogCLI_InvalidJSONIsError(t *testing.T) {
 	}
 }
 
-// T-330: SubagentStop hook will populate RootID on every subagent payload
-// per the I-369 (Option C) decision so cost rolls up to the spawning
-// agent's root item even when the parent's stack has shifted by the time
-// the subagent finishes. The accumulator's ItemID resolution must honor
-// RootID before falling through to stack-top.
-func TestSessionLog_RoutesViaRootID(t *testing.T) {
+// T-330: SubagentStop hook populates RollupItemID on every subagent
+// payload per the I-369 (Option C) decision so cost rolls up to the
+// spawning agent's root item even when the parent's stack has shifted by
+// the time the subagent finishes. The accumulator's ItemID resolution
+// honors RollupItemID before falling through to stack-top.
+//
+// ParentID/RootID/Role remain AGENT-CHAIN provenance (agent-id-typed),
+// emitted into the ai_turns line for T-327's `st stats meta --by role`
+// drill-down — separate namespace from the item-id routing key.
+func TestSessionLog_RoutesViaRollupItemID(t *testing.T) {
 	env := testutil.NewEnv(t)
-	// Stack top is T-001, but the subagent payload says RootID=T-003.
-	// Metrics MUST land on T-003 — that's the spawning agent's root.
+	// Stack top is T-001, but the subagent payload says RollupItemID=T-003.
+	// Metrics MUST land on T-003 — the spawning agent's root item.
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-001"}})
 
 	p := SessionLogPayload{
 		SessionID:       "subagent-sess",
-		ParentID:        "parent-sess",
-		RootID:          "T-003",
+		ParentID:        "agent-a", // agent-id, provenance only
+		RootID:          "agent-a", // agent-id, provenance only
 		Role:            "code-reviewer",
+		RollupItemID:    "T-003", // item-id, the routing target
 		Model:           "claude-haiku-4-5",
 		RegInputTokens:  2000,
 		RegOutputTokens: 400,
@@ -530,7 +535,7 @@ func TestSessionLog_RoutesViaRootID(t *testing.T) {
 
 	env.Reload(t)
 
-	// Metrics on T-003 (the RootID target).
+	// Metrics on T-003 (the RollupItemID target).
 	target, _ := env.S.Get("T-003")
 	assertInt(t, target, "time_tracking", "reg_input_tokens", 2000)
 	assertInt(t, target, "time_tracking", "reg_output_tokens", 400)
@@ -539,30 +544,30 @@ func TestSessionLog_RoutesViaRootID(t *testing.T) {
 	// Stack-top item T-001 must be untouched.
 	other, _ := env.S.Get("T-001")
 	if got := readIntField(other, "time_tracking", "reg_input_tokens"); got != 0 {
-		t.Errorf("T-001 reg_input_tokens = %d, want 0 (RootID should override stack-top)", got)
+		t.Errorf("T-001 reg_input_tokens = %d, want 0 (RollupItemID should override stack-top)", got)
 	}
 
-	// The per-turn line preserves heritage so drill-down (T-327) can
-	// group by role/parent.
+	// The per-turn ai_turns line preserves heritage so drill-down (T-327)
+	// can group by role / parent agent / root agent.
 	raw, err := os.ReadFile(filepath.Join(env.Root, "tasks", "T-003-active.md"))
 	if err != nil {
 		t.Fatalf("read T-003: %v", err)
 	}
-	for _, want := range []string{"role:code-reviewer", "parent:parent-sess", "root:T-003"} {
+	for _, want := range []string{"role:code-reviewer", "parent:agent-a", "root:agent-a"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("ai_turns line missing %q. File:\n%s", want, string(raw))
 		}
 	}
 }
 
-// Sanity: the existing stack-top routing still wins when RootID is empty
-// (i.e., the parent agent's own Stop hook firing — non-subagent path).
-func TestSessionLog_RootIDFallthroughWhenEmpty(t *testing.T) {
+// Sanity: regular parent-agent turns (no RollupItemID) still route via
+// stack top — the non-subagent path is unchanged.
+func TestSessionLog_RollupItemIDFallthroughWhenEmpty(t *testing.T) {
 	env := testutil.NewEnv(t)
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
 
 	p := SessionLogPayload{
-		// No ParentID/RootID/Role — this is a regular parent-agent turn.
+		// No ParentID/RootID/Role/RollupItemID — regular parent-agent turn.
 		SessionID:      "regular-sess",
 		Model:          "claude-opus-4-7",
 		RegInputTokens: 100,
@@ -575,15 +580,14 @@ func TestSessionLog_RootIDFallthroughWhenEmpty(t *testing.T) {
 	assertInt(t, item, "time_tracking", "reg_input_tokens", 100)
 }
 
-// Explicit ItemID still wins over RootID when both are set — caller-known
-// attribution beats subagent rollup heuristic.
-func TestSessionLog_ExplicitItemIDBeatsRootID(t *testing.T) {
+// Explicit ItemID beats RollupItemID — caller-known attribution always wins.
+func TestSessionLog_ExplicitItemIDBeatsRollupItemID(t *testing.T) {
 	env := testutil.NewEnv(t)
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-001"}})
 
 	p := SessionLogPayload{
 		ItemID:         "T-002",
-		RootID:         "T-003",
+		RollupItemID:   "T-003",
 		SessionID:      "sess",
 		Model:          "claude-haiku-4-5",
 		RegInputTokens: 50,
@@ -604,6 +608,36 @@ func TestSessionLog_ExplicitItemIDBeatsRootID(t *testing.T) {
 		if got := readIntField(other, "time_tracking", "reg_input_tokens"); got != 0 {
 			t.Errorf("%s should be untouched, got reg_input_tokens=%d", otherID, got)
 		}
+	}
+}
+
+// Coverage for the orphan fallthrough on a missing rollup target — the
+// existing item-not-found soft-fail must still fire when a subagent's
+// RollupItemID points to a phantom item.
+func TestSessionLog_RollupItemIDMissingItemWritesOrphanLog(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-test")
+	env := testutil.NewEnv(t)
+	// Empty stack; payload's RollupItemID points to a phantom T-999.
+	p := SessionLogPayload{
+		SessionID:      "subagent-sess",
+		Role:           "Explore",
+		RollupItemID:   "T-999",
+		Model:          "claude-haiku-4-5",
+		RegInputTokens: 50,
+	}
+	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
+		t.Fatalf("expected soft-fail orphan, got exit=%d", code)
+	}
+	orphanPath := filepath.Join(env.Cfg.SessionsDir(), "orphan.log")
+	data, err := os.ReadFile(orphanPath)
+	if err != nil {
+		t.Fatalf("orphan.log expected: %v", err)
+	}
+	if !strings.Contains(string(data), `"agent_id":"agent-test"`) {
+		t.Errorf("orphan.log missing agent_id: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"rollup_item_id":"T-999"`) {
+		t.Errorf("orphan.log missing rollup_item_id field: %s", string(data))
 	}
 }
 
