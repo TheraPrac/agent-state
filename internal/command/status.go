@@ -57,9 +57,36 @@ type StatusOpts struct {
 	SprintsAll    bool   // include archived
 	SprintsClosed bool   // only closed/archived
 	SprintsRunning bool  // only sprints with a running pipeline
+
+	// T-329: query/sort/filter on the unified status surface. All three are
+	// composable; Filters AND together; Sort applies after filters; Since
+	// drops items whose last_touched is before the cutoff. JSON emits a
+	// machine-readable shape with every metric the text view shows.
+	Filters []string // raw "key:value" strings; parsed by parseFilterSpecs
+	Sort    string   // "field" or "field,asc"/"field,desc"
+	Since   string   // duration like "7d", "24h", "30m"
+	JSON    bool     // emit JSON instead of human-readable text
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
+	// T-329: validate query flags up front so a typo surfaces immediately
+	// (not after a refresh round-trip + dashboard render).
+	filters, ferr := parseFilterSpecs(opts.Filters)
+	if ferr != nil {
+		fmt.Fprintf(os.Stderr, "status: %v\n", ferr)
+		return 2
+	}
+	sortSpecVal, serr := parseSortSpec(opts.Sort)
+	if serr != nil {
+		fmt.Fprintf(os.Stderr, "status: %v\n", serr)
+		return 2
+	}
+	sinceCutoff, ce := resolveSinceCutoff(opts.Since, time.Now())
+	if ce != nil {
+		fmt.Fprintf(os.Stderr, "status: invalid --since %q: %v\n", opts.Since, ce)
+		return 2
+	}
+
 	// I-380: refresh from origin BEFORE rendering so a stale local clone
 	// can't show phantom "active" items that have already been archived
 	// upstream. Banner surfaces non-trivial outcomes; on a successful
@@ -71,6 +98,10 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 	}
 	if opts.Check {
 		return Check(s, cfg, false, false)
+	}
+	if opts.JSON {
+		// store.Store satisfies the storeForQuery interface (All() exists).
+		return statusJSON(s, cfg, filters, sortSpecVal, sinceCutoff)
 	}
 	if opts.Sprints {
 		// T-325: `st status --sprints` is the unified entry point for the
@@ -89,7 +120,7 @@ func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int 
 		opts.Recent = true
 		// Completed is NOT included in -a; use -d explicitly
 	}
-	return statusDashboard(s, cfg, opts)
+	return statusDashboard(s, cfg, opts, filters, sortSpecVal, sinceCutoff)
 }
 
 // refreshAndReload calls store.RefreshWorkspace (unless skipped), prints a
@@ -138,7 +169,7 @@ func applyRefreshResult(s *store.Store, cfg *config.Config, res store.RefreshRes
 	return s
 }
 
-func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
+func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filters []filterSpec, ss sortSpec, sinceCutoff time.Time) int {
 	g := deps.Build(s.All(), cfg)
 
 	// Count items by category
@@ -176,7 +207,16 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts) int {
 
 	// Active work
 	active := s.List(store.StatusFilter("active"))
-	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+	// T-329: apply filters + sort + since to the active-work loop. The
+	// applyStatusQuery helper falls back to ID-asc when no sort is set,
+	// matching prior behavior; filters that match nothing render the
+	// "(none)" line so the operator sees the surface rather than nothing.
+	if len(filters) > 0 || !sinceCutoff.IsZero() || ss.Field != "" {
+		active = applyStatusQuery(active, filters, ss, sinceCutoff, cfg, cfg.ManifestDir(), time.Now())
+	}
+	if ss.Field == "" {
+		sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+	}
 
 	fmt.Printf("%s━━━ ACTIVE WORK ━━━%s\n", cBoldW, cReset)
 	if len(active) == 0 {
