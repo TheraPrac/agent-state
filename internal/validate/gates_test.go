@@ -63,7 +63,7 @@ func TestGateDepsResolvedPass(t *testing.T) {
 		"close": {{Type: "deps_resolved"}},
 	}
 
-	dep := testItem("T-002", "completed")
+	dep := testItem("T-002", "done")
 	item := testItem("T-001", "active")
 	item.DependsOn = []string{"T-002"}
 	allItems := map[string]*model.Item{"T-001": item, "T-002": dep}

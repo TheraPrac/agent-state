@@ -291,15 +291,15 @@ func TestAdvanceNoItems(t *testing.T) {
 
 	// Make both items terminal
 	if err := s.Mutate("T-001", func(it *model.Item) error {
-		it.Doc.SetField("status", "completed")
-		it.Status = "completed"
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 	if err := s.Mutate("T-002", func(it *model.Item) error {
-		it.Doc.SetField("status", "completed")
-		it.Status = "completed"
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-002: %v", err)
@@ -623,7 +623,7 @@ time_tracking:
 
 	// --- Close and verify human-readable totals ---
 	s3, _ := store.New(cfg)
-	closeCode := Close(s3, cfg, "T-010", "completed", CloseOpts{Force: true})
+	closeCode := Close(s3, cfg, "T-010", "done", CloseOpts{Force: true})
 	if closeCode != 0 {
 		t.Fatalf("close returned %d", closeCode)
 	}
@@ -836,8 +836,8 @@ func TestIsEligible(t *testing.T) {
 
 	// Make T-001 completed — not eligible
 	if err := s.Mutate("T-001", func(it *model.Item) error {
-		it.Doc.SetField("status", "completed")
-		it.Status = "completed"
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-001: %v", err)
@@ -1157,7 +1157,7 @@ func TestCloseGateRejectsSkippedDeploy(t *testing.T) {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 
-	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step := config.RunStepDef{Type: "close", Resolution: "done"}
 	step.SetName("close")
 
 	sr := executeClose(s, cfg, "T-001", step)
@@ -1181,7 +1181,7 @@ func TestCloseGateRejectsSkippedUAT(t *testing.T) {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 
-	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step := config.RunStepDef{Type: "close", Resolution: "done"}
 	step.SetName("close")
 
 	sr := executeClose(s, cfg, "T-001", step)
@@ -1204,7 +1204,7 @@ func TestCloseGateAllowsNoSkips(t *testing.T) {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 
-	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step := config.RunStepDef{Type: "close", Resolution: "done"}
 	step.SetName("close")
 
 	sr := executeClose(s, cfg, "T-001", step)
@@ -1226,7 +1226,7 @@ func TestCloseGateAllowsNonCriticalSkips(t *testing.T) {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 
-	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step := config.RunStepDef{Type: "close", Resolution: "done"}
 	step.SetName("close")
 
 	sr := executeClose(s, cfg, "T-001", step)
@@ -1248,7 +1248,7 @@ func TestCloseGateRejectsMultipleSkips(t *testing.T) {
 		t.Fatalf("mutate T-001: %v", err)
 	}
 
-	step := config.RunStepDef{Type: "close", Resolution: "completed"}
+	step := config.RunStepDef{Type: "close", Resolution: "done"}
 	step.SetName("close")
 
 	sr := executeClose(s, cfg, "T-001", step)

@@ -76,9 +76,10 @@ func TestNonTerminalFilter(t *testing.T) {
 	cfg, _ := config.Load(root)
 
 	items := s.List(NonTerminalFilter(cfg))
-	// Should exclude T-004 (completed) and include T-001 (queued), T-002 (active), T-003 (active), I-001 (open)
+	// I-433: terminal statuses are now done/abandoned/archived for both
+	// types under the unified vocabulary.
 	for _, item := range items {
-		if item.Status == "completed" || item.Status == "archived" {
+		if item.Status == "done" || item.Status == "archived" || item.Status == "abandoned" {
 			t.Errorf("NonTerminalFilter included %s with status %s", item.ID, item.Status)
 		}
 	}
@@ -186,7 +187,7 @@ func TestNextIDEmptyStore(t *testing.T) {
 func TestNonTerminalFilterUnknownType(t *testing.T) {
 	cfg := config.Defaults()
 	f := NonTerminalFilter(cfg)
-	item := &model.Item{Type: "nonexistent", Status: "open"}
+	item := &model.Item{Type: "nonexistent", Status: "queued"}
 	// Unknown type → should return true (keep)
 	if !f(item) {
 		t.Error("unknown type should pass filter")

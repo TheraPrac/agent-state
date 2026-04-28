@@ -11,7 +11,7 @@ func testItems() map[string]*model.Item {
 	p1 := 1
 	p2 := 2
 	return map[string]*model.Item{
-		"T-001": {ID: "T-001", Type: "task", Status: "completed", Title: "Done task", Priority: &p1},
+		"T-001": {ID: "T-001", Type: "task", Status: "done", Title: "Done task", Priority: &p1},
 		"T-002": {ID: "T-002", Type: "task", Status: "queued", Title: "Ready task", Priority: &p1, DependsOn: []string{"T-001"}},
 		"T-003": {ID: "T-003", Type: "task", Status: "queued", Title: "Blocked task", Priority: &p2, DependsOn: []string{"T-002"}},
 		"T-004": {ID: "T-004", Type: "task", Status: "queued", Title: "Independent task", Priority: &p2},

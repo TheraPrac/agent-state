@@ -37,6 +37,24 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		return 1
 	}
 
+	// I-433: legacy resolutions (resolved/wontfix/completed) are dead.
+	// Catch them at the entry point with a migration pointer so muscle
+	// memory `st close X resolved` doesn't silently become an "invalid
+	// resolution" error with no breadcrumb to the new vocabulary.
+	switch resolution {
+	case "resolved", "completed":
+		fmt.Fprintln(os.Stderr,
+			"close: resolution \""+resolution+"\" is deprecated (I-433). "+
+				"Use \"done\" instead — the unified vocabulary across both "+
+				"tasks and issues is queued/active/done/abandoned/archived.")
+		return 2
+	case "wontfix":
+		fmt.Fprintln(os.Stderr,
+			"close: resolution \"wontfix\" is deprecated (I-433). "+
+				"Use \"abandoned\" instead.")
+		return 2
+	}
+
 	// Resolution must be a valid terminal status
 	validTerminal := false
 	for _, ts := range tc.TerminalStatuses {
@@ -57,15 +75,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	}
 
 	// If abandoning, require reason
-	if resolution == "abandoned" || resolution == "wontfix" || resolution == "declined" {
+	if resolution == "abandoned" || resolution == "declined" {
 		if opts.Reason == "" {
 			fmt.Fprintln(os.Stderr, "--reason is required when abandoning")
 			return 2
 		}
 	}
 
-	// Gate enforcement (skip for abandon/wontfix — those bypass gates by design)
-	if !opts.Force && resolution != "abandoned" && resolution != "wontfix" && resolution != "declined" {
+	// Gate enforcement — skip for abandon/declined since those bypass gates
+	// by design. (wontfix is rejected earlier per I-433.)
+	if !opts.Force && resolution != "abandoned" && resolution != "declined" {
 		results := validate.EvaluateGates(item, "close", cfg, s.All())
 		if !validate.GatesPassed(results) {
 			failure := validate.FirstFailure(results)

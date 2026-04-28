@@ -304,11 +304,11 @@ type statusJSONMetrics struct {
 // text dashboard renders, no separate metric dump needed.
 //
 // Default scope matches the text dashboard's active-first bias: when the
-// caller doesn't pass a `status:` filter, terminal statuses (completed,
-// resolved, abandoned, wontfix, archived) are excluded so a casual
-// `st status --json` doesn't dump hundreds of archive entries. Operators
-// who want the archive can opt in via `--filter status:archived` or
-// equivalent.
+// caller doesn't pass a `status:` filter, terminal statuses (done,
+// abandoned, archived per the I-433 unified vocabulary) are excluded so
+// a casual `st status --json` doesn't dump hundreds of archive entries.
+// Operators who want the archive can opt in via `--filter status:archived`
+// or equivalent.
 func statusJSON(s storeForQuery, cfg *config.Config, filters []filterSpec, ss sortSpec, sinceCutoff time.Time) int {
 	allMap := s.All()
 	all := make([]*model.Item, 0, len(allMap))

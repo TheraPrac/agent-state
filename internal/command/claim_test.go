@@ -168,7 +168,7 @@ func TestCloseClearsClaim(t *testing.T) {
 	Start(s, cfg, "T-001", StartOpts{})
 
 	// Close it
-	code := Close(s, cfg, "T-001", "completed", CloseOpts{Force: true})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{Force: true})
 	if code != 0 {
 		t.Fatalf("Close returned %d, want 0", code)
 	}

@@ -32,17 +32,18 @@ func TestDefaultsHaveIDPrefixes(t *testing.T) {
 }
 
 func TestDefaultsTerminalStatuses(t *testing.T) {
+	// I-433: terminal statuses for tasks are now done/abandoned/archived
+	// (the shared vocabulary). `completed` was renamed to `done`.
 	cfg := Defaults()
-
 	tc := cfg.Types["task"]
 	found := false
 	for _, s := range tc.TerminalStatuses {
-		if s == "completed" {
+		if s == "done" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("task terminal statuses should include 'completed'")
+		t.Error("task terminal statuses should include 'done'")
 	}
 }
 

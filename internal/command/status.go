@@ -178,7 +178,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 		switch {
 		case item.Status == "active":
 			activeCount++
-		case item.Type == "issue" && item.Status == "open":
+		case item.Type == "issue" && item.Status == "queued":
 			issueCount++
 		case isStartStatus(item, cfg):
 			queuedCount++
@@ -295,7 +295,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 	if !opts.Issues && !opts.Tasks && !opts.Recent {
 		priCounts := map[int]int{}
 		for _, item := range s.All() {
-			if item.Type == "issue" && item.Status == "open" {
+			if item.Type == "issue" && item.Status == "queued" {
 				p := 2
 				if item.Priority != nil {
 					p = *item.Priority
@@ -327,7 +327,8 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 }
 
 func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
-	openIssues := s.List(store.TypeFilter("issue"), store.StatusFilter("open"))
+	// I-433: open issues are now status:queued under the unified vocabulary.
+	openIssues := s.List(store.TypeFilter("issue"), store.StatusFilter("queued"))
 	if len(openIssues) == 0 {
 		return
 	}
@@ -1074,18 +1075,21 @@ func priorityColor(p *int) string {
 // statusLabel renders a short colorized status tag like "[active]" or
 // "[queued]". I-406's display story: every item line surfaces its
 // status so the operator doesn't have to scan section headers to know
-// where it sits in its lifecycle.
+// where it sits in its lifecycle. The legacy arms ("open"/"resolved"/
+// "wontfix"/"completed") survive only to render gracefully if a stray
+// pre-I-433 item slips back in via a foreign branch — new writes go
+// through the unified queued/active/done/abandoned/archived vocabulary.
 func statusLabel(status string) string {
 	switch status {
 	case "active":
 		return fmt.Sprintf("%s[active]%s", cGreen, cReset)
 	case "queued":
 		return fmt.Sprintf("%s[queued]%s", cCyan, cReset)
-	case "open":
+	case "open": // legacy — pre-I-433 issue status
 		return fmt.Sprintf("%s[open]%s", cCyan, cReset)
-	case "completed", "resolved", "done":
+	case "done", "completed", "resolved": // legacy: completed/resolved
 		return fmt.Sprintf("%s[%s]%s", cDim, status, cReset)
-	case "abandoned", "wontfix":
+	case "abandoned", "wontfix": // legacy: wontfix
 		return fmt.Sprintf("%s[%s]%s", cDim, status, cReset)
 	case "archived":
 		return fmt.Sprintf("%s[archived]%s", cDim, cReset)

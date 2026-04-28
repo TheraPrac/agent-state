@@ -135,30 +135,46 @@ func TestItemInvalidStatus(t *testing.T) {
 	}
 }
 
+// I-433: tasks and issues share the unified vocabulary
+// (queued/active/done/abandoned/archived). The old per-type asymmetry
+// (where "open" was issue-only, "completed" was task-only) is gone.
 func TestItemStatusValidForType(t *testing.T) {
 	cfg := config.Defaults()
 
-	// "open" is valid for issue, not for task
-	item := validItem()
-	item.Type = "issue"
-	item.ID = "I-001"
-	item.Status = "open"
-	r := Item(item, cfg)
-	if !r.OK() {
-		t.Errorf("open should be valid for issue: %v", r.Errors)
+	// `queued` is the start status for both types post-I-433.
+	for _, typ := range []string{"task", "issue"} {
+		item := validItem()
+		item.Type = typ
+		if typ == "issue" {
+			item.ID = "I-001"
+		}
+		item.Status = "queued"
+		r := Item(item, cfg)
+		if !r.OK() {
+			t.Errorf("queued should be valid for %s: %v", typ, r.Errors)
+		}
 	}
 
-	item2 := validItem()
-	item2.Status = "open" // task can't be "open"
-	r2 := Item(item2, cfg)
-	if r2.OK() {
-		t.Error("open should be invalid for task")
+	// Legacy values (open/completed/resolved/wontfix) are no longer in
+	// the type's status set, so validation should reject them.
+	for _, typ := range []string{"task", "issue"} {
+		item := validItem()
+		item.Type = typ
+		if typ == "issue" {
+			item.ID = "I-001"
+		}
+		item.Status = "open"
+		if Item(item, cfg).OK() {
+			t.Errorf("legacy 'open' should be invalid for %s post-I-433", typ)
+		}
 	}
 }
 
 func TestDirectoryConsistency(t *testing.T) {
 	cfg := config.Defaults()
 
+	// I-433: unified DirectoryMap — queued/active in original dir,
+	// done/abandoned/archived in archive/.
 	tests := []struct {
 		name      string
 		itemType  string
@@ -168,12 +184,12 @@ func TestDirectoryConsistency(t *testing.T) {
 	}{
 		{"task queued in tasks", "task", "queued", "/path/to/tasks", false},
 		{"task active in tasks", "task", "active", "/path/to/tasks", false},
-		{"task completed in archive", "task", "completed", "/path/to/archive", false},
+		{"task done in archive", "task", "done", "/path/to/archive", false},
 		{"task queued in archive", "task", "queued", "/path/to/archive", true},
-		{"task completed in tasks", "task", "completed", "/path/to/tasks", true},
-		{"issue open in issues", "issue", "open", "/path/to/issues", false},
-		{"issue resolved in archive", "issue", "resolved", "/path/to/archive", false},
-		{"issue open in archive", "issue", "open", "/path/to/archive", true},
+		{"task done in tasks", "task", "done", "/path/to/tasks", true},
+		{"issue queued in issues", "issue", "queued", "/path/to/issues", false},
+		{"issue done in archive", "issue", "done", "/path/to/archive", false},
+		{"issue queued in archive", "issue", "queued", "/path/to/archive", true},
 	}
 
 	for _, tt := range tests {
@@ -263,7 +279,7 @@ func TestTypeSpecificRequiredFields(t *testing.T) {
 		item := validItem()
 		item.Type = "issue"
 		item.ID = "I-001"
-		item.Status = "open"
+		item.Status = "queued"
 		item.Doc = docWithFields("id", "type", "status", "title", "depends_on", "blocks")
 		r := Item(item, cfg)
 		if !r.OK() {
@@ -275,7 +291,7 @@ func TestTypeSpecificRequiredFields(t *testing.T) {
 		item := validItem()
 		item.Type = "issue"
 		item.ID = "I-001"
-		item.Status = "open"
+		item.Status = "queued"
 		item.Doc = docWithFields("id", "type", "status", "title", "depends_on", "blocks")
 		r := Item(item, cfg)
 		if !r.OK() {
@@ -300,8 +316,8 @@ func TestIndexCoverage(t *testing.T) {
 	items := map[string]*model.Item{
 		"T-001": {ID: "T-001", Type: "task", Status: "queued", Created: now},
 		"T-002": {ID: "T-002", Type: "task", Status: "queued", Created: now},
-		"T-003": {ID: "T-003", Type: "task", Status: "completed", Created: now}, // terminal
-		"I-001": {ID: "I-001", Type: "issue", Status: "open", Created: now},
+		"T-003": {ID: "T-003", Type: "task", Status: "done", Created: now}, // terminal
+		"I-001": {ID: "I-001", Type: "issue", Status: "queued", Created: now},
 	}
 
 	t.Run("all non-archived items listed", func(t *testing.T) {
@@ -341,7 +357,7 @@ func TestDeliveryGate(t *testing.T) {
 
 	t.Run("archived task without UAT approval", func(t *testing.T) {
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 			Delivery: map[string]interface{}{"stage": "merged"},
 		}
@@ -353,7 +369,7 @@ func TestDeliveryGate(t *testing.T) {
 
 	t.Run("archived task with UAT approval", func(t *testing.T) {
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 			Delivery: map[string]interface{}{"stage": "uat_approved"},
 		}
@@ -365,7 +381,7 @@ func TestDeliveryGate(t *testing.T) {
 
 	t.Run("archived task with closed stage", func(t *testing.T) {
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 			Delivery: map[string]interface{}{"stage": "closed"},
 		}
@@ -389,7 +405,7 @@ func TestDeliveryGate(t *testing.T) {
 
 	t.Run("no delivery data skipped", func(t *testing.T) {
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 		}
 		r := DeliveryGate(item, cfg)
@@ -401,7 +417,7 @@ func TestDeliveryGate(t *testing.T) {
 	t.Run("no delivery config skipped", func(t *testing.T) {
 		noCfg := config.Defaults()
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 			Delivery: map[string]interface{}{"stage": "coding"},
 		}
@@ -413,7 +429,7 @@ func TestDeliveryGate(t *testing.T) {
 
 	t.Run("null delivery stage", func(t *testing.T) {
 		item := &model.Item{
-			ID: "T-001", Type: "task", Status: "completed",
+			ID: "T-001", Type: "task", Status: "done",
 			Created: now, LastTouched: now, Title: "Test",
 			Delivery: map[string]interface{}{"stage": ""},
 		}

@@ -223,8 +223,8 @@ func TestMove(t *testing.T) {
 
 	// Change T-001 to completed, then move
 	item, _ := s.Get("T-001")
-	item.Status = "completed"
-	item.Doc.SetField("status", "completed")
+	item.Status = "done"
+	item.Doc.SetField("status", "done")
 
 	if err := s.write(item); err != nil {
 		t.Fatalf("Write: %v", err)

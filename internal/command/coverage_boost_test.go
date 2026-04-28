@@ -70,7 +70,7 @@ func TestMigrateScope(t *testing.T) {
 func TestCloseActiveForced(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	os.MkdirAll(cfg.ChangelogDir(), 0755)
-	code := Close(s, cfg, "T-003", "completed", CloseOpts{Force: true})
+	code := Close(s, cfg, "T-003", "done", CloseOpts{Force: true})
 	if code != 0 {
 		t.Errorf("close active+force should succeed, got %d", code)
 	}
@@ -483,7 +483,7 @@ func TestCloseWithTimeTracking(t *testing.T) {
 		t.Fatalf("mutate T-003: %v", err)
 	}
 
-	code := Close(s, cfg, "T-003", "completed", CloseOpts{Force: true})
+	code := Close(s, cfg, "T-003", "done", CloseOpts{Force: true})
 	if code != 0 {
 		t.Errorf("close with time tracking exit %d", code)
 	}
@@ -517,7 +517,7 @@ func TestCloseInvalidResolutionV2(t *testing.T) {
 
 func TestCloseAlreadyClosed(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-004", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-004", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("closing already-closed should exit 1, got %d", code)
 	}
@@ -644,7 +644,7 @@ func TestCloseGateFailure(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	os.MkdirAll(cfg.ChangelogDir(), 0755)
 	// Close T-001 (queued) without --force — gate should catch missing evidence
-	code := Close(s, cfg, "T-001", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{})
 	// Gate may or may not fail depending on config — just exercise the path
 	_ = code
 }
@@ -790,7 +790,7 @@ func TestMigrateActual(t *testing.T) {
 
 func TestCloseNotFoundV3(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-999", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-999", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("close not found exit %d, want 1", code)
 	}
@@ -805,7 +805,7 @@ func TestCloseUnknownType(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mutate T-001: %v", err)
 	}
-	code := Close(s, cfg, "T-001", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("close unknown type exit %d, want 1", code)
 	}
@@ -813,7 +813,7 @@ func TestCloseUnknownType(t *testing.T) {
 
 func TestCloseAlreadyCompleted(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-004", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-004", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("close already completed exit %d, want 1", code)
 	}
@@ -948,7 +948,7 @@ func TestCloseWithGateEnforcement(t *testing.T) {
 	Start(s, cfg, "T-001", StartOpts{})
 
 	// Close without force — gate should fail because T-001 has no summary
-	code := Close(s, cfg, "T-001", "completed", CloseOpts{Force: false})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{Force: false})
 	if code != 1 {
 		t.Errorf("close with failing gate exit %d, want 1", code)
 	}

@@ -248,21 +248,21 @@ func TestStatusQuery_JSONDefaultsToNonTerminal(t *testing.T) {
 		t.Fatalf("unmarshal: %v\nout: %s", err, out)
 	}
 	for _, r := range rows {
-		if r.Status == "completed" || r.Status == "resolved" || r.Status == "abandoned" || r.Status == "wontfix" || r.Status == "archived" {
+		if r.Status == "done" || r.Status == "abandoned" || r.Status == "archived" {
 			t.Errorf("default JSON should exclude terminal statuses, got %s status=%s", r.ID, r.Status)
 		}
 	}
-	// Sanity: with explicit `status:completed` filter, terminal items
+	// Sanity: with explicit `status:done` filter, terminal items
 	// should appear (proves the default narrowing is opt-out, not hardcoded).
 	out = captureStdout(t, func() {
-		Status(s, cfg, "", StatusOpts{JSON: true, NoRefresh: true, Filters: []string{"status:completed"}})
+		Status(s, cfg, "", StatusOpts{JSON: true, NoRefresh: true, Filters: []string{"status:done"}})
 	})
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	for _, r := range rows {
-		if r.Status != "completed" {
-			t.Errorf("status:completed filter leaked non-completed: %+v", r)
+		if r.Status != "done" {
+			t.Errorf("status:done filter leaked non-done: %+v", r)
 		}
 	}
 }

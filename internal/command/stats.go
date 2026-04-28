@@ -307,7 +307,7 @@ func computeStats(s *store.Store, cfg *config.Config) statsData {
 		// I-406: priority is the unified urgency signal across both
 		// types. Bucket open issues + queued tasks by priority (p0-p4).
 		// Items missing priority bucket as p2 (medium).
-		if (item.Type == "issue" && item.Status == "open") ||
+		if (item.Type == "issue" && item.Status == "queued") ||
 			(item.Type == "task" && isQueuedTask(item, cfg)) {
 			p := 2
 			if item.Priority != nil {

@@ -93,7 +93,7 @@ next_actions:
 	// Write a sample issue
 	issueContent := `id: I-001
 type: issue
-status: open
+status: queued
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 
@@ -482,7 +482,7 @@ func TestReconcileArchivePhase(t *testing.T) {
 	// Write a completed task that's still in tasks/
 	completedTask := `id: T-050
 type: task
-status: completed
+status: done
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 completed: 2026-03-26T10:00:00-06:00
@@ -590,7 +590,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// Step 5: CLOSE (active → completed)
-	_, _, code = runAs(t, ws, "close", id, "completed", "--force")
+	_, _, code = runAs(t, ws, "close", id, "done", "--force")
 	if code != 0 {
 		t.Fatalf("close exit %d", code)
 	}
@@ -601,7 +601,7 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 1 archive file for %s, got %d", id, len(archiveMatches))
 	}
 	data, _ = os.ReadFile(archiveMatches[0])
-	if !strings.Contains(string(data), "status: completed") {
+	if !strings.Contains(string(data), "status: done") {
 		t.Errorf("archived file should be completed:\n%s", string(data))
 	}
 	if !strings.Contains(string(data), "completed:") {

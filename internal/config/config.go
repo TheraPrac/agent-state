@@ -589,35 +589,42 @@ func Defaults() *Config {
 			Index:     "index.md",
 		},
 		Types: map[string]TypeConfig{
+			// I-433: tasks and issues share the same status vocabulary —
+			// queued / active / done / abandoned / archived. The legacy
+			// per-type vocabularies (tasks: completed; issues: open /
+			// resolved / wontfix) were renamed and backfilled by
+			// cmd/migrate-status-vocab. Items still live in their
+			// type-specific directories during start (tasks/, issues/);
+			// terminal statuses route to archive/ as before.
 			"task": {
 				IDPrefix:         "T",
-				Statuses:         []string{"queued", "active", "completed", "abandoned", "archived"},
+				Statuses:         []string{"queued", "active", "done", "abandoned", "archived"},
 				StartStatus:      "queued",
 				ActiveStatus:     "active",
-				TerminalStatuses: []string{"completed", "abandoned", "archived"},
+				TerminalStatuses: []string{"done", "abandoned", "archived"},
 				RequiredFields:   []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
 					"queued":    "tasks",
 					"active":    "tasks",
-					"completed": "archive",
+					"done":      "archive",
 					"abandoned": "archive",
 				},
 			},
 			"issue": {
 				IDPrefix:         "I",
-				Statuses:         []string{"open", "active", "resolved", "wontfix", "archived"},
-				StartStatus:      "open",
+				Statuses:         []string{"queued", "active", "done", "abandoned", "archived"},
+				StartStatus:      "queued",
 				ActiveStatus:     "active",
-				TerminalStatuses: []string{"resolved", "wontfix", "archived"},
+				TerminalStatuses: []string{"done", "abandoned", "archived"},
 				// I-406: severity dropped in favor of priority (p0-p4
 				// scale, shared with tasks). Priority isn't required at
 				// the schema level — create.go fills a default of 2.
 				RequiredFields: []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
-					"open":     "issues",
-					"active":   "issues",
-					"resolved": "archive",
-					"wontfix":  "archive",
+					"queued":    "issues",
+					"active":    "issues",
+					"done":      "archive",
+					"abandoned": "archive",
 				},
 			},
 			"idea": {

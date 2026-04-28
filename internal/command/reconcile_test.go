@@ -213,8 +213,8 @@ func TestReconcileArchive(t *testing.T) {
 		t.Skip("T-002 not in test env")
 	}
 	if err := s.Mutate("T-002", func(it *model.Item) error {
-		it.Doc.SetField("status", "completed")
-		it.Status = "completed"
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-002: %v", err)
@@ -239,8 +239,8 @@ func TestReconcileArchiveDryRun(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	if err := s.Mutate("T-002", func(it *model.Item) error {
-		it.Doc.SetField("status", "completed")
-		it.Status = "completed"
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-002: %v", err)

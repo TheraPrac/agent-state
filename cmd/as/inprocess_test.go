@@ -81,7 +81,7 @@ next_actions:
 
 	issueContent := `id: I-001
 type: issue
-status: open
+status: queued
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 
@@ -283,7 +283,7 @@ func TestInProcess_Close(t *testing.T) {
 	ws := setupInProcessWorkspace(t)
 	// Start first (must be active to close)
 	runInProcess(t, ws, "start", "T-001")
-	stdout, code := runInProcess(t, ws, "close", "T-001", "completed", "--force")
+	stdout, code := runInProcess(t, ws, "close", "T-001", "done", "--force")
 	if code != 0 {
 		t.Errorf("close exit %d", code)
 	}
@@ -490,7 +490,7 @@ func TestInProcess_FullLifecycle(t *testing.T) {
 	}
 
 	// Close
-	_, code = runInProcess(t, ws, "close", id, "completed", "--force")
+	_, code = runInProcess(t, ws, "close", id, "done", "--force")
 	if code != 0 {
 		t.Fatalf("close exit %d", code)
 	}
