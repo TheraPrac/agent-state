@@ -203,6 +203,11 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			item.SetNested("work_tracking", "branch", branch)
 		}
 
+		// I-447: starting work on an item enters the `coding` lifecycle
+		// stage. advanceDeliveryStage protects items already past coding
+		// (e.g., reopened after a partial close).
+		advanceDeliveryStage(item, "coding")
+
 		item.Doc.SetField("status", tc.ActiveStatus)
 		item.Status = tc.ActiveStatus
 
