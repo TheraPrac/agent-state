@@ -21,7 +21,10 @@ type Item struct {
 	// Optional scalar fields
 	Completed      *time.Time
 	Priority       *int
-	Severity       string // issues only: critical, high, medium, low
+	// DEPRECATED (I-406) — read-only for legacy-file round-trip during
+	// the deprecation window. New items use Priority instead. Remove
+	// once a sweep confirms no agent-state files still carry severity.
+	Severity string
 	Category       string
 	Repo           string
 	Summary        string

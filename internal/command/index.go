@@ -255,15 +255,25 @@ func writeOpenIssues(b *strings.Builder, s *store.Store) {
 	}
 
 	groups := map[string]*sevGroup{
-		"blocking":  {Label: "blocking"},
-		"important": {Label: "important"},
-		"tech-debt": {Label: "tech-debt"},
+		"p0": {Label: "p0 (blocking)"},
+		"p1": {Label: "p1 (high)"},
+		"p2": {Label: "p2 (medium)"},
+		"p3": {Label: "p3 (deferred)"},
+		"p4": {Label: "p4 (low)"},
 	}
-	order := []string{"blocking", "important", "tech-debt"}
+	order := []string{"p0", "p1", "p2", "p3", "p4"}
 
+	// I-406: bucket issues by priority instead of the legacy severity
+	// categories. Items missing priority bucket as p2 (medium).
 	for _, item := range issues {
-		cat := issueSeverityCategory(item.Severity)
-		groups[cat].Items = append(groups[cat].Items, item)
+		key := "p2"
+		if item.Priority != nil {
+			key = fmt.Sprintf("p%d", *item.Priority)
+		}
+		if _, ok := groups[key]; !ok {
+			key = "p2"
+		}
+		groups[key].Items = append(groups[key].Items, item)
 	}
 
 	b.WriteString("## Open Issues\n")
@@ -275,25 +285,10 @@ func writeOpenIssues(b *strings.Builder, s *store.Store) {
 		sort.Slice(grp.Items, func(i, j int) bool { return grp.Items[i].ID < grp.Items[j].ID })
 		b.WriteString(fmt.Sprintf("### %s (%d)\n", grp.Label, len(grp.Items)))
 		for _, item := range grp.Items {
-			sev := item.Severity
-			if sev == "" {
-				sev = "medium"
-			}
-			b.WriteString(fmt.Sprintf("- %s [%s] — %s\n", item.ID, sev, item.Title))
+			b.WriteString(fmt.Sprintf("- %s [%s] — %s\n", item.ID, key, item.Title))
 		}
 	}
 	b.WriteString("\n")
-}
-
-func issueSeverityCategory(sev string) string {
-	switch sev {
-	case "critical", "high":
-		return "blocking"
-	case "low":
-		return "tech-debt"
-	default:
-		return "important"
-	}
 }
 
 func writePendingUAT(b *strings.Builder, s *store.Store, cfg *config.Config) {

@@ -289,7 +289,9 @@ func TestIndexBlockedSection(t *testing.T) {
 	}
 }
 
-func TestIndexIssueSeverity(t *testing.T) {
+// I-406: index now buckets by priority (p0..p4) instead of severity
+// (blocking/important/tech-debt). I-001 fixture has priority: 1 → p1 bucket.
+func TestIndexIssueByPriority(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	indexPath := cfg.IndexPath()
 	os.MkdirAll(filepath.Dir(indexPath), 0755)
@@ -298,9 +300,8 @@ func TestIndexIssueSeverity(t *testing.T) {
 	content, _ := os.ReadFile(indexPath)
 	str := string(content)
 
-	// I-001 has severity: high → should be under "blocking"
-	if !strings.Contains(str, "### blocking") {
-		t.Error("missing blocking issue section")
+	if !strings.Contains(str, "### p1 (high)") {
+		t.Errorf("missing p1 issue section in index. Got:\n%s", str)
 	}
 }
 
@@ -367,7 +368,9 @@ func TestPrimeCompactOmitsCommands(t *testing.T) {
 	}
 }
 
-func TestPrimeIssuesBySeverity(t *testing.T) {
+// I-406: prime renders open-issues by priority (p0..p4) instead of
+// severity buckets. I-001 fixture is priority 1 → "p1: 1".
+func TestPrimeIssuesByPriority(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	old := os.Stdout
@@ -384,9 +387,8 @@ func TestPrimeIssuesBySeverity(t *testing.T) {
 	if !strings.Contains(output, "## Open Issues") {
 		t.Error("missing Open Issues section in prime output")
 	}
-	// I-001 is high severity → 1 blocking
-	if !strings.Contains(output, "1 blocking") {
-		t.Error("expected 1 blocking issue in prime output")
+	if !strings.Contains(output, "p1: 1") {
+		t.Errorf("expected 'p1: 1' in prime output. Got:\n%s", output)
 	}
 }
 
@@ -428,8 +430,8 @@ func TestPrimeJSONIncludesNewFields(t *testing.T) {
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	if !strings.Contains(output, `"issues_by_severity"`) {
-		t.Error("JSON missing issues_by_severity field")
+	if !strings.Contains(output, `"issues_by_priority"`) {
+		t.Error("JSON missing issues_by_priority field (I-406)")
 	}
 	if !strings.Contains(output, `"guidance"`) {
 		t.Error("JSON missing guidance field")
@@ -495,24 +497,10 @@ func TestGetNestedFieldBadParent(t *testing.T) {
 	}
 }
 
-func TestIssueSeverityCategory(t *testing.T) {
-	tests := []struct {
-		sev  string
-		want string
-	}{
-		{"critical", "blocking"},
-		{"high", "blocking"},
-		{"medium", "important"},
-		{"low", "tech-debt"},
-		{"", "important"},
-	}
-	for _, tt := range tests {
-		got := issueSeverityCategory(tt.sev)
-		if got != tt.want {
-			t.Errorf("issueSeverityCategory(%q) = %q, want %q", tt.sev, got, tt.want)
-		}
-	}
-}
+// I-406: TestIssueSeverityCategory removed. issueSeverityCategory is
+// gone; index.go now buckets by priority directly. Coverage for the
+// new bucketing is in the integration tests that assert the rendered
+// index includes p0..p4 sections.
 
 // --- Time Tracking ---
 

@@ -373,6 +373,11 @@ func storeScalar(item *model.Item, key, val string) {
 			// migration reads them from Doc.GetField("priority") for conversion.
 		}
 	case "severity":
+		// I-406: severity is deprecated. Parser still recognizes it so
+		// any legacy file slipping through round-trips without data
+		// loss during the deprecation window. Remove this case once
+		// Item.Severity is removed and a sweep confirms no agent-state
+		// file still carries severity.
 		item.Severity = val
 	case "category":
 		item.Category = val

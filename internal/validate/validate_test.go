@@ -256,21 +256,18 @@ func TestTypeSpecificRequiredFields(t *testing.T) {
 		}
 	})
 
-	t.Run("issue missing severity", func(t *testing.T) {
+	// I-406: severity is no longer required on issues. The new field
+	// list is just depends_on + blocks. Validation should succeed when
+	// those are present even without severity.
+	t.Run("issue without severity is valid post-I-406", func(t *testing.T) {
 		item := validItem()
 		item.Type = "issue"
 		item.ID = "I-001"
 		item.Status = "open"
 		item.Doc = docWithFields("id", "type", "status", "title", "depends_on", "blocks")
 		r := Item(item, cfg)
-		found := false
-		for _, e := range r.Errors {
-			if e.Field == "severity" {
-				found = true
-			}
-		}
-		if !found {
-			t.Error("expected error for missing severity on issue")
+		if !r.OK() {
+			t.Errorf("expected no errors post-I-406, got: %v", r.Errors)
 		}
 	})
 
@@ -279,7 +276,7 @@ func TestTypeSpecificRequiredFields(t *testing.T) {
 		item.Type = "issue"
 		item.ID = "I-001"
 		item.Status = "open"
-		item.Doc = docWithFields("id", "type", "status", "title", "severity", "depends_on", "blocks")
+		item.Doc = docWithFields("id", "type", "status", "title", "depends_on", "blocks")
 		r := Item(item, cfg)
 		if !r.OK() {
 			t.Errorf("expected no errors, got: %v", r.Errors)

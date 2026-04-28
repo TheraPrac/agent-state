@@ -14,9 +14,13 @@ import (
 )
 
 // CreateOpts holds flags for the create command.
+//
+// I-406: Severity is deprecated. The CLI rejects --severity at the entry
+// point with a migration pointer; the field stays here only so existing
+// callers keep compiling. Remove after a deprecation window.
 type CreateOpts struct {
 	Priority int
-	Severity string // issues only: critical, high, medium, low
+	Severity string // DEPRECATED — see I-406. Reject at CLI entry.
 	Tag      string
 	Depends  string
 	Sprint   string // optional: assign to sprint on creation
@@ -26,6 +30,27 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	tc, ok := cfg.Types[itemType]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown type: %s\n", itemType)
+		return 2
+	}
+
+	// I-406: severity field is dead. If a caller still passes it, fail
+	// loudly with a migration pointer rather than silently writing it.
+	if opts.Severity != "" {
+		fmt.Fprintln(os.Stderr,
+			"create: --severity is deprecated (I-406). Use --priority <0-4> instead.\n"+
+				"  blocking|critical|p0    -> 0\n"+
+				"  high|important          -> 1\n"+
+				"  medium|normal           -> 2 (default)\n"+
+				"  tech-debt               -> 3 + tag tech-debt\n"+
+				"  low|minor               -> 4")
+		return 2
+	}
+
+	// I-406: priority must be 0-4. Cobra defaults the flag to 2 (medium)
+	// when not specified, so this only fires on explicit out-of-range
+	// values like --priority 9.
+	if opts.Priority < 0 || opts.Priority > 4 {
+		fmt.Fprintf(os.Stderr, "create: priority must be 0-4 (got %d)\n", opts.Priority)
 		return 2
 	}
 
@@ -64,12 +89,8 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		Raw: fmt.Sprintf("priority: %d", opts.Priority), Key: "priority", Value: fmt.Sprintf("%d", opts.Priority),
 	})
 
-	// Severity (issues only)
-	if opts.Severity != "" {
-		lines = append(lines, model.Line{
-			Raw: "severity: " + opts.Severity, Key: "severity", Value: opts.Severity,
-		})
-	}
+	// I-406: severity field is no longer written. Existing files were
+	// migrated by cmd/migrate-priority. Items now carry priority only.
 
 	// Tags
 	if opts.Tag != "" {
@@ -104,9 +125,6 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		Doc:         doc,
 	}
 
-	if opts.Severity != "" {
-		item.Severity = opts.Severity
-	}
 	if opts.Depends != "" {
 		item.DependsOn = []string{opts.Depends}
 	}

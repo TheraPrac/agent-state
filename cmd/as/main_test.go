@@ -334,8 +334,9 @@ func TestCreate(t *testing.T) {
 }
 
 func TestCreateIssue(t *testing.T) {
+	// I-406: --severity is dead. Use --priority instead.
 	ws := setupWorkspace(t)
-	stdout, _, code := runAs(t, ws, "create", "issue", "New test issue", "--severity", "high")
+	stdout, _, code := runAs(t, ws, "create", "issue", "New test issue", "--priority", "1")
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}

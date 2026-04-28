@@ -281,7 +281,7 @@ type statusJSONItem struct {
 	LastTouched   string         `json:"last_touched,omitempty"`
 	LastTouchedBy string         `json:"last_touched_by,omitempty"`
 	Priority      *int           `json:"priority,omitempty"`
-	Severity      string         `json:"severity,omitempty"`
+	// I-406: Severity removed; Priority is the unified urgency signal.
 	Tags          []string       `json:"tags,omitempty"`
 	Epic          string         `json:"epic,omitempty"`
 	Sprint        string         `json:"sprint,omitempty"`
@@ -345,7 +345,6 @@ func statusJSON(s storeForQuery, cfg *config.Config, filters []filterSpec, ss so
 			LastTouched:   item.LastTouched.Format(time.RFC3339),
 			LastTouchedBy: item.LastTouchedBy,
 			Priority:      item.Priority,
-			Severity:      item.Severity,
 			Tags:          item.Tags,
 			Epic:          item.Epic,
 			Sprint:        item.Sprint,

@@ -25,7 +25,7 @@ type primeData struct {
 	Active           []primeItem    `json:"active"`
 	Ready            []primeItem    `json:"ready"`
 	Issues           int            `json:"open_issues"`
-	IssuesBySeverity map[string]int `json:"issues_by_severity"`
+	IssuesByPriority map[int]int `json:"issues_by_priority"` // I-406: priority-bucketed open issues
 	Queued           int            `json:"queued_tasks"`
 	Archive          int            `json:"archived"`
 	Guidance         string         `json:"guidance,omitempty"`
@@ -166,7 +166,7 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 	data := primeData{
 		Active:           active,
 		Ready:            ready,
-		IssuesBySeverity: make(map[string]int),
+		IssuesByPriority: make(map[int]int),
 		Sprint: &sprintContext{
 			ID:         sp.ID,
 			Title:      sp.Title,
@@ -469,10 +469,12 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 
 	// Open issues by severity
 	b.WriteString("## Open Issues\n")
-	blocking := data.IssuesBySeverity["critical"] + data.IssuesBySeverity["high"]
-	important := data.IssuesBySeverity["medium"]
-	techDebt := data.IssuesBySeverity["low"]
-	b.WriteString(fmt.Sprintf("  %d blocking  %d important  %d tech-debt\n\n", blocking, important, techDebt))
+	// I-406: bucket open issues by priority (0-4) instead of legacy
+	// severity. The labels keep operator orientation: p0/p1 are urgent,
+	// p2 is the default, p3/p4 are deferred / tech-debt territory.
+	b.WriteString(fmt.Sprintf("  p0: %d  p1: %d  p2: %d  p3: %d  p4: %d\n\n",
+		data.IssuesByPriority[0], data.IssuesByPriority[1], data.IssuesByPriority[2],
+		data.IssuesByPriority[3], data.IssuesByPriority[4]))
 
 	// Summary
 	b.WriteString("## Summary\n")
@@ -501,7 +503,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 
 func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData {
 	data := primeData{
-		IssuesBySeverity: make(map[string]int),
+		IssuesByPriority: make(map[int]int),
 	}
 
 	// Active work
@@ -530,15 +532,16 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 		})
 	}
 
-	// Counts and issue severity
+	// I-406: counts + open-issues-by-priority. Priority field replaces
+	// severity; items missing priority bucket as p2.
 	for _, item := range s.All() {
 		if item.Type == "issue" && item.Status == "open" {
 			data.Issues++
-			sev := item.Severity
-			if sev == "" {
-				sev = "medium"
+			p := 2
+			if item.Priority != nil {
+				p = *item.Priority
 			}
-			data.IssuesBySeverity[sev]++
+			data.IssuesByPriority[p]++
 		}
 		if isStartStatus(item, cfg) {
 			data.Queued++
