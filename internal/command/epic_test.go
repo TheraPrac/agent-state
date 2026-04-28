@@ -575,7 +575,7 @@ func TestCloseRecordsTimeTracking(t *testing.T) {
 	Start(s, cfg, "T-001", StartOpts{})
 
 	// Close
-	code := Close(s, cfg, "T-001", "completed", CloseOpts{Force: true})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{Force: true})
 	if code != 0 {
 		t.Fatalf("Close returned %d, want 0", code)
 	}
@@ -583,7 +583,7 @@ func TestCloseRecordsTimeTracking(t *testing.T) {
 	item, _ := s.Get("T-001")
 	completedAt, ok := item.TimeTracking["completed_at"]
 	if !ok || completedAt == "" {
-		t.Error("expected completed_at in time_tracking")
+		t.Error("expected done_at in time_tracking")
 	}
 
 	wallHours, ok := item.TimeTracking["wall_time_hours"]

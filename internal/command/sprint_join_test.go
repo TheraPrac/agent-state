@@ -263,7 +263,7 @@ depends_on:
 `)
 	writeFile(t, filepath.Join(root, "archive", "T-004-done.md"), `id: T-004
 type: task
-status: completed
+status: done
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 completed: 2026-03-25T10:00:00-06:00
@@ -570,7 +570,7 @@ func TestPrimeSprintScopedOnlyCompletedItems(t *testing.T) {
 
 	writeFile(t, filepath.Join(root, "archive", "T-001-done.md"), `id: T-001
 type: task
-status: completed
+status: done
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 completed: 2026-03-25T10:00:00-06:00

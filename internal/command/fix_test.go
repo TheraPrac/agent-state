@@ -47,7 +47,7 @@ blocks:
 	// Issue missing severity, depends_on, blocks
 	writeFile(t, filepath.Join(root, "issues", "I-001-bare.md"), `id: I-001
 type: issue
-status: open
+status: queued
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 title: Bare issue

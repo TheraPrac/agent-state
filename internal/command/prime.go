@@ -535,7 +535,7 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 	// I-406: counts + open-issues-by-priority. Priority field replaces
 	// severity; items missing priority bucket as p2.
 	for _, item := range s.All() {
-		if item.Type == "issue" && item.Status == "open" {
+		if item.Type == "issue" && item.Status == "queued" {
 			data.Issues++
 			p := 2
 			if item.Priority != nil {

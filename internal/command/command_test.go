@@ -77,7 +77,7 @@ next_actions:
 
 	writeFile(t, filepath.Join(root, "issues", "I-001-bug.md"), `id: I-001
 type: issue
-status: open
+status: queued
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 
@@ -87,7 +87,7 @@ priority: 1
 
 	writeFile(t, filepath.Join(root, "archive", "T-004-done.md"), `id: T-004
 type: task
-status: completed
+status: done
 created: 2026-03-20T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 
@@ -334,14 +334,14 @@ func TestStartNotFound(t *testing.T) {
 
 func TestCloseHappy(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-003", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-003", "done", CloseOpts{})
 	if code != 0 {
 		t.Errorf("Close T-003 returned %d, want 0", code)
 	}
 
 	item, _ := s.Get("T-003")
-	if item.Status != "completed" {
-		t.Errorf("status = %q, want completed", item.Status)
+	if item.Status != "done" {
+		t.Errorf("status = %q, want done", item.Status)
 	}
 }
 
@@ -371,7 +371,7 @@ func TestCloseInvalidResolution(t *testing.T) {
 
 func TestCloseNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-999", "completed", CloseOpts{})
+	code := Close(s, cfg, "T-999", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("Close not found returned %d, want 1", code)
 	}
@@ -388,7 +388,7 @@ func TestCloseAutoRemovesFromQueue(t *testing.T) {
 		t.Fatalf("QueueAdd T-001 = %d", code)
 	}
 
-	if code := Close(s, cfg, "T-003", "completed", CloseOpts{}); code != 0 {
+	if code := Close(s, cfg, "T-003", "done", CloseOpts{}); code != 0 {
 		t.Fatalf("Close T-003 = %d", code)
 	}
 
@@ -401,7 +401,7 @@ func TestCloseAutoRemovesFromQueue(t *testing.T) {
 func TestCloseQueueAutoRemoveSilentOnUnqueuedItem(t *testing.T) {
 	// Closing an item that isn't in the queue must not error.
 	s, cfg := setupTestEnv(t)
-	if code := Close(s, cfg, "T-003", "completed", CloseOpts{}); code != 0 {
+	if code := Close(s, cfg, "T-003", "done", CloseOpts{}); code != 0 {
 		t.Errorf("Close on unqueued item returned %d, want 0", code)
 	}
 }
@@ -752,7 +752,7 @@ func TestCloseWontfixRequiresReason(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// First start the issue so it's active
 	Start(s, cfg, "I-001", StartOpts{})
-	code := Close(s, cfg, "I-001", "wontfix", CloseOpts{})
+	code := Close(s, cfg, "I-001", "abandoned", CloseOpts{})
 	if code != 2 {
 		t.Errorf("Close wontfix without reason returned %d, want 2", code)
 	}
@@ -761,7 +761,7 @@ func TestCloseWontfixRequiresReason(t *testing.T) {
 func TestCloseWontfixWithReason(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	Start(s, cfg, "I-001", StartOpts{})
-	code := Close(s, cfg, "I-001", "wontfix", CloseOpts{Reason: "not a real bug"})
+	code := Close(s, cfg, "I-001", "abandoned", CloseOpts{Reason: "not a real bug"})
 	if code != 0 {
 		t.Errorf("Close wontfix with reason returned %d, want 0", code)
 	}

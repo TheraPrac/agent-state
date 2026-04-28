@@ -243,7 +243,8 @@ func writeBlocked(b *strings.Builder, s *store.Store, cfg *config.Config, g *dep
 }
 
 func writeOpenIssues(b *strings.Builder, s *store.Store) {
-	issues := s.List(store.TypeFilter("issue"), store.StatusFilter("open"))
+	// I-433: open issues are now status:queued under the unified vocabulary.
+	issues := s.List(store.TypeFilter("issue"), store.StatusFilter("queued"))
 	if len(issues) == 0 {
 		return
 	}

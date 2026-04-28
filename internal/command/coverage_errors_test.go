@@ -188,7 +188,7 @@ delivery:
 `), 0644)
 	writeFile(t, filepath.Join(root, "archive", "T-001-done.md"), `id: T-001
 type: task
-status: completed
+status: done
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 title: Done task

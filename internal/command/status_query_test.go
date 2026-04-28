@@ -261,7 +261,7 @@ func TestStatusQuery_JSONDefaultsToNonTerminal(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	for _, r := range rows {
-		if r.Status != "completed" {
+		if r.Status != "done" {
 			t.Errorf("status:completed filter leaked non-completed: %+v", r)
 		}
 	}

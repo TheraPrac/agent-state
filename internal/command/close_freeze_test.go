@@ -62,7 +62,7 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 		return "", fmt.Errorf("unexpected git call: %s", key)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "completed", CloseOpts{
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{
 		Force: true, // bypass gates
 		FilesOpts: FilesOpts{
 			ResolveRepo: resolve,
@@ -130,7 +130,7 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 func TestClose_NoWorktreesWritesZeros(t *testing.T) {
 	env := testutil.NewEnv(t)
 	// No worktree config at all — configuredRepos returns nil → zero totals
-	code := Close(env.S, env.Cfg, "T-003", "completed", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
 	if code != 0 {
 		t.Fatalf("close exit=%d", code)
 	}

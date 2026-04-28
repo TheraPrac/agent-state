@@ -119,14 +119,14 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 7: Close T-006 to unblock T-005 ===
-	code = Close(s, cfg, "T-006", "completed", CloseOpts{})
+	code = Close(s, cfg, "T-006", "done", CloseOpts{})
 	if code != 0 {
 		t.Fatalf("Close T-006 returned %d", code)
 	}
 
 	item6, _ = s.Get("T-006")
-	if item6.Status != "completed" {
-		t.Errorf("T-006 status = %q, want completed", item6.Status)
+	if item6.Status != "done" {
+		t.Errorf("T-006 status = %q, want done", item6.Status)
 	}
 
 	// === Step 8: Now start T-005 (should succeed, dep resolved) ===
@@ -193,14 +193,14 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 13: Close T-005 ===
-	code = Close(s, cfg, "T-005", "completed", CloseOpts{})
+	code = Close(s, cfg, "T-005", "done", CloseOpts{})
 	if code != 0 {
 		t.Fatalf("Close T-005 returned %d", code)
 	}
 
 	item, _ = s.Get("T-005")
-	if item.Status != "completed" {
-		t.Errorf("final status = %q, want completed", item.Status)
+	if item.Status != "done" {
+		t.Errorf("final status = %q, want done", item.Status)
 	}
 
 	// === Step 14: Verify changelog ===
@@ -262,14 +262,14 @@ func TestLifecycleIssueWithPriority(t *testing.T) {
 	}
 
 	// Close as resolved
-	code = Close(s, cfg, "I-002", "resolved", CloseOpts{})
+	code = Close(s, cfg, "I-002", "done", CloseOpts{})
 	if code != 0 {
 		t.Fatalf("Close issue returned %d", code)
 	}
 
 	item, _ := s.Get("I-002")
-	if item.Status != "resolved" {
-		t.Errorf("issue status = %q, want resolved", item.Status)
+	if item.Status != "done" {
+		t.Errorf("issue status = %q, want done", item.Status)
 	}
 }
 

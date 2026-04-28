@@ -261,8 +261,8 @@ func TestQueuePruneDropsTerminalItems(t *testing.T) {
 
 	// Mark T-001 as completed (terminal); T-002 + T-003 stay queued/active.
 	if err := s.Mutate("T-001", func(it *model.Item) error {
-		it.Status = "completed"
-		it.Doc.SetField("status", "completed")
+		it.Status = "done"
+		it.Doc.SetField("status", "done")
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-001: %v", err)

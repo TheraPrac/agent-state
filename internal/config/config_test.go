@@ -18,7 +18,10 @@ func TestDefaults(t *testing.T) {
 	if !ok {
 		t.Fatal("default config missing 'task' type")
 	}
-	wantStatuses := []string{"queued", "active", "completed", "abandoned", "archived"}
+	// I-433: unified status vocabulary across types — `done` replaces
+	// `completed` (task) and `resolved` (issue); `abandoned` replaces
+	// `wontfix` (issue).
+	wantStatuses := []string{"queued", "active", "done", "abandoned", "archived"}
 	if len(taskType.Statuses) != len(wantStatuses) {
 		t.Fatalf("task statuses = %v, want %v", taskType.Statuses, wantStatuses)
 	}
@@ -84,12 +87,17 @@ func TestDirectoryForStatus(t *testing.T) {
 		status   string
 		want     string
 	}{
+		// I-433: unified vocabulary — done/abandoned/archived for terminal,
+		// queued/active for live. Old per-type values (completed, open,
+		// resolved, wontfix) are retired.
 		{"task", "queued", "tasks"},
 		{"task", "active", "tasks"},
-		{"task", "completed", "archive"},
+		{"task", "done", "archive"},
 		{"task", "abandoned", "archive"},
-		{"issue", "open", "issues"},
-		{"issue", "resolved", "archive"},
+		{"issue", "queued", "issues"},
+		{"issue", "active", "issues"},
+		{"issue", "done", "archive"},
+		{"issue", "abandoned", "archive"},
 		{"task", "nonexistent", ""},
 		{"nonexistent", "queued", ""},
 	}

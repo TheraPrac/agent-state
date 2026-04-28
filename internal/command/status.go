@@ -178,7 +178,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 		switch {
 		case item.Status == "active":
 			activeCount++
-		case item.Type == "issue" && item.Status == "open":
+		case item.Type == "issue" && item.Status == "queued":
 			issueCount++
 		case isStartStatus(item, cfg):
 			queuedCount++
@@ -295,7 +295,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 	if !opts.Issues && !opts.Tasks && !opts.Recent {
 		priCounts := map[int]int{}
 		for _, item := range s.All() {
-			if item.Type == "issue" && item.Status == "open" {
+			if item.Type == "issue" && item.Status == "queued" {
 				p := 2
 				if item.Priority != nil {
 					p = *item.Priority
@@ -327,7 +327,8 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 }
 
 func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
-	openIssues := s.List(store.TypeFilter("issue"), store.StatusFilter("open"))
+	// I-433: open issues are now status:queued under the unified vocabulary.
+	openIssues := s.List(store.TypeFilter("issue"), store.StatusFilter("queued"))
 	if len(openIssues) == 0 {
 		return
 	}
