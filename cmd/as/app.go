@@ -526,6 +526,11 @@ YAML block scalars so multi-line values replace cleanly.`,
 			sprintsAll, _ := cmd.Flags().GetBool("sprints-all")
 			sprintsClosed, _ := cmd.Flags().GetBool("sprints-closed")
 			sprintsRunning, _ := cmd.Flags().GetBool("sprints-running")
+			// T-329: query/sort/filter on the unified status surface.
+			filters, _ := cmd.Flags().GetStringSlice("filter")
+			sortStr, _ := cmd.Flags().GetString("sort")
+			since, _ := cmd.Flags().GetString("since")
+			jsonOut, _ := cmd.Flags().GetBool("json")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
@@ -533,6 +538,7 @@ YAML block scalars so multi-line values replace cleanly.`,
 				Sprints: sprints, SprintsID: sprintsID,
 				SprintsAll: sprintsAll, SprintsClosed: sprintsClosed,
 				SprintsRunning: sprintsRunning,
+				Filters: filters, Sort: sortStr, Since: since, JSON: jsonOut,
 			})
 		},
 	}
@@ -550,6 +556,14 @@ YAML block scalars so multi-line values replace cleanly.`,
 	statusCmd.Flags().Bool("sprints-all", false, "with --sprints: include archived")
 	statusCmd.Flags().Bool("sprints-closed", false, "with --sprints: only closed/archived")
 	statusCmd.Flags().Bool("sprints-running", false, "with --sprints: only sprints with a running pipeline")
+	// T-329: query/sort/filter on the unified status surface.
+	statusCmd.Flags().StringSlice("filter", nil,
+		"filter spec key:value, repeatable (keys: agent, assigned, status, type, tag, priority, epic, sprint)")
+	statusCmd.Flags().String("sort", "",
+		"sort field[,asc|desc] (fields: cost, time, lines, last_touched, priority, id)")
+	statusCmd.Flags().String("since", "",
+		"only items touched within this duration (e.g. 7d, 24h, 30m)")
+	statusCmd.Flags().Bool("json", false, "emit JSON instead of human-readable text")
 	root.AddCommand(statusCmd)
 
 	statsCmd := &cobra.Command{
