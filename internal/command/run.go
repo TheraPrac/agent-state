@@ -893,28 +893,35 @@ func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, en
 	cleanup := registerRunProcess(cfg, "item:"+itemID)
 	defer cleanup()
 	primeClaimState(s, cfg)
-	// I-429: surface binary drift before tokens get spent on a stale build.
-	// (RunItem with a sprint delegates to Run which would also fire — keep
-	// it here so the standalone-item path is covered too.)
-	printBinaryDriftWarning(cfg, os.Stdout)
 
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
+		// I-429: even on the missing-pipeline early-exit, an operator
+		// who's about to fix the config + retry should know the binary
+		// is stale.
+		printBinaryDriftWarning(cfg, os.Stdout)
 		fmt.Fprintln(os.Stderr, "no run.pipeline configured")
 		return 1
 	}
 
 	item, ok := s.Get(itemID)
 	if !ok {
+		printBinaryDriftWarning(cfg, os.Stdout)
 		fmt.Fprintf(os.Stderr, "not found: %s\n", itemID)
 		return 1
 	}
 
-	// If item has a sprint, run within that sprint context
+	// If item has a sprint, run within that sprint context. Don't fire
+	// the drift banner here — Run() will fire it once below, and a double
+	// banner on the sprint-delegating path would be noisy.
 	if item.Sprint != "" {
 		opts.ItemFilter = itemID
 		return Run(s, cfg, item.Sprint, opts, engine)
 	}
+
+	// I-429: standalone path (no sprint) — Run() never fires here, so
+	// surface drift on this side of the branch.
+	printBinaryDriftWarning(cfg, os.Stdout)
 
 	// No sprint — run standalone (single item, no sprint validation)
 	fmt.Printf("Running %s standalone (no sprint)\n", itemID)

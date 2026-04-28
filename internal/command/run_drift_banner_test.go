@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/model"
 )
 
 // I-429: every `st run` entrypoint must surface the binary-drift banner
@@ -58,6 +60,35 @@ func TestRunDriftBanner_RunSprintSurfacesBanner(t *testing.T) {
 	})
 	if !containsDriftBanner(out) {
 		t.Errorf("Run did not emit drift banner; output:\n%s", out)
+	}
+}
+
+// /code-review finding: RunItem with a sprint delegates to Run, so the
+// banner must NOT fire twice along that path. Originally I-429's first
+// cut had RunItem fire the banner unconditionally, then Run fire again
+// after delegation — this test pins the once-per-invocation guarantee.
+func TestRunDriftBanner_SprintItemFiresOnce(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	writeAgentRegistrationYAML(t, cfg.AgentsDir(), "agent-x", "deadbeef00", os.Getpid())
+	writeAgentRegistrationYAML(t, cfg.AgentsDir(), "agent-y", "cafebabe11", os.Getpid())
+
+	// Mark T-001 as belonging to a sprint so RunItem delegates to Run.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Doc.SetField("sprint", "test-sprint")
+		it.Sprint = "test-sprint"
+		return nil
+	}); err != nil {
+		t.Fatalf("seed sprint: %v", err)
+	}
+	cfg.Run = nil // Run() bails after the banner
+
+	out := captureStdout(t, func() {
+		_ = RunItem(s, cfg, "T-001", RunOpts{}, RunEngine{})
+	})
+	count := strings.Count(out, "binary drift")
+	if count != 1 {
+		t.Errorf("expected exactly 1 drift banner on sprint-delegating RunItem, got %d. Output:\n%s", count, out)
 	}
 }
 
