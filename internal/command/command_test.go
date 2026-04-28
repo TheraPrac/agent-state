@@ -82,7 +82,7 @@ created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
 
 title: A bug
-severity: high
+priority: 1
 `)
 
 	writeFile(t, filepath.Join(root, "archive", "T-004-done.md"), `id: T-004
@@ -643,32 +643,41 @@ func TestStatusCompleted(t *testing.T) {
 	}
 }
 
-func TestSeverityRank(t *testing.T) {
+// I-406: TestSeverityRank / TestSeverityColor replaced by priority
+// equivalents below. The severity-specific helpers are gone.
+
+func TestPriorityRank(t *testing.T) {
 	tests := []struct {
-		sev  string
+		p    *int
 		want int
 	}{
-		{"critical", 0}, {"high", 1}, {"medium", 2}, {"normal", 3}, {"low", 4}, {"unknown", 5},
+		{intPtr(0), 0}, {intPtr(1), 1}, {intPtr(2), 2},
+		{intPtr(3), 3}, {intPtr(4), 4},
+		{nil, 99}, // unprioritized sorts last
 	}
 	for _, tt := range tests {
-		got := severityRank(tt.sev)
+		got := priorityRank(tt.p)
 		if got != tt.want {
-			t.Errorf("severityRank(%q) = %d, want %d", tt.sev, got, tt.want)
+			t.Errorf("priorityRank(%v) = %d, want %d", tt.p, got, tt.want)
 		}
 	}
 }
 
-func TestSeverityColor(t *testing.T) {
-	if severityColor("critical") == "" {
-		t.Error("critical should have a color")
+func TestPriorityColor(t *testing.T) {
+	// p0/p1 are urgent and should have a color; p2 is yellow (default
+	// dashboard yellow), p3+ are dimmed without a color of their own.
+	if priorityColor(intPtr(0)) == "" {
+		t.Error("p0 should have a color")
 	}
-	if severityColor("high") == "" {
-		t.Error("high should have a color")
+	if priorityColor(intPtr(1)) == "" {
+		t.Error("p1 should have a color")
 	}
-	if severityColor("medium") != "" {
-		t.Error("medium should not have a color")
+	if priorityColor(nil) != "" {
+		t.Error("nil priority should have no color")
 	}
 }
+
+// intPtr lives in epic_test.go.
 
 func TestTruncate(t *testing.T) {
 	if truncate("short", 10) != "short" {

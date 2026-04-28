@@ -233,7 +233,12 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 			if stage != "" {
 				stageStr = fmt.Sprintf("  (%s)", stage)
 			}
-			fmt.Printf("  %s%-8s%s %s%s%s\n", cBold, item.ID, cReset, item.Title, stageStr, assigned)
+			// I-406: every line surfaces priority + status so the
+			// operator doesn't have to scan section headers to know
+			// where an item sits.
+			fmt.Printf("  %s %s  %s%-8s%s %s%s%s\n",
+				priorityLabel(item.Priority), statusLabel(item.Status),
+				cBold, item.ID, cReset, item.Title, stageStr, assigned)
 			if line := ExtractItemMetrics(item, cfg.ManifestDir(), now, false).FormatLine(); line != "" {
 				fmt.Printf("           %s%s%s\n", cDim, line, cReset)
 			}
@@ -257,7 +262,8 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 			if stage != "" {
 				stageStr = fmt.Sprintf("  (%s)", stage)
 			}
-			fmt.Printf("  %s▶ on DEV%s  %s%-8s%s %s%s%s\n",
+			fmt.Printf("  %s %s  %s▶ on DEV%s  %s%-8s%s %s%s%s\n",
+				priorityLabel(item.Priority), statusLabel(item.Status),
 				cMagenta, cReset, cBold, item.ID, cReset, truncate(item.Title, 55), stageStr, deployed)
 		}
 		fmt.Println()
@@ -283,22 +289,24 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 		printCompleted(s, cfg)
 	}
 
-	// Summary footer (only when sections are collapsed)
+	// Summary footer (only when sections are collapsed). I-406: bucket
+	// open issues by priority instead of severity. Items missing priority
+	// (shouldn't happen post-migration, but defensive) bucket as p2.
 	if !opts.Issues && !opts.Tasks && !opts.Recent {
-		sevCounts := map[string]int{}
+		priCounts := map[int]int{}
 		for _, item := range s.All() {
 			if item.Type == "issue" && item.Status == "open" {
-				sev := item.Severity
-				if sev == "" {
-					sev = "medium"
+				p := 2
+				if item.Priority != nil {
+					p = *item.Priority
 				}
-				sevCounts[sev]++
+				priCounts[p]++
 			}
 		}
-		sevSummary := ""
-		for _, sev := range []string{"critical", "high", "medium", "low"} {
-			if n, ok := sevCounts[sev]; ok && n > 0 {
-				sevSummary += fmt.Sprintf("  %s%d %s%s", cYellow, n, sevAbbrev(sev), cReset)
+		priSummary := ""
+		for p := 0; p <= 4; p++ {
+			if n, ok := priCounts[p]; ok && n > 0 {
+				priSummary += fmt.Sprintf("  %s%d %s%s", cYellow, n, priorityAbbrev(p), cReset)
 			}
 		}
 
@@ -310,7 +318,7 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 			}
 		}
 
-		fmt.Printf("  %sIssues:%s %d open%s  %s(status -i)%s\n", cBold, cReset, issueCount, sevSummary, cDim, cReset)
+		fmt.Printf("  %sIssues:%s %d open%s  %s(status -i)%s\n", cBold, cReset, issueCount, priSummary, cDim, cReset)
 		fmt.Printf("  %sTasks:%s  %d queued  %s(status -t)%s\n", cBold, cReset, queuedCount, cDim, cReset)
 		fmt.Printf("  %sRecent:%s %d closed (7d)  %s(status -r)%s\n", cBold, cReset, recentCount, cDim, cReset)
 	}
@@ -388,10 +396,12 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 		return gi.tag < gj.tag
 	})
 
-	// Sort items within each group by severity
+	// I-406: sort items within each group by priority (lower = more
+	// urgent). Items missing priority sort last via priorityRank's nil
+	// handling.
 	for _, grp := range groupMap {
 		sort.Slice(grp.items, func(i, j int) bool {
-			ri, rj := severityRank(grp.items[i].Severity), severityRank(grp.items[j].Severity)
+			ri, rj := priorityRank(grp.items[i].Priority), priorityRank(grp.items[j].Priority)
 			if ri != rj {
 				return ri < rj
 			}
@@ -399,19 +409,19 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 		})
 	}
 
-	// Count by severity for header
-	sevCounts := map[string]int{}
+	// Count by priority for header summary.
+	priCounts := map[int]int{}
 	for _, item := range openIssues {
-		sev := item.Severity
-		if sev == "" {
-			sev = "medium"
+		p := 2
+		if item.Priority != nil {
+			p = *item.Priority
 		}
-		sevCounts[sev]++
+		priCounts[p]++
 	}
 	summary := fmt.Sprintf("  %s%d open%s", cBold, len(openIssues), cReset)
-	for _, sev := range []string{"critical", "high", "medium", "normal", "low"} {
-		if n, ok := sevCounts[sev]; ok && n > 0 {
-			summary += fmt.Sprintf("  %s%d %s%s", cYellow, n, sevAbbrev(sev), cReset)
+	for p := 0; p <= 4; p++ {
+		if n, ok := priCounts[p]; ok && n > 0 {
+			summary += fmt.Sprintf("  %s%d %s%s", cYellow, n, priorityAbbrev(p), cReset)
 		}
 	}
 
@@ -450,10 +460,6 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 		fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
 
 		for _, item := range grp.items {
-			sev := item.Severity
-			if sev == "" {
-				sev = "medium"
-			}
 			blocked := g.IsBlocked(item.ID)
 			idColor := cGreen
 			if blocked {
@@ -465,8 +471,10 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 			if item.PlanApproved {
 				planBadge = fmt.Sprintf("  %s󰙅%s", cGreen, cReset)
 			}
+			// I-406: render `[pN]` priority tag in the trailing position
+			// where the severity label used to sit.
 			fmt.Printf("    %s%-8s%s %s  %s%s%s  %s%s\n",
-				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, sevLabel(sev), planBadge)
+				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, priorityLabel(item.Priority), planBadge)
 
 			blocksItems := g.BlocksItems(item.ID)
 			if len(blocksItems) > 0 {
@@ -876,11 +884,10 @@ func statusSingle(s *store.Store, cfg *config.Config, id string) int {
 	if label := formatAssignment(item); label != "" {
 		fmt.Printf("  Assigned: %s\n", label)
 	}
-	if item.Severity != "" {
-		fmt.Printf("  Severity: %s\n", item.Severity)
-	}
+	// I-406: severity field is dead. Priority is the unified urgency
+	// signal across both tasks and issues.
 	if item.Priority != nil {
-		fmt.Printf("  Priority: %d\n", *item.Priority)
+		fmt.Printf("  Priority: p%d\n", *item.Priority)
 	}
 
 	stage := deliveryStage(item)
@@ -1000,54 +1007,90 @@ func isTerminal(item *model.Item, cfg *config.Config) bool {
 	return false
 }
 
-func severityRank(sev string) int {
-	switch sev {
-	case "critical":
-		return 0
-	case "high":
-		return 1
-	case "medium":
-		return 2
-	case "normal":
-		return 3
-	case "low":
-		return 4
+// I-406: severity-based helpers replaced with priority equivalents.
+// Priority is int 0-4 (0=highest); the helpers below render and order
+// items uniformly across both tasks and issues.
+
+// priorityRank returns a sort key from a priority pointer. nil sorts
+// last (treated as worse than p4) so unprioritized items don't bubble
+// to the top of severity-sorted lists.
+func priorityRank(p *int) int {
+	if p == nil {
+		return 99
+	}
+	return *p
+}
+
+// priorityAbbrev returns a fixed-width 3-char abbreviation for use in
+// counted summary lines like "8 p0  90 p1  18 p2".
+func priorityAbbrev(p int) string {
+	if p < 0 || p > 4 {
+		return "p?"
+	}
+	return fmt.Sprintf("p%d", p)
+}
+
+// priorityLabel returns a colorized 3-char tag like "[p0]". p0/p1 are
+// red/orange (urgent), p2 yellow (default), p3/p4 green/dim. nil renders
+// as a dim placeholder so the column width stays consistent.
+func priorityLabel(p *int) string {
+	if p == nil {
+		return fmt.Sprintf("%s[p?]%s", cDim, cReset)
+	}
+	switch *p {
+	case 0:
+		return fmt.Sprintf("%s[p0]%s", cRed, cReset)
+	case 1:
+		return fmt.Sprintf("%s[p1]%s", cOrange, cReset)
+	case 2:
+		return fmt.Sprintf("%s[p2]%s", cYellow, cReset)
+	case 3:
+		return fmt.Sprintf("%s[p3]%s", cGreen, cReset)
+	case 4:
+		return fmt.Sprintf("%s[p4]%s", cDim, cReset)
 	default:
-		return 5
+		return fmt.Sprintf("%s[p?]%s", cDim, cReset)
 	}
 }
 
-func sevAbbrev(sev string) string {
-	switch sev {
-	case "critical":
-		return "crt"
-	case "high":
-		return "hig"
-	case "medium":
-		return "med"
-	case "normal":
-		return "nrm"
-	case "low":
-		return "low"
+// priorityColor returns just the ANSI color code for a priority, used
+// when callers want to render their own labels in the priority's color.
+func priorityColor(p *int) string {
+	if p == nil {
+		return ""
+	}
+	switch *p {
+	case 0:
+		return cRed
+	case 1:
+		return cOrange
+	case 2:
+		return cYellow
 	default:
-		return sev
+		return ""
 	}
 }
 
-func sevLabel(sev string) string {
-	switch sev {
-	case "critical":
-		return fmt.Sprintf("%sCRT%s", cRed, cReset)
-	case "high":
-		return fmt.Sprintf("%sHIG%s", cOrange, cReset)
-	case "medium":
-		return fmt.Sprintf("%sMED%s", cYellow, cReset)
-	case "normal":
-		return fmt.Sprintf("%sNRM%s", cGreen, cReset)
-	case "low":
-		return fmt.Sprintf("%sLOW%s", cDim, cReset)
+// statusLabel renders a short colorized status tag like "[active]" or
+// "[queued]". I-406's display story: every item line surfaces its
+// status so the operator doesn't have to scan section headers to know
+// where it sits in its lifecycle.
+func statusLabel(status string) string {
+	switch status {
+	case "active":
+		return fmt.Sprintf("%s[active]%s", cGreen, cReset)
+	case "queued":
+		return fmt.Sprintf("%s[queued]%s", cCyan, cReset)
+	case "open":
+		return fmt.Sprintf("%s[open]%s", cCyan, cReset)
+	case "completed", "resolved", "done":
+		return fmt.Sprintf("%s[%s]%s", cDim, status, cReset)
+	case "abandoned", "wontfix":
+		return fmt.Sprintf("%s[%s]%s", cDim, status, cReset)
+	case "archived":
+		return fmt.Sprintf("%s[archived]%s", cDim, cReset)
 	default:
-		return fmt.Sprintf("%-3s", sev)
+		return fmt.Sprintf("[%s]", status)
 	}
 }
 
@@ -1065,16 +1108,7 @@ func workStatus(item *model.Item) string {
 	return fmt.Sprintf("[%sno work%s]", cDim, cReset)
 }
 
-func severityColor(sev string) string {
-	switch sev {
-	case "critical":
-		return cRed
-	case "high":
-		return cYellow
-	default:
-		return ""
-	}
-}
+// I-406: severityColor removed; callers use priorityColor instead.
 
 func truncate(s string, max int) string {
 	runes := []rune(s)

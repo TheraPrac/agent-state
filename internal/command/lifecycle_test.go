@@ -56,8 +56,8 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatal("T-006 should exist after create")
 	}
 
-	// === Step 3: Create an issue with severity ===
-	code = Create(s, cfg, "issue", "Bug found", CreateOpts{Priority: 0, Severity: "high"})
+	// === Step 3: Create an issue with priority (I-406; severity is dead) ===
+	code = Create(s, cfg, "issue", "Bug found", CreateOpts{Priority: 1})
 	if code != 0 {
 		t.Fatalf("Create issue returned %d", code)
 	}
@@ -65,8 +65,8 @@ func TestFullLifecycle(t *testing.T) {
 	if !ok {
 		t.Fatal("I-002 should exist after create")
 	}
-	if issue.Severity != "high" {
-		t.Errorf("issue severity = %q, want high", issue.Severity)
+	if issue.Priority == nil || *issue.Priority != 1 {
+		t.Errorf("issue priority = %v, want 1", issue.Priority)
 	}
 
 	// === Step 4: Add dependency (T-005 depends on T-006) ===
@@ -239,17 +239,17 @@ func TestFullLifecycle(t *testing.T) {
 	t.Log("Full lifecycle test passed: create → dep add → start (blocked) → close dep → start → update → tag add/rm → dep rm → close → verify changelog")
 }
 
-// TestLifecycleIssueWithSeverity tests the issue-specific flow.
-func TestLifecycleIssueWithSeverity(t *testing.T) {
+// TestLifecycleIssueWithPriority tests the issue-specific flow with the
+// I-406 unified priority field (severity is dead).
+func TestLifecycleIssueWithPriority(t *testing.T) {
 	root := setupTestEnvRoot(t)
 	cfg, _ := config.Load(root)
 	s, _ := store.New(cfg)
 	os.MkdirAll(cfg.ChangelogDir(), 0755)
 
-	// Create issue with severity
+	// Create issue with priority (no longer takes severity).
 	code := Create(s, cfg, "issue", "Security vulnerability", CreateOpts{
 		Priority: 0,
-		Severity: "critical",
 	})
 	if code != 0 {
 		t.Fatalf("Create issue returned %d", code)

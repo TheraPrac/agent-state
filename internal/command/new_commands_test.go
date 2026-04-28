@@ -316,28 +316,71 @@ func TestLogWithLimit(t *testing.T) {
 	}
 }
 
-// === Create with severity ===
+// === Create with priority (I-406) ===
 
-func TestCreateIssueSeverity(t *testing.T) {
+// I-406: severity is dead. The CLI rejects --severity at the entry point;
+// callers use --priority (0-4) instead.
+func TestCreateIssueRejectsSeverity(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 	code := Create(s, cfg, "issue", "Critical bug", CreateOpts{Priority: 0, Severity: "critical"})
-	if code != 0 {
-		t.Errorf("Create issue with severity returned %d, want 0", code)
+	if code != 2 {
+		t.Errorf("Create issue with --severity should exit 2 (deprecated), got %d", code)
 	}
+}
 
+func TestCreateIssueWithPriority(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Create(s, cfg, "issue", "Critical bug", CreateOpts{Priority: 0})
+	if code != 0 {
+		t.Errorf("Create issue with priority=0 returned %d, want 0", code)
+	}
 	item, ok := s.Get("I-002")
 	if !ok {
 		t.Fatal("I-002 should exist after create")
 	}
-	if item.Severity != "critical" {
-		t.Errorf("severity = %q, want critical", item.Severity)
+	if item.Priority == nil || *item.Priority != 0 {
+		t.Errorf("priority = %v, want 0", item.Priority)
 	}
-
-	// Verify file on disk
 	path, _ := s.Path("I-002")
 	content, _ := os.ReadFile(path)
-	if !containsStr(string(content), "severity: critical") {
-		t.Error("file should contain 'severity: critical'")
+	if !containsStr(string(content), "priority: 0") {
+		t.Error("file should contain 'priority: 0'")
+	}
+}
+
+// I-406: `st update <id> severity <anything>` must exit non-zero with
+// the migration pointer rather than silently writing a deprecated field.
+func TestUpdateRejectsSeverity(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	code := Update(s, cfg, "I-001", "severity", "high", UpdateModeValue)
+	if code != 2 {
+		t.Errorf("Update severity should exit 2 (deprecated), got %d", code)
+	}
+}
+
+// I-406: `st update <id> priority 9` must exit non-zero with a clear
+// must-be-0-4 message — the new value-set check.
+func TestUpdateRejectsOutOfRangePriority(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	if code := Update(s, cfg, "T-003", "priority", "9", UpdateModeValue); code != 2 {
+		t.Errorf("Update priority=9 should exit 2, got %d", code)
+	}
+	if code := Update(s, cfg, "T-003", "priority", "-1", UpdateModeValue); code != 2 {
+		t.Errorf("Update priority=-1 should exit 2, got %d", code)
+	}
+	if code := Update(s, cfg, "T-003", "priority", "abc", UpdateModeValue); code != 2 {
+		t.Errorf("Update priority=abc should exit 2, got %d", code)
+	}
+}
+
+// I-406: priority must be 0-4. Out-of-range rejected at create time.
+func TestCreateRejectsOutOfRangePriority(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	if code := Create(s, cfg, "task", "x", CreateOpts{Priority: 9}); code != 2 {
+		t.Errorf("Create with priority=9 should exit 2, got %d", code)
+	}
+	if code := Create(s, cfg, "task", "x", CreateOpts{Priority: -1}); code != 2 {
+		t.Errorf("Create with priority=-1 should exit 2, got %d", code)
 	}
 }
 

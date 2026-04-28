@@ -147,7 +147,10 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		},
 	}
 	createCmd.Flags().IntP("priority", "p", 2, "priority 0-4 (0=highest)")
-	createCmd.Flags().String("severity", "", "issue severity (critical, high, medium, low)")
+	// I-406: --severity is deprecated. Stays registered so callers passing
+	// it get the migration message from Create() instead of "unknown flag".
+	createCmd.Flags().String("severity", "", "DEPRECATED — use --priority (I-406)")
+	_ = createCmd.Flags().MarkDeprecated("severity", "use --priority (I-406)")
 	createCmd.Flags().String("tag", "", "initial tag")
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")

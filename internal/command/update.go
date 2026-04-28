@@ -56,6 +56,34 @@ const (
 // (depends_on, acceptance_criteria, etc.) accept multi-line input as a
 // list replacement.
 func Update(s *store.Store, cfg *config.Config, id, field, value string, mode UpdateMode) int {
+	// I-406: reject writes to the deprecated severity field with a
+	// migration pointer. The mapping is documented in cmd/migrate-priority.
+	if field == "severity" {
+		fmt.Fprintln(os.Stderr,
+			"update: severity is deprecated (I-406). Use priority (0-4) instead.\n"+
+				"  blocking|critical|p0    -> 0\n"+
+				"  high|important          -> 1\n"+
+				"  medium|normal           -> 2 (default)\n"+
+				"  tech-debt               -> 3 + tag tech-debt\n"+
+				"  low|minor               -> 4")
+		return 2
+	}
+
+	// I-406: priority must be 0-4. Reject explicit out-of-range values
+	// at the CLI boundary so a typo like `st update X priority 9` fails
+	// loud rather than silently corrupting the schema.
+	if field == "priority" {
+		// Only validate when value is supplied directly (not from
+		// stdin/editor — those modes resolve below).
+		if mode == UpdateModeValue && value != "" {
+			var n int
+			if _, err := fmt.Sscanf(value, "%d", &n); err != nil || n < 0 || n > 4 {
+				fmt.Fprintf(os.Stderr, "update: priority must be int 0-4 (got %q)\n", value)
+				return 2
+			}
+		}
+	}
+
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)

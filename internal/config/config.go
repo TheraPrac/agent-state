@@ -609,7 +609,10 @@ func Defaults() *Config {
 				StartStatus:      "open",
 				ActiveStatus:     "active",
 				TerminalStatuses: []string{"resolved", "wontfix", "archived"},
-				RequiredFields:   []string{"severity", "depends_on", "blocks"},
+				// I-406: severity dropped in favor of priority (p0-p4
+				// scale, shared with tasks). Priority isn't required at
+				// the schema level — create.go fills a default of 2.
+				RequiredFields: []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
 					"open":     "issues",
 					"active":   "issues",

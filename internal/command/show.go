@@ -92,8 +92,9 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 			}
 		}
 	}
-	if item.Severity != "" {
-		fmt.Printf("  severity: %s\n", item.Severity)
+	// I-406: severity is dead; priority is the unified urgency signal.
+	if item.Priority != nil {
+		fmt.Printf("  priority: p%d\n", *item.Priority)
 	}
 	if stage, ok := item.Delivery["stage"]; ok {
 		if str, ok := stage.(string); ok && str != "" {

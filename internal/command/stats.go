@@ -20,7 +20,7 @@ type StatsOpts struct {
 
 type statsData struct {
 	ByType     map[string]map[string]int `json:"by_type"`
-	BySeverity map[string]int            `json:"by_severity,omitempty"`
+	// I-406: BySeverity removed; ByPriority is the unified bucket.
 	ByPriority map[int]int               `json:"by_priority,omitempty"`
 	Total      int                       `json:"total"`
 	ThisWeek   struct {
@@ -98,20 +98,12 @@ func Stats(s *store.Store, cfg *config.Config, opts StatsOpts) int {
 	}
 	fmt.Printf("  Total:   %d\n\n", data.Total)
 
-	// Severity distribution
-	if len(data.BySeverity) > 0 {
-		fmt.Println("  By severity (open issues):")
-		for _, sev := range []string{"critical", "high", "medium", "low"} {
-			if n, ok := data.BySeverity[sev]; ok && n > 0 {
-				fmt.Printf("    %s: %d\n", sev, n)
-			}
-		}
-		fmt.Println()
-	}
+	// I-406: severity buckets removed — priority is the unified bucket
+	// for both open issues and queued tasks.
 
 	// Priority distribution
 	if len(data.ByPriority) > 0 {
-		fmt.Println("  By priority (queued tasks):")
+		fmt.Println("  By priority (open issues + queued tasks):")
 		for p := 0; p <= 4; p++ {
 			if n, ok := data.ByPriority[p]; ok && n > 0 {
 				fmt.Printf("    p%d: %d\n", p, n)
@@ -297,7 +289,7 @@ func indexColonInModelLine(s string) int {
 func computeStats(s *store.Store, cfg *config.Config) statsData {
 	data := statsData{
 		ByType:     make(map[string]map[string]int),
-		BySeverity: make(map[string]int),
+		// I-406: severity bucket removed.
 		ByPriority: make(map[int]int),
 	}
 
@@ -312,17 +304,11 @@ func computeStats(s *store.Store, cfg *config.Config) statsData {
 		}
 		data.ByType[item.Type][item.Status]++
 
-		// Severity (open issues)
-		if item.Type == "issue" && item.Status == "open" {
-			sev := item.Severity
-			if sev == "" {
-				sev = "medium"
-			}
-			data.BySeverity[sev]++
-		}
-
-		// Priority (queued tasks)
-		if item.Type == "task" && isQueuedTask(item, cfg) {
+		// I-406: priority is the unified urgency signal across both
+		// types. Bucket open issues + queued tasks by priority (p0-p4).
+		// Items missing priority bucket as p2 (medium).
+		if (item.Type == "issue" && item.Status == "open") ||
+			(item.Type == "task" && isQueuedTask(item, cfg)) {
 			p := 2
 			if item.Priority != nil {
 				p = *item.Priority

@@ -84,12 +84,13 @@ func TestFixRequiredFields(t *testing.T) {
 		t.Error("expected blocks field to be inserted in T-001")
 	}
 
-	// Re-read I-001 and check severity, depends_on, blocks were inserted
+	// I-406: severity is no longer required on issues. The fix sweep
+	// now only inserts depends_on + blocks for issues.
 	content, err = os.ReadFile(filepath.Join(root, "issues", "I-001-bare.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"severity:", "depends_on:", "blocks:"} {
+	for _, field := range []string{"depends_on:", "blocks:"} {
 		if !strings.Contains(string(content), field) {
 			t.Errorf("expected %s to be inserted in I-001", field)
 		}
