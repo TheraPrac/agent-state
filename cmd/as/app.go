@@ -341,6 +341,29 @@ YAML block scalars so multi-line values replace cleanly.`,
 	agentCmd.AddCommand(agentWorkspaceCmd)
 	root.AddCommand(agentCmd)
 
+	// --- Spawn (T-326): hierarchical agent registration ---
+
+	spawnCmd := &cobra.Command{
+		Use:   "spawn",
+		Short: "Spawn child agents for the T-312 hierarchy",
+	}
+	spawnChildCmd := &cobra.Command{
+		Use:   "child <item>",
+		Short: "Materialize a child agent registration under the calling identity",
+		Long: "Spawn a child agent that inherits the caller's identity as parent.\n" +
+			"V1 supports same-item spawn only — the parent's claim covers the\n" +
+			"child's work, no new worktree is created. Different-item spawn is\n" +
+			"a tracked follow-up.\n\n" +
+			"Prints `<child-id>\\t<pid>` on stdout so the caller can pipe the\n" +
+			"id into a subprocess launcher (e.g. `AS_AGENT_ID=$(...) st run`).",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SpawnChild(appStore, appCfg, command.SpawnChildOpts{Item: args[0]})
+		},
+	}
+	spawnCmd.AddCommand(spawnChildCmd)
+	root.AddCommand(spawnCmd)
+
 	// --- Workflow commands ---
 
 	startCmd := &cobra.Command{
