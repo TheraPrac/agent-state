@@ -503,9 +503,12 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 
 	now := time.Now()
 
-	// Header
-	fmt.Printf("\n    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
-		"ITEM", "PROGRESS", "STATUS", "CREATED", "WALL", "ST TIME", "AI TIME", "COST", "TOKENS (I/O/T)", "NET LOC")
+	// Header — I-440: ID/priority/status/title/last_touched moved to a
+	// per-item title row above the data row (via FormatItemRow). The
+	// data row carries pipeline-specific columns only (progress bar,
+	// step name, metrics).
+	fmt.Printf("\n            %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
+		"PROGRESS", "STEP", "CREATED", "WALL", "ST TIME", "AI TIME", "COST", "TOKENS (I/O/T)", "NET LOC")
 	fmt.Println("    " + strings.Repeat("-", 148))
 
 	for _, epic := range reg.Epics {
@@ -652,26 +655,25 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 					}
 				}
 
-				// Format: title on first row, data on second row
-				title := item.Title
-				if len(title) > 80 {
-					title = title[:77] + "..."
-				}
-				planBadge := ""
-				if item.PlanApproved {
-					planBadge = fmt.Sprintf("  %s󰙅%s", "\033[32m", "\033[0m")
-				}
-				fmt.Printf("      %-80s%s\n", title, planBadge)
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
-					itemID, bar, statusLabel, createdStr, cols.Wall, cols.ProcessTime, cols.AITime, cols.Cost, cols.Tokens, cols.LOC, inFlight)
+				// I-440: title row uses the unified FormatItemRow so
+				// id/priority/[item-status]/title/last_touched render
+				// byte-identically against st status. Data row below
+				// carries only pipeline-specific columns (progress bar,
+				// step name, metrics) — "STATUS" → "STEP" in the header.
+				fmt.Printf("    %s\n", FormatItemRow(item, ItemRowOpts{
+					TitleWidth:   60,
+					PlanApproved: item.PlanApproved,
+				}))
+				fmt.Printf("            %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
+					bar, statusLabel, createdStr, cols.Wall, cols.ProcessTime, cols.AITime, cols.Cost, cols.Tokens, cols.LOC, inFlight)
 			}
 
-			// Sprint subtotal (always printed)
+			// Sprint subtotal — same data-row column layout as items.
 			{
 				sprintCols := sprintTotal.FormatColumns()
 				fmt.Printf("    %s\n", strings.Repeat("─", 148))
-				fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
-					"", "", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "",
+				fmt.Printf("            %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
+					"", fmt.Sprintf("%d/%d done", done, len(sp.Items)), "",
 					sprintCols.Wall, sprintCols.ProcessTime, sprintCols.AITime, sprintCols.Cost, sprintCols.Tokens, sprintCols.LOC)
 			}
 
@@ -679,12 +681,13 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 			epicTotal = epicTotal.Add(sprintTotal)
 		}
 
-		// Epic grand total — only printed when there's measurable activity
+		// Epic grand total — only printed when there's measurable activity.
+		// Epic title fills the STEP column slot.
 		if epicHasItems && (epicTotal.Wall > 0 || epicTotal.CostUSD > 0) {
 			epicCols := epicTotal.FormatColumns()
 			fmt.Printf("\n    %s\n", strings.Repeat("═", 148))
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
-				"TOTAL", "", epic.Title, "",
+			fmt.Printf("    %-8s    %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s\n",
+				"TOTAL", "", truncate(epic.Title, 22), "",
 				epicCols.Wall, epicCols.ProcessTime, epicCols.AITime, epicCols.Cost, epicCols.Tokens, epicCols.LOC)
 			fmt.Printf("    %s\n", strings.Repeat("═", 148))
 		}
@@ -756,14 +759,13 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 				}
 			}
 
-			title := item.Title
-			if len(title) > 80 {
-				title = title[:77] + "..."
-			}
-
-			fmt.Printf("      %s\n", title)
-			fmt.Printf("    %-8s %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
-				item.ID, bar, statusLabel, createdStr, cols.Wall, cols.ProcessTime, cols.AITime, cols.Cost, cols.Tokens, cols.LOC, inFlight)
+			// I-440: same shared title row as the sprint-grouped path.
+			fmt.Printf("    %s\n", FormatItemRow(item, ItemRowOpts{
+				TitleWidth:   60,
+				PlanApproved: item.PlanApproved,
+			}))
+			fmt.Printf("            %-15s %-22s %-8s  %12s  %12s  %10s  %10s  %21s  %10s%s\n",
+				bar, statusLabel, createdStr, cols.Wall, cols.ProcessTime, cols.AITime, cols.Cost, cols.Tokens, cols.LOC, inFlight)
 		}
 	}
 

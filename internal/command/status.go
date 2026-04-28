@@ -462,20 +462,14 @@ func printIssues(s *store.Store, cfg *config.Config, g *deps.Graph) {
 
 		for _, item := range grp.items {
 			blocked := g.IsBlocked(item.ID)
-			idColor := cGreen
-			if blocked {
-				idColor = cRed
-			}
-
-			touched := item.LastTouched.Format("2006-01-02")
-			planBadge := ""
-			if item.PlanApproved {
-				planBadge = fmt.Sprintf("  %s󰙅%s", cGreen, cReset)
-			}
-			// I-406: render `[pN]` priority tag in the trailing position
-			// where the severity label used to sit.
-			fmt.Printf("    %s%-8s%s %s  %s%s%s  %s%s\n",
-				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, priorityLabel(item.Priority), planBadge)
+			// I-440: shared row formatter — same base columns as
+			// st run status. Indent the row to match the section's
+			// "    ◇ tag" prefix; trailing newline emitted here.
+			fmt.Printf("    %s\n", FormatItemRow(item, ItemRowOpts{
+				TitleWidth:   45,
+				Blocked:      blocked,
+				PlanApproved: item.PlanApproved,
+			}))
 
 			blocksItems := g.BlocksItems(item.ID)
 			if len(blocksItems) > 0 {
@@ -647,37 +641,16 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 		fmt.Printf("    %s◇ %s%s\n", cBoldB, grp.tag, cReset)
 
 		for _, item := range grp.items {
-			p := priorityOf(item)
 			blocked := g.IsBlocked(item.ID)
-
-			// Priority color: p0=red, p1=orange, p2=yellow, p3=green, p4+=gray
-			pColor := ""
-			switch p {
-			case 0:
-				pColor = cRed
-			case 1:
-				pColor = cOrange
-			case 2:
-				pColor = cYellow
-			case 3:
-				pColor = cGreen
-			default:
-				pColor = cDim
-			}
-
-			idColor := cGreen
-			if blocked {
-				idColor = cRed
-			}
-
-			// Item line: ID + fixed-width title + last touched + colored priority + plan badge
-			touched := item.LastTouched.Format("2006-01-02")
-			planBadge := ""
-			if item.PlanApproved {
-				planBadge = fmt.Sprintf("  %s󰙅%s", cGreen, cReset)
-			}
-			fmt.Printf("    %s%-8s%s %s  %s%s%s  %s(p%d)%s%s\n",
-				idColor, item.ID, cReset, padRight(truncate(item.Title, 45), 45), cDim, touched, cReset, pColor, p, cReset, planBadge)
+			// I-440: shared row formatter. Replaces the inline
+			// (pN)-style tag with the unified [pN] label that
+			// printIssues already used — closes the issues-vs-tasks
+			// rendering inconsistency as a side effect of parity.
+			fmt.Printf("    %s\n", FormatItemRow(item, ItemRowOpts{
+				TitleWidth:   45,
+				Blocked:      blocked,
+				PlanApproved: item.PlanApproved,
+			}))
 
 			// Blocks line (separate, indented)
 			blocksItems := g.BlocksItems(item.ID)
