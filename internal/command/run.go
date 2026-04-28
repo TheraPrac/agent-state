@@ -251,7 +251,7 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 				continue
 			}
 
-			if sprintRef.Status == "archived" || sprintRef.Status == "completed" {
+			if sprintRef.Status == "archived" || sprintRef.Status == "done" {
 				fmt.Printf("    done %s  %d/%d\n", sprintRef.Title, len(sprintRef.Items), len(sprintRef.Items))
 				hasSprintsForEpic = true
 				continue
@@ -544,7 +544,7 @@ func RunStatus(s *store.Store, cfg *config.Config, opts RunStatusOpts) int {
 				}
 			} else if !opts.ShowAll && filterEpicID == "" && filterSprintID == "" {
 				// Default: hide archived sprints
-				if sp.Status == "archived" || sp.Status == "completed" {
+				if sp.Status == "archived" || sp.Status == "done" {
 					continue
 				}
 			}
@@ -2704,11 +2704,11 @@ func executeClose(s *store.Store, cfg *config.Config, itemID string, step config
 
 	resolution := step.Resolution
 	if resolution == "" {
-		resolution = "completed"
-	}
-
-	if item != nil && item.Type == "issue" && resolution == "completed" {
-		resolution = "resolved"
+		// I-433: unified terminal status across both types is `done`.
+		// (Was `completed` for tasks + remap-to-`resolved` for issues
+		// pre-unification — both now hit the legacy-rejection guard in
+		// Close() and would silently fail the pipeline step.)
+		resolution = "done"
 	}
 
 	code := Close(s, cfg, itemID, resolution, CloseOpts{})

@@ -75,15 +75,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	}
 
 	// If abandoning, require reason
-	if resolution == "abandoned" || resolution == "wontfix" || resolution == "declined" {
+	if resolution == "abandoned" || resolution == "declined" {
 		if opts.Reason == "" {
 			fmt.Fprintln(os.Stderr, "--reason is required when abandoning")
 			return 2
 		}
 	}
 
-	// Gate enforcement (skip for abandon/wontfix — those bypass gates by design)
-	if !opts.Force && resolution != "abandoned" && resolution != "wontfix" && resolution != "declined" {
+	// Gate enforcement — skip for abandon/declined since those bypass gates
+	// by design. (wontfix is rejected earlier per I-433.)
+	if !opts.Force && resolution != "abandoned" && resolution != "declined" {
 		results := validate.EvaluateGates(item, "close", cfg, s.All())
 		if !validate.GatesPassed(results) {
 			failure := validate.FirstFailure(results)
