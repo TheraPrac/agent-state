@@ -156,6 +156,8 @@ func RunInteractive(s *store.Store, cfg *config.Config, opts RunOpts, engine Run
 	cleanup := registerRunProcess(cfg, "interactive")
 	defer cleanup()
 	primeClaimState(s, cfg)
+	// I-429: surface binary drift before tokens get spent on a stale build.
+	printBinaryDriftWarning(cfg, os.Stdout)
 
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
@@ -891,6 +893,10 @@ func RunItem(s *store.Store, cfg *config.Config, itemID string, opts RunOpts, en
 	cleanup := registerRunProcess(cfg, "item:"+itemID)
 	defer cleanup()
 	primeClaimState(s, cfg)
+	// I-429: surface binary drift before tokens get spent on a stale build.
+	// (RunItem with a sprint delegates to Run which would also fire — keep
+	// it here so the standalone-item path is covered too.)
+	printBinaryDriftWarning(cfg, os.Stdout)
 
 	pipeline := cfg.RunPipeline()
 	if len(pipeline) == 0 {
@@ -927,6 +933,8 @@ func Run(s *store.Store, cfg *config.Config, sprintID string, opts RunOpts, engi
 	cleanup := registerRunProcess(cfg, "sprint:"+sprintID)
 	defer cleanup()
 	primeClaimState(s, cfg)
+	// I-429: surface binary drift before tokens get spent on a stale build.
+	printBinaryDriftWarning(cfg, os.Stdout)
 
 	// Load sprint and validate
 	pipeline := cfg.RunPipeline()
