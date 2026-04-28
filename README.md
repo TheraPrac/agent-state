@@ -28,3 +28,12 @@ Never `go install` — use `make install`. See `Makefile` for details.
 ## Where it's used
 
 The installed `st` binary is invoked from the TheraPrac workspace at `/Users/jfinlinson/Dev/theraprac-agents/theraprac-agent-a/theraprac-workspace/`. That repo's `bin/st` is the symlink target that `make install` writes to.
+
+## Tests
+
+```bash
+go test ./...                                    # unit tests, fast
+go test -tags multiagent ./internal/command/...  # multi-agent integration harness (T-328)
+```
+
+The `multiagent` build tag is opt-in. The harness compiles `st` once and races two subprocess agents against a tempdir workspace, asserting cross-process invariants (atomic claims, mail atomicity, stale-PID sweep). Unit-test runs skip the file by default so iteration stays fast.
