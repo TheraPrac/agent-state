@@ -122,6 +122,14 @@ func applyRefreshResult(s *store.Store, cfg *config.Config, res store.RefreshRes
 		}
 	case store.RefreshDiverged:
 		fmt.Fprintf(w, "%s⚠ local diverged from origin — run `git pull --rebase`%s\n", cYellow, cReset)
+	case store.RefreshAhead:
+		// I-430: pure-ahead. Local has unpushed commits but remote has
+		// nothing new — recoverable via `st sync`. Defensive guard: a
+		// producer that returns RefreshAhead with AheadCount == 0 is
+		// technically malformed; print nothing rather than "0 unpushed".
+		if res.AheadCount > 0 {
+			fmt.Fprintf(w, "%s⇡ %d unpushed commit(s) — run `st sync` to recover%s\n", cYellow, res.AheadCount, cReset)
+		}
 	case store.RefreshBlocked:
 		fmt.Fprintf(w, "%s⚠ uncommitted changes blocked refresh — commit or stash%s\n", cYellow, cReset)
 	case store.RefreshOffline:

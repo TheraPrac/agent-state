@@ -313,7 +313,11 @@ func TestRefreshWorkspacePulled(t *testing.T) {
 	}
 }
 
-func TestRefreshWorkspaceDiverged(t *testing.T) {
+// I-430: pure-ahead workspace (local commits not pushed yet, remote has
+// nothing new) returns RefreshAhead with the unpushed count — separate
+// from RefreshDiverged. Previously this test fixture asserted
+// RefreshDiverged, but per I-430 that scenario is "ahead, not diverged."
+func TestRefreshWorkspaceAhead(t *testing.T) {
 	clone, _, cfg := setupRefreshTestRepo(t)
 	runGit := func(dir string, args ...string) {
 		cmd := exec.Command("git", args...)
@@ -326,12 +330,56 @@ func TestRefreshWorkspaceDiverged(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	// Create a local commit not on origin.
+	// Two unpushed local commits; remote stays put.
+	for i := 0; i < 2; i++ {
+		path := filepath.Join(clone, "tasks", "local"+strconv.Itoa(i)+".md")
+		if err := os.WriteFile(path, []byte("id: T-LOCAL"+strconv.Itoa(i)+"\nbody\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(clone, "add", "-A")
+		runGit(clone, "commit", "-m", "local-only-"+strconv.Itoa(i))
+	}
+
+	res := RefreshWorkspace(cfg)
+	if res.Outcome != RefreshAhead {
+		t.Fatalf("outcome = %v, want RefreshAhead (err=%v)", res.Outcome, res.Err)
+	}
+	if res.AheadCount != 2 {
+		t.Errorf("AheadCount = %d, want 2", res.AheadCount)
+	}
+}
+
+// True divergence: both sides have non-shared commits. Distinct from
+// the pure-ahead case above; should still return RefreshDiverged.
+func TestRefreshWorkspaceDiverged(t *testing.T) {
+	clone, origin, cfg := setupRefreshTestRepo(t)
+	tmp := filepath.Dir(clone)
+	other := filepath.Join(tmp, "other-div")
+	runGit := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=t@t.t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Local: one unpushed commit.
 	if err := os.WriteFile(filepath.Join(clone, "tasks", "local.md"), []byte("id: T-LOCAL\nbody\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	runGit(clone, "add", "-A")
 	runGit(clone, "commit", "-m", "local-only")
+	// Remote: a sibling clone advances and pushes a different commit.
+	runGit(tmp, "clone", origin, "other-div")
+	if err := os.WriteFile(filepath.Join(other, "tasks", "remote.md"), []byte("id: T-REMOTE\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(other, "add", "-A")
+	runGit(other, "commit", "-m", "remote-only")
+	runGit(other, "push", "origin", "main")
 
 	res := RefreshWorkspace(cfg)
 	if res.Outcome != RefreshDiverged {

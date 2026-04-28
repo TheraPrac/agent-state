@@ -56,6 +56,38 @@ func TestStatusRefreshBannerBlocked(t *testing.T) {
 	}
 }
 
+// I-430: pure-ahead workspace (local commits not yet pushed) gets its
+// own banner separate from RefreshDiverged. RefreshDiverged is the
+// scary "you have a real conflict to resolve" surface; RefreshAhead is
+// the friendly "you forgot to push, run st sync" nudge.
+func TestStatusAheadBanner(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	var buf bytes.Buffer
+	applyRefreshResult(s, cfg, store.RefreshResult{Outcome: store.RefreshAhead, AheadCount: 2}, &buf)
+	out := buf.String()
+	for _, want := range []string{"2 unpushed commit(s)", "st sync"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ahead banner missing %q. Got:\n%s", want, out)
+		}
+	}
+	// Should NOT use the alarming "diverged" copy — that's a different state.
+	if strings.Contains(out, "diverged") {
+		t.Errorf("ahead banner shouldn't mention 'diverged'. Got:\n%s", out)
+	}
+}
+
+func TestStatusAheadBannerSilentOnZero(t *testing.T) {
+	// Defensive: AheadCount = 0 with RefreshAhead is technically malformed
+	// (the producer would send RefreshUpToDate instead), but the renderer
+	// should still print a sensible (or no) line — not a "0 unpushed" lie.
+	s, cfg := setupTestEnv(t)
+	var buf bytes.Buffer
+	applyRefreshResult(s, cfg, store.RefreshResult{Outcome: store.RefreshAhead, AheadCount: 0}, &buf)
+	if strings.Contains(buf.String(), "0 unpushed") {
+		t.Errorf("renderer printed misleading '0 unpushed' on zero AheadCount. Got:\n%s", buf.String())
+	}
+}
+
 func TestStatusRefreshBannerSilentOnUpToDate(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	var buf bytes.Buffer
