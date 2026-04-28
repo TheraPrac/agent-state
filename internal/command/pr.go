@@ -287,6 +287,11 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 		// Record PR in work_tracking
 		item.Doc.AppendToNestedList("work_tracking", "pr", capturedPRRef)
 
+		// I-447: opening a PR advances the lifecycle past `pushed`.
+		// Only advance forward — never regress if the item is already
+		// at merged/closed via a separate path.
+		advanceDeliveryStage(item, "pr_open")
+
 		// Record test files written
 		for _, tf := range capturedDedupedTestFiles {
 			item.Doc.AppendToNestedList("testing_evidence", "tests_written", tf)

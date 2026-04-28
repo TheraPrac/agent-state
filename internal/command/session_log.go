@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -189,6 +190,23 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 	capturedTurnLine := formatAITurnLine(payload, capturedCost, capturedCostSource, capturedNow)
 
 	if err := s.Mutate(itemID, func(item *model.Item) error {
+		// I-448: drop tuple-identical SUBAGENT turns within the last 60s.
+		// The /code-review skill (and similar fan-out patterns) spawns
+		// N parallel Sonnet/Haiku subagents whose SubagentStop hooks
+		// fire per-agent, each producing ai_turns rows with byte-
+		// identical (cache_in, reg_in, reg_out, cache_out_1h, role,
+		// model) tuples but distinct session IDs. Without dedup, the
+		// parent item's totals get inflated N× — that's the I-432 /
+		// I-441 / I-443 24-billion-token / $15K bug. Scoped to subagent
+		// payloads only so legitimate same-session same-token
+		// accumulation (rare, but seen in unit tests) is unaffected.
+		if payload.Step == "subagent" && isDuplicateRecentTurn(item, payload, capturedNow, 60) {
+			fmt.Fprintf(os.Stderr,
+				"session log: dropped duplicate subagent turn for %s (cache_in=%d reg_out=%d within 60s)\n",
+				itemID, payload.CacheInTokens, payload.RegOutputTokens)
+			return nil
+		}
+
 		// Accrue aggregate fields (re-reads from fresh disk copy inside lock)
 		item.SetNested("time_tracking", "process_time_seconds",
 			fmt.Sprintf("%d", readIntField(item, "time_tracking", "process_time_seconds")+int(payload.ProcessMs/1000)))
@@ -584,6 +602,124 @@ func seenSessionIDs(item *model.Item) map[string]bool {
 		}
 	}
 	return seen
+}
+
+// isDuplicateRecentTurn returns true when the item's existing ai_turns
+// already contains a byte-identical-tuple turn within `withinSec`
+// seconds of `nowStr`. The tuple is (cache_in, cache_out, reg_in,
+// reg_out, cache_out_1h, role, model) — the SubagentStop fan-out
+// pattern that produced 5× duplication on I-432 / I-441 / I-443 had
+// byte-identical values across all of these. Different agents
+// producing legitimately-identical token counts within 60s is
+// vanishingly unlikely; the time window is the primary guard rail.
+//
+// Scans every ai_turn (no early-exit on document order) so clock skew
+// between parallel agents writing to the same item — which can produce
+// out-of-order timestamps — doesn't silently let a duplicate through.
+// Lists are small in practice; the linear scan cost is irrelevant
+// against the disk write.
+func isDuplicateRecentTurn(item *model.Item, p SessionLogPayload, nowStr string, withinSec int) bool {
+	if item == nil || item.Doc == nil {
+		return false
+	}
+	now, err := time.Parse(time.RFC3339, nowStr)
+	if err != nil {
+		return false
+	}
+	cutoff := now.Add(-time.Duration(withinSec) * time.Second)
+
+	inTimeTracking := false
+	inAITurns := false
+	for _, line := range item.Doc.Lines {
+		if line.Indent == 0 && line.Key != "" {
+			inTimeTracking = line.Key == "time_tracking"
+			inAITurns = false
+			continue
+		}
+		if !inTimeTracking {
+			continue
+		}
+		if line.Indent == 2 && line.Key == "ai_turns" {
+			inAITurns = true
+			continue
+		}
+		if line.Indent <= 2 && line.Key != "" && line.Key != "ai_turns" {
+			inAITurns = false
+			continue
+		}
+		if !inAITurns {
+			continue
+		}
+		trimmed := strings.TrimSpace(line.Raw)
+		if !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		entry := strings.TrimPrefix(trimmed, "- ")
+		atStr := extractField(entry, "at:")
+		if atStr == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, atStr)
+		if err != nil {
+			continue
+		}
+		if at.Before(cutoff) {
+			continue
+		}
+		if extractIntField(entry, "cache_in:") != p.CacheInTokens {
+			continue
+		}
+		if extractIntField(entry, "cache_out:") != p.CacheOutTokens {
+			continue
+		}
+		if extractIntField(entry, "reg_in:") != p.RegInputTokens {
+			continue
+		}
+		if extractIntField(entry, "reg_out:") != p.RegOutputTokens {
+			continue
+		}
+		if extractIntField(entry, "cache_out_1h:") != p.CacheOut1hTokens {
+			continue
+		}
+		if extractField(entry, "model:") != p.Model {
+			continue
+		}
+		if extractField(entry, "role:") != p.Role {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// extractField pulls the value of a "key:value" pair from an ai_turns
+// line; tokens are space-delimited so the value runs to the next space
+// or end of string.
+func extractField(line, key string) string {
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(key):]
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		rest = rest[:sp]
+	}
+	return rest
+}
+
+// extractIntField parses a "key:N" int field. Returns 0 on absent /
+// malformed — matches the SessionLogPayload zero-value semantics so
+// "missing field" and "explicit 0" tuple-match the same way.
+func extractIntField(line, key string) int {
+	v := extractField(line, key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // writeOrphanLog appends a single JSON line to cfg.SessionsDir()/orphan.log.

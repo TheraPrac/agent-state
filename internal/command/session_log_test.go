@@ -641,6 +641,83 @@ func TestSessionLog_RollupItemIDMissingItemWritesOrphanLog(t *testing.T) {
 	}
 }
 
+// I-448: parallel subagents in a fan-out (e.g. /code-review's 5
+// reviewers) produce ai_turns rows with byte-identical token tuples
+// but distinct session IDs. Without dedup, each rolls up into the
+// parent's totals, inflating cache_in/total_input_tokens N×. Verify
+// that:
+//   - the FIRST subagent payload accrues normally
+//   - a second subagent payload with identical (cache_in, reg_in,
+//     reg_out, cache_out_1h, role, model) tuple within 60s is
+//     dropped — turn_count stays at 1, totals don't double
+//   - an interactive payload with the same tuple still accrues
+//     (dedup is scoped to step:subagent only)
+func TestSessionLog_DropsDuplicateSubagentTurnsWithin60s(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
+
+	tuple := SessionLogPayload{
+		Step:             "subagent",
+		Role:             "general-purpose",
+		Model:            "claude-opus-4-7",
+		RegInputTokens:   45676,
+		RegOutputTokens:  1050962,
+		CacheInTokens:    601116722,
+		CacheOut1hTokens: 5849169,
+	}
+
+	// First subagent — should accrue.
+	first := tuple
+	first.SessionID = "agent-aaa"
+	if code := SessionLog(env.S, env.Cfg, first); code != 0 {
+		t.Fatalf("first subagent SessionLog exit=%d", code)
+	}
+
+	// Second subagent — different agent ID, byte-identical tuple within
+	// 60s — must be dropped.
+	second := tuple
+	second.SessionID = "agent-bbb"
+	if code := SessionLog(env.S, env.Cfg, second); code != 0 {
+		t.Fatalf("second subagent SessionLog exit=%d", code)
+	}
+
+	// Third subagent, same shape as the first two.
+	third := tuple
+	third.SessionID = "agent-ccc"
+	if code := SessionLog(env.S, env.Cfg, third); code != 0 {
+		t.Fatalf("third subagent SessionLog exit=%d", code)
+	}
+
+	env.Reload(t)
+	item, _ := env.S.Get("T-003")
+
+	if got := readIntField(item, "time_tracking", "turn_count"); got != 1 {
+		t.Errorf("turn_count = %d, want 1 (dups dropped)", got)
+	}
+	if got := readIntField(item, "time_tracking", "cache_in_tokens"); got != 601116722 {
+		t.Errorf("cache_in_tokens = %d, want 601116722 (single tuple, dups dropped)", got)
+	}
+
+	// Interactive payload with the same tuple must STILL accrue —
+	// dedup is scoped to step:subagent only.
+	interactive := tuple
+	interactive.SessionID = "agent-interactive"
+	interactive.Step = "interactive"
+	if code := SessionLog(env.S, env.Cfg, interactive); code != 0 {
+		t.Fatalf("interactive SessionLog exit=%d", code)
+	}
+
+	env.Reload(t)
+	item, _ = env.S.Get("T-003")
+
+	if got := readIntField(item, "time_tracking", "turn_count"); got != 2 {
+		t.Errorf("turn_count = %d, want 2 (interactive must accrue past dedup)", got)
+	}
+	if got := readIntField(item, "time_tracking", "cache_in_tokens"); got != 2*601116722 {
+		t.Errorf("cache_in_tokens = %d, want %d (1 subagent + 1 interactive)", got, 2*601116722)
+	}
+}
+
 // --- helpers ---
 
 func assertInt(t *testing.T, item *model.Item, parent, key string, want int) {

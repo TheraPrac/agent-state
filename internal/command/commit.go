@@ -38,6 +38,11 @@ func Commit(s *store.Store, cfg *config.Config, id, message string) int {
 
 	if err := s.Mutate(id, func(it *model.Item) error {
 		it.Doc.AppendToNestedList("work_tracking", "commits", commitLine)
+		// I-447: advance delivery.stage so st status / st run status
+		// reflect interactive lifecycle progress without requiring
+		// st run to drive the pipeline. Only advance forward — never
+		// regress past pushed/pr_open/merged that may already be set.
+		advanceDeliveryStage(it, "committed")
 		return nil
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)

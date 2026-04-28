@@ -115,6 +115,11 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		item.Doc.SetField("completed", nowStr)
 		item.Doc.SetField("last_touched", nowStr)
 
+		// I-447: closing the item is the terminal lifecycle position.
+		// Always set (not advance) so abandon paths surface as "closed"
+		// in render too.
+		item.SetNested("delivery", "stage", "closed")
+
 		// Record completion time tracking
 		item.SetNested("time_tracking", "completed_at", nowStr)
 
