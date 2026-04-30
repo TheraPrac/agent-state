@@ -373,9 +373,18 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			item, _ = s.Get(itemID)
 			capturedScopeRepos := append([]string(nil), p.ScopeRepos...)
 			capturedACs := append([]string(nil), p.ACs...)
+			approvedAt := time.Now().Format(time.RFC3339)
+			approver := cfg.AgentID()
+			if approver == "" {
+				approver = "user"
+			}
 			if err := s.Mutate(itemID, func(item *model.Item) error {
 				item.PlanApproved = true
+				item.PlanApprovedAt = approvedAt
+				item.PlanApprovedBy = approver
 				item.Doc.SetField("plan_approved", "true")
+				item.Doc.SetField("plan_approved_at", approvedAt)
+				item.Doc.SetField("plan_approved_by", approver)
 				// Set scope_repos as a field
 				if len(capturedScopeRepos) > 0 {
 					item.Doc.SetField("scope_repos", strings.Join(capturedScopeRepos, ", "))

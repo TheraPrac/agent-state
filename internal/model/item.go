@@ -35,6 +35,8 @@ type Item struct {
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
+	PlanApprovedAt string // RFC3339 timestamp; set by `st plan approve` (I-178)
+	PlanApprovedBy string // operator or agent ID that approved the plan (I-178)
 
 	// List fields
 	Tags               []string

@@ -2941,10 +2941,27 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		return sr
 	}
 	if p, err := plan.Load(cfg.PlansDir(), itemID); err == nil && p != nil && p.Approved {
-		// Plan sidecar exists and is approved — sync flag to item and skip
+		// Plan sidecar exists and is approved — sync flag to item and skip.
+		// I-178 invariant: PlanApproved=true must be paired with audit
+		// fields. Use the sidecar's ApprovedAt when available; the
+		// sidecar doesn't track approver-by, so we record the current
+		// agent / "user" so the gate doesn't render "approved by ?"
+		// downstream.
+		approvedAt := p.ApprovedAt
+		if approvedAt == "" {
+			approvedAt = time.Now().Format(time.RFC3339)
+		}
+		approver := cfg.AgentID()
+		if approver == "" {
+			approver = "user"
+		}
 		_ = s.Mutate(itemID, func(item *model.Item) error {
 			item.PlanApproved = true
+			item.PlanApprovedAt = approvedAt
+			item.PlanApprovedBy = approver
 			item.Doc.SetField("plan_approved", "true")
+			item.Doc.SetField("plan_approved_at", approvedAt)
+			item.Doc.SetField("plan_approved_by", approver)
 			return nil
 		})
 		sr.Passed = true
@@ -3198,10 +3215,19 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		fmt.Println()
 	}
 
+	approvedAt := time.Now().Format(time.RFC3339)
+	approver := cfg.AgentID()
+	if approver == "" {
+		approver = "user"
+	}
 	_ = s3.Mutate(itemID, func(item *model.Item) error {
 		item.PlanApproved = true
+		item.PlanApprovedAt = approvedAt
+		item.PlanApprovedBy = approver
 		item.Doc.SetField("plan_approved", "true")
-		item.Doc.SetField("last_touched", time.Now().Format(time.RFC3339))
+		item.Doc.SetField("plan_approved_at", approvedAt)
+		item.Doc.SetField("plan_approved_by", approver)
+		item.Doc.SetField("last_touched", approvedAt)
 		return nil
 	})
 

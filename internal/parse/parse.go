@@ -401,6 +401,10 @@ func storeScalar(item *model.Item, key, val string) {
 		item.ClaimedAt = val
 	case "plan_approved":
 		item.PlanApproved = val == "true"
+	case "plan_approved_at":
+		item.PlanApprovedAt = val
+	case "plan_approved_by":
+		item.PlanApprovedBy = val
 	case "parallel_group":
 		// Legacy field — store but don't surface
 	}
