@@ -635,16 +635,16 @@ func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueAppro
 		return 0
 	}
 
-	found := false
-	var entryIdx int
+	// entryIdx defaults to -1 so a future refactor that drops the
+	// `if entryIdx < 0` guard below can't silently mutate entries[0].
+	entryIdx := -1
 	for i, e := range entries {
 		if e.ID == id {
 			entryIdx = i
-			found = true
 			break
 		}
 	}
-	if !found {
+	if entryIdx < 0 {
 		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
 		return 1
 	}
