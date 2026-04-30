@@ -91,6 +91,10 @@ type StartOpts struct {
 	Slug   string   // branch slug (e.g. "uat-database-reset")
 	Repos  []string // repos to create worktrees for (overrides config defaults)
 	NoPush bool     // skip the auto-push onto the work stack
+	// Force bypasses the I-490 queue-approval gate. When true, an item
+	// in pending status can still be activated, but the bypass is
+	// recorded in the changelog so it's auditable.
+	Force bool
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
@@ -116,6 +120,28 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	if item.Status != tc.StartStatus {
 		fmt.Fprintf(os.Stderr, "%s is %s, not %s — cannot start\n", id, item.Status, tc.StartStatus)
 		return 1
+	}
+
+	// I-490: queue approval gate. If the item is on the queue with
+	// Approved=false, refuse to start unless --force was passed. This
+	// makes the I-488 pending status meaningful — agents in YOLO mode
+	// can no longer skip the operator's approval checkpoint. Items
+	// not on the queue at all are unaffected.
+	if IsQueuePending(cfg, id) {
+		if !opts.Force {
+			fmt.Fprintf(os.Stderr,
+				"%s is pending operator approval — run `st queue approve %s` first (or `st start %s --force` to bypass)\n",
+				id, id, id)
+			return 1
+		}
+		// Bypass authorized by --force. Append an audit entry so the
+		// override is visible in the changelog. Best-effort — don't
+		// fail the start over a logging miss.
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "start_force",
+			Reason: "bypassed I-490 queue approval gate via --force",
+		})
+		fmt.Fprintf(os.Stderr, "warning: --force bypassed pending-approval gate for %s\n", id)
 	}
 
 	// Check: not assigned to another agent
@@ -319,7 +345,9 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			}
 		}
 		if !alreadyOnStack {
-			if rc := StackPush(s, cfg, id, ""); rc != 0 {
+			// Auto-push from `st start` is internal; the I-490 gate already
+			// fired earlier in Start, so it's safe to bypass here.
+			if rc := StackPush(s, cfg, id, StackPushOpts{FromPending: true}); rc != 0 {
 				fmt.Fprintf(os.Stderr, "warning: auto-push failed (rc=%d); run `st push %s` to attribute metrics\n", rc, id)
 			}
 		}

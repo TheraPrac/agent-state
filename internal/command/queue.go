@@ -70,6 +70,33 @@ type QueueApproveOpts struct {
 	Sprint string // when non-empty (and ID empty), bulk-approve all pending sprint members
 }
 
+// IsQueuePending reports whether `id` has a queue entry that is still
+// awaiting operator approval (Approved=false). Returns false when the
+// item is not on the queue at all — the I-490 gate only fires for
+// pending entries, so items never queued can still be `st start`-ed.
+func IsQueuePending(cfg *config.Config, id string) bool {
+	for _, e := range LoadQueue(cfg) {
+		if e.ID == id {
+			return !e.Approved
+		}
+	}
+	return false
+}
+
+// PendingApprovalCount returns how many queue entries are waiting on
+// operator approval. Surfaced by `st prime` / `st status` so the
+// session-start banner highlights pending items the operator needs to
+// approve before agents can pick them up (I-490).
+func PendingApprovalCount(cfg *config.Config) int {
+	n := 0
+	for _, e := range LoadQueue(cfg) {
+		if !e.Approved {
+			n++
+		}
+	}
+	return n
+}
+
 // autoSync commits + pushes any working-tree changes left by a state-mutating
 // command (queue/stack/sprint writes that touch .as/* files). Best-effort —
 // failures log to stderr but don't fail the caller. Without this, every

@@ -189,6 +189,12 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 	var b strings.Builder
 	b.WriteString("=== AS CONTEXT ===\n\n")
 
+	// I-490: surface pending-approval count up-front so the operator
+	// sees stale items waiting on them before scanning the rest.
+	if pending := PendingApprovalCount(cfg); pending > 0 {
+		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
+	}
+
 	// Sprint header
 	b.WriteString(fmt.Sprintf("## Sprint: %s — %s\n", sp.ID, sp.Title))
 	b.WriteString(fmt.Sprintf("  Progress: %d/%d complete, %d in-progress, %d blocked\n\n",
@@ -316,6 +322,12 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	// Markdown output
 	var b strings.Builder
 	b.WriteString("=== AS CONTEXT ===\n\n")
+
+	// I-490: surface pending-approval count up-front so the operator
+	// sees stale items waiting on them before scanning the rest.
+	if pending := PendingApprovalCount(cfg); pending > 0 {
+		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
+	}
 
 	// Active work
 	b.WriteString("## Active Work\n")

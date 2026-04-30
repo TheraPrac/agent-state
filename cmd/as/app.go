@@ -386,12 +386,16 @@ YAML block scalars so multi-line values replace cleanly.`,
 			slug, _ := cmd.Flags().GetString("slug")
 			repos, _ := cmd.Flags().GetStringSlice("repos")
 			noPush, _ := cmd.Flags().GetBool("no-push")
-			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{Slug: slug, Repos: repos, NoPush: noPush})
+			force, _ := cmd.Flags().GetBool("force")
+			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{
+				Slug: slug, Repos: repos, NoPush: noPush, Force: force,
+			})
 		},
 	}
 	startCmd.Flags().String("slug", "", "branch name slug")
 	startCmd.Flags().StringSlice("repos", nil, "repos to create worktrees for")
 	startCmd.Flags().Bool("no-push", false, "skip auto-push onto the work stack")
+	startCmd.Flags().Bool("force", false, "bypass the I-490 queue-approval gate (logs to changelog)")
 	root.AddCommand(startCmd)
 
 	closeCmd := &cobra.Command{
@@ -1114,10 +1118,15 @@ implement step during st run.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			reason, _ := cmd.Flags().GetString("reason")
-			exitCode = command.StackPush(appStore, appCfg, args[0], reason)
+			fromPending, _ := cmd.Flags().GetBool("from-pending")
+			exitCode = command.StackPush(appStore, appCfg, args[0], command.StackPushOpts{
+				Reason:      reason,
+				FromPending: fromPending,
+			})
 		},
 	}
 	pushCmd.Flags().String("reason", "", "why this item is being pushed (what blocked the parent)")
+	pushCmd.Flags().Bool("from-pending", false, "allow pushing an item that's pending operator approval (I-490 escape hatch)")
 	root.AddCommand(pushCmd)
 
 	popCmd := &cobra.Command{

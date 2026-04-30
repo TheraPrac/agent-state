@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -327,6 +328,77 @@ func TestStartNotFound(t *testing.T) {
 	code := Start(s, cfg, "T-999", StartOpts{})
 	if code != 1 {
 		t.Errorf("Start not found returned %d, want 1", code)
+	}
+}
+
+// I-490: start refuses to activate an item with a pending queue entry.
+func TestStartRefusesPending(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	s, cfg := setupTestEnv(t)
+
+	// Agent-add → pending entry.
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
+		t.Fatalf("queue add: %d", code)
+	}
+
+	if code := Start(s, cfg, "T-001", StartOpts{}); code != 1 {
+		t.Errorf("expected exit 1 for pending start, got %d", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if item.Status == "active" {
+		t.Error("item should NOT have been activated when pending")
+	}
+}
+
+// I-490: approving a pending entry then starting succeeds.
+func TestStartAfterApprove(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	s, cfg := setupTestEnv(t)
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
+		t.Fatalf("queue add: %d", code)
+	}
+	t.Setenv("AS_AGENT_ID", "")
+	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+	if code := Start(s, cfg, "T-001", StartOpts{}); code != 0 {
+		t.Errorf("expected start to succeed after approve, got %d", code)
+	}
+}
+
+// I-490: --force bypasses the gate and writes a changelog entry.
+func TestStartForceBypassesPending(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	s, cfg := setupTestEnv(t)
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
+		t.Fatalf("queue add: %d", code)
+	}
+	if code := Start(s, cfg, "T-001", StartOpts{Force: true}); code != 0 {
+		t.Errorf("--force should succeed against pending, got %d", code)
+	}
+
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatalf("read changelog: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Op == "start_force" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected start_force entry in changelog after --force bypass")
+	}
+}
+
+// I-490: items not on the queue at all are unaffected by the gate.
+func TestStartUnqueuedItemAllowed(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := Start(s, cfg, "T-001", StartOpts{}); code != 0 {
+		t.Errorf("expected unqueued start to succeed; got %d", code)
 	}
 }
 

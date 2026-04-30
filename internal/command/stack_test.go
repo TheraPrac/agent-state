@@ -10,12 +10,12 @@ import (
 func TestStackPushShow(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	code := StackPush(s, cfg, "T-001", "primary task")
+	code := StackPush(s, cfg, "T-001", StackPushOpts{Reason: "primary task"})
 	if code != 0 {
 		t.Fatalf("StackPush returned %d", code)
 	}
 
-	code = StackPush(s, cfg, "T-002", "blocks T-001")
+	code = StackPush(s, cfg, "T-002", StackPushOpts{Reason: "blocks T-001"})
 	if code != 0 {
 		t.Fatalf("StackPush T-002 returned %d", code)
 	}
@@ -40,8 +40,8 @@ func TestStackPushShow(t *testing.T) {
 func TestStackPushDuplicate(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	StackPush(s, cfg, "T-001", "")
-	code := StackPush(s, cfg, "T-001", "")
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
+	code := StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
 	if code != 1 {
 		t.Errorf("duplicate push returned %d, want 1", code)
 	}
@@ -49,7 +49,7 @@ func TestStackPushDuplicate(t *testing.T) {
 
 func TestStackPushNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := StackPush(s, cfg, "T-999", "")
+	code := StackPush(s, cfg, "T-999", StackPushOpts{Reason: ""})
 	if code != 1 {
 		t.Errorf("not found returned %d, want 1", code)
 	}
@@ -58,8 +58,8 @@ func TestStackPushNotFound(t *testing.T) {
 func TestStackPop(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	StackPush(s, cfg, "T-001", "primary")
-	StackPush(s, cfg, "T-002", "interrupt")
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: "primary"})
+	StackPush(s, cfg, "T-002", StackPushOpts{Reason: "interrupt"})
 
 	// Capture stdout
 	old := os.Stdout
@@ -102,7 +102,7 @@ func TestStackPopAutoSkipsResolved(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// T-004 is completed (in archive fixture)
-	StackPush(s, cfg, "T-001", "base")
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: "base"})
 	// Manually add a resolved item to the stack
 	entries := LoadStack(cfg)
 	entries = append(entries, StackEntry{ID: "T-004", Reason: "was working on this"})
@@ -222,7 +222,7 @@ func TestLoadStackLegacyFallback(t *testing.T) {
 		t.Fatalf("legacy entry = %+v", entries[0])
 	}
 
-	if code := StackPush(s, cfg, "T-002", "new per-agent entry"); code != 0 {
+	if code := StackPush(s, cfg, "T-002", StackPushOpts{Reason: "new per-agent entry"}); code != 0 {
 		t.Fatalf("StackPush returned %d", code)
 	}
 
@@ -237,5 +237,36 @@ func TestLoadStackLegacyFallback(t *testing.T) {
 	}
 	if entries[0].ID != "T-001" || entries[1].ID != "T-002" {
 		t.Errorf("per-agent stack = %+v", entries)
+	}
+}
+
+// I-490: stack push refuses pending items unless --from-pending.
+func TestStackPushBlocksPending(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	s, cfg := setupTestEnv(t)
+
+	// Pending entry (agent-added → Approved=false).
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
+		t.Fatalf("queue add: %d", code)
+	}
+
+	if code := StackPush(s, cfg, "T-001", StackPushOpts{}); code != 1 {
+		t.Errorf("expected push of pending item to refuse with exit 1, got %d", code)
+	}
+
+	if code := StackPush(s, cfg, "T-001", StackPushOpts{FromPending: true}); code != 0 {
+		t.Errorf("--from-pending should bypass; got %d", code)
+	}
+	entries := LoadStack(cfg)
+	if len(entries) != 1 || entries[0].ID != "T-001" {
+		t.Errorf("stack after --from-pending push = %+v", entries)
+	}
+}
+
+// I-490: stack push of an item NOT on the queue is unaffected by the gate.
+func TestStackPushUnqueuedItemAllowed(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := StackPush(s, cfg, "T-001", StackPushOpts{}); code != 0 {
+		t.Errorf("push of unqueued item should succeed; got %d", code)
 	}
 }

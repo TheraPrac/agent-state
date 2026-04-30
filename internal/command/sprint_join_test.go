@@ -510,7 +510,7 @@ func TestPrimeGlobalWithQueueAndStack(t *testing.T) {
 	QueueAdd(s, cfg, "T-001", QueueOpts{Reason: "test"})
 
 	// Push to stack
-	StackPush(s, cfg, "T-003", "testing stack")
+	StackPush(s, cfg, "T-003", StackPushOpts{Reason: "testing stack"})
 
 	code := Prime(s, cfg, PrimeOpts{})
 	if code != 0 {

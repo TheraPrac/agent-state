@@ -60,7 +60,7 @@ func TestStart_AutoPushIdempotent(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Pre-push manually
-	if rc := StackPush(s, cfg, "T-001", "manual"); rc != 0 {
+	if rc := StackPush(s, cfg, "T-001", StackPushOpts{Reason: "manual"}); rc != 0 {
 		t.Fatalf("pre-push StackPush = %d", rc)
 	}
 

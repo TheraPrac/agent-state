@@ -29,7 +29,18 @@ type StackRepoState struct {
 
 // --- Commands ---
 
-func StackPush(s *store.Store, cfg *config.Config, id string, reason string) int {
+// StackPushOpts holds flags for stack push.
+type StackPushOpts struct {
+	Reason string
+	// FromPending lets the operator push a pending-approval item onto
+	// the stack without first approving it. Useful when interrupting
+	// current work to investigate an item that hasn't graduated through
+	// the queue yet. Default behavior (FromPending=false) is to refuse
+	// pending items per the I-490 gate.
+	FromPending bool
+}
+
+func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts) int {
 	if _, ok := s.Get(id); !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
 		return 1
@@ -43,6 +54,16 @@ func StackPush(s *store.Store, cfg *config.Config, id string, reason string) int
 			fmt.Fprintf(os.Stderr, "%s is already on the stack\n", id)
 			return 1
 		}
+	}
+
+	// I-490: stack push honors the queue approval gate by default. The
+	// --from-pending flag lets the operator interrupt-mode an item
+	// that hasn't yet graduated through the queue.
+	if !opts.FromPending && IsQueuePending(cfg, id) {
+		fmt.Fprintf(os.Stderr,
+			"%s is pending operator approval — run `st queue approve %s` first (or `st push %s --from-pending` to push without approving)\n",
+			id, id, id)
+		return 1
 	}
 
 	// Capture repo state from the item's work_tracking
@@ -62,7 +83,7 @@ func StackPush(s *store.Store, cfg *config.Config, id string, reason string) int
 
 	entry := StackEntry{
 		ID:       id,
-		Reason:   reason,
+		Reason:   opts.Reason,
 		PushedAt: time.Now().Format(time.RFC3339),
 		PushedBy: agentID,
 		Repos:    repos,
@@ -78,8 +99,8 @@ func StackPush(s *store.Store, cfg *config.Config, id string, reason string) int
 
 	depth := len(entries)
 	fmt.Printf("Pushed %s onto stack (depth %d)\n", id, depth)
-	if reason != "" {
-		fmt.Printf("  reason: %s\n", reason)
+	if opts.Reason != "" {
+		fmt.Printf("  reason: %s\n", opts.Reason)
 	}
 	autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth))
 	return 0
