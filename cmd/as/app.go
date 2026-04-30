@@ -291,15 +291,23 @@ YAML block scalars so multi-line values replace cleanly.`,
 	}
 	agentWorkspaceCreateCmd := &cobra.Command{
 		Use:   "create <agent>",
-		Short: "Create or repair an independent agent workspace",
-		Args:  cobra.ExactArgs(1),
+		Short: "Create or repair an independent agent workspace (auto-chains AWS+GH identity bootstrap)",
+		Long: "Create or repair an independent agent workspace.\n\n" +
+			"After cloning repos and starting Docker services, this command auto-chains\n" +
+			"`st agent bootstrap` for the new agent, provisioning both AWS and GitHub\n" +
+			"identities. Use --skip-aws / --skip-gh to opt out of either half (e.g., to\n" +
+			"reuse a shared identity).",
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			branch, _ := cmd.Flags().GetString("branch")
 			full, _ := cmd.Flags().GetBool("full")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			repair, _ := cmd.Flags().GetBool("repair")
+			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
+			skipGH, _ := cmd.Flags().GetBool("skip-gh")
 			exitCode = command.AgentWorkspaceCreate(appCfg, command.AgentWorkspaceCreateOpts{
 				Agent: args[0], Branch: branch, Full: full, DryRun: dryRun, Repair: repair,
+				SkipAWS: skipAWS, SkipGH: skipGH,
 			})
 		},
 	}
@@ -307,6 +315,8 @@ YAML block scalars so multi-line values replace cleanly.`,
 	agentWorkspaceCreateCmd.Flags().Bool("full", false, "create independent non-symlink clones")
 	agentWorkspaceCreateCmd.Flags().Bool("dry-run", false, "print the plan without filesystem, git, or Docker changes")
 	agentWorkspaceCreateCmd.Flags().Bool("repair", false, "replace known-safe partial workspace symlinks")
+	agentWorkspaceCreateCmd.Flags().Bool("skip-aws", false, "do not chain AWS identity bootstrap")
+	agentWorkspaceCreateCmd.Flags().Bool("skip-gh", false, "do not chain GitHub identity bootstrap")
 	agentWorkspaceCmd.AddCommand(agentWorkspaceCreateCmd)
 
 	agentWorkspaceStatusCmd := &cobra.Command{

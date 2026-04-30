@@ -33,11 +33,13 @@ type AgentAuthOpts struct {
 }
 
 type AgentWorkspaceCreateOpts struct {
-	Agent  string
-	Branch string
-	Full   bool
-	DryRun bool
-	Repair bool
+	Agent   string
+	Branch  string
+	Full    bool
+	DryRun  bool
+	Repair  bool
+	SkipAWS bool
+	SkipGH  bool
 }
 
 type AgentWorkspaceStatusOpts struct {
@@ -114,6 +116,7 @@ func AgentWorkspaceCreate(cfg *config.Config, opts AgentWorkspaceCreateOpts) int
 		return 1
 	}
 	printAgentWorkspacePlan(plan, opts.DryRun, opts.Full, opts.Repair)
+	printIdentityBootstrapPlan(plan.AgentID, opts.SkipAWS, opts.SkipGH)
 	if opts.DryRun {
 		return 0
 	}
@@ -123,6 +126,12 @@ func AgentWorkspaceCreate(cfg *config.Config, opts AgentWorkspaceCreateOpts) int
 	}
 	if err := applyAgentWorkspaceCreate(plan, opts.Repair); err != nil {
 		fmt.Fprintf(os.Stderr, "agent workspace create: %v\n", err)
+		return 1
+	}
+	if err := runIdentityBootstrap(cfg, plan.AgentID, opts.SkipAWS, opts.SkipGH); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"agent workspace create: identity bootstrap failed for %s: %v\n  retry with: st agent bootstrap --name %s\n",
+			plan.AgentID, err, plan.AgentID)
 		return 1
 	}
 	return 0
@@ -546,6 +555,31 @@ func runAgentScript(path string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// runIdentityBootstrap chains AgentBootstrap onto a successful workspace
+// create so a single command produces a fully usable agent (clones +
+// build + AWS + GH identity). Honors caller skip flags so operators can
+// opt out of either half (e.g., reuse a shared AWS user). Stub-friendly
+// via package-level var to keep tests off live AWS/GH scripts.
+var runIdentityBootstrap = func(cfg *config.Config, agentID string, skipAWS, skipGH bool) error {
+	if code := AgentBootstrap(cfg, AgentBootstrapOpts{Name: agentID, SkipAWS: skipAWS, SkipGH: skipGH}); code != 0 {
+		return fmt.Errorf("agent bootstrap exited with code %d", code)
+	}
+	return nil
+}
+
+// printIdentityBootstrapPlan surfaces the AWS/GH chain in dry-run output
+// so operators discover the auto-bootstrap behavior without reading the
+// help text.
+func printIdentityBootstrapPlan(agentID string, skipAWS, skipGH bool) {
+	state := func(skip bool) string {
+		if skip {
+			return "skip"
+		}
+		return "run"
+	}
+	fmt.Printf("  identity bootstrap: agent=%s aws=%s gh=%s\n", agentID, state(skipAWS), state(skipGH))
 }
 
 // runAsInstall builds the per-agent st binary in the freshly-cloned `as`
