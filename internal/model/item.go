@@ -59,8 +59,36 @@ type Item struct {
 	// Context and other multiline blocks
 	Context string
 
+	// SBAR is the I-487 composite content field. The four sub-fields
+	// follow the clinical Situation/Background/Assessment/Recommendation
+	// handoff convention so issues and tasks always carry symptom +
+	// history + diagnosis + proposed-fix instead of a single freeform
+	// blob. Legacy items (Summary/Context populated, SBAR empty) keep
+	// working unchanged; the migrate-sbar tool seeds Background from
+	// Summary.
+	SBAR SBAR
+
 	// The full parsed document (for roundtrip fidelity)
 	Doc *ParsedDocument
+}
+
+// SBAR is the four-section composite content of an item. Each field
+// is a free-form string (potentially multiline). An item is "fully
+// SBAR'd" when all four are non-empty; a partial SBAR is allowed
+// during the legacy-summary deprecation window and is the migration
+// tool's default for items that pre-date the schema.
+type SBAR struct {
+	Situation      string
+	Background     string
+	Assessment     string
+	Recommendation string
+}
+
+// IsEmpty reports whether all four SBAR fields are blank — the
+// signal that an item is unmigrated (legacy Summary/Context still
+// authoritative).
+func (s SBAR) IsEmpty() bool {
+	return s.Situation == "" && s.Background == "" && s.Assessment == "" && s.Recommendation == ""
 }
 
 // SetNested updates a nested string field on the item, keeping the

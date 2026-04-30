@@ -110,7 +110,17 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	if len(item.Tags) > 0 {
 		fmt.Printf("  tags: %v\n", item.Tags)
 	}
-	if item.Summary != "" {
+	// I-487: SBAR is the canonical content shape — render it when any
+	// of the four fields is populated. Fall back to legacy summary
+	// rendering for unmigrated items so nothing goes dark during the
+	// transition window.
+	if !item.SBAR.IsEmpty() {
+		fmt.Println("  sbar:")
+		renderSBARField("situation", item.SBAR.Situation)
+		renderSBARField("background", item.SBAR.Background)
+		renderSBARField("assessment", item.SBAR.Assessment)
+		renderSBARField("recommendation", item.SBAR.Recommendation)
+	} else if item.Summary != "" {
 		fmt.Printf("  summary:\n    %s\n", item.Summary)
 	}
 	if len(item.AcceptanceCriteria) > 0 {
@@ -129,6 +139,47 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	renderTimeTracking(os.Stdout, item)
 
 	return 0
+}
+
+// renderSBARField prints one labeled SBAR section to stdout. Empty
+// fields render as `<field>: (empty)` so the gap is visible — that's
+// the I-487 contract: every item is supposed to populate all four.
+func renderSBARField(label, value string) {
+	if value == "" {
+		fmt.Printf("    %s: (empty)\n", label)
+		return
+	}
+	lines := splitLines(value)
+	if len(lines) == 1 {
+		fmt.Printf("    %s: %s\n", label, lines[0])
+		return
+	}
+	fmt.Printf("    %s:\n", label)
+	for _, l := range lines {
+		fmt.Printf("      %s\n", l)
+	}
+}
+
+// splitLines splits on '\n', preserving empty intermediate lines but
+// stripping a trailing newline. Local to show.go to avoid pulling
+// strings.Split into the per-render hot path through the renderer
+// helpers above.
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := []string{}
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
 }
 
 // renderTimeTracking prints a human-readable summary of time/cost/token/LOC

@@ -740,3 +740,90 @@ func writeTempFile(t *testing.T, content string) string {
 	}
 	return path
 }
+
+// I-487: SBAR with all four multiline children parses into the typed
+// struct AND survives a serialize-reparse round-trip without churn.
+func TestParse_SBARBlock(t *testing.T) {
+	content := `id: I-001
+type: issue
+status: queued
+created: 2026-04-30T10:00:00-06:00
+last_touched: 2026-04-30T10:00:00-06:00
+title: SBAR-shaped issue
+
+sbar:
+  situation: |
+    CreateAppointment returns RLS_VIOLATION on every fresh-signup tenant.
+  background: |
+    UserContextMiddleware sets app.tenant_id on a per-request *sql.Conn
+    pinned in ctx; service methods that bypass s.querier(ctx) get a
+    fresh pool conn without RLS context.
+  assessment: |
+    CreateAppointment passes s.db to scheduling.ValidateResource*
+    helpers — the helpers query through the raw pool. Reproducible 100%
+    of the time on fresh signup.
+  recommendation: |
+    Widen scheduling validators from *sql.DB to a Querier interface;
+    switch the 4 call sites in db/appointments.go to s.querier(ctx).
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+
+	if !strings.Contains(item.SBAR.Situation, "RLS_VIOLATION") {
+		t.Errorf("SBAR.Situation = %q", item.SBAR.Situation)
+	}
+	if !strings.Contains(item.SBAR.Background, "UserContextMiddleware") {
+		t.Errorf("SBAR.Background = %q", item.SBAR.Background)
+	}
+	if !strings.Contains(item.SBAR.Assessment, "CreateAppointment passes") {
+		t.Errorf("SBAR.Assessment = %q", item.SBAR.Assessment)
+	}
+	if !strings.Contains(item.SBAR.Recommendation, "Widen scheduling") {
+		t.Errorf("SBAR.Recommendation = %q", item.SBAR.Recommendation)
+	}
+
+	// Round-trip: serialize and re-parse — fields survive.
+	out := item.Doc.String()
+	path2 := writeTempFile(t, out)
+	item2, err := File(path2)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if item2.SBAR.Situation != item.SBAR.Situation {
+		t.Errorf("Situation churn:\n  before=%q\n  after =%q", item.SBAR.Situation, item2.SBAR.Situation)
+	}
+	if item2.SBAR.Recommendation != item.SBAR.Recommendation {
+		t.Errorf("Recommendation churn:\n  before=%q\n  after =%q", item.SBAR.Recommendation, item2.SBAR.Recommendation)
+	}
+}
+
+// I-487 backwards-compat: a legacy item with summary: but no sbar:
+// parses with empty SBAR struct and the original Summary preserved.
+// Round-trip is byte-stable.
+func TestParse_LegacySummaryStillWorks(t *testing.T) {
+	content := `id: I-002
+type: issue
+status: queued
+created: 2026-04-30T10:00:00-06:00
+last_touched: 2026-04-30T10:00:00-06:00
+title: Pre-SBAR legacy item
+
+summary: |-
+  Single-blob summary written before the SBAR schema landed.
+  Two paragraphs of context here.
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if !item.SBAR.IsEmpty() {
+		t.Errorf("legacy item should have empty SBAR, got %+v", item.SBAR)
+	}
+	if !strings.Contains(item.Summary, "Single-blob summary") {
+		t.Errorf("Summary churn: %q", item.Summary)
+	}
+}

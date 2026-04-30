@@ -248,8 +248,12 @@ func File(path string) (*model.Item, error) {
 				}
 				line.BlockKey = nestKey
 
-				// Check for nested multiline block
-				if val == "|" || val == ">" {
+				// Check for nested multiline block. Same indicator
+				// vocabulary as the top-level branch: `|`, `>`, `|+`,
+				// `|-`. The strip/keep/keep-trailing semantics only
+				// matter for serialization; the parser stores content
+				// verbatim and storeMultiline trims trailing newlines.
+				if val == "|" || val == ">" || val == "|+" || val == "|-" {
 					inBlock = true
 					blockIndent = line.Indent + 2
 					currentBlock = ""
@@ -435,6 +439,11 @@ func storeNestedScalar(item *model.Item, parent, key, val string) {
 		item.TimeTracking[key] = val
 	case "manifest":
 		item.Manifest[key] = val
+	case "sbar":
+		// I-487: SBAR fields are usually multiline, but a one-line
+		// inline value (e.g. `situation: short symptom`) is also
+		// supported and routes here.
+		setSBARField(item, key, val)
 	}
 }
 
@@ -448,9 +457,34 @@ func storeMultiline(item *model.Item, key, nestKey, content string) {
 	case "context":
 		item.Context = content
 	}
+	// I-487: SBAR multiline blocks (situation/background/assessment/
+	// recommendation) live under nestKey="sbar" with multi-line
+	// values. Route those into the typed SBAR struct so callers can
+	// access them without re-parsing the raw doc.
+	if nestKey == "sbar" {
+		setSBARField(item, key, content)
+		return
+	}
 	// Other multiline fields stored in the nested maps if applicable
 	if nestKey != "" {
 		storeNestedScalar(item, nestKey, key, content)
+	}
+}
+
+// setSBARField writes a single SBAR sub-field by name. Unknown keys
+// are silently dropped — the typed struct only carries the four
+// canonical sections, but the underlying doc retains arbitrary
+// children for round-trip fidelity.
+func setSBARField(item *model.Item, key, value string) {
+	switch key {
+	case "situation":
+		item.SBAR.Situation = value
+	case "background":
+		item.SBAR.Background = value
+	case "assessment":
+		item.SBAR.Assessment = value
+	case "recommendation":
+		item.SBAR.Recommendation = value
 	}
 }
 
