@@ -64,6 +64,35 @@ func TestReleaseNotAssigned(t *testing.T) {
 	}
 }
 
+// I-408: the early-exit guard previously refused to release any item
+// whose assigned_to + claimed_by were empty. That blocked recovery for
+// items that landed in "stuck active" — assignment cleared by hand but
+// status still active. Release must now reach the Mutate path when the
+// item is active so the caller can recover the queued state.
+func TestReleaseStuckActiveRecovers(t *testing.T) {
+	root := setupTestEnvRoot(t)
+	writeFile(t, filepath.Join(root, "tasks", "T-100-stuck.md"), `id: T-100
+type: task
+status: active
+created: 2026-04-30T10:00:00-06:00
+last_touched: 2026-04-30T10:00:00-06:00
+title: Stuck active task
+assigned_to: ""
+`)
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+
+	code := Release(s, cfg, "T-100")
+	if code != 0 {
+		t.Fatalf("Release on stuck-active returned %d, want 0", code)
+	}
+	item, _ := s.Get("T-100")
+	if item.Status != "queued" {
+		t.Errorf("status = %q, want queued (stuck-active recovery)", item.Status)
+	}
+}
+
 func TestReleaseNotFound(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 	code := Release(s, cfg, "T-999")

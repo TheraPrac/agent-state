@@ -21,7 +21,17 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 
-	if item.AssignedTo == "" && item.ClaimedBy == "" {
+	// I-408: an item can land in a "stuck active" state (assigned/claim
+	// cleared by hand, status still active) — that's exactly what this
+	// PR is fixing. Allow release to proceed when status is the type's
+	// ActiveStatus even if the cached read shows no assignment, so the
+	// recovery path is reachable. The cached read is only an early-exit
+	// optimization; the Mutate callback is the source of truth.
+	stuckActive := false
+	if tc, ok := cfg.Types[item.Type]; ok && item.Status == tc.ActiveStatus {
+		stuckActive = true
+	}
+	if item.AssignedTo == "" && item.ClaimedBy == "" && !stuckActive {
 		fmt.Fprintf(os.Stderr, "%s is not assigned or claimed\n", id)
 		return 1
 	}
@@ -63,11 +73,20 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 			item.Doc.SetField("claimed_by", "")
 			item.Doc.SetField("claimed_at", "")
 		}
-		if tc, ok := cfg.Types[item.Type]; ok && item.Status == tc.ActiveStatus {
-			statusBefore = item.Status
-			item.Status = tc.StartStatus
-			item.Doc.SetField("status", tc.StartStatus)
-			statusAfter = item.Status
+		if tc, ok := cfg.Types[item.Type]; ok {
+			if item.Status == tc.ActiveStatus {
+				statusBefore = item.Status
+				item.Status = tc.StartStatus
+				item.Doc.SetField("status", tc.StartStatus)
+				statusAfter = item.Status
+			}
+		} else if item.Status == "active" {
+			// Unknown type but status is active: warn so the operator
+			// knows status was left as-is. Without this, the assignment
+			// and claim clear but status stays "active" silently.
+			fmt.Fprintf(os.Stderr,
+				"warning: unknown type %q for %s — status %q left untouched; update manually if needed\n",
+				item.Type, id, item.Status)
 		}
 		return nil
 	}); err != nil {
@@ -104,12 +123,17 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 	if statusBefore != "" {
 		statusNote = fmt.Sprintf(" (status: %s → %s)", statusBefore, statusAfter)
 	}
-	if oldAgent != "" && oldClaim != "" {
+	switch {
+	case oldAgent != "" && oldClaim != "":
 		fmt.Printf("Released %s — was assigned to %s, claimed by session %s%s\n", id, oldAgent, oldClaim, statusNote)
-	} else if oldAgent != "" {
+	case oldAgent != "":
 		fmt.Printf("Released %s — was assigned to %s%s\n", id, oldAgent, statusNote)
-	} else {
+	case oldClaim != "":
 		fmt.Printf("Released %s — was claimed by session %s%s\n", id, oldClaim, statusNote)
+	default:
+		// I-408: stuck-active recovery — neither assigned nor claimed,
+		// status was active. The status reset is the whole story.
+		fmt.Printf("Released %s — recovered from stuck-active%s\n", id, statusNote)
 	}
 
 	// Commit + push so the claim release is visible to other sessions
