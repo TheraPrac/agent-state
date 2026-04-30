@@ -39,14 +39,19 @@ type QueueEntry struct {
 	AddedBy  string // "user" or agent ID
 	Reason   string
 	Approved bool // agent-added items need user approval
-	// Source identifies what put the entry on the queue. "sprint" means the
-	// entry was created as a side effect of `st sprint add`; sprint rm then
-	// cascade-removes it. Any other value (including the default empty
-	// string and the explicit `"manual"` constant) is treated as
-	// operator-added — sprint rm leaves it. Note: SaveQueue suppresses the
-	// `source:` line for empty/manual to keep the file compact, so empty
-	// string is the canonical on-disk representation; future readers must
-	// check `Source != QueueSourceSprint`, not `Source == QueueSourceManual`.
+	// Source identifies what put the entry on the queue. "sprint" means
+	// the entry was created as a side effect of `st sprint add`; sprint
+	// rm then cascade-removes it. "manual" means the operator placed
+	// or re-placed the entry explicitly (via `st queue add` or via
+	// `st queue move`, which I-489 flips to "manual" on move) — sprint
+	// rm leaves it alone and the chain-position walk skips it. The
+	// empty string is a legacy on-disk form (pre-I-488) treated as
+	// equivalent to "manual" at runtime: SaveQueue writes "manual"
+	// explicitly when the field is set, but skips the line for empty
+	// so the file format stays compact for entries that never carried
+	// the field. Future readers must check `Source != QueueSourceSprint`
+	// (not `== QueueSourceManual`) so legacy empty-source entries
+	// behave identically to operator-pinned ones.
 	Source string
 }
 
