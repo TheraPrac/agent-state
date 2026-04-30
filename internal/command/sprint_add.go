@@ -73,7 +73,26 @@ func SprintAdd(s *store.Store, cfg *config.Config, sprintID string, itemIDs []st
 		return 1
 	}
 
-	fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
+	// Auto-queue each item with Approved=false, Source=sprint. Items already
+	// in the queue (manually queued by the operator) are left alone — see
+	// upsertQueueSprintEntry comment.
+	queued := 0
+	for _, id := range itemIDs {
+		added, err := upsertQueueSprintEntry(cfg, id, sprintID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "queueing %s: %v\n", id, err)
+			return 1
+		}
+		if added {
+			queued++
+		}
+	}
+
+	if queued > 0 {
+		fmt.Printf("Added %d item(s) to sprint %s (queued %d as pending)\n", len(itemIDs), sprintID, queued)
+	} else {
+		fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
+	}
 	autoSync(s, fmt.Sprintf("st sprint add: %s += %d item(s)", sprintID, len(itemIDs)))
 	return 0
 }

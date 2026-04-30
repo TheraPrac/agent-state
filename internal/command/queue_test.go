@@ -88,7 +88,7 @@ func TestQueueNext(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	QueueNext(s, cfg)
+	QueueNext(s, cfg, QueueNextOpts{})
 	w.Close()
 	os.Stdout = old
 
@@ -112,7 +112,7 @@ func TestQueueNextSkipsUnapproved(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	QueueNext(s, cfg)
+	QueueNext(s, cfg, QueueNextOpts{})
 	w.Close()
 	os.Stdout = old
 
@@ -195,7 +195,7 @@ func TestQueueApprove(t *testing.T) {
 	}
 
 	t.Setenv("AS_AGENT_ID", "")
-	code := QueueApprove(s, cfg, "T-001")
+	code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{})
 	if code != 0 {
 		t.Fatalf("QueueApprove returned %d", code)
 	}
@@ -208,7 +208,7 @@ func TestQueueApprove(t *testing.T) {
 
 func TestQueueApproveNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := QueueApprove(s, cfg, "T-999")
+	code := QueueApprove(s, cfg, "T-999", QueueApproveOpts{})
 	if code != 1 {
 		t.Errorf("approve not found returned %d, want 1", code)
 	}
@@ -224,7 +224,7 @@ func TestQueueShowEmpty(t *testing.T) {
 
 func TestQueueNextEmpty(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := QueueNext(s, cfg)
+	code := QueueNext(s, cfg, QueueNextOpts{})
 	if code != 0 {
 		t.Errorf("QueueNext empty returned %d", code)
 	}
@@ -304,6 +304,131 @@ func TestQueuePruneNoTerminalItems(t *testing.T) {
 	entries := LoadQueue(cfg)
 	if len(entries) != 2 {
 		t.Errorf("prune with no terminal items removed entries: %v", entries)
+	}
+}
+
+// I-488: Source field round-trips through Save/Load.
+func TestQueueSourceRoundTrip(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	entries := []QueueEntry{
+		{ID: "T-001", Approved: true, Source: QueueSourceSprint},
+		{ID: "T-002", Approved: false, Source: QueueSourceSprint, Reason: "sprint:demo"},
+		{ID: "T-003", Approved: true}, // empty Source = manual default
+	}
+	if err := SaveQueue(cfg, entries); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got := LoadQueue(cfg)
+	if len(got) != 3 {
+		t.Fatalf("loaded %d entries, want 3", len(got))
+	}
+	if got[0].Source != QueueSourceSprint {
+		t.Errorf("entry[0].Source = %q, want %q", got[0].Source, QueueSourceSprint)
+	}
+	if got[1].Source != QueueSourceSprint {
+		t.Errorf("entry[1].Source = %q, want %q", got[1].Source, QueueSourceSprint)
+	}
+	if got[2].Source != "" {
+		t.Errorf("entry[2].Source = %q, want empty (manual default)", got[2].Source)
+	}
+}
+
+// I-488: queue next --sprint filters to sprint members.
+func TestQueueNextSprintFilter(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// T-001 is queued + approved + unblocked but not in any sprint.
+	QueueAdd(s, cfg, "T-001", QueueOpts{})
+	// T-003 is active and assigned to a sprint.
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.Sprint = "demo"
+		it.Doc.SetField("sprint", "demo")
+		it.Status = "queued"
+		it.Doc.SetField("status", "queued")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+	QueueAdd(s, cfg, "T-003", QueueOpts{})
+
+	// No filter: returns first approved+unblocked → T-001.
+	out := captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{}) })
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("no-filter next = %q, want T-001", out)
+	}
+
+	// --sprint demo: skips T-001, returns T-003.
+	out = captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{Sprint: "demo"}) })
+	if !strings.Contains(out, "T-003") {
+		t.Errorf("--sprint demo next = %q, want T-003", out)
+	}
+
+	// --sprint nonexistent: prints "no items".
+	out = captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{Sprint: "ghost"}) })
+	if !strings.Contains(out, "No approved") {
+		t.Errorf("--sprint ghost next = %q, want 'No approved' message", out)
+	}
+}
+
+// I-488: queue approve --sprint flips every pending sprint member.
+func TestQueueApproveSprintBulk(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-a")
+
+	// Stamp T-001 + T-002 as members of "demo"; queue them as pending.
+	for _, id := range []string{"T-001", "T-002"} {
+		if err := s.Mutate(id, func(it *model.Item) error {
+			it.Sprint = "demo"
+			it.Doc.SetField("sprint", "demo")
+			return nil
+		}); err != nil {
+			t.Fatalf("mutate %s: %v", id, err)
+		}
+	}
+	QueueAdd(s, cfg, "T-001", QueueOpts{}) // agent-added → pending
+	QueueAdd(s, cfg, "T-002", QueueOpts{}) // agent-added → pending
+
+	// T-003 is queued but NOT a sprint member.
+	QueueAdd(s, cfg, "T-003", QueueOpts{})
+
+	t.Setenv("AS_AGENT_ID", "")
+	code := QueueApprove(s, cfg, "", QueueApproveOpts{Sprint: "demo"})
+	if code != 0 {
+		t.Fatalf("approve --sprint = %d", code)
+	}
+
+	entries := LoadQueue(cfg)
+	by := map[string]QueueEntry{}
+	for _, e := range entries {
+		by[e.ID] = e
+	}
+	if !by["T-001"].Approved {
+		t.Error("T-001 should be approved after --sprint demo")
+	}
+	if !by["T-002"].Approved {
+		t.Error("T-002 should be approved after --sprint demo")
+	}
+	if by["T-003"].Approved {
+		t.Error("T-003 (not in sprint) should still be pending")
+	}
+}
+
+// I-488: queue approve with neither <id> nor --sprint errors.
+func TestQueueApproveRequiresArgOrFlag(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	code := QueueApprove(s, cfg, "", QueueApproveOpts{})
+	if code != 2 {
+		t.Errorf("empty approve returned %d, want 2", code)
+	}
+}
+
+// I-488: queue approve with both <id> and --sprint errors.
+func TestQueueApproveMutuallyExclusive(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	QueueAdd(s, cfg, "T-001", QueueOpts{})
+	code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{Sprint: "demo"})
+	if code != 2 {
+		t.Errorf("conflicting args returned %d, want 2", code)
 	}
 }
 

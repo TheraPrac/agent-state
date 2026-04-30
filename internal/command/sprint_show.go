@@ -59,18 +59,45 @@ func SprintShow(s *store.Store, cfg *config.Config, sprintID string) int {
 	// Build dep graph for blocking info
 	g := deps.Build(s.All(), cfg)
 
+	// I-488: queue is the source of execution order. Render members in the
+	// order they appear in the queue, with any orphans (in sprint registry
+	// but missing from queue — e.g. closed and pruned, or pre-migration
+	// data) appended below a "(not queued)" subheader.
+	memberSet := make(map[string]bool, len(sp.Items))
+	for _, id := range sp.Items {
+		memberSet[id] = true
+	}
+
+	queue := LoadQueue(cfg)
+	var ordered []string
+	queuedSet := make(map[string]bool, len(memberSet))
+	for _, e := range queue {
+		if memberSet[e.ID] {
+			ordered = append(ordered, e.ID)
+			queuedSet[e.ID] = true
+		}
+	}
+	var orphans []string
+	for _, id := range sp.Items {
+		if !queuedSet[id] {
+			orphans = append(orphans, id)
+		}
+	}
+
 	// Table header
 	fmt.Printf("  %-3s %-8s %-35s %-12s %-8s\n", "#", "ID", "Title", "Status", "Priority")
 
 	complete := 0
 	inProgress := 0
 	blocked := 0
+	row := 0
 
-	for i, itemID := range sp.Items {
+	renderRow := func(itemID string) {
+		row++
 		item, ok := s.Get(itemID)
 		if !ok {
-			fmt.Printf("  %-3d %-8s (not found)\n", i+1, itemID)
-			continue
+			fmt.Printf("  %-3d %-8s (not found)\n", row, itemID)
+			return
 		}
 
 		title := item.Title
@@ -83,25 +110,34 @@ func SprintShow(s *store.Store, cfg *config.Config, sprintID string) int {
 			prio = fmt.Sprintf("p%d", *item.Priority)
 		}
 
-		fmt.Printf("  %-3d %-8s %-35s %-12s %-8s\n", i+1, item.ID, title, item.Status, prio)
+		fmt.Printf("  %-3d %-8s %-35s %-12s %-8s\n", row, item.ID, title, item.Status, prio)
 
-		// Show blocking info
 		blocksIDs := g.BlocksItems(itemID)
 		if len(blocksIDs) > 0 {
 			fmt.Printf("  %s blocks %s\n", strings.Repeat(" ", 13), strings.Join(blocksIDs, ", "))
 		}
 
-		// Count status categories
 		if cfg.IsTerminalStatus(item.Type, item.Status) {
 			complete++
-		} else {
-			tc, ok := cfg.Types[item.Type]
-			if ok && item.Status == tc.ActiveStatus {
-				inProgress++
-			}
-			if g.IsBlocked(itemID) {
-				blocked++
-			}
+			return
+		}
+		tc, ok := cfg.Types[item.Type]
+		if ok && item.Status == tc.ActiveStatus {
+			inProgress++
+		}
+		if g.IsBlocked(itemID) {
+			blocked++
+		}
+	}
+
+	for _, id := range ordered {
+		renderRow(id)
+	}
+	if len(orphans) > 0 {
+		fmt.Println()
+		fmt.Println("  (not queued — sprint members missing from the queue)")
+		for _, id := range orphans {
+			renderRow(id)
 		}
 	}
 

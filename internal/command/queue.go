@@ -13,6 +13,12 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// Queue entry source values. Missing/empty = legacy "manual" semantics.
+const (
+	QueueSourceManual = "manual"
+	QueueSourceSprint = "sprint"
+)
+
 // QueueEntry represents an item in the user-controlled work queue.
 type QueueEntry struct {
 	ID       string
@@ -20,11 +26,30 @@ type QueueEntry struct {
 	AddedBy  string // "user" or agent ID
 	Reason   string
 	Approved bool // agent-added items need user approval
+	// Source identifies what put the entry on the queue. "sprint" means the
+	// entry was created as a side effect of `st sprint add`; sprint rm then
+	// cascade-removes it. Any other value (including the default empty
+	// string and the explicit `"manual"` constant) is treated as
+	// operator-added — sprint rm leaves it. Note: SaveQueue suppresses the
+	// `source:` line for empty/manual to keep the file compact, so empty
+	// string is the canonical on-disk representation; future readers must
+	// check `Source != QueueSourceSprint`, not `Source == QueueSourceManual`.
+	Source string
 }
 
 // QueueOpts holds flags for queue commands.
 type QueueOpts struct {
 	Reason string
+}
+
+// QueueNextOpts filters queue next.
+type QueueNextOpts struct {
+	Sprint string // when non-empty, restrict to items whose item.Sprint matches
+}
+
+// QueueApproveOpts holds flags for queue approve.
+type QueueApproveOpts struct {
+	Sprint string // when non-empty (and ID empty), bulk-approve all pending sprint members
 }
 
 // autoSync commits + pushes any working-tree changes left by a state-mutating
@@ -133,7 +158,7 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 	return 0
 }
 
-func QueueNext(s *store.Store, cfg *config.Config) int {
+func QueueNext(s *store.Store, cfg *config.Config, opts QueueNextOpts) int {
 	entries := LoadQueue(cfg)
 	g := deps.Build(s.All(), cfg)
 
@@ -151,11 +176,18 @@ func QueueNext(s *store.Store, cfg *config.Config) int {
 		if cfg.IsTerminalStatus(item.Type, item.Status) {
 			continue
 		}
+		if opts.Sprint != "" && item.Sprint != opts.Sprint {
+			continue
+		}
 		fmt.Printf("%s — %s\n", e.ID, item.Title)
 		return 0
 	}
 
-	fmt.Println("No approved, unblocked items in queue")
+	if opts.Sprint != "" {
+		fmt.Printf("No approved, unblocked items in queue for sprint %s\n", opts.Sprint)
+	} else {
+		fmt.Println("No approved, unblocked items in queue")
+	}
 	return 0
 }
 
@@ -172,6 +204,67 @@ func QueueRm(s *store.Store, cfg *config.Config, id string) int {
 	fmt.Printf("Removed %s from queue\n", id)
 	autoSync(s, fmt.Sprintf("st queue rm: %s", id))
 	return 0
+}
+
+// upsertQueueSprintEntry ensures `id` has a sprint-sourced queue entry.
+// When the entry is absent we append a new one with Approved=false (so a
+// 30-item sprint doesn't flood the operator's "next" view) and
+// Source="sprint" so a later `st sprint rm` cascades the removal. When an
+// entry already exists we leave it alone — operator-queued entries (empty
+// or "manual" Source) keep their origin so sprint rm won't cascade-remove
+// them, matching the "track origin" contract in I-488.
+//
+// Returns true if a new queue entry was appended.
+func upsertQueueSprintEntry(cfg *config.Config, id, sprintID string) (bool, error) {
+	entries := LoadQueue(cfg)
+	for _, e := range entries {
+		if e.ID == id {
+			return false, nil
+		}
+	}
+
+	addedBy := cfg.AgentID()
+	if addedBy == "" {
+		addedBy = "user"
+	}
+	entries = append(entries, QueueEntry{
+		ID:       id,
+		AddedAt:  time.Now().Format(time.RFC3339),
+		AddedBy:  addedBy,
+		Reason:   fmt.Sprintf("sprint:%s", sprintID),
+		Approved: false,
+		Source:   QueueSourceSprint,
+	})
+	if err := SaveQueue(cfg, entries); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// removeSprintSourcedQueueEntry drops the entry for `id` IFF it was
+// added by `st sprint add` (Source="sprint"). Operator-queued entries
+// ("manual" or empty Source) are left in place so removing an item from
+// a sprint doesn't yank work the operator explicitly queued.
+//
+// Returns (removed, err). Missing entries return (false, nil).
+func removeSprintSourcedQueueEntry(cfg *config.Config, id string) (bool, error) {
+	entries := LoadQueue(cfg)
+	found := false
+	var updated []QueueEntry
+	for _, e := range entries {
+		if e.ID == id && e.Source == QueueSourceSprint {
+			found = true
+			continue
+		}
+		updated = append(updated, e)
+	}
+	if !found {
+		return false, nil
+	}
+	if err := SaveQueue(cfg, updated); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // removeFromQueueSilently drops the entry with the given ID from the queue
@@ -285,8 +378,49 @@ func QueueMove(s *store.Store, cfg *config.Config, id string, position int) int 
 	return 0
 }
 
-func QueueApprove(s *store.Store, cfg *config.Config, id string) int {
+func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueApproveOpts) int {
+	if id == "" && opts.Sprint == "" {
+		fmt.Fprintln(os.Stderr, "queue approve requires <id> or --sprint <slug>")
+		return 2
+	}
+	if id != "" && opts.Sprint != "" {
+		fmt.Fprintln(os.Stderr, "queue approve: <id> and --sprint are mutually exclusive")
+		return 2
+	}
+
 	entries := LoadQueue(cfg)
+
+	if opts.Sprint != "" {
+		approved := 0
+		var approvedIDs []string
+		for i, e := range entries {
+			if entries[i].Approved {
+				continue
+			}
+			item, ok := s.Get(e.ID)
+			if !ok {
+				continue
+			}
+			if item.Sprint != opts.Sprint {
+				continue
+			}
+			entries[i].Approved = true
+			approved++
+			approvedIDs = append(approvedIDs, e.ID)
+		}
+		if approved == 0 {
+			fmt.Printf("No pending sprint-%s items in queue\n", opts.Sprint)
+			return 0
+		}
+		if err := SaveQueue(cfg, entries); err != nil {
+			fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Approved %d item(s) for sprint %s: %s\n", approved, opts.Sprint, strings.Join(approvedIDs, ", "))
+		autoSync(s, fmt.Sprintf("st queue approve --sprint %s: %d item(s)", opts.Sprint, approved))
+		return 0
+	}
+
 	found := false
 	for i, e := range entries {
 		if e.ID == id {
@@ -358,6 +492,8 @@ func LoadQueue(cfg *config.Config) []QueueEntry {
 				current.Reason = val
 			case "approved":
 				current.Approved = val == "true"
+			case "source":
+				current.Source = val
 			}
 		}
 	}
@@ -388,6 +524,9 @@ func SaveQueue(cfg *config.Config, entries []QueueEntry) error {
 		}
 		if !e.Approved {
 			sb.WriteString("    approved: false\n")
+		}
+		if e.Source != "" && e.Source != QueueSourceManual {
+			sb.WriteString(fmt.Sprintf("    source: %s\n", e.Source))
 		}
 	}
 	return os.WriteFile(cfg.QueuePath(), []byte(sb.String()), 0644)
