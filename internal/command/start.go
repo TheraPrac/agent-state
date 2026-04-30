@@ -92,8 +92,12 @@ type StartOpts struct {
 	Repos  []string // repos to create worktrees for (overrides config defaults)
 	NoPush bool     // skip the auto-push onto the work stack
 	// Force bypasses the I-490 queue-approval gate. When true, an item
-	// in pending status can still be activated, but the bypass is
-	// recorded in the changelog so it's auditable.
+	// in pending status can still be activated. After the start
+	// successfully completes, a `start_force` audit entry is appended
+	// to the item's changelog (best-effort — a logging miss does not
+	// fail the start). The audit is written post-Mutate so a force
+	// that fails a later guard (assignment, claim race) doesn't leave
+	// a misleading bypass record.
 	Force bool
 }
 
@@ -127,6 +131,12 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// makes the I-488 pending status meaningful — agents in YOLO mode
 	// can no longer skip the operator's approval checkpoint. Items
 	// not on the queue at all are unaffected.
+	//
+	// Track the bypass; the audit write is deferred until after the
+	// start actually succeeds (post-Mutate) so a `--force` that fails
+	// a later guard (assignment, claim race) doesn't leave a misleading
+	// bypass record.
+	forceBypassedPending := false
 	if IsQueuePending(cfg, id) {
 		if !opts.Force {
 			fmt.Fprintf(os.Stderr,
@@ -134,13 +144,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 				id, id, id)
 			return 1
 		}
-		// Bypass authorized by --force. Append an audit entry so the
-		// override is visible in the changelog. Best-effort — don't
-		// fail the start over a logging miss.
-		_ = changelog.Append(cfg, id, changelog.Entry{
-			Op:     "start_force",
-			Reason: "bypassed I-490 queue approval gate via --force",
-		})
+		forceBypassedPending = true
 		fmt.Fprintf(os.Stderr, "warning: --force bypassed pending-approval gate for %s\n", id)
 	}
 
@@ -324,6 +328,15 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		Op: "start", Field: "status",
 		OldValue: tc.StartStatus, NewValue: tc.ActiveStatus,
 	})
+
+	// I-490: record the --force bypass only after the start actually
+	// succeeded. Best-effort — a logging miss does not fail the start.
+	if forceBypassedPending {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "start_force",
+			Reason: "bypassed I-490 queue approval gate via --force",
+		})
+	}
 
 	fmt.Printf("Started %s — %s\n", id, item.Title)
 	if agentID != "" {
