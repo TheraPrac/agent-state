@@ -302,6 +302,14 @@ func DuplicateIDs(itemDir string, cfg *config.Config) []DuplicateID {
 		dirPath := filepath.Join(itemDir, dir)
 		entries, err := os.ReadDir(dirPath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				// IsNotExist is the expected case (a configured dir
+				// that doesn't exist yet on this machine). Anything
+				// else (permission, transient I/O) is silent
+				// false-negative-prone — surface it on stderr so a
+				// CI/hook run sees the partial-scan condition.
+				fmt.Fprintf(os.Stderr, "warning: DuplicateIDs cannot read %s: %v\n", dirPath, err)
+			}
 			continue
 		}
 		for _, entry := range entries {

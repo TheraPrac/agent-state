@@ -221,6 +221,14 @@ func (s *Store) RemoveStaleDuplicates(id string) ([]string, error) {
 				continue
 			}
 			if err := os.Remove(path); err != nil {
+				if os.IsNotExist(err) {
+					// A concurrent st invocation (peer agent or
+					// st check --fix racing st close) already
+					// removed it. Treat as success — the goal is
+					// "no duplicate at this path" and that goal is
+					// met.
+					continue
+				}
 				return removed, fmt.Errorf("removing duplicate %s: %w", path, err)
 			}
 			removed = append(removed, path)
