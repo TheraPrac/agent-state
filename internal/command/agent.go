@@ -33,11 +33,14 @@ type AgentAuthOpts struct {
 }
 
 type AgentWorkspaceCreateOpts struct {
-	Agent  string
-	Branch string
-	Full   bool
-	DryRun bool
-	Repair bool
+	Agent   string
+	Branch  string
+	Full    bool
+	DryRun  bool
+	Repair  bool
+	SkipAWS bool
+	SkipGH  bool
+	Owner   string
 }
 
 type AgentWorkspaceStatusOpts struct {
@@ -114,6 +117,7 @@ func AgentWorkspaceCreate(cfg *config.Config, opts AgentWorkspaceCreateOpts) int
 		return 1
 	}
 	printAgentWorkspacePlan(plan, opts.DryRun, opts.Full, opts.Repair)
+	printIdentityBootstrapPlan(plan.AgentID, opts.SkipAWS, opts.SkipGH)
 	if opts.DryRun {
 		return 0
 	}
@@ -121,12 +125,23 @@ func AgentWorkspaceCreate(cfg *config.Config, opts AgentWorkspaceCreateOpts) int
 		fmt.Fprintln(os.Stderr, "agent workspace create: non-dry-run create requires --full")
 		return 2
 	}
-	if err := applyAgentWorkspaceCreate(plan, opts.Repair); err != nil {
+	if err := applyWorkspaceCreate(plan, opts.Repair); err != nil {
 		fmt.Fprintf(os.Stderr, "agent workspace create: %v\n", err)
+		return 1
+	}
+	if err := runIdentityBootstrap(cfg, plan.AgentID, opts.Owner, opts.SkipAWS, opts.SkipGH); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"agent workspace create: identity bootstrap failed for %s: %v\n  retry with: st agent bootstrap --name %s\n",
+			plan.AgentID, err, plan.AgentID)
 		return 1
 	}
 	return 0
 }
+
+// applyWorkspaceCreate is a package-level var so tests can stub the
+// heavy apply path (real git clones + Docker) and exercise the wiring
+// from AgentWorkspaceCreate into runIdentityBootstrap.
+var applyWorkspaceCreate = applyAgentWorkspaceCreate
 
 func AgentWorkspaceStatus(cfg *config.Config, opts AgentWorkspaceStatusOpts) int {
 	plan, err := buildAgentWorkspacePlan(cfg, opts.Agent, "")
@@ -534,8 +549,16 @@ func requireAgentScriptDir(dir string) (string, error) {
 	return dir, nil
 }
 
+// agentScriptTimeout bounds AWS IAM key creation + GitHub App install.
+// These are network-bound; a stalled HTTPS connect must not hang
+// `st agent workspace create` indefinitely. 10 minutes mirrors the
+// runAsInstall budget from I-475.
+const agentScriptTimeout = 10 * time.Minute
+
 func runAgentScript(path string, args []string, stdout, stderr io.Writer) int {
-	cmd := exec.Command(path, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), agentScriptTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
@@ -546,6 +569,41 @@ func runAgentScript(path string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// runIdentityBootstrap chains AgentBootstrap onto a successful workspace
+// create so a single command produces a fully usable agent (clones +
+// build + AWS + GH identity). Honors caller skip flags so operators can
+// opt out of either half (e.g., reuse a shared AWS user). Resolves the
+// bootstrap scripts from the *caller's* config — the new agent's clone
+// may not be fully provisioned yet. Stub-friendly via package-level var
+// to keep tests off live AWS/GH scripts.
+var runIdentityBootstrap = func(cfg *config.Config, agentID, owner string, skipAWS, skipGH bool) error {
+	if skipAWS && skipGH {
+		// Both halves opted out — no work to do, and AgentBootstrap
+		// resolves agentScriptsDir up-front, which can fail on a
+		// machine without theraprac-infra cloned. Skip is skip.
+		return nil
+	}
+	if code := AgentBootstrap(cfg, AgentBootstrapOpts{
+		Name: agentID, Owner: owner, SkipAWS: skipAWS, SkipGH: skipGH,
+	}); code != 0 {
+		return fmt.Errorf("agent bootstrap exited with code %d", code)
+	}
+	return nil
+}
+
+// printIdentityBootstrapPlan surfaces the AWS/GH chain in dry-run output
+// so operators discover the auto-bootstrap behavior without reading the
+// help text.
+func printIdentityBootstrapPlan(agentID string, skipAWS, skipGH bool) {
+	state := func(skip bool) string {
+		if skip {
+			return "skip"
+		}
+		return "run"
+	}
+	fmt.Printf("  identity bootstrap: agent=%s aws=%s gh=%s\n", agentID, state(skipAWS), state(skipGH))
 }
 
 // runAsInstall builds the per-agent st binary in the freshly-cloned `as`

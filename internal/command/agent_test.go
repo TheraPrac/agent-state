@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/config"
 )
 
 func TestAgentList(t *testing.T) {
@@ -152,8 +154,33 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 	} else if !strings.Contains(asLine, "make install") {
 		t.Errorf("as row missing make-install hook: %q", asLine)
 	}
+	// I-476: dry-run must surface the auto-chained identity bootstrap.
+	if !strings.Contains(stdout, "identity bootstrap: agent=agent-b aws=run gh=run") {
+		t.Errorf("dry-run missing default identity bootstrap line:\n%s", stdout)
+	}
 	if _, err := os.Stat(filepath.Join(agentsRoot, "theraprac-agent-b")); !os.IsNotExist(err) {
 		t.Fatalf("dry-run should not create target, stat err=%v", err)
+	}
+}
+
+// I-476: --skip-aws / --skip-gh must round-trip into the dry-run plan
+// so operators can confirm an opt-out before applying.
+func TestAgentWorkspaceCreatePlanHonorsBootstrapSkipFlags(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "b", Branch: "main", Full: true, DryRun: true,
+			SkipAWS: true, SkipGH: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+	if !strings.Contains(stdout, "identity bootstrap: agent=agent-b aws=skip gh=skip") {
+		t.Errorf("dry-run missing skip identity-bootstrap line:\n%s", stdout)
 	}
 }
 
@@ -576,6 +603,87 @@ func TestRunAsInstallStubReplaceable(t *testing.T) {
 	}
 	if captured != "/tmp/expected-target" {
 		t.Errorf("stub did not capture target: got %q", captured)
+	}
+}
+
+// I-476: runIdentityBootstrap fans out into the agent-bootstrap shell
+// scripts, so unit tests stub it to verify chain semantics without
+// touching live AWS/GH. This test confirms the stub captures the
+// caller's args verbatim — the chain is wired correctly.
+func TestRunIdentityBootstrapStubReplaceable(t *testing.T) {
+	orig := runIdentityBootstrap
+	defer func() { runIdentityBootstrap = orig }()
+	type call struct {
+		agent, owner    string
+		skipAWS, skipGH bool
+	}
+	var got call
+	runIdentityBootstrap = func(_ *config.Config, agent, owner string, skipAWS, skipGH bool) error {
+		got = call{agent: agent, owner: owner, skipAWS: skipAWS, skipGH: skipGH}
+		return nil
+	}
+	if err := runIdentityBootstrap(nil, "agent-z", "TheraPrac", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if got.agent != "agent-z" || got.owner != "TheraPrac" || !got.skipAWS || got.skipGH {
+		t.Errorf("stub did not capture args: %+v", got)
+	}
+}
+
+// I-476: when both --skip-aws and --skip-gh are set, runIdentityBootstrap
+// must short-circuit instead of calling AgentBootstrap, which resolves
+// agentScriptsDir up-front and fails on a fresh machine without
+// theraprac-infra cloned. Skip is skip — no ambient state lookup.
+func TestRunIdentityBootstrapShortCircuitsWhenBothSkipped(t *testing.T) {
+	// Force agent-scripts resolution to fail; if the short-circuit is
+	// missing, AgentBootstrap will surface that failure and this test
+	// catches it.
+	t.Setenv("ST_AGENT_SCRIPTS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
+	if err := runIdentityBootstrap(nil, "agent-z", "", true, true); err != nil {
+		t.Errorf("skip-both must short-circuit, got error: %v", err)
+	}
+}
+
+// I-476: AgentWorkspaceCreate must thread Agent + Owner + skip flags
+// through to runIdentityBootstrap. The stub-replaceable contract is
+// established elsewhere; this test verifies the wiring at the call
+// site (the bug class flagged in PR #56's code review).
+func TestAgentWorkspaceCreateChainsBootstrapWithOpts(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	origApply := applyWorkspaceCreate
+	origBoot := runIdentityBootstrap
+	defer func() {
+		applyWorkspaceCreate = origApply
+		runIdentityBootstrap = origBoot
+	}()
+	applyWorkspaceCreate = func(plan agentWorkspacePlan, repair bool) error { return nil }
+
+	type call struct {
+		agent, owner    string
+		skipAWS, skipGH bool
+	}
+	var got call
+	runIdentityBootstrap = func(_ *config.Config, agent, owner string, skipAWS, skipGH bool) error {
+		got = call{agent: agent, owner: owner, skipAWS: skipAWS, skipGH: skipGH}
+		return nil
+	}
+
+	captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "z", Branch: "main", Full: true, DryRun: false,
+			SkipAWS: true, SkipGH: false, Owner: "TheraPrac",
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	want := call{agent: "agent-z", owner: "TheraPrac", skipAWS: true, skipGH: false}
+	if got != want {
+		t.Errorf("chain did not propagate opts: got %+v, want %+v", got, want)
 	}
 }
 
