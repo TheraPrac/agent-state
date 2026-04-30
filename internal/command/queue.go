@@ -10,7 +10,20 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
+)
+
+// I-489 chain-position constants. The formula
+// `epic_priority*epicMul + sprint_position*sprintMul + within-sprint`
+// produces a deterministic insert key for sprint-sourced queue entries
+// so the queue reflects epic→sprint→item priority by default. Manual
+// `queue move` overrides aren't subject to this — see
+// findChainInsertIndex for how operator-pinned entries are tolerated.
+const (
+	epicMul           = 1_000_000
+	sprintMul         = 10_000
+	unprioritizedEpic = 999 // sentinel: epics without Priority sort after numbered ones
 )
 
 // Queue entry source values. Missing/empty = legacy "manual" semantics.
@@ -26,14 +39,19 @@ type QueueEntry struct {
 	AddedBy  string // "user" or agent ID
 	Reason   string
 	Approved bool // agent-added items need user approval
-	// Source identifies what put the entry on the queue. "sprint" means the
-	// entry was created as a side effect of `st sprint add`; sprint rm then
-	// cascade-removes it. Any other value (including the default empty
-	// string and the explicit `"manual"` constant) is treated as
-	// operator-added — sprint rm leaves it. Note: SaveQueue suppresses the
-	// `source:` line for empty/manual to keep the file compact, so empty
-	// string is the canonical on-disk representation; future readers must
-	// check `Source != QueueSourceSprint`, not `Source == QueueSourceManual`.
+	// Source identifies what put the entry on the queue. "sprint" means
+	// the entry was created as a side effect of `st sprint add`; sprint
+	// rm then cascade-removes it. "manual" means the operator placed
+	// or re-placed the entry explicitly (via `st queue add` or via
+	// `st queue move`, which I-489 flips to "manual" on move) — sprint
+	// rm leaves it alone and the chain-position walk skips it. The
+	// empty string is a legacy on-disk form (pre-I-488) treated as
+	// equivalent to "manual" at runtime: SaveQueue writes "manual"
+	// explicitly when the field is set, but skips the line for empty
+	// so the file format stays compact for entries that never carried
+	// the field. Future readers must check `Source != QueueSourceSprint`
+	// (not `== QueueSourceManual`) so legacy empty-source entries
+	// behave identically to operator-pinned ones.
 	Source string
 }
 
@@ -122,6 +140,11 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 
 	g := deps.Build(s.All(), cfg)
 
+	// I-489: load the registry so we can render the epic→sprint chain
+	// alongside each entry. Best-effort — if the registry can't load,
+	// we just skip the chain row.
+	r, _ := registry.Load(cfg.EpicsPath())
+
 	fmt.Printf("%sWork Queue%s (%d items)\n\n", cBold, cReset, len(entries))
 	for i, e := range entries {
 		item, ok := s.Get(e.ID)
@@ -150,12 +173,55 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 		fmt.Printf("  %d. %s%-8s%s %s  %s(%s)%s%s%s%s\n",
 			i+1, cBold, e.ID, cReset, title, cDim, status, cReset, active, blocked, approval)
 
-		if e.Reason != "" {
+		// Chain row — epic › sprint, only when at least one is set.
+		if ok && (item.Epic != "" || item.Sprint != "") {
+			chain := formatEpicSprintChain(r, item.Epic, item.Sprint)
+			if chain != "" {
+				fmt.Printf("     %s%s%s\n", cDim, chain, cReset)
+			}
+		}
+
+		// Reason — suppress the auto-generated `sprint:<slug>` because
+		// the chain row already conveys it; show operator-set reasons.
+		autoReason := false
+		if e.Reason != "" && strings.HasPrefix(e.Reason, "sprint:") && ok && item.Sprint != "" && e.Reason == "sprint:"+item.Sprint {
+			autoReason = true
+		}
+		if e.Reason != "" && !autoReason {
 			fmt.Printf("     %s%s%s\n", cDim, e.Reason, cReset)
 		}
 	}
 	fmt.Println()
 	return 0
+}
+
+// formatEpicSprintChain renders the epic→sprint context for an item as
+// `<epic-id> [pN] › <sprint-id> [#K]`. Pieces are dropped when missing
+// so unprioritized epics or items without a sprint render cleanly.
+func formatEpicSprintChain(r *registry.Registry, epicID, sprintID string) string {
+	if epicID == "" && sprintID == "" {
+		return ""
+	}
+	parts := []string{}
+	if epicID != "" {
+		piece := epicID
+		if r != nil {
+			if e, ok := r.GetEpic(epicID); ok && e.Priority != nil {
+				piece = fmt.Sprintf("%s p%d", epicID, *e.Priority)
+			}
+		}
+		parts = append(parts, piece)
+	}
+	if sprintID != "" {
+		piece := sprintID
+		if r != nil {
+			if sp, err := r.SprintByID(sprintID); err == nil && sp.Sequence > 0 {
+				piece = fmt.Sprintf("%s #%d", sprintID, sp.Sequence)
+			}
+		}
+		parts = append(parts, piece)
+	}
+	return strings.Join(parts, " › ")
 }
 
 func QueueNext(s *store.Store, cfg *config.Config, opts QueueNextOpts) int {
@@ -207,15 +273,25 @@ func QueueRm(s *store.Store, cfg *config.Config, id string) int {
 }
 
 // upsertQueueSprintEntry ensures `id` has a sprint-sourced queue entry.
-// When the entry is absent we append a new one with Approved=false (so a
+// When the entry is absent we insert a new one with Approved=false (so a
 // 30-item sprint doesn't flood the operator's "next" view) and
-// Source="sprint" so a later `st sprint rm` cascades the removal. When an
-// entry already exists we leave it alone — operator-queued entries (empty
-// or "manual" Source) keep their origin so sprint rm won't cascade-remove
-// them, matching the "track origin" contract in I-488.
+// Source="sprint" so a later `st sprint rm` cascades the removal. The
+// insert position is computed from the epic→sprint→within-sprint chain
+// (I-489) so high-priority epics' sprints land ahead of lower ones by
+// default. Operator-pinned entries (Source != "sprint") are tolerated —
+// the chain walk skips them — so prior `queue move` overrides survive.
 //
-// Returns true if a new queue entry was appended.
-func upsertQueueSprintEntry(cfg *config.Config, id, sprintID string) (bool, error) {
+// When an entry already exists we leave it alone — operator-queued
+// entries (empty or "manual" Source) keep their origin so sprint rm
+// won't cascade-remove them, matching the "track origin" contract in
+// I-488.
+//
+// `s` and `r` are optional; when nil, the function falls back to
+// appending at the end of the queue (used by tests / pathological
+// states where the chain can't be resolved).
+//
+// Returns true if a new queue entry was added.
+func upsertQueueSprintEntry(cfg *config.Config, s *store.Store, r *registry.Registry, id, sprintID string) (bool, error) {
 	entries := LoadQueue(cfg)
 	for _, e := range entries {
 		if e.ID == id {
@@ -227,18 +303,82 @@ func upsertQueueSprintEntry(cfg *config.Config, id, sprintID string) (bool, erro
 	if addedBy == "" {
 		addedBy = "user"
 	}
-	entries = append(entries, QueueEntry{
+	newEntry := QueueEntry{
 		ID:       id,
 		AddedAt:  time.Now().Format(time.RFC3339),
 		AddedBy:  addedBy,
 		Reason:   fmt.Sprintf("sprint:%s", sprintID),
 		Approved: false,
 		Source:   QueueSourceSprint,
-	})
-	if err := SaveQueue(cfg, entries); err != nil {
+	}
+
+	insertIdx := len(entries)
+	if s != nil && r != nil {
+		targetPos := computeSprintQueuePosition(r, sprintID, id)
+		insertIdx = findChainInsertIndex(entries, s, r, targetPos)
+	}
+	updated := make([]QueueEntry, 0, len(entries)+1)
+	updated = append(updated, entries[:insertIdx]...)
+	updated = append(updated, newEntry)
+	updated = append(updated, entries[insertIdx:]...)
+
+	if err := SaveQueue(cfg, updated); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// computeSprintQueuePosition returns the deterministic chain-position
+// key for a sprint-sourced item: epic priority dominates, sprint
+// Sequence within the epic breaks ties, item index within the sprint
+// breaks the next tie. Items in unprioritized epics sort after every
+// numbered one. Used at insert time (I-489); not stored on the queue
+// entry.
+func computeSprintQueuePosition(r *registry.Registry, sprintID, itemID string) int {
+	sp, err := r.SprintByID(sprintID)
+	if err != nil {
+		return unprioritizedEpic * epicMul
+	}
+
+	epicPrio := unprioritizedEpic
+	if e, ok := r.GetEpic(sp.Epic); ok && e.Priority != nil {
+		epicPrio = *e.Priority
+	}
+
+	sprintPos := sp.Sequence
+
+	withinIdx := len(sp.Items) // not yet appended → land at the tail of the sprint band
+	for i, sid := range sp.Items {
+		if sid == itemID {
+			withinIdx = i
+			break
+		}
+	}
+
+	return epicPrio*epicMul + sprintPos*sprintMul + withinIdx
+}
+
+// findChainInsertIndex walks the queue and returns the first index whose
+// sprint-sourced predecessor has a computed chain-position greater than
+// targetPos. Manual / operator-pinned entries (Source != "sprint") are
+// tolerated and skipped — the operator put them there explicitly, so a
+// future sprint add should not displace them. When no entry's position
+// dominates targetPos, the function returns len(entries) (= append).
+func findChainInsertIndex(entries []QueueEntry, s *store.Store, r *registry.Registry, targetPos int) int {
+	for i, e := range entries {
+		if e.Source != QueueSourceSprint {
+			continue
+		}
+		item, ok := s.Get(e.ID)
+		if !ok || item.Sprint == "" {
+			continue
+		}
+		otherPos := computeSprintQueuePosition(r, item.Sprint, e.ID)
+		if otherPos > targetPos {
+			return i
+		}
+	}
+	return len(entries)
 }
 
 // removeSprintSourcedQueueEntry drops the entry for `id` IFF it was
@@ -353,6 +493,15 @@ func QueueMove(s *store.Store, cfg *config.Config, id string, position int) int 
 		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
 		return 1
 	}
+
+	// I-489: an operator move is an explicit override of the
+	// epic→sprint chain ordering. Flip Source to "manual" so a future
+	// `st sprint add` won't compare its chain-position against this
+	// entry and silently displace it. As a side effect, `st sprint rm`
+	// no longer cascade-removes this entry — also intentional, since
+	// the operator's manual placement signals "I want this in the
+	// queue regardless of sprint membership."
+	entry.Source = QueueSourceManual
 
 	entries = append(entries[:idx], entries[idx+1:]...)
 
@@ -525,7 +674,13 @@ func SaveQueue(cfg *config.Config, entries []QueueEntry) error {
 		if !e.Approved {
 			sb.WriteString("    approved: false\n")
 		}
-		if e.Source != "" && e.Source != QueueSourceManual {
+		// I-489: persist Source verbatim when set. Empty stays empty
+		// (skipped) so the file format for entries that never carried
+		// Source remains compact. "manual" is written explicitly so a
+		// `queue move`-created pin survives reload — without this the
+		// round-trip would collapse "manual" back to empty and a future
+		// `sprint add` would treat the entry as an unrecognized source.
+		if e.Source != "" {
 			sb.WriteString(fmt.Sprintf("    source: %s\n", e.Source))
 		}
 	}

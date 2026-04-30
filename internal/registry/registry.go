@@ -15,9 +15,14 @@ import (
 
 // Epic represents a long-lived work stream.
 type Epic struct {
-	ID          string
-	Title       string
-	Status      string   // active, completed
+	ID    string
+	Title string
+	// Status: active, archived, completed.
+	Status string
+	// Priority: 1 = highest, 2 = next, ..., nil = unprioritized (sorts last).
+	// I-489 introduces this; pre-existing epics carry nil until the operator
+	// runs `st epic move <id> <pos>`.
+	Priority    *int
 	SprintOrder []string // ordered sprint IDs
 }
 
@@ -80,6 +85,10 @@ func Load(path string) (*Registry, error) {
 				ID:     current["id"],
 				Title:  current["title"],
 				Status: current["status"],
+			}
+			if p, ok := current["priority"]; ok && p != "" {
+				n := parseInt(p)
+				e.Priority = &n
 			}
 			if so, ok := currentLists["sprint_order"]; ok {
 				e.SprintOrder = so
@@ -184,6 +193,9 @@ func (r *Registry) Save(path string) error {
 			b.WriteString(fmt.Sprintf("  - id: %s\n", e.ID))
 			b.WriteString(fmt.Sprintf("    title: %s\n", yamlQuote(e.Title)))
 			b.WriteString(fmt.Sprintf("    status: %s\n", e.Status))
+			if e.Priority != nil {
+				b.WriteString(fmt.Sprintf("    priority: %d\n", *e.Priority))
+			}
 			if len(e.SprintOrder) > 0 {
 				b.WriteString(fmt.Sprintf("    sprint_order: [%s]\n", strings.Join(e.SprintOrder, ", ")))
 			}
@@ -409,22 +421,64 @@ func (r *Registry) GetSprint(id string) (Sprint, bool) {
 	return Sprint{}, false
 }
 
-// ListEpics returns all epics.
+// ListEpics returns all epics ordered by Priority asc (nil sorts last);
+// epics with the same Priority break the tie by ID for stable rendering.
+// I-489: callers like `st epic list` show this order so the strategic
+// chain (highest-priority epic first) is visible at a glance.
 func (r *Registry) ListEpics() []Epic {
-	return r.Epics
+	out := make([]Epic, len(r.Epics))
+	copy(out, r.Epics)
+	sort.SliceStable(out, func(i, j int) bool {
+		return epicPriorityRank(out[i]) < epicPriorityRank(out[j])
+	})
+	return out
 }
 
-// ListSprints returns sprints, optionally filtered by epic ID.
-func (r *Registry) ListSprints(epicID string) []Sprint {
-	if epicID == "" {
-		return r.Sprints
+// epicPriorityRank returns a sortable rank for an epic. nil priority maps
+// to a large sentinel so unprioritized epics sort after every numbered
+// one. Ties on Priority break by ID. The priority band multiplier
+// dominates the ID hash so two adjacent priorities can never overlap
+// regardless of which IDs the namegen produces.
+func epicPriorityRank(e Epic) int64 {
+	const unprioritized = int64(1_000_000)
+	const priorityMul = int64(100_000) // larger than max idHashRank (32767)
+	if e.Priority != nil {
+		return int64(*e.Priority)*priorityMul + idHashRank(e.ID)
 	}
+	return unprioritized*priorityMul + idHashRank(e.ID)
+}
+
+// idHashRank reduces an ID to a small stable integer for tie-breaking.
+// Pure function of the bytes; not crypto-stable, just good enough for a
+// deterministic sort within the per-process lifetime of the registry.
+// Bounded by 0x7fff (32767), which is well below epicPriorityRank's
+// priority-band multiplier so cross-band collisions are impossible.
+func idHashRank(id string) int64 {
+	var h int64
+	for _, c := range id {
+		h = (h*131 + int64(c)) & 0x7fff
+	}
+	return h
+}
+
+// ListSprints returns sprints, optionally filtered by epic ID, ordered
+// by Sequence asc. I-489: matches SprintsForEpic so callers see
+// epic-position order regardless of which lookup helper they use.
+func (r *Registry) ListSprints(epicID string) []Sprint {
 	var result []Sprint
 	for _, s := range r.Sprints {
-		if s.Epic == epicID {
-			result = append(result, s)
+		if epicID != "" && s.Epic != epicID {
+			continue
 		}
+		result = append(result, s)
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		// Group by epic first when listing across epics, then by Sequence.
+		if epicID == "" && result[i].Epic != result[j].Epic {
+			return result[i].Epic < result[j].Epic
+		}
+		return result[i].Sequence < result[j].Sequence
+	})
 	return result
 }
 
@@ -516,6 +570,155 @@ func (r *Registry) ArchiveEpic(epicID string, isItemDone func(id string) bool) e
 		}
 	}
 	r.Epics[epicIdx].Status = "archived"
+	return nil
+}
+
+// MoveEpic sets `epicID`'s priority to `pos` (1-indexed; 1 = highest)
+// and renumbers every other prioritized epic to a contiguous 1..N range
+// preserving relative order. Epics that previously had nil priority
+// stay nil — moving one epic shouldn't impose ranks on the rest.
+//
+// I-489: this is the operator-facing reorder primitive that makes the
+// epic→sprint→item chain controllable.
+func (r *Registry) MoveEpic(epicID string, pos int) error {
+	if pos < 1 {
+		return fmt.Errorf("position must be 1 or greater, got %d", pos)
+	}
+
+	epicIdx := -1
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			epicIdx = i
+			break
+		}
+	}
+	if epicIdx < 0 {
+		return fmt.Errorf("epic not found: %s", epicID)
+	}
+
+	// Collect every prioritized epic except the target. Sort them by
+	// current Priority + ID to preserve their relative order.
+	type ranked struct {
+		idx  int
+		prio int
+	}
+	var others []ranked
+	for i, e := range r.Epics {
+		if i == epicIdx {
+			continue
+		}
+		if e.Priority == nil {
+			continue
+		}
+		others = append(others, ranked{idx: i, prio: *e.Priority})
+	}
+	sort.SliceStable(others, func(i, j int) bool {
+		if others[i].prio != others[j].prio {
+			return others[i].prio < others[j].prio
+		}
+		return r.Epics[others[i].idx].ID < r.Epics[others[j].idx].ID
+	})
+
+	// Splice the target at position pos (1-indexed).
+	if pos > len(others)+1 {
+		pos = len(others) + 1
+	}
+	final := make([]int, 0, len(others)+1)
+	for i := 0; i < pos-1 && i < len(others); i++ {
+		final = append(final, others[i].idx)
+	}
+	final = append(final, epicIdx)
+	for i := pos - 1; i < len(others); i++ {
+		final = append(final, others[i].idx)
+	}
+
+	for rank, idx := range final {
+		p := rank + 1
+		r.Epics[idx].Priority = &p
+	}
+	return nil
+}
+
+// MoveSprint sets `sprintID`'s Sequence so it becomes position `pos`
+// (1-indexed) within its parent epic, renumbering siblings to a
+// contiguous 1..N range preserving their relative order. Sprints in
+// other epics are unaffected.
+//
+// I-489: pairs with MoveEpic to make the chain operator-controllable.
+func (r *Registry) MoveSprint(sprintID string, pos int) error {
+	if pos < 1 {
+		return fmt.Errorf("position must be 1 or greater, got %d", pos)
+	}
+
+	sp, err := r.SprintByID(sprintID)
+	if err != nil {
+		return err
+	}
+	epicID := sp.Epic
+
+	// Collect all sprint indices in this epic (target + siblings),
+	// ordered by current Sequence.
+	type ranked struct {
+		idx int
+		seq int
+	}
+	var siblings []ranked
+	targetSeq := sp.Sequence
+	for i, s := range r.Sprints {
+		if s.Epic != epicID {
+			continue
+		}
+		if s.ID == sprintID {
+			continue
+		}
+		siblings = append(siblings, ranked{idx: i, seq: s.Sequence})
+	}
+	sort.SliceStable(siblings, func(i, j int) bool {
+		if siblings[i].seq != siblings[j].seq {
+			return siblings[i].seq < siblings[j].seq
+		}
+		return r.Sprints[siblings[i].idx].ID < r.Sprints[siblings[j].idx].ID
+	})
+
+	targetIdx := -1
+	for i, s := range r.Sprints {
+		if s.ID == sprintID {
+			targetIdx = i
+			break
+		}
+	}
+	_ = targetSeq // referenced only via target identity below
+
+	// Splice target at pos (1-indexed).
+	if pos > len(siblings)+1 {
+		pos = len(siblings) + 1
+	}
+	final := make([]int, 0, len(siblings)+1)
+	for i := 0; i < pos-1 && i < len(siblings); i++ {
+		final = append(final, siblings[i].idx)
+	}
+	final = append(final, targetIdx)
+	for i := pos - 1; i < len(siblings); i++ {
+		final = append(final, siblings[i].idx)
+	}
+
+	for rank, idx := range final {
+		r.Sprints[idx].Sequence = rank + 1
+	}
+
+	// Keep the parent epic's SprintOrder slice consistent with the new
+	// ordering for any reader that prefers the explicit list form.
+	for ei, e := range r.Epics {
+		if e.ID != epicID {
+			continue
+		}
+		newOrder := make([]string, 0, len(final))
+		for _, idx := range final {
+			newOrder = append(newOrder, r.Sprints[idx].ID)
+		}
+		r.Epics[ei].SprintOrder = newOrder
+		break
+	}
 	return nil
 }
 

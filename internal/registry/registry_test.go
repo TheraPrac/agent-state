@@ -499,3 +499,193 @@ func TestYamlQuote(t *testing.T) {
 		}
 	}
 }
+
+// I-489: Epic.Priority round-trips through Save/Load and ListEpics
+// orders prioritized epics ahead of unprioritized ones.
+func TestEpicPriorityRoundTripAndOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "epics.yaml")
+
+	r := &Registry{}
+	a := r.AddEpic("alpha-go-live")
+	b := r.AddEpic("billing-v2")
+	c := r.AddEpic("unprioritized")
+	prio := 1
+	r.Epics[indexOfEpic(r, b.ID)].Priority = &prio
+	prio2 := 2
+	r.Epics[indexOfEpic(r, a.ID)].Priority = &prio2
+	_ = c // stays nil
+
+	if err := r.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	r2, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got := r2.ListEpics()
+	if len(got) != 3 {
+		t.Fatalf("got %d epics, want 3", len(got))
+	}
+	if got[0].ID != b.ID || got[1].ID != a.ID {
+		t.Errorf("priority order broken: got %s, %s; want %s (p1), %s (p2)",
+			got[0].ID, got[1].ID, b.ID, a.ID)
+	}
+	if got[2].ID != c.ID || got[2].Priority != nil {
+		t.Errorf("unprioritized epic should sort last with nil priority; got %+v", got[2])
+	}
+}
+
+func TestMoveEpicRenumbers(t *testing.T) {
+	r := &Registry{}
+	a := r.AddEpic("a")
+	b := r.AddEpic("b")
+	c := r.AddEpic("c")
+
+	// Initial state: all unprioritized.
+	if err := r.MoveEpic(a.ID, 1); err != nil {
+		t.Fatalf("move a: %v", err)
+	}
+	if r.Epics[indexOfEpic(r, a.ID)].Priority == nil || *r.Epics[indexOfEpic(r, a.ID)].Priority != 1 {
+		t.Errorf("a.Priority not set to 1")
+	}
+	// Other epics should remain unprioritized.
+	for _, id := range []string{b.ID, c.ID} {
+		if r.Epics[indexOfEpic(r, id)].Priority != nil {
+			t.Errorf("%s should remain unprioritized after first move", id)
+		}
+	}
+
+	// Move c to position 1; a should shift to 2.
+	if err := r.MoveEpic(c.ID, 1); err != nil {
+		t.Fatalf("move c: %v", err)
+	}
+	if got := *r.Epics[indexOfEpic(r, c.ID)].Priority; got != 1 {
+		t.Errorf("c.Priority = %d, want 1", got)
+	}
+	if got := *r.Epics[indexOfEpic(r, a.ID)].Priority; got != 2 {
+		t.Errorf("a.Priority = %d, want 2 (shifted by c's insert)", got)
+	}
+	if r.Epics[indexOfEpic(r, b.ID)].Priority != nil {
+		t.Errorf("b should still be unprioritized — it was never moved")
+	}
+
+	// Out-of-range pos clamps to end.
+	if err := r.MoveEpic(b.ID, 100); err != nil {
+		t.Fatalf("move b: %v", err)
+	}
+	if got := *r.Epics[indexOfEpic(r, b.ID)].Priority; got != 3 {
+		t.Errorf("b.Priority = %d, want 3 (clamped to end)", got)
+	}
+}
+
+func TestMoveEpicNotFound(t *testing.T) {
+	r := &Registry{}
+	if err := r.MoveEpic("ghost", 1); err == nil {
+		t.Error("expected error for missing epic")
+	}
+}
+
+func TestMoveEpicRejectsZero(t *testing.T) {
+	r := &Registry{}
+	a := r.AddEpic("a")
+	if err := r.MoveEpic(a.ID, 0); err == nil {
+		t.Error("expected error for pos=0")
+	}
+}
+
+// I-489: MoveSprint renumbers within the parent epic only.
+func TestMoveSprintRenumbersWithinEpic(t *testing.T) {
+	r := &Registry{}
+	e1 := r.AddEpic("e1")
+	e2 := r.AddEpic("e2")
+	s1, _ := r.AddSprint(e1.ID, "s1") // Sequence 1
+	s2, _ := r.AddSprint(e1.ID, "s2") // Sequence 2
+	s3, _ := r.AddSprint(e1.ID, "s3") // Sequence 3
+	other, _ := r.AddSprint(e2.ID, "other")
+
+	if err := r.MoveSprint(s3.ID, 1); err != nil {
+		t.Fatalf("move s3: %v", err)
+	}
+
+	// After move: s3=1, s1=2, s2=3 within e1; e2's sprint untouched.
+	if got, _ := r.GetSprint(s3.ID); got.Sequence != 1 {
+		t.Errorf("s3.Sequence = %d, want 1", got.Sequence)
+	}
+	if got, _ := r.GetSprint(s1.ID); got.Sequence != 2 {
+		t.Errorf("s1.Sequence = %d, want 2", got.Sequence)
+	}
+	if got, _ := r.GetSprint(s2.ID); got.Sequence != 3 {
+		t.Errorf("s2.Sequence = %d, want 3", got.Sequence)
+	}
+	if got, _ := r.GetSprint(other.ID); got.Sequence != 1 {
+		t.Errorf("e2's sprint should remain Sequence 1, got %d", got.Sequence)
+	}
+
+	// Epic SprintOrder should reflect the new order.
+	for _, ep := range r.ListEpics() {
+		if ep.ID != e1.ID {
+			continue
+		}
+		want := []string{s3.ID, s1.ID, s2.ID}
+		if len(ep.SprintOrder) != len(want) {
+			t.Fatalf("SprintOrder len = %d, want %d", len(ep.SprintOrder), len(want))
+		}
+		for i, id := range want {
+			if ep.SprintOrder[i] != id {
+				t.Errorf("SprintOrder[%d] = %s, want %s", i, ep.SprintOrder[i], id)
+			}
+		}
+	}
+}
+
+func TestMoveSprintNotFound(t *testing.T) {
+	r := &Registry{}
+	if err := r.MoveSprint("ghost", 1); err == nil {
+		t.Error("expected error for missing sprint")
+	}
+}
+
+// I-489: ListSprints sorts by Sequence (was previously unsorted, while
+// SprintsForEpic was sorted — this test pins down the consistency fix).
+func TestListSprintsSortedBySequence(t *testing.T) {
+	r := &Registry{}
+	e := r.AddEpic("e")
+	s1, _ := r.AddSprint(e.ID, "s1")
+	s2, _ := r.AddSprint(e.ID, "s2")
+	s3, _ := r.AddSprint(e.ID, "s3")
+
+	// Reorder via MoveSprint then check both methods agree.
+	if err := r.MoveSprint(s3.ID, 1); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	listed := r.ListSprints(e.ID)
+	forEpic := r.SprintsForEpic(e.ID)
+	if len(listed) != len(forEpic) {
+		t.Fatalf("listed=%d, forEpic=%d", len(listed), len(forEpic))
+	}
+	for i := range listed {
+		if listed[i].ID != forEpic[i].ID {
+			t.Errorf("ListSprints[%d]=%s, SprintsForEpic[%d]=%s — should match",
+				i, listed[i].ID, i, forEpic[i].ID)
+		}
+	}
+	// Sanity: s3 is first.
+	if listed[0].ID != s3.ID {
+		t.Errorf("listed[0]=%s, want s3=%s", listed[0].ID, s3.ID)
+	}
+	_ = s1
+	_ = s2
+}
+
+// indexOfEpic finds an epic by ID and returns its slice index, for
+// tests that need to mutate Priority directly.
+func indexOfEpic(r *Registry, id string) int {
+	for i, e := range r.Epics {
+		if e.ID == id {
+			return i
+		}
+	}
+	return -1
+}

@@ -842,3 +842,77 @@ func writeFile2(t *testing.T, path, content string) {
 	t.Helper()
 	os.WriteFile(path, []byte(content), 0644)
 }
+
+// I-489: EpicMove command sets priority and renumbers others.
+func TestEpicMoveCommand(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	if code := EpicCreate(cfg, "alpha"); code != 0 {
+		t.Fatalf("epic create: %d", code)
+	}
+	if code := EpicCreate(cfg, "beta"); code != 0 {
+		t.Fatalf("epic create: %d", code)
+	}
+
+	r, _ := registry.Load(cfg.EpicsPath())
+	if len(r.Epics) != 2 {
+		t.Fatalf("expected 2 epics, got %d", len(r.Epics))
+	}
+	alphaID := r.Epics[0].ID
+	betaID := r.Epics[1].ID
+
+	if code := EpicMove(s, cfg, betaID, 1); code != 0 {
+		t.Fatalf("epic move: %d", code)
+	}
+
+	r2, _ := registry.Load(cfg.EpicsPath())
+	for _, e := range r2.Epics {
+		if e.ID == betaID {
+			if e.Priority == nil || *e.Priority != 1 {
+				t.Errorf("beta priority = %v, want 1", e.Priority)
+			}
+		}
+		if e.ID == alphaID && e.Priority != nil {
+			t.Error("alpha should remain unprioritized — it was never moved")
+		}
+	}
+}
+
+func TestEpicMoveCommandNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := EpicMove(s, cfg, "ghost", 1); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+}
+
+// I-489: SprintMove renumbers sprints within an epic.
+func TestSprintMoveCommand(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	EpicCreate(cfg, "epic")
+	r, _ := registry.Load(cfg.EpicsPath())
+	epicID := r.Epics[0].ID
+	SprintCreate(cfg, epicID, "sprint A")
+	SprintCreate(cfg, epicID, "sprint B")
+	SprintCreate(cfg, epicID, "sprint C")
+	r, _ = registry.Load(cfg.EpicsPath())
+
+	cID := r.Sprints[2].ID
+	if code := SprintMove(s, cfg, cID, 1); code != 0 {
+		t.Fatalf("sprint move: %d", code)
+	}
+
+	r2, _ := registry.Load(cfg.EpicsPath())
+	for _, sp := range r2.Sprints {
+		if sp.ID == cID && sp.Sequence != 1 {
+			t.Errorf("C.Sequence = %d, want 1", sp.Sequence)
+		}
+	}
+}
+
+func TestSprintMoveCommandNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := SprintMove(s, cfg, "ghost", 1); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+}

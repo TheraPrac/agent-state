@@ -50,8 +50,36 @@ func EpicList(s *store.Store, cfg *config.Config) int {
 	}
 
 	for _, e := range epics {
-		fmt.Printf("%-30s %-8s %d items  %s\n", e.ID, e.Status, counts[e.ID], e.Title)
+		prio := "—"
+		if e.Priority != nil {
+			prio = fmt.Sprintf("p%d", *e.Priority)
+		}
+		fmt.Printf("%-4s %-30s %-8s %d items  %s\n", prio, e.ID, e.Status, counts[e.ID], e.Title)
 	}
+	return 0
+}
+
+// EpicMove sets the priority of an epic. 1 = highest. Renumbers other
+// prioritized epics 1..N preserving relative order; epics that were
+// unprioritized stay that way (use this command on each one to assign
+// a rank). Required so the epic→sprint→item chain in I-489 has a
+// deterministic top.
+func EpicMove(s *store.Store, cfg *config.Config, epicID string, pos int) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+	if err := r.MoveEpic(epicID, pos); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Moved epic %s to priority %d\n", epicID, pos)
+	autoSync(s, fmt.Sprintf("st epic move: %s -> p%d", epicID, pos))
 	return 0
 }
 

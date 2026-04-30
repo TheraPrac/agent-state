@@ -753,6 +753,20 @@ YAML block scalars so multi-line values replace cleanly.`,
 			exitCode = command.EpicDelete(appCfg, args[0])
 		},
 	})
+	epicCmd.AddCommand(&cobra.Command{
+		Use:   "move <epic-id> <position>",
+		Short: "Set the priority of an epic (1 = highest); renumbers others",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			pos, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "position must be a number")
+				exitCode = 2
+				return
+			}
+			exitCode = command.EpicMove(appStore, appCfg, args[0], pos)
+		},
+	})
 	root.AddCommand(epicCmd)
 
 	sprintCmd := &cobra.Command{
@@ -871,8 +885,22 @@ YAML block scalars so multi-line values replace cleanly.`,
 			exitCode = command.SprintNext(appStore, appCfg, args[0])
 		},
 	}
+	sprintMoveCmd := &cobra.Command{
+		Use:   "move <sprint-id> <position>",
+		Short: "Reorder a sprint within its parent epic (1 = first)",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			pos, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "position must be a number")
+				exitCode = 2
+				return
+			}
+			exitCode = command.SprintMove(appStore, appCfg, args[0], pos)
+		},
+	}
 
-	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
+	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintMoveCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
 	root.AddCommand(sprintCmd)
 
 	uatCmd := &cobra.Command{
