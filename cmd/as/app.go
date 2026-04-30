@@ -305,9 +305,10 @@ YAML block scalars so multi-line values replace cleanly.`,
 			repair, _ := cmd.Flags().GetBool("repair")
 			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
 			skipGH, _ := cmd.Flags().GetBool("skip-gh")
+			owner, _ := cmd.Flags().GetString("owner")
 			exitCode = command.AgentWorkspaceCreate(appCfg, command.AgentWorkspaceCreateOpts{
 				Agent: args[0], Branch: branch, Full: full, DryRun: dryRun, Repair: repair,
-				SkipAWS: skipAWS, SkipGH: skipGH,
+				SkipAWS: skipAWS, SkipGH: skipGH, Owner: owner,
 			})
 		},
 	}
@@ -317,6 +318,7 @@ YAML block scalars so multi-line values replace cleanly.`,
 	agentWorkspaceCreateCmd.Flags().Bool("repair", false, "replace known-safe partial workspace symlinks")
 	agentWorkspaceCreateCmd.Flags().Bool("skip-aws", false, "do not chain AWS identity bootstrap")
 	agentWorkspaceCreateCmd.Flags().Bool("skip-gh", false, "do not chain GitHub identity bootstrap")
+	agentWorkspaceCreateCmd.Flags().String("owner", "", "GitHub org for the chained GH App install (forwarded to agent bootstrap)")
 	agentWorkspaceCmd.AddCommand(agentWorkspaceCreateCmd)
 
 	agentWorkspaceStatusCmd := &cobra.Command{
