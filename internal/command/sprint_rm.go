@@ -42,7 +42,20 @@ func SprintRm(s *store.Store, cfg *config.Config, sprintID, itemID string) int {
 		return 1
 	}
 
-	fmt.Printf("Removed %s from sprint %s\n", itemID, sprintID)
+	// Cascade-remove the queue entry IFF it was sprint-sourced. Manually
+	// queued entries (Source="manual" or empty) stay — operator queued them
+	// standalone and removing them from the sprint shouldn't yank that work.
+	dequeued, err := removeSprintSourcedQueueEntry(cfg, itemID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "removing %s from queue: %v\n", itemID, err)
+		return 1
+	}
+
+	if dequeued {
+		fmt.Printf("Removed %s from sprint %s (and queue)\n", itemID, sprintID)
+	} else {
+		fmt.Printf("Removed %s from sprint %s\n", itemID, sprintID)
+	}
 	autoSync(s, fmt.Sprintf("st sprint rm: %s -= %s", sprintID, itemID))
 	return 0
 }

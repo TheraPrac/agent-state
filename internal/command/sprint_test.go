@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -445,6 +446,146 @@ func TestSprintAddAlreadySetSkip(t *testing.T) {
 	code := SprintAdd(s2, cfg, sprintID, []string{"T-001"})
 	if code != 0 {
 		t.Fatalf("SprintAdd skip returned %d, want 0", code)
+	}
+}
+
+// I-488: sprint add auto-queues each item with Approved=false and
+// Source=sprint, so a 30-item sprint doesn't flood the operator's
+// "next" view but the entries are visible in `st queue show`.
+func TestSprintAddAutoQueuesPending(t *testing.T) {
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	code := SprintAdd(s, cfg, sprintID, []string{"T-001", "T-002"})
+	if code != 0 {
+		t.Fatalf("SprintAdd returned %d", code)
+	}
+
+	entries := LoadQueue(cfg)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 queue entries after sprint add, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.Approved {
+			t.Errorf("entry %s should be pending (Approved=false)", e.ID)
+		}
+		if e.Source != QueueSourceSprint {
+			t.Errorf("entry %s Source = %q, want %q", e.ID, e.Source, QueueSourceSprint)
+		}
+	}
+}
+
+// I-488: sprint add doesn't downgrade an entry the operator already
+// queued (Source stays empty/manual; Approved stays whatever it was).
+func TestSprintAddPreservesManualEntry(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "") // operator-equivalent: ensure QueueAdd marks Approved=true
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	// Operator manually queued T-001 first.
+	if code := QueueAdd(s, cfg, "T-001", QueueOpts{Reason: "operator-curated"}); code != 0 {
+		t.Fatalf("QueueAdd returned %d", code)
+	}
+
+	// Now sprint adds it.
+	if code := SprintAdd(s, cfg, sprintID, []string{"T-001"}); code != 0 {
+		t.Fatalf("SprintAdd returned %d", code)
+	}
+
+	entries := LoadQueue(cfg)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 queue entry, got %d", len(entries))
+	}
+	if !entries[0].Approved {
+		t.Error("operator-queued entry should stay approved after sprint add")
+	}
+	if entries[0].Source != "" && entries[0].Source != QueueSourceManual {
+		t.Errorf("Source = %q, want empty or manual (operator-queued)", entries[0].Source)
+	}
+	if entries[0].Reason != "operator-curated" {
+		t.Errorf("Reason should remain operator-curated, got %q", entries[0].Reason)
+	}
+}
+
+// I-488: sprint rm cascade-removes the queue entry when it was sprint-
+// sourced; manual entries stay.
+func TestSprintRmCascadesSprintSourced(t *testing.T) {
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	SprintAdd(s, cfg, sprintID, []string{"T-001"})
+	if got := LoadQueue(cfg); len(got) != 1 {
+		t.Fatalf("expected 1 queue entry, got %d", len(got))
+	}
+
+	if code := SprintRm(s, cfg, sprintID, "T-001"); code != 0 {
+		t.Fatalf("SprintRm returned %d", code)
+	}
+	if got := LoadQueue(cfg); len(got) != 0 {
+		t.Errorf("expected queue empty after cascade, got %d", len(got))
+	}
+}
+
+func TestSprintRmLeavesManualEntry(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	// Operator manual-queued, then sprint-added (entry is "manual" origin).
+	QueueAdd(s, cfg, "T-001", QueueOpts{})
+	SprintAdd(s, cfg, sprintID, []string{"T-001"})
+
+	if code := SprintRm(s, cfg, sprintID, "T-001"); code != 0 {
+		t.Fatalf("SprintRm returned %d", code)
+	}
+	got := LoadQueue(cfg)
+	if len(got) != 1 || got[0].ID != "T-001" {
+		t.Errorf("manual-queued entry must survive sprint rm, got %v", got)
+	}
+}
+
+// I-488: sprint show renders members in queue-position order.
+func TestSprintShowOrdersByQueuePosition(t *testing.T) {
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	SprintAdd(s, cfg, sprintID, []string{"T-001", "T-002"})
+	if code := QueueMove(s, cfg, "T-002", 1); code != 0 {
+		t.Fatalf("QueueMove returned %d", code)
+	}
+
+	out := captureStdout(t, func() { SprintShow(s, cfg, sprintID) })
+	idx1 := strings.Index(out, "T-002")
+	idx2 := strings.Index(out, "T-001")
+	if idx1 < 0 || idx2 < 0 {
+		t.Fatalf("sprint show missing members:\n%s", out)
+	}
+	if idx1 > idx2 {
+		t.Errorf("expected T-002 before T-001 in sprint show after queue move:\n%s", out)
+	}
+}
+
+// I-488: sprint next is a thin wrapper around queue next --sprint.
+func TestSprintNextHonorsApprovalAndDeps(t *testing.T) {
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+
+	SprintAdd(s, cfg, sprintID, []string{"T-001", "T-002"}) // both pending after sprint add
+
+	// Pending → no next.
+	out := captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
+	if !strings.Contains(out, "No approved") {
+		t.Errorf("expected 'No approved' for all-pending sprint, got %q", out)
+	}
+
+	// Approve both. T-002 depends on T-001 → blocked → next is T-001.
+	QueueApprove(s, cfg, "T-001", QueueApproveOpts{})
+	QueueApprove(s, cfg, "T-002", QueueApproveOpts{})
+	out = captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("expected T-001 (T-002 is blocked by T-001), got %q", out)
+	}
+}
+
+func TestSprintNextBadSprint(t *testing.T) {
+	s, cfg, _, _ := setupSprintTestEnv(t)
+	code := SprintNext(s, cfg, "ghost-sprint")
+	if code != 1 {
+		t.Errorf("SprintNext on missing sprint returned %d, want 1", code)
 	}
 }
 

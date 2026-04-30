@@ -863,7 +863,16 @@ YAML block scalars so multi-line values replace cleanly.`,
 			exitCode = command.SprintStatus(appStore, appCfg, sprintID)
 		},
 	}
-	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
+	sprintNextCmd := &cobra.Command{
+		Use:   "next <sprint-id>",
+		Short: "Print the next approved, unblocked item in this sprint",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SprintNext(appStore, appCfg, args[0])
+		},
+	}
+
+	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
 	root.AddCommand(sprintCmd)
 
 	uatCmd := &cobra.Command{
@@ -1114,13 +1123,16 @@ implement step during st run.`,
 			exitCode = command.QueueShow(appStore, appCfg)
 		},
 	})
-	queueCmd.AddCommand(&cobra.Command{
+	queueNextCmd := &cobra.Command{
 		Use:   "next",
 		Short: "Print the next approved, unblocked item",
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.QueueNext(appStore, appCfg)
+			sprint, _ := cmd.Flags().GetString("sprint")
+			exitCode = command.QueueNext(appStore, appCfg, command.QueueNextOpts{Sprint: sprint})
 		},
-	})
+	}
+	queueNextCmd.Flags().String("sprint", "", "filter to items belonging to this sprint slug")
+	queueCmd.AddCommand(queueNextCmd)
 	queueCmd.AddCommand(&cobra.Command{
 		Use:   "rm <id>",
 		Short: "Remove an item from the queue",
@@ -1144,14 +1156,21 @@ implement step during st run.`,
 		},
 	}
 	queueCmd.AddCommand(queueMoveCmd)
-	queueCmd.AddCommand(&cobra.Command{
-		Use:   "approve <id>",
-		Short: "Approve an agent-proposed queue item",
-		Args:  cobra.ExactArgs(1),
+	queueApproveCmd := &cobra.Command{
+		Use:   "approve [id]",
+		Short: "Approve an agent-proposed queue item (or a whole sprint)",
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.QueueApprove(appStore, appCfg, args[0])
+			sprint, _ := cmd.Flags().GetString("sprint")
+			id := ""
+			if len(args) == 1 {
+				id = args[0]
+			}
+			exitCode = command.QueueApprove(appStore, appCfg, id, command.QueueApproveOpts{Sprint: sprint})
 		},
-	})
+	}
+	queueApproveCmd.Flags().String("sprint", "", "bulk-approve all pending sprint members (mutually exclusive with <id>)")
+	queueCmd.AddCommand(queueApproveCmd)
 	queueCmd.AddCommand(&cobra.Command{
 		Use:   "prune",
 		Short: "Drop terminal (resolved/completed/etc) items from the queue",
