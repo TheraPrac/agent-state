@@ -260,6 +260,178 @@ func TestFilenameGeneration(t *testing.T) {
 	}
 }
 
+// I-472: when the same ID appears in two type-directories with the
+// same filename basename (the peer-merge resurrection case), scan must
+// pick the file in the dir that matches the item's status — not
+// whichever one Go's map iteration happens to visit last.
+func TestScan_DeduplicatesByStatusDir(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	body := `id: I-001
+type: issue
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+
+completed: 2026-04-01T11:00:00-06:00
+
+title: Resurrected from a peer branch
+`
+	writeItem(t, filepath.Join(root, "issues", "I-001-resurrected.md"), body)
+	writeItem(t, filepath.Join(root, "archive", "I-001-resurrected.md"), body)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	path, ok := s.Path("I-001")
+	if !ok {
+		t.Fatal("I-001 missing after scan")
+	}
+	if filepath.Base(filepath.Dir(path)) != "archive" {
+		t.Errorf("scan picked %s — expected the archive copy", path)
+	}
+
+	// On-disk state is unchanged (read-only operation).
+	if _, err := os.Stat(filepath.Join(root, "issues", "I-001-resurrected.md")); err != nil {
+		t.Errorf("scan should not delete the stale file; got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "archive", "I-001-resurrected.md")); err != nil {
+		t.Errorf("canonical archive copy should still exist; got %v", err)
+	}
+}
+
+// I-472 safety boundary: when two files share an ID prefix but have
+// different filenames (an ID-collision, not a peer-merge resurrection),
+// RemoveStaleDuplicates must leave them BOTH in place. Removing either
+// would destroy data.
+func TestRemoveStaleDuplicates_LeavesIDCollisionAlone(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	bodyArchive := `id: T-099
+type: task
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+
+completed: 2026-04-01T11:00:00-06:00
+
+title: Older shipped task
+`
+	bodyTasks := `id: T-099
+type: task
+status: active
+created: 2026-04-15T10:00:00-06:00
+last_touched: 2026-04-15T10:00:00-06:00
+
+title: Different in-flight task with the same ID
+`
+	archivePath := filepath.Join(root, "archive", "T-099-older-shipped.md")
+	tasksPath := filepath.Join(root, "tasks", "T-099-different-inflight.md")
+	writeItem(t, archivePath, bodyArchive)
+	writeItem(t, tasksPath, bodyTasks)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	removed, err := s.RemoveStaleDuplicates("T-099")
+	if err != nil {
+		t.Fatalf("RemoveStaleDuplicates: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed=%v, want [] (different basenames must not auto-remove)", removed)
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Errorf("archive path destroyed by ID-collision auto-remove: %v", err)
+	}
+	if _, err := os.Stat(tasksPath); err != nil {
+		t.Errorf("tasks path destroyed by ID-collision auto-remove: %v", err)
+	}
+}
+
+// I-472: RemoveStaleDuplicates wipes any same-basename file outside
+// the canonical path and returns the list it removed so callers can
+// log / commit them.
+func TestRemoveStaleDuplicates(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	body := `id: I-002
+type: issue
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+
+completed: 2026-04-01T11:00:00-06:00
+
+title: Has a stale copy in issues
+`
+	stalePath := filepath.Join(root, "issues", "I-002-has-a-stale-copy.md")
+	canonicalPath := filepath.Join(root, "archive", "I-002-has-a-stale-copy.md")
+	writeItem(t, stalePath, body)
+	writeItem(t, canonicalPath, body)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	removed, err := s.RemoveStaleDuplicates("I-002")
+	if err != nil {
+		t.Fatalf("RemoveStaleDuplicates: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != stalePath {
+		t.Errorf("removed=%v, want [%s]", removed, stalePath)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Errorf("stale path still exists; got err=%v", err)
+	}
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Errorf("canonical path missing; got err=%v", err)
+	}
+
+	// Idempotent: a second call is a no-op.
+	removed2, err := s.RemoveStaleDuplicates("I-002")
+	if err != nil {
+		t.Fatalf("second RemoveStaleDuplicates: %v", err)
+	}
+	if len(removed2) != 0 {
+		t.Errorf("second call removed=%v, want empty", removed2)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && containsStr(s, sub)
 }

@@ -22,9 +22,36 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		if fixed > 0 {
 			fmt.Printf("\n\033[32m%d fix(es) applied\033[0m\n\n", fixed)
 		}
+
+		// I-472: clean duplicate-id drift between issues/ and archive/
+		// before reporting. Same gate as Fix above — quiet/CI mode
+		// stays read-only and surfaces drift as a check failure
+		// instead of silently rewriting the working tree. Only same-
+		// basename duplicates are auto-fixed; ID-collisions warn but
+		// require human triage.
+		for _, d := range validate.DuplicateIDs(cfg.ItemDir(), cfg) {
+			removed, err := s.RemoveStaleDuplicates(d.ID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  fix-failed: %s — %v\n", d.ID, err)
+				continue
+			}
+			for _, p := range removed {
+				fmt.Printf("  fixed: removed duplicate %s\n", p)
+			}
+		}
 	}
 
 	var issues int
+
+	// I-472: report any duplicate-id drift remaining after auto-fix.
+	// In quiet/CI mode the fix step above is skipped so this surfaces
+	// real duplicates as failures.
+	for _, d := range validate.DuplicateIDs(cfg.ItemDir(), cfg) {
+		issues++
+		if !quiet {
+			fmt.Printf("  \033[31m✗\033[0m duplicate id %s in %v\n", d.ID, d.Paths)
+		}
+	}
 
 	// Validate each item
 	for id, item := range s.All() {

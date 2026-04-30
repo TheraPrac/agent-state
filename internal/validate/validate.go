@@ -4,7 +4,10 @@ package validate
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -259,4 +262,102 @@ func HasField(doc *model.ParsedDocument, key string) bool {
 		}
 	}
 	return false
+}
+
+// DuplicateID is one drift report from DuplicateIDs: a single item file
+// (identified by basename) that exists in more than one type-directory
+// at the same time. The ID field is the parsed ID prefix (e.g.,
+// "I-443"); Paths lists every location of the file.
+type DuplicateID struct {
+	ID    string
+	Paths []string
+}
+
+// DuplicateIDs walks every type-directory under itemDir and returns one
+// DuplicateID entry per filename that appears in two or more dirs. This
+// is the I-472 drift detector — the symptom of a peer-merge event that
+// re-introduced a stale pre-archive copy alongside the canonical one.
+// The fix-path in `st check` calls Store.RemoveStaleDuplicates(id).
+//
+// IMPORTANT: this matches by full filename, not just the ID prefix. Two
+// files with the same ID prefix but different slugs (e.g.
+// `T-015-billing.md` and `T-015-openapi.md`) represent a historical
+// ID-collision — different items that happen to share an ID — and are
+// NOT reported here. Removing either would destroy data; that drift
+// class needs separate human triage.
+func DuplicateIDs(itemDir string, cfg *config.Config) []DuplicateID {
+	dirs := make(map[string]bool)
+	for _, tc := range cfg.Types {
+		for _, dir := range tc.DirectoryMap {
+			dirs[dir] = true
+		}
+	}
+
+	type fileLoc struct {
+		basename string
+		path     string
+	}
+	byBase := make(map[string][]fileLoc)
+	for dir := range dirs {
+		dirPath := filepath.Join(itemDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				// IsNotExist is the expected case (a configured dir
+				// that doesn't exist yet on this machine). Anything
+				// else (permission, transient I/O) is silent
+				// false-negative-prone — surface it on stderr so a
+				// CI/hook run sees the partial-scan condition.
+				fmt.Fprintf(os.Stderr, "warning: DuplicateIDs cannot read %s: %v\n", dirPath, err)
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			if entry.Name() == "index.md" || entry.Name() == "README.md" {
+				continue
+			}
+			byBase[entry.Name()] = append(byBase[entry.Name()],
+				fileLoc{basename: entry.Name(), path: filepath.Join(dirPath, entry.Name())})
+		}
+	}
+
+	var dups []DuplicateID
+	for basename, locs := range byBase {
+		if len(locs) < 2 {
+			continue
+		}
+		id := extractIDFromFilename(basename)
+		if id == "" {
+			continue
+		}
+		paths := make([]string, 0, len(locs))
+		for _, l := range locs {
+			paths = append(paths, l.path)
+		}
+		sort.Strings(paths)
+		dups = append(dups, DuplicateID{ID: id, Paths: paths})
+	}
+	sort.Slice(dups, func(i, j int) bool { return dups[i].ID < dups[j].ID })
+	return dups
+}
+
+// extractIDFromFilename pulls the leading ID prefix off an item file
+// name. Filenames have the form "<PREFIX>-<NUM>-<slug>.md" or
+// "<PREFIX>-<NUM>.md"; the ID is the first two hyphen-delimited
+// segments. Returns "" when the filename doesn't match the pattern so
+// strays in the directory don't false-trigger duplicate reports.
+func extractIDFromFilename(name string) string {
+	base := strings.TrimSuffix(name, ".md")
+	parts := strings.SplitN(base, "-", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	id := parts[0] + "-" + parts[1]
+	if !idPattern.MatchString(id) {
+		return ""
+	}
+	return id
 }

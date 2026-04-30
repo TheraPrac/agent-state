@@ -39,7 +39,23 @@ func New(cfg *config.Config) (*Store, error) {
 	return s, nil
 }
 
-// scan walks all directories defined in config and loads items.
+// scan walks all directories defined in config and loads items. When
+// the same ID appears in multiple type-directories, scan picks the file
+// in the directory matching the item's current status. Two drift
+// classes can produce that situation:
+//
+//   - I-472 peer-merge resurrection — a peer agent's feature branch
+//     created when the item was still active brings back the
+//     pre-archive copy after merge, so issues/<id>-foo.md and
+//     archive/<id>-foo.md (same basename) coexist. Safe to auto-clean
+//     via Store.RemoveStaleDuplicates.
+//   - ID collision — two different items with the same ID prefix but
+//     different filename slugs (e.g. T-015-billing.md +
+//     T-015-openapi.md). Auto-cleaning would destroy data; this case
+//     warns to stderr and requires human triage.
+//
+// On-disk state is unchanged here; cleanup happens in Close and
+// `st check --fix`.
 func (s *Store) scan() error {
 	root := s.cfg.ItemDir()
 
@@ -50,6 +66,8 @@ func (s *Store) scan() error {
 			dirs[dir] = true
 		}
 	}
+
+	candidates := make(map[string][]scanCandidate)
 
 	for dir := range dirs {
 		dirPath := filepath.Join(root, dir)
@@ -77,13 +95,146 @@ func (s *Store) scan() error {
 			}
 
 			if item.ID != "" {
-				s.items[item.ID] = item
-				s.paths[item.ID] = path
+				candidates[item.ID] = append(candidates[item.ID], scanCandidate{path: path, item: item})
 			}
 		}
 	}
 
+	for id, cands := range candidates {
+		if len(cands) == 1 {
+			s.items[id] = cands[0].item
+			s.paths[id] = cands[0].path
+			continue
+		}
+
+		chosen := pickCanonicalCandidate(cands, s.cfg)
+		paths := make([]string, 0, len(cands))
+		for _, c := range cands {
+			paths = append(paths, c.path)
+		}
+		if sameBasename(cands) {
+			fmt.Fprintf(os.Stderr,
+				"warning: duplicate id %s in %v — using %s. Run `st check` to clean up.\n",
+				id, paths, chosen.path)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"warning: id collision %s — different items share this ID: %v. Using %s; rename the others manually.\n",
+				id, paths, chosen.path)
+		}
+		s.items[id] = chosen.item
+		s.paths[id] = chosen.path
+	}
+
 	return nil
+}
+
+// scanCandidate is one parsed (path, item) pair seen during a scan.
+type scanCandidate struct {
+	path string
+	item *model.Item
+}
+
+// sameBasename reports whether every candidate has the same filename
+// basename. True ⇒ peer-merge resurrection (I-472, safe to auto-clean).
+// False ⇒ ID-collision (different items, needs human triage).
+func sameBasename(cands []scanCandidate) bool {
+	if len(cands) < 2 {
+		return true
+	}
+	first := filepath.Base(cands[0].path)
+	for _, c := range cands[1:] {
+		if filepath.Base(c.path) != first {
+			return false
+		}
+	}
+	return true
+}
+
+// pickCanonicalCandidate chooses the candidate whose directory matches
+// the item's current status. Falls back to the lexicographically-
+// smallest path when no candidate matches, so the choice is deterministic
+// across runs.
+func pickCanonicalCandidate(cands []scanCandidate, cfg *config.Config) scanCandidate {
+	for _, c := range cands {
+		dir := cfg.DirectoryForStatus(c.item.Type, c.item.Status)
+		if dir == "" {
+			continue
+		}
+		if filepath.Base(filepath.Dir(c.path)) == dir {
+			return c
+		}
+	}
+	chosen := cands[0]
+	for _, c := range cands[1:] {
+		if c.path < chosen.path {
+			chosen = c
+		}
+	}
+	return chosen
+}
+
+// RemoveStaleDuplicates scans every type directory for files whose
+// basename matches the canonical file's basename and removes any that
+// are not at s.paths[id]. Returns the slice of removed paths.
+// Idempotent — when there are no duplicates, returns an empty slice
+// with a nil error.
+//
+// Basename match is the safety boundary. The I-472 case (peer-merge
+// resurrection) creates a file with an IDENTICAL filename in a second
+// type-dir, and that's what we sweep. Different-slug files that share
+// the same ID prefix are historical ID-collisions — a different drift
+// class — and removing either of them would destroy data, so this
+// helper never touches them.
+//
+// Used by `st close` (after Move) and `st check --fix`.
+func (s *Store) RemoveStaleDuplicates(id string) ([]string, error) {
+	canonical, ok := s.paths[id]
+	if !ok {
+		return nil, fmt.Errorf("no path for item %s", id)
+	}
+	canonicalBase := filepath.Base(canonical)
+
+	root := s.cfg.ItemDir()
+	dirs := make(map[string]bool)
+	for _, tc := range s.cfg.Types {
+		for _, dir := range tc.DirectoryMap {
+			dirs[dir] = true
+		}
+	}
+
+	var removed []string
+	for dir := range dirs {
+		dirPath := filepath.Join(root, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, fmt.Errorf("reading %s: %w", dirPath, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Name() != canonicalBase {
+				continue
+			}
+			path := filepath.Join(dirPath, entry.Name())
+			if path == canonical {
+				continue
+			}
+			if err := os.Remove(path); err != nil {
+				if os.IsNotExist(err) {
+					// A concurrent st invocation (peer agent or
+					// st check --fix racing st close) already
+					// removed it. Treat as success — the goal is
+					// "no duplicate at this path" and that goal is
+					// met.
+					continue
+				}
+				return removed, fmt.Errorf("removing duplicate %s: %w", path, err)
+			}
+			removed = append(removed, path)
+		}
+	}
+	return removed, nil
 }
 
 // Get returns an item by ID.

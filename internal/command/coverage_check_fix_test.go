@@ -416,3 +416,88 @@ delivery:
 		t.Errorf("expected code 0 after auto-fix, got %d", code)
 	}
 }
+
+// I-472: Check should auto-fix duplicate-id drift in non-quiet mode and
+// flag it as a failure in quiet mode (CI/hooks).
+func TestCheck_FlagsDuplicateID(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	body := `id: I-009
+type: issue
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-04-01T10:00:00-06:00
+
+completed: 2026-04-01T11:00:00-06:00
+
+title: Resolved issue with a stale issues/ copy
+
+depends_on:
+- []
+
+blocks:
+- []
+`
+	stalePath := filepath.Join(root, "issues", "I-009-resolved-issue.md")
+	canonicalPath := filepath.Join(root, "archive", "I-009-resolved-issue.md")
+	if err := os.WriteFile(stalePath, []byte(body), 0644); err != nil {
+		t.Fatalf("seed stale: %v", err)
+	}
+	if err := os.WriteFile(canonicalPath, []byte(body), 0644); err != nil {
+		t.Fatalf("seed canonical: %v", err)
+	}
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	// Stub git probes so checkGitStatus doesn't add unrelated noise.
+	origExecGit := execGit
+	origExecGitNoOutput := execGitNoOutput
+	defer func() {
+		execGit = origExecGit
+		execGitNoOutput = origExecGitNoOutput
+	}()
+	execGit = func(dir string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "rev-list" {
+			return []byte("0\n"), nil
+		}
+		return []byte(""), nil
+	}
+	execGitNoOutput = func(dir string, args ...string) error { return nil }
+
+	// Quiet mode: read-only — drift surfaces as a failure, no on-disk
+	// repair.
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if code := Check(s, cfg, true, false); code == 0 {
+		t.Errorf("quiet Check expected non-zero exit when duplicate present, got 0")
+	}
+	if _, err := os.Stat(stalePath); err != nil {
+		t.Errorf("quiet Check should not delete stale file; got %v", err)
+	}
+
+	// Non-quiet: auto-fix removes the stale duplicate.
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New (rescan): %v", err)
+	}
+	if code := Check(s2, cfg, false, false); code != 0 {
+		t.Logf("Check returned %d (non-fatal — other validators may flag the seed item)", code)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Errorf("non-quiet Check should remove stale duplicate; stat err=%v", err)
+	}
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Errorf("canonical archive copy should remain; got %v", err)
+	}
+}

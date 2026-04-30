@@ -206,6 +206,23 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		return 1
 	}
 
+	// I-472: sweep stale duplicates left behind by peer-merge events.
+	// Modern Move uses os.Rename and shouldn't leave a duplicate, but
+	// a peer agent's feature branch created when this item was still
+	// active can resurrect issues/<id>-*.md when that branch merges
+	// back to main — leaving two files for the same ID. `git add -u`
+	// (in GitSync below) auto-stages the deletions so the cleanup
+	// rides along in the close commit. Only same-basename matches are
+	// removed; ID-collisions (different items sharing an ID prefix)
+	// are left for human triage.
+	if removed, derr := s.RemoveStaleDuplicates(id); derr != nil {
+		fmt.Fprintf(os.Stderr, "warning: cleanup of stale duplicates for %s failed: %v\n", id, derr)
+	} else {
+		for _, p := range removed {
+			fmt.Fprintf(os.Stderr, "removed stale duplicate: %s\n", p)
+		}
+	}
+
 	changelog.Append(cfg, id, changelog.Entry{
 		Op: "close", Field: "status",
 		OldValue: oldStatus, NewValue: resolution,
