@@ -1199,14 +1199,19 @@ implement step during st run.`,
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			sprint, _ := cmd.Flags().GetString("sprint")
+			bypassPlan, _ := cmd.Flags().GetBool("bypass-plan")
 			id := ""
 			if len(args) == 1 {
 				id = args[0]
 			}
-			exitCode = command.QueueApprove(appStore, appCfg, id, command.QueueApproveOpts{Sprint: sprint})
+			exitCode = command.QueueApprove(appStore, appCfg, id, command.QueueApproveOpts{
+				Sprint:     sprint,
+				BypassPlan: bypassPlan,
+			})
 		},
 	}
 	queueApproveCmd.Flags().String("sprint", "", "bulk-approve all pending sprint members (mutually exclusive with <id>)")
+	queueApproveCmd.Flags().Bool("bypass-plan", false, "bypass the I-491 plan-required gate (logs to changelog)")
 	queueCmd.AddCommand(queueApproveCmd)
 	queueCmd.AddCommand(&cobra.Command{
 		Use:   "prune",

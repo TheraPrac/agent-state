@@ -359,7 +359,9 @@ func TestStartAfterApprove(t *testing.T) {
 		t.Fatalf("queue add: %d", code)
 	}
 	t.Setenv("AS_AGENT_ID", "")
-	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{}); code != 0 {
+	// I-491 plan gate isn't under test here — bypass to focus on
+	// the start-after-approve flow.
+	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true}); code != 0 {
 		t.Fatalf("approve: %d", code)
 	}
 	if code := Start(s, cfg, "T-001", StartOpts{}); code != 0 {

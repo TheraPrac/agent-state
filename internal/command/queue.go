@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -68,6 +69,11 @@ type QueueNextOpts struct {
 // QueueApproveOpts holds flags for queue approve.
 type QueueApproveOpts struct {
 	Sprint string // when non-empty (and ID empty), bulk-approve all pending sprint members
+	// BypassPlan skips the I-491 plan-required gate. Each bypassed
+	// approval writes a changelog entry so the override is auditable.
+	// Use only for emergencies — the gate exists so approvals carry a
+	// commitment to a method, not just a yes/no rubber-stamp.
+	BypassPlan bool
 }
 
 // IsQueuePending reports whether `id` has a queue entry that is still
@@ -567,8 +573,12 @@ func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueAppro
 	entries := LoadQueue(cfg)
 
 	if opts.Sprint != "" {
-		approved := 0
-		var approvedIDs []string
+		// I-491: pre-pass — collect candidates and check the plan gate.
+		// Without --bypass-plan, refuse the whole bulk-approve if any
+		// candidate lacks an approved plan, so the operator gets a
+		// "fix these N items first" signal rather than a partial commit.
+		var candidates []int
+		var planless []string
 		for i, e := range entries {
 			if entries[i].Approved {
 				continue
@@ -580,35 +590,84 @@ func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueAppro
 			if item.Sprint != opts.Sprint {
 				continue
 			}
-			entries[i].Approved = true
-			approved++
-			approvedIDs = append(approvedIDs, e.ID)
+			candidates = append(candidates, i)
+			if !item.PlanApproved {
+				planless = append(planless, e.ID)
+			}
 		}
-		if approved == 0 {
+		if len(candidates) == 0 {
 			fmt.Printf("No pending sprint-%s items in queue\n", opts.Sprint)
 			return 0
+		}
+		if !opts.BypassPlan && len(planless) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"refusing to approve sprint %s — %d item(s) have no approved plan: %s\n",
+				opts.Sprint, len(planless), strings.Join(planless, ", "))
+			fmt.Fprintln(os.Stderr,
+				"run `st prep <id>` (Accept) or `st plan approve <id>` for each, or pass --bypass-plan to override")
+			return 1
+		}
+		approved := 0
+		var approvedIDs []string
+		for _, i := range candidates {
+			entries[i].Approved = true
+			approved++
+			approvedIDs = append(approvedIDs, entries[i].ID)
 		}
 		if err := SaveQueue(cfg, entries); err != nil {
 			fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
 			return 1
 		}
+		// Audit per-bypass so each override is traceable.
+		if opts.BypassPlan {
+			for _, id := range planless {
+				_ = changelog.Append(cfg, id, changelog.Entry{
+					Op:     "approve_bypass_plan",
+					Reason: fmt.Sprintf("I-491 plan gate bypassed via --bypass-plan (sprint %s bulk approve)", opts.Sprint),
+				})
+			}
+		}
 		fmt.Printf("Approved %d item(s) for sprint %s: %s\n", approved, opts.Sprint, strings.Join(approvedIDs, ", "))
+		if opts.BypassPlan && len(planless) > 0 {
+			fmt.Fprintf(os.Stderr, "warning: --bypass-plan overrode the I-491 plan gate for: %s\n", strings.Join(planless, ", "))
+		}
 		autoSync(s, fmt.Sprintf("st queue approve --sprint %s: %d item(s)", opts.Sprint, approved))
 		return 0
 	}
 
-	found := false
+	// entryIdx defaults to -1 so a future refactor that drops the
+	// `if entryIdx < 0` guard below can't silently mutate entries[0].
+	entryIdx := -1
 	for i, e := range entries {
 		if e.ID == id {
-			entries[i].Approved = true
-			found = true
+			entryIdx = i
 			break
 		}
 	}
-	if !found {
+	if entryIdx < 0 {
 		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
 		return 1
 	}
+
+	// I-491: per-item plan gate. Refuse approval when the item's plan
+	// has not been operator-approved (PlanApproved=false). Bypass via
+	// --bypass-plan logs to the changelog so the override is auditable.
+	item, ok := s.Get(id)
+	if ok && !item.PlanApproved {
+		if !opts.BypassPlan {
+			fmt.Fprintf(os.Stderr,
+				"%s has no approved plan — run `st prep %s` (Accept) or `st plan approve %s` first (or `--bypass-plan` to override)\n",
+				id, id, id)
+			return 1
+		}
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "approve_bypass_plan",
+			Reason: "I-491 plan gate bypassed via --bypass-plan",
+		})
+		fmt.Fprintf(os.Stderr, "warning: --bypass-plan overrode the I-491 plan gate for %s\n", id)
+	}
+
+	entries[entryIdx].Approved = true
 	if err := SaveQueue(cfg, entries); err != nil {
 		fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
 		return 1

@@ -573,8 +573,10 @@ func TestSprintNextHonorsApprovalAndDeps(t *testing.T) {
 	}
 
 	// Approve both. T-002 depends on T-001 → blocked → next is T-001.
-	QueueApprove(s, cfg, "T-001", QueueApproveOpts{})
-	QueueApprove(s, cfg, "T-002", QueueApproveOpts{})
+	// I-491 plan gate isn't under test here — bypass to focus on
+	// approval-and-block ordering.
+	QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true})
+	QueueApprove(s, cfg, "T-002", QueueApproveOpts{BypassPlan: true})
 	out = captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
 	if !strings.Contains(out, "T-001") {
 		t.Errorf("expected T-001 (T-002 is blocked by T-001), got %q", out)
