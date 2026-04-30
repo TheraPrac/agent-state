@@ -53,6 +53,7 @@ var agentWorkspaceRepos = []string{
 	"theraprac-web",
 	"theraprac-infra",
 	"theraprac-workspace",
+	"as",
 }
 
 // sharedSymlinkRepos lists repos that are NOT cloned into each agent's
@@ -320,6 +321,9 @@ func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, full, repair bool)
 			default:
 				action = "clone"
 			}
+			if repo.Name == "as" && (repo.State == "absent" || repo.State == "symlink") {
+				action += " + make install"
+			}
 		}
 		fmt.Printf("    %-20s state=%-8s action=%-38s target=%s\n",
 			repo.Name, repo.State, action, repo.TargetPath)
@@ -371,6 +375,11 @@ func applyAgentWorkspaceCreate(plan agentWorkspacePlan, repair bool) error {
 		}
 		if err := materializeEnv(repo.Name, repo.SourcePath, repo.TargetPath, plan.Ports); err != nil {
 			return fmt.Errorf("%s env materialize: %w", repo.Name, err)
+		}
+		if repo.Name == "as" {
+			if err := runAsInstall(repo.TargetPath); err != nil {
+				return fmt.Errorf("%s make install: %w", repo.Name, err)
+			}
 		}
 	}
 	if err := persistAgentWorkspaceConfig(plan); err != nil {
@@ -532,6 +541,18 @@ func runAgentScript(path string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// runAsInstall builds the per-agent st binary in the freshly-cloned `as`
+// repo. The dispatcher (I-419) walks up from $PWD to find theraprac-agent-*
+// and uses ITS as/bin/st — so without this build, a new agent has no
+// per-agent binary and the dispatcher silently falls back to a sibling's.
+var runAsInstall = func(targetPath string) error {
+	cmd := exec.Command("make", "install")
+	cmd.Dir = targetPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func agentCredentialsDir() (string, error) {

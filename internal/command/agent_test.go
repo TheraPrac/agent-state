@@ -137,6 +137,21 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 			t.Errorf("dry-run output missing %q:\n%s", want, stdout)
 		}
 	}
+	// I-475: as repo must appear in the plan with a make-install hook so
+	// the per-agent dispatcher (I-419) finds bin/st after create.
+	var asLine string
+	for _, line := range strings.Split(stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "as ") {
+			asLine = line
+			break
+		}
+	}
+	if asLine == "" {
+		t.Errorf("plan output missing the as repo row:\n%s", stdout)
+	} else if !strings.Contains(asLine, "make install") {
+		t.Errorf("as row missing make-install hook: %q", asLine)
+	}
 	if _, err := os.Stat(filepath.Join(agentsRoot, "theraprac-agent-b")); !os.IsNotExist(err) {
 		t.Fatalf("dry-run should not create target, stat err=%v", err)
 	}
