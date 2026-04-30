@@ -1218,6 +1218,51 @@ implement step during st run.`,
 	})
 	root.AddCommand(queueCmd)
 
+	// I-178: plan-approval primitives. The `plan-before-code-guard.sh`
+	// hook (Phase B per-agent install) calls `st plan check <id>` to
+	// decide whether to deny Edit/Write tool use against application
+	// code. `st plan approve` and `st plan reset` toggle the gate; the
+	// audit fields PlanApprovedAt + PlanApprovedBy track who/when so a
+	// reviewer can trace the approval back.
+	planCmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Manage per-item plan approvals (I-178 plan-before-code gate)",
+	}
+	planApproveCmd := &cobra.Command{
+		Use:   "approve <id>",
+		Short: "Mark an item's plan as approved (sets the I-178 gate to allow code edits)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{})
+		},
+	}
+	planResetCmd := &cobra.Command{
+		Use:   "reset <id>",
+		Short: "Revert a previously-approved plan (closes the I-178 gate; needs re-approval)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PlanReset(appStore, appCfg, args[0])
+		},
+	}
+	planCheckCmd := &cobra.Command{
+		Use:   "check <id>",
+		Short: "Print plan-approval state and exit 0 if approved, 1 otherwise (for hook integration)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PlanCheck(appStore, appCfg, args[0])
+		},
+	}
+	planShowCmd := &cobra.Command{
+		Use:   "show <id>",
+		Short: "Display plan-approval state and linked plan files",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PlanShow(appStore, appCfg, args[0])
+		},
+	}
+	planCmd.AddCommand(planApproveCmd, planResetCmd, planCheckCmd, planShowCmd)
+	root.AddCommand(planCmd)
+
 	filesCmd := &cobra.Command{
 		Use:   "files <id>",
 		Short: "Show live file changes across item worktrees (diff from origin/main merge-base)",
