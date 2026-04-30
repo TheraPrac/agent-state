@@ -157,6 +157,47 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 	}
 }
 
+// I-475: applyAgentWorkspaceCreate runs `make install` for the as repo on
+// every state (absent, symlink-replaced, existing git clone). The dry-run
+// plan must reflect that for state=git too — otherwise the operator sees
+// "repair/check" and is surprised by a 30-60s Go build during apply.
+func TestAgentWorkspaceCreatePlanShowsAsInstallForExistingClone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+	asTarget := filepath.Join(agentsRoot, "theraprac-agent-b", "as")
+	if err := os.MkdirAll(asTarget, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, asTarget, "init")
+
+	stdout := captureStdout(t, func() {
+		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "b", Branch: "main", Full: true, DryRun: true,
+		})
+		if code != 0 {
+			t.Fatalf("AgentWorkspaceCreate returned %d", code)
+		}
+	})
+
+	for _, line := range strings.Split(stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "as ") {
+			if !strings.Contains(line, "state=git") {
+				t.Errorf("expected as row state=git, got: %q", line)
+			}
+			if !strings.Contains(line, "make install") {
+				t.Errorf("as row at state=git missing make install: %q", line)
+			}
+			return
+		}
+	}
+	t.Errorf("plan output missing the as repo row:\n%s", stdout)
+}
+
 func TestAgentWorkspaceCreateDryRunDetectsPartialSymlink(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
@@ -483,6 +524,58 @@ func TestLinkClaudeContext(t *testing.T) {
 	writeFile(t, bad, "not a symlink")
 	if err := linkClaudeContext(plan, true); err == nil {
 		t.Fatal("expected error when link path holds a real file")
+	}
+}
+
+// I-475: runAsInstall must execute `make install` from inside the target
+// dir and surface a precise error on failure. This is the apply-path hook
+// that produces <agent>/as/bin/st; without it the dispatcher (I-419) has
+// no per-agent binary to resolve. Stub-friendly via package-level var.
+func TestRunAsInstallExecutesMakeInstall(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not available")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "installed.marker")
+	writeFile(t, filepath.Join(dir, "Makefile"), "install:\n\t@touch installed.marker\n")
+	if err := runAsInstall(dir); err != nil {
+		t.Fatalf("runAsInstall returned error: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected install target to run in %s, marker missing: %v", dir, err)
+	}
+}
+
+func TestRunAsInstallSurfacesMakeFailure(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not available")
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Makefile"), "install:\n\t@false\n")
+	if err := runAsInstall(dir); err == nil {
+		t.Fatal("expected runAsInstall to return error for a failing make target")
+	}
+}
+
+func TestRunAsInstallStubReplaceable(t *testing.T) {
+	orig := runAsInstall
+	defer func() { runAsInstall = orig }()
+	var captured string
+	runAsInstall = func(target string) error {
+		captured = target
+		return nil
+	}
+	if err := runAsInstall("/tmp/expected-target"); err != nil {
+		t.Fatal(err)
+	}
+	if captured != "/tmp/expected-target" {
+		t.Errorf("stub did not capture target: got %q", captured)
 	}
 }
 

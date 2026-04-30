@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 )
@@ -321,7 +323,10 @@ func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, full, repair bool)
 			default:
 				action = "clone"
 			}
-			if repo.Name == "as" && (repo.State == "absent" || repo.State == "symlink") {
+			if repo.Name == "as" {
+				// applyAgentWorkspaceCreate runs make install on every
+				// non-shared apply, including the existing-clone (git)
+				// case, so the plan must surface it for every state.
 				action += " + make install"
 			}
 		}
@@ -547,8 +552,19 @@ func runAgentScript(path string, args []string, stdout, stderr io.Writer) int {
 // repo. The dispatcher (I-419) walks up from $PWD to find theraprac-agent-*
 // and uses ITS as/bin/st — so without this build, a new agent has no
 // per-agent binary and the dispatcher silently falls back to a sibling's.
+//
+// A 10-minute deadline guards against module-download stalls; on a fresh
+// machine `make` and `go` are required, so we pre-flight LookPath to
+// surface a precise error instead of an exec-not-found message.
 var runAsInstall = func(targetPath string) error {
-	cmd := exec.Command("make", "install")
+	for _, tool := range []string{"make", "go"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			return fmt.Errorf("%s not on PATH (install xcode-select / build-essential / go toolchain): %w", tool, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "make", "install")
 	cmd.Dir = targetPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
