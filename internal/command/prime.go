@@ -10,6 +10,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -54,6 +55,25 @@ type primeItem struct {
 	Stage    string `json:"stage,omitempty"`
 	Priority int    `json:"priority,omitempty"`
 	Assigned string `json:"assigned,omitempty"`
+
+	// I-495: SBAR composite content surfaced into the prime export so
+	// LLM consumers see symptom + history + diagnosis + recommendation
+	// for every active/ready item without re-reading each file. Each
+	// section is omitempty — items with only some sections populated
+	// (legacy items mid-migration) skip blank fields cleanly.
+	Situation      string `json:"situation,omitempty"`
+	Background     string `json:"background,omitempty"`
+	Assessment     string `json:"assessment,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+}
+
+// fillSBAR copies SBAR sub-fields from item onto the primeItem.
+// Centralised so every primeItem construction site stays in sync.
+func (pi *primeItem) fillSBAR(item *model.Item) {
+	pi.Situation = item.SBAR.Situation
+	pi.Background = item.SBAR.Background
+	pi.Assessment = item.SBAR.Assessment
+	pi.Recommendation = item.SBAR.Recommendation
 }
 
 func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
@@ -124,6 +144,7 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 			Priority: p,
 			Assigned: item.AssignedTo,
 		}
+		pi.fillSBAR(item)
 
 		if cfg.IsTerminalStatus(item.Type, item.Status) {
 			complete++
@@ -214,6 +235,7 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 				line += fmt.Sprintf("  [%s]", item.Assigned)
 			}
 			b.WriteString(line + "\n")
+			writeSBARLines(&b, item, opts.Compact)
 		}
 	}
 	b.WriteString("\n")
@@ -275,6 +297,7 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 	} else {
 		for _, item := range shown {
 			b.WriteString(fmt.Sprintf("  %-8s p%d  %s\n", item.ID, item.Priority, item.Title))
+			writeSBARLines(&b, item, opts.Compact)
 		}
 	}
 	b.WriteString("\n")
@@ -343,6 +366,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 				line += fmt.Sprintf("  [%s]", item.Assigned)
 			}
 			b.WriteString(line + "\n")
+			writeSBARLines(&b, item, opts.Compact)
 		}
 	}
 	b.WriteString("\n")
@@ -475,6 +499,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	} else {
 		for _, item := range shown {
 			b.WriteString(fmt.Sprintf("  %-8s p%d  %s\n", item.ID, item.Priority, item.Title))
+			writeSBARLines(&b, item, opts.Compact)
 		}
 	}
 	b.WriteString("\n")
@@ -522,12 +547,14 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 	active := s.List(store.StatusFilter("active"))
 	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
 	for _, item := range active {
-		data.Active = append(data.Active, primeItem{
+		pi := primeItem{
 			ID:       item.ID,
 			Title:    item.Title,
 			Stage:    deliveryStage(item),
 			Assigned: item.AssignedTo,
-		})
+		}
+		pi.fillSBAR(item)
+		data.Active = append(data.Active, pi)
 	}
 
 	// Ready queue (all of them — caller trims for display)
@@ -537,11 +564,13 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 		if item.Priority != nil {
 			p = *item.Priority
 		}
-		data.Ready = append(data.Ready, primeItem{
+		pi := primeItem{
 			ID:       item.ID,
 			Title:    item.Title,
 			Priority: p,
-		})
+		}
+		pi.fillSBAR(item)
+		data.Ready = append(data.Ready, pi)
 	}
 
 	// I-406: counts + open-issues-by-priority. Priority field replaces
@@ -567,4 +596,34 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 	data.Guidance = cfg.Guidance
 
 	return data
+}
+
+// writeSBARLines emits the four SBAR sections for a primeItem under
+// the item's main bullet. Empty sections are skipped (a partially-
+// SBAR'd item, common during the I-487 migration window, gets only
+// its non-empty sections rendered). Multi-line bodies are indented
+// uniformly so the LLM consumer can attribute the lines to the
+// surrounding section header.
+//
+// `compact` skips SBAR entirely — `--compact` is the hook-injection
+// path with a tight context budget; SBAR can be paragraphs.
+func writeSBARLines(b *strings.Builder, pi primeItem, compact bool) {
+	if compact {
+		return
+	}
+	for _, sec := range []struct{ label, body string }{
+		{"Situation", pi.Situation},
+		{"Background", pi.Background},
+		{"Assessment", pi.Assessment},
+		{"Recommendation", pi.Recommendation},
+	} {
+		if sec.body == "" {
+			continue
+		}
+		lines := strings.Split(strings.TrimRight(sec.body, "\n"), "\n")
+		b.WriteString(fmt.Sprintf("      %s: %s\n", sec.label, lines[0]))
+		for _, ln := range lines[1:] {
+			b.WriteString(fmt.Sprintf("        %s\n", ln))
+		}
+	}
 }

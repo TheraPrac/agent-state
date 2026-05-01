@@ -936,6 +936,86 @@ func writeSBARStubEditor(t *testing.T, replacement string) string {
 	return script
 }
 
+// === I-495: st prime exports SBAR per item ===
+
+// I-495: writeSBARLines renders only non-empty sections. Items with
+// a partial SBAR (legacy items mid-migration) skip blank fields
+// instead of emitting "Background:" with no body.
+func TestWriteSBARLines_OmitsEmptySections(t *testing.T) {
+	pi := primeItem{
+		Situation:      "the symptom",
+		Recommendation: "the fix",
+	}
+	var b strings.Builder
+	writeSBARLines(&b, pi, false)
+	out := b.String()
+	if !strings.Contains(out, "Situation: the symptom") {
+		t.Errorf("missing Situation, got: %q", out)
+	}
+	if !strings.Contains(out, "Recommendation: the fix") {
+		t.Errorf("missing Recommendation, got: %q", out)
+	}
+	if strings.Contains(out, "Background:") {
+		t.Errorf("rendered Background even though empty, got: %q", out)
+	}
+	if strings.Contains(out, "Assessment:") {
+		t.Errorf("rendered Assessment even though empty, got: %q", out)
+	}
+}
+
+// I-495: compact mode skips SBAR entirely. The hook-injection path
+// runs with a tight context budget; SBAR can be paragraphs.
+func TestWriteSBARLines_CompactSkipsAll(t *testing.T) {
+	pi := primeItem{
+		Situation:      "s",
+		Background:     "b",
+		Assessment:     "a",
+		Recommendation: "r",
+	}
+	var b strings.Builder
+	writeSBARLines(&b, pi, true)
+	if b.Len() != 0 {
+		t.Errorf("compact mode should emit nothing, got: %q", b.String())
+	}
+}
+
+// I-495: multi-line SBAR bodies indent each continuation line under
+// the section header so LLM consumers can attribute the text.
+func TestWriteSBARLines_MultilineIndents(t *testing.T) {
+	pi := primeItem{
+		Background: "first line\nsecond line\nthird line",
+	}
+	var b strings.Builder
+	writeSBARLines(&b, pi, false)
+	out := b.String()
+	if !strings.Contains(out, "      Background: first line") {
+		t.Errorf("first line not under section header, got: %q", out)
+	}
+	if !strings.Contains(out, "        second line") {
+		t.Errorf("second line not indented under section, got: %q", out)
+	}
+}
+
+// I-495: primeItem.fillSBAR copies all 4 sub-fields off the item.
+// Centralising this on a method keeps every primeItem construction
+// site in sync — fillSBAR not being called would silently strip SBAR
+// from prime output.
+func TestPrimeItem_FillSBAR(t *testing.T) {
+	item := &model.Item{
+		SBAR: model.SBAR{
+			Situation:      "s",
+			Background:     "b",
+			Assessment:     "a",
+			Recommendation: "r",
+		},
+	}
+	pi := primeItem{}
+	pi.fillSBAR(item)
+	if pi.Situation != "s" || pi.Background != "b" || pi.Assessment != "a" || pi.Recommendation != "r" {
+		t.Errorf("fillSBAR did not copy fields: %+v", pi)
+	}
+}
+
 // === Finish with worktree ===
 
 func TestFinishWithWorktreeConfig(t *testing.T) {
