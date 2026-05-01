@@ -182,12 +182,15 @@ fields, and the SBAR composite stay on the single-field paths.`,
 			stdinFlag, _ := cmd.Flags().GetBool("stdin")
 			id := args[0]
 
-			// I-504: batch form — every arg after <id> contains '='
-			// at a non-zero index. A single arg with '=' falls
-			// through to single-field if --stdin is set or if there
-			// are exactly 3 args (<id> <field> <value>) where the
-			// value happens to contain '=' literally.
-			if len(args) >= 2 && !stdinFlag && allLookLikePairs(args[1:]) && len(args) != 3 {
+			// I-504: batch form fires when every arg after <id> looks
+			// like `key=value`. The legacy `<id> <field> <value>`
+			// case where the value happens to contain a literal `=`
+			// (e.g. `st update I-001 message foo=bar`) is preserved
+			// because args[1] = "message" has no `=`, so
+			// allLookLikePairs returns false and we route to
+			// single-field. --stdin always wins over batch dispatch
+			// since stdin mode targets a single field.
+			if len(args) >= 2 && !stdinFlag && allLookLikePairs(args[1:]) {
 				pairs := make([]command.FieldValue, 0, len(args)-1)
 				for _, a := range args[1:] {
 					eq := strings.Index(a, "=")

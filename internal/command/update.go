@@ -613,6 +613,7 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 	}
 
 	summaryShimSeen := false
+	seen := make(map[string]bool, len(pairs))
 	resolved := make([]FieldValue, 0, len(pairs))
 	for _, p := range pairs {
 		if p.Field == "severity" {
@@ -625,6 +626,17 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 				"update: sbar is a composite block — batch mode cannot set it as a scalar.\n"+
 					"  Use: st update %s sbar  (opens the 4-section editor)\n",
 				id)
+			return 2
+		}
+		// I-504 (review fix): list fields silently corrupt schema
+		// when written as a scalar. depends_on/blocks/etc. need the
+		// list-replacement path which only the single-field --stdin
+		// flow exposes today; reject in batch with a clear redirect.
+		if listFields[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"update: %s is a list field — batch mode cannot set list fields as a scalar.\n"+
+					"  Use: st update %s %s --stdin  (multi-line list replacement)\n",
+				p.Field, id, p.Field)
 			return 2
 		}
 		if p.Field == "summary" {
@@ -645,6 +657,18 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		if rc := preCheckVocab(item, p.Field, p.Value, cfg); rc != 0 {
 			return rc
 		}
+		// I-504 (review fix): reject duplicate-field batches —
+		// last-write-wins inside the Mutate would silently lose the
+		// earlier value (notably bad for the summary->sbar.background
+		// shim where two `summary=` pairs both target the same
+		// resolved key).
+		if seen[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"update: field %q appears more than once in batch — collapse the pairs or split into separate calls.\n",
+				p.Field)
+			return 2
+		}
+		seen[p.Field] = true
 		resolved = append(resolved, p)
 	}
 

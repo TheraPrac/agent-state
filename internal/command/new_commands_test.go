@@ -1122,6 +1122,44 @@ func TestUpdateBatch_SummaryRoutesOnce(t *testing.T) {
 	}
 }
 
+// I-504 (review fix): list fields cannot be written as scalars
+// (would corrupt the YAML schema). Batch mode rejects them with a
+// pointer to `st update <id> <field> --stdin` for multi-line list
+// replacement.
+func TestUpdateBatch_RejectsListField(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	pairs := []FieldValue{
+		{Field: "priority", Value: "1"},
+		{Field: "depends_on", Value: "I-002"},
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 2 {
+		t.Errorf("list field in batch should exit 2, got %d", code)
+	}
+}
+
+// I-504 (review fix): a batch with two pairs targeting the same
+// resolved field (e.g. two `summary=...` that both shim to
+// sbar.background) silently last-write-wins inside the Mutate —
+// reject early.
+func TestUpdateBatch_RejectsDuplicateField(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	// Capture the deprecation notice + duplicate-rejection so the
+	// test does not pollute go-test stdout.
+	origStderr := os.Stderr
+	_, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr; wPipe.Close() }()
+
+	pairs := []FieldValue{
+		{Field: "summary", Value: "first"},
+		{Field: "summary", Value: "second"},
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 2 {
+		t.Errorf("duplicate-field batch should exit 2, got %d", code)
+	}
+}
+
 // I-504: the SBAR composite block has no positional value form.
 // Batch mode rejects `sbar=...` with a pointer to the editor flow.
 func TestUpdateBatch_RejectsSBARField(t *testing.T) {
