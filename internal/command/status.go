@@ -246,6 +246,11 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 	}
 	fmt.Println()
 
+	// I-382: YOUR STACK section surfaces the per-agent work stack
+	// (I-383) on the dashboard so operators see "what am I focused
+	// on right now?" without a separate `st stack` call.
+	renderStackSection(s, cfg)
+
 	// Pending UAT
 	uatPending := findUATPending(s, cfg)
 	if len(uatPending) > 0 {
@@ -1161,4 +1166,59 @@ func printBinaryDriftWarning(cfg *config.Config, w io.Writer) {
 		fmt.Fprintf(w, "  %s%s%s%s — %s\n", cBold, short, cReset, marker, strings.Join(ids, ", "))
 	}
 	fmt.Fprintf(w, "  %sFix: in each diverged agent's clone, run `cd <agent>/as && git pull && make install`%s\n\n", cDim, cReset)
+}
+
+// renderStackSection prints the I-382 YOUR STACK block. Header
+// always renders (so the feature is discoverable), unless the
+// agent has no identity AND no entries — that combination is the
+// central-workspace path where the section is just noise.
+//
+// Top of stack first with a green "← current" marker; parents
+// dimmed below it. Stack items whose underlying item file no
+// longer exists render as "(not found)" instead of crashing.
+func renderStackSection(s *store.Store, cfg *config.Config) {
+	entries := LoadStack(cfg)
+	agentID := cfg.AgentID()
+	if agentID == "" && len(entries) == 0 {
+		return
+	}
+
+	depth := len(entries)
+	label := agentID
+	if label == "" {
+		label = "no agent id"
+	}
+	fmt.Printf("%s━━━ YOUR STACK (%s, depth %d) ━━━%s\n",
+		cBoldW, label, depth, cReset)
+
+	if len(entries) == 0 {
+		fmt.Printf("  %s(empty)%s\n", cDim, cReset)
+		fmt.Println()
+		return
+	}
+
+	// Render top-of-stack first. LoadStack returns entries with the
+	// most-recent push at the END of the slice (push appends), so
+	// iterate from len-1 down to 0.
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		title := ""
+		if item, ok := s.Get(e.ID); ok {
+			title = truncate(item.Title, 60)
+		} else {
+			title = "(not found)"
+		}
+		marker := ""
+		idColor := cDim
+		idReset := cReset
+		titleColor := cDim
+		if i == len(entries)-1 {
+			marker = fmt.Sprintf("  %s← current%s", cGreen, cReset)
+			idColor = cBold
+			titleColor = ""
+		}
+		fmt.Printf("  %s%-8s%s %s%s%s%s\n",
+			idColor, e.ID, idReset, titleColor, title, cReset, marker)
+	}
+	fmt.Println()
 }
