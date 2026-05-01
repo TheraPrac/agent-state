@@ -1047,7 +1047,24 @@ implement step during st run.`,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) > 0 {
-				exitCode = command.Prep(appStore, appCfg, args[0], opts, engine)
+				// I-512: when the positional arg is an item ID rather than a
+				// sprint slug, derive the sprint and prep just that item. This
+				// is the UX from the issue: `st prep I-509` instead of
+				// `st prep <sprint> --item I-509`. Sprint slugs (which are
+				// name-generator strings like "mainly-popular-gorilla") never
+				// match an item ID lookup, so the back-compat path is intact.
+				arg := args[0]
+				if it, ok := appStore.Get(arg); ok {
+					if it.Sprint == "" {
+						fmt.Fprintf(os.Stderr, "item %s has no sprint assigned\n", arg)
+						exitCode = 1
+						return
+					}
+					opts.ItemFilter = arg
+					exitCode = command.Prep(appStore, appCfg, it.Sprint, opts, engine)
+				} else {
+					exitCode = command.Prep(appStore, appCfg, arg, opts, engine)
+				}
 			} else if item != "" {
 				// Resolve sprint from item
 				it, ok := appStore.Get(item)

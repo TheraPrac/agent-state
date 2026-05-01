@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +13,22 @@ import (
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// relativePlanPath returns the plan sidecar path for itemID, relative
+// to root when possible (so the linked_plans value round-trips between
+// machines without absolute-path drift). Falls back to the absolute
+// path if relativization fails. I-512.
+func relativePlanPath(plansDir, root, itemID string) string {
+	abs := filepath.Join(plansDir, itemID+".md")
+	if root == "" {
+		return abs
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return abs
+	}
+	return rel
+}
 
 // PrepOpts holds flags for the prep command.
 type PrepOpts struct {
@@ -378,6 +395,15 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			if approver == "" {
 				approver = "user"
 			}
+			// I-512: stamp linked_plans with the per-item sidecar path so
+			// downstream consumers (the plan-before-code hook, st prime,
+			// review tools) can correlate the active item with its plan
+			// content. Sidecars live under cfg.PlansDir() with filename
+			// `<id>.md`; we record the path RELATIVE to repo root so the
+			// value round-trips between machines without absolute-path
+			// drift.
+			sidecarRel := relativePlanPath(cfg.PlansDir(), cfg.Root(), itemID)
+
 			if err := s.Mutate(itemID, func(item *model.Item) error {
 				item.PlanApproved = true
 				item.PlanApprovedAt = approvedAt
@@ -392,6 +418,21 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				// Ensure ACs are on the item
 				if len(item.AcceptanceCriteria) == 0 && len(capturedACs) > 0 {
 					item.Doc.ReplaceList("acceptance_criteria", capturedACs)
+				}
+				// I-512: append the sidecar path to linked_plans, idempotent
+				// against re-Accept on a previously rejected plan.
+				if sidecarRel != "" {
+					already := false
+					for _, lp := range item.LinkedPlans {
+						if lp == sidecarRel {
+							already = true
+							break
+						}
+					}
+					if !already {
+						item.LinkedPlans = append(item.LinkedPlans, sidecarRel)
+						item.Doc.ReplaceList("linked_plans", item.LinkedPlans)
+					}
 				}
 				return nil
 			}); err != nil {
