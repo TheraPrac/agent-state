@@ -95,6 +95,65 @@ func TestValidateACs_FindingStringIncludesACAndIndex(t *testing.T) {
 	}
 }
 
+// TestValidateACs_VagueThresholdsRejected covers the post-review
+// fix that requires a unit/% on the comparator — a bare comparator
+// with no quantifier ("errors > 0") is no longer treated as a
+// measurable threshold.
+func TestValidateACs_VagueThresholdsRejected(t *testing.T) {
+	vague := []string{
+		"errors > 0",
+		"users > 5",
+		"items <= 100",
+	}
+	for _, ac := range vague {
+		t.Run(ac, func(t *testing.T) {
+			findings := ValidateACs([]string{ac})
+			if len(findings) != 1 {
+				t.Errorf("expected vague threshold %q to be flagged; got %d findings", ac, len(findings))
+			}
+		})
+	}
+}
+
+// TestValidateACs_PassesAloneIsVague covers the post-review fix that
+// removed bare `passes` / `succeeds` from assertion verbs. Named
+// test references like `TestFoo passes` are still verifiable via
+// goTestPattern.
+func TestValidateACs_PassesAloneIsVague(t *testing.T) {
+	findings := ValidateACs([]string{"the feature passes review"})
+	if len(findings) != 1 {
+		t.Errorf("expected 'passes' alone in prose to be vague; got %d findings", len(findings))
+	}
+	// Positive control: TestFoo passes still counts (goTestPattern).
+	findings = ValidateACs([]string{"TestFoo passes"})
+	if len(findings) != 0 {
+		t.Errorf("named test reference should still be verifiable; got %d findings", len(findings))
+	}
+}
+
+// TestContainsWord_MultibyteUTF8 covers the post-review fix that
+// switched containsWord from byte-based to rune-based boundary
+// checks. ACs with em-dashes or accented chars now produce correct
+// boundary decisions.
+func TestContainsWord_MultibyteUTF8(t *testing.T) {
+	cases := []struct {
+		hay, needle string
+		want        bool
+	}{
+		{"system — accepts the input", "accepts", true},     // em-dash boundary
+		{"resumé returns 200", "returns", true},             // accented char doesn't break match
+		{"smartquotes “returns” mid-stream", "returns", true}, // curly quotes
+	}
+	for _, c := range cases {
+		t.Run(c.hay+"/"+c.needle, func(t *testing.T) {
+			got := containsWord(c.hay, c.needle)
+			if got != c.want {
+				t.Errorf("containsWord(%q,%q) = %v, want %v", c.hay, c.needle, got, c.want)
+			}
+		})
+	}
+}
+
 func TestContainsWord_WordBoundaries(t *testing.T) {
 	cases := []struct {
 		hay, needle string

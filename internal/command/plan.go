@@ -56,6 +56,9 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 			for _, f := range findings {
 				fmt.Fprintf(os.Stderr, "  %s\n", f.String())
 			}
+			fmt.Fprintf(os.Stderr,
+				"Edit .plans/%s.md to make each AC testable (cmd: prefix, named test, or measurable threshold), then re-run `st plan approve --strict %s`.\n",
+				id, id)
 			return 2
 		}
 	}
@@ -185,22 +188,36 @@ func fallback(s, def string) string {
 	return s
 }
 
-// loadStrictACFindings loads the per-item plan sidecar (if present)
-// and returns ValidateACs findings against its acceptance criteria.
-// Returns nil if no sidecar exists or parsing fails — strict mode
-// gates only against findings, never against missing data.
+// loadStrictACFindings loads the per-item plan sidecar and returns
+// ValidateACs findings against its acceptance criteria. Distinguishes
+// three cases by stderr signal:
+//   - Missing sidecar: silent — operator may have approved via `st
+//     plan approve` directly without authoring a sidecar, and strict
+//     mode shouldn't gate on absence of data.
+//   - Parse error: emit a stderr warning. Approval proceeds (don't
+//     punish the operator for a corrupt file by changing behavior),
+//     but they see why strict couldn't validate.
+//   - Loaded successfully: return ValidateACs findings.
 //
 // I-511: used by `st plan approve --strict` to refuse approval when
-// the plan content has un-verifiable ACs. Falls back gracefully when
-// no sidecar exists (e.g. plan was approved via `st plan approve`
-// directly without `st prep`) — strict mode then has no AC content
-// to inspect, and approval proceeds.
+// the plan content has un-verifiable ACs.
 func loadStrictACFindings(cfg *config.Config, id string) []plan.ACFinding {
 	if cfg == nil {
 		return nil
 	}
 	p, err := plan.Load(cfg.PlansDir(), id)
-	if err != nil || p == nil {
+	if err != nil {
+		// Surface non-IsNotExist errors so a corrupt sidecar doesn't
+		// silently neutralize --strict. plan.Load already returns
+		// (nil, nil) for IsNotExist, so any non-nil err here is a
+		// real parse / read failure worth logging.
+		fmt.Fprintf(os.Stderr,
+			"plan-approve --strict: could not load .plans/%s.md (%v); proceeding without AC validation. Investigate the sidecar before relying on --strict.\n",
+			id, err)
+		return nil
+	}
+	if p == nil {
+		// Sidecar doesn't exist — strict mode has nothing to gate on.
 		return nil
 	}
 	return plan.ValidateACs(p.ACs)

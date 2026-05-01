@@ -67,20 +67,38 @@ var suiteNames = []string{
 // assertionVerbs are the action words that signal an AC is observably
 // testable. Match is whole-word, case-insensitive. A single match is
 // enough to consider the AC verifiable.
+//
+// Note: `passes` / `succeeds` were intentionally NOT included here
+// because they're commonly used in vague prose ("the feature passes
+// review", "everything succeeds"). The verifiable case
+// `"TestFoo passes"` is already covered by goTestPattern, which
+// matches the named test reference itself.
 var assertionVerbs = []string{
 	"returns", "exits", "equals", "contains", "matches", "asserts",
 	"outputs", "produces", "blocks", "rejects", "accepts", "surfaces",
-	"emits", "fails", "passes", "succeeds", "denies", "allows",
+	"emits", "fails", "denies", "allows",
 	"renders", "displays", "shows",
 }
 
 // goTestPattern matches Go test names like `TestFoo` or `TestFoo_Bar`.
 var goTestPattern = regexp.MustCompile(`\bTest[A-Z]\w*`)
 
-// thresholdPattern matches measurable thresholds: `< 50ms`, `>= 99%`,
-// `> 100`, `<= 5s`, `~ 200`, `200 OK`, etc. Permissive on whitespace
-// and unit suffix.
-var thresholdPattern = regexp.MustCompile(`(?i)([<>]=?|~)\s*\d+|status\s+\d{3}|\b\d{3}\s+(ok|created|accepted|no\s+content|bad\s+request|unauthorized|forbidden|not\s+found)\b`)
+// thresholdPattern matches measurable thresholds. The number must
+// carry a unit (or `%`) so vague comparisons like `"errors > 0"` or
+// `"coverage > 0%"` aren't treated as testable — both halves of a
+// real threshold (the comparator AND a quantifier) must be present.
+//
+// Recognized shapes:
+//   - `<NN[unit]`, `>= NN[unit]`, etc. where unit is a 1-3 letter
+//     suffix (ms, s, kb, mb, ...) or `%`
+//   - HTTP status references: `status 200`, `200 OK`, `404 Not Found`
+var thresholdPattern = regexp.MustCompile(
+	// Comparator + number + (% OR unit-suffix-with-word-boundary).
+	// `%` is non-word so \b after it doesn't trigger; place \b inside
+	// the alternation to anchor only the unit-suffix branch.
+	`(?i)(?:[<>]=?|~)\s*\d+(?:\.\d+)?\s*(?:%|[a-z]{1,3}\b)` +
+		`|status\s+\d{3}` +
+		`|\b\d{3}\s+(?:ok|created|accepted|no\s+content|bad\s+request|unauthorized|forbidden|not\s+found)\b`)
 
 // jsTestPattern matches JavaScript test-name calls: `it("...")`,
 // `test("...")`, `describe("...")`. Single-quoted variants too.
@@ -125,28 +143,42 @@ func isVerifiable(ac string) bool {
 }
 
 // containsWord reports whether word appears in haystack as a whole
-// word (bordered by start-of-string, end-of-string, or non-word char).
-// Avoids matching `accepts` inside `unaccepting` and similar.
+// word (bordered by start-of-string, end-of-string, or non-word
+// rune). Avoids matching `accepts` inside `unaccepting` and similar.
+//
+// Operates on runes (not bytes) so multibyte UTF-8 input — em-dashes,
+// accented characters, curly quotes — produces correct boundary
+// decisions. word itself is assumed to be ASCII (the assertionVerbs
+// list is all ASCII).
 func containsWord(haystack, word string) bool {
-	idx := 0
-	for {
-		i := strings.Index(haystack[idx:], word)
-		if i < 0 {
-			return false
+	hayRunes := []rune(haystack)
+	wordRunes := []rune(word)
+	if len(wordRunes) == 0 || len(hayRunes) < len(wordRunes) {
+		return false
+	}
+	for i := 0; i+len(wordRunes) <= len(hayRunes); i++ {
+		match := true
+		for j, r := range wordRunes {
+			if hayRunes[i+j] != r {
+				match = false
+				break
+			}
 		}
-		i += idx
-		left := i == 0 || !isWordChar(haystack[i-1])
-		right := i+len(word) == len(haystack) || !isWordChar(haystack[i+len(word)])
+		if !match {
+			continue
+		}
+		left := i == 0 || !isWordRune(hayRunes[i-1])
+		right := i+len(wordRunes) == len(hayRunes) || !isWordRune(hayRunes[i+len(wordRunes)])
 		if left && right {
 			return true
 		}
-		idx = i + 1
 	}
+	return false
 }
 
-func isWordChar(b byte) bool {
-	return (b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9') ||
-		b == '_'
+func isWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == '_'
 }
