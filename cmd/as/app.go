@@ -162,20 +162,52 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	root.AddCommand(createCmd)
 
 	updateCmd := &cobra.Command{
-		Use:   "update <id> <field> [value]",
-		Short: "Update a field on an item (positional value, $EDITOR, or --stdin)",
-		Long: `Update a field on an item using one of three input modes:
+		Use:   "update <id> <field> [value] | <id> field=value [field=value ...]",
+		Short: "Update one or more fields on an item",
+		Long: `Update fields on an item.
 
-  st update <id> <field> <value>   # positional — set directly
-  st update <id> <field>           # no value — open $EDITOR seeded with current value
-  st update <id> <field> --stdin   # read new value from stdin (pipe or heredoc)
+Single-field modes:
+  st update <id> <field> <value>           # positional — set directly
+  st update <id> <field>                   # no value — open $EDITOR seeded with current value
+  st update <id> <field> --stdin           # read new value from stdin (pipe or heredoc)
 
-Long-form fields (description, summary, context, notes) round-trip as
-YAML block scalars so multi-line values replace cleanly.`,
-		Args: cobra.RangeArgs(2, 3),
+Batch mode (I-504) — one commit, one push, one changelog flush:
+  st update <id> field1=value1 field2=value2 ...
+
+Batch mode is atomic: any pair that fails vocab/range validation
+rejects the whole batch before any write. Long-form fields, list
+fields, and the SBAR composite stay on the single-field paths.`,
+		Args: cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			stdinFlag, _ := cmd.Flags().GetBool("stdin")
-			id, field := args[0], args[1]
+			id := args[0]
+
+			// I-504: batch form — every arg after <id> contains '='
+			// at a non-zero index. A single arg with '=' falls
+			// through to single-field if --stdin is set or if there
+			// are exactly 3 args (<id> <field> <value>) where the
+			// value happens to contain '=' literally.
+			if len(args) >= 2 && !stdinFlag && allLookLikePairs(args[1:]) && len(args) != 3 {
+				pairs := make([]command.FieldValue, 0, len(args)-1)
+				for _, a := range args[1:] {
+					eq := strings.Index(a, "=")
+					pairs = append(pairs, command.FieldValue{
+						Field: a[:eq],
+						Value: a[eq+1:],
+					})
+				}
+				exitCode = command.UpdateBatch(appStore, appCfg, id, pairs)
+				return
+			}
+
+			if len(args) > 3 {
+				fmt.Fprintln(os.Stderr,
+					"update: too many args for single-field form. Use field=value pairs for batch mode.")
+				exitCode = 2
+				return
+			}
+
+			field := args[1]
 			switch {
 			case stdinFlag:
 				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
@@ -1539,4 +1571,23 @@ Kinds:
 	root.AddCommand(initCmd)
 
 	return root
+}
+
+// allLookLikePairs reports whether every argument is of the form
+// `key=value` with a non-empty key (i.e., contains an `=` at a
+// non-zero index). I-504: routes `st update <id> field=value
+// field=value ...` to batch mode while leaving the single-field
+// `<id> <field> <value>` form (where args[1] is the field name
+// without `=`) untouched.
+func allLookLikePairs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, a := range args {
+		idx := strings.Index(a, "=")
+		if idx <= 0 {
+			return false
+		}
+	}
+	return true
 }

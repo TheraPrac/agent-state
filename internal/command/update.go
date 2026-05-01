@@ -569,3 +569,134 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 	}
 	return 0
 }
+
+// FieldValue is one element of a batch `st update <id> field=value
+// field=value ...` invocation. Field is the YAML key (top-level or
+// dotted nested path); Value is the literal string to write.
+type FieldValue struct {
+	Field string
+	Value string
+}
+
+// UpdateBatch applies multiple field=value pairs to a single item
+// in one Mutate, one GitSync, and one changelog flush — the agent-
+// ergonomics path I-504 calls for. Per-pair vocab gates run BEFORE
+// any write so an invalid pair rejects the entire batch (atomic);
+// partial writes would break the "one commit, one push" contract
+// that motivated the feature.
+//
+// Special routings:
+//   - summary -> sbar.background (I-494 deprecation shim, notice
+//     emitted once for the whole batch).
+//   - sbar (the composite block) is rejected — there is no
+//     well-defined positional value form for a 4-section block.
+//     The user is pointed at `st update <id> sbar` (editor mode).
+//   - severity is rejected (I-406 hard-deprecation, same as the
+//     single-field path).
+//   - listFields with multi-line values are not supported here;
+//     batch mode is for single-line scalar pairs. Multi-line list
+//     replacements stay on the single-field path with --stdin.
+func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldValue) int {
+	if len(pairs) == 0 {
+		fmt.Fprintln(os.Stderr, "update: no field=value pairs supplied")
+		return 2
+	}
+
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+	if item.Doc == nil {
+		fmt.Fprintf(os.Stderr, "%s has no document\n", id)
+		return 1
+	}
+
+	summaryShimSeen := false
+	resolved := make([]FieldValue, 0, len(pairs))
+	for _, p := range pairs {
+		if p.Field == "severity" {
+			fmt.Fprintln(os.Stderr,
+				"update: severity is deprecated (I-406). Use priority (0-4) instead.")
+			return 2
+		}
+		if p.Field == "sbar" {
+			fmt.Fprintf(os.Stderr,
+				"update: sbar is a composite block — batch mode cannot set it as a scalar.\n"+
+					"  Use: st update %s sbar  (opens the 4-section editor)\n",
+				id)
+			return 2
+		}
+		if p.Field == "summary" {
+			if !summaryShimSeen {
+				fmt.Fprintln(os.Stderr,
+					"update: summary is deprecated (I-487). Routing content to sbar.background.")
+				summaryShimSeen = true
+			}
+			p.Field = "sbar.background"
+		}
+		if p.Field == "priority" {
+			n, err := strconv.Atoi(strings.TrimSpace(p.Value))
+			if err != nil || n < 0 || n > 4 {
+				fmt.Fprintf(os.Stderr, "update: priority must be int 0-4 (got %q)\n", p.Value)
+				return 2
+			}
+		}
+		if rc := preCheckVocab(item, p.Field, p.Value, cfg); rc != 0 {
+			return rc
+		}
+		resolved = append(resolved, p)
+	}
+
+	// Status changes still respect the pipeline-lock check.
+	for _, p := range resolved {
+		if p.Field == "status" && store.IsLocked(cfg, id) {
+			fmt.Fprintf(os.Stderr, "%s is locked (active pipeline) — use `st unlock %s` first\n", id, id)
+			return 1
+		}
+	}
+
+	type batchEntry struct {
+		field    string
+		oldValue string
+		newValue string
+	}
+	entries := make([]batchEntry, 0, len(resolved))
+
+	mutateErr := s.Mutate(id, func(it *model.Item) error {
+		for _, p := range resolved {
+			var old string
+			switch {
+			case strings.Contains(p.Field, "."):
+				old, _ = it.Doc.GetNestedField(p.Field)
+				it.Doc.SetNestedField(p.Field, p.Value)
+			default:
+				old, _ = it.Doc.GetField(p.Field)
+				it.Doc.SetField(p.Field, p.Value)
+			}
+			entries = append(entries, batchEntry{p.Field, old, p.Value})
+		}
+		return nil
+	})
+	if mutateErr != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, mutateErr)
+		return 1
+	}
+
+	for _, e := range entries {
+		changelog.Append(cfg, id, changelog.Entry{
+			Op: "update", Field: e.field,
+			OldValue: e.oldValue, NewValue: e.newValue,
+		})
+	}
+
+	fields := make([]string, len(entries))
+	for i, e := range entries {
+		fields[i] = e.field
+	}
+	fmt.Printf("Updated %s: %s\n", id, strings.Join(fields, ", "))
+	if err := s.GitSync(fmt.Sprintf("st update batch: %s (%s)", id, strings.Join(fields, ", "))); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	}
+	return 0
+}

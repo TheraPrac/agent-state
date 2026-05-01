@@ -1038,6 +1038,103 @@ func TestPrimeItem_FillSBAR(t *testing.T) {
 	}
 }
 
+// === I-504: st update batch mode ===
+
+func TestUpdateBatch_TwoFields(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	pairs := []FieldValue{
+		{Field: "priority", Value: "1"},
+		{Field: "status", Value: "active"},
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 0 {
+		t.Fatalf("UpdateBatch returned %d, want 0", code)
+	}
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	item, ok := s2.Get("I-001")
+	if !ok {
+		t.Fatal("I-001 missing after re-parse")
+	}
+	if item.Priority == nil || *item.Priority != 1 {
+		t.Errorf("priority = %v, want 1", item.Priority)
+	}
+	if item.Status != "active" {
+		t.Errorf("status = %q, want active", item.Status)
+	}
+}
+
+// I-504: an invalid pair rejects the WHOLE batch before any write.
+// Partial writes would break the "one commit, one push" contract.
+// Fixture I-001 starts with priority=1; the batch attempts to set
+// priority=3 (would change) + status=open (rejected by I-508 vocab
+// gate). On batch reject, priority must remain at 1.
+func TestUpdateBatch_AtomicValidation(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	pairs := []FieldValue{
+		{Field: "priority", Value: "3"},
+		{Field: "status", Value: "open"}, // legacy alias — rejected by I-508 vocab gate
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 2 {
+		t.Errorf("invalid pair should exit 2, got %d", code)
+	}
+
+	item, _ := s.Get("I-001")
+	if item.Priority != nil && *item.Priority != 1 {
+		t.Errorf("priority changed to %d; partial batch write detected", *item.Priority)
+	}
+}
+
+// I-504: the deprecated `summary` field still works in batch mode
+// — same I-494 shim, but the deprecation notice fires once for the
+// whole batch (not per pair). Content lands under sbar.background.
+func TestUpdateBatch_SummaryRoutesOnce(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	origStderr := os.Stderr
+	rPipe, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr }()
+
+	pairs := []FieldValue{
+		{Field: "summary", Value: "the new content"},
+		{Field: "priority", Value: "2"},
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 0 {
+		t.Fatalf("batch with summary returned %d", code)
+	}
+	wPipe.Close()
+	stderrOut := readAll(t, rPipe)
+
+	if strings.Count(stderrOut, "deprecated") != 1 {
+		t.Errorf("deprecation notice should fire once, got %d times in: %q",
+			strings.Count(stderrOut, "deprecated"), stderrOut)
+	}
+
+	s2, _ := store.New(cfg)
+	item, _ := s2.Get("I-001")
+	if !strings.Contains(item.SBAR.Background, "the new content") {
+		t.Errorf("expected sbar.background to receive the value, got %q", item.SBAR.Background)
+	}
+}
+
+// I-504: the SBAR composite block has no positional value form.
+// Batch mode rejects `sbar=...` with a pointer to the editor flow.
+func TestUpdateBatch_RejectsSBARField(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	pairs := []FieldValue{
+		{Field: "priority", Value: "1"},
+		{Field: "sbar", Value: "single-line cannot represent 4 sections"},
+	}
+	if code := UpdateBatch(s, cfg, "I-001", pairs); code != 2 {
+		t.Errorf("sbar=... in batch should exit 2, got %d", code)
+	}
+}
+
 // === Finish with worktree ===
 
 func TestFinishWithWorktreeConfig(t *testing.T) {
