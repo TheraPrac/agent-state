@@ -70,7 +70,7 @@ func TestSprintCreate(t *testing.T) {
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 
-	code := SprintCreate(cfg, epicID, "Sprint 1")
+	code := SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
 	if code != 0 {
 		t.Fatalf("SprintCreate returned %d, want 0", code)
 	}
@@ -86,10 +86,37 @@ func TestSprintCreate(t *testing.T) {
 
 func TestSprintCreateBadEpic(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	code := SprintCreate(cfg, "nonexistent", "Bad Sprint")
+	code := SprintCreate(cfg, "nonexistent", "Bad Sprint", SprintCreateOpts{})
 	if code != 1 {
 		t.Errorf("expected exit code 1 for bad epic, got %d", code)
 	}
+}
+
+// I-405: SprintCreateOpts.Description, when set, persists into the
+// registry and survives a fresh Load.
+func TestSprintCreateWithDescription(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	r, _ := registry.Load(cfg.EpicsPath())
+	e := r.AddEpic("Goal Epic")
+	r.Save(cfg.EpicsPath())
+
+	code := SprintCreate(cfg, e.ID, "With Goal", SprintCreateOpts{
+		Description: "ship the alpha gate",
+	})
+	if code != 0 {
+		t.Fatalf("SprintCreate with description returned %d", code)
+	}
+
+	r2, _ := registry.Load(cfg.EpicsPath())
+	for _, sp := range r2.Sprints {
+		if sp.Title == "With Goal" {
+			if sp.Description != "ship the alpha gate" {
+				t.Errorf("description = %q, want round-trip preserved", sp.Description)
+			}
+			return
+		}
+	}
+	t.Error("sprint with description not found after Load")
 }
 
 func TestSprintListEmpty(t *testing.T) {
@@ -782,7 +809,7 @@ func TestSprintListWithSprints(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	EpicCreate(cfg, "Parent")
 	r, _ := registry.Load(cfg.EpicsPath())
-	SprintCreate(cfg, r.Epics[0].ID, "Sprint 1")
+	SprintCreate(cfg, r.Epics[0].ID, "Sprint 1", SprintCreateOpts{})
 
 	code := SprintList(cfg, "")
 	if code != 0 {
@@ -892,9 +919,9 @@ func TestSprintMoveCommand(t *testing.T) {
 	EpicCreate(cfg, "epic")
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "sprint A")
-	SprintCreate(cfg, epicID, "sprint B")
-	SprintCreate(cfg, epicID, "sprint C")
+	SprintCreate(cfg, epicID, "sprint A", SprintCreateOpts{})
+	SprintCreate(cfg, epicID, "sprint B", SprintCreateOpts{})
+	SprintCreate(cfg, epicID, "sprint C", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 
 	cID := r.Sprints[2].ID

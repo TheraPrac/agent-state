@@ -453,6 +453,52 @@ func TestSprintFieldsRoundtrip(t *testing.T) {
 	}
 }
 
+// I-405: sprint description round-trips through Save + Load.
+func TestSprintDescriptionRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "epics.yaml")
+
+	r := &Registry{}
+	e := r.AddEpic("Epic")
+	s, _ := r.AddSprint(e.ID, "Sprint")
+	for i := range r.Sprints {
+		if r.Sprints[i].ID == s.ID {
+			r.Sprints[i].Description = "ship the alpha gate by Friday"
+		}
+	}
+
+	if err := r.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	r2, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r2.Sprints[0].Description != "ship the alpha gate by Friday" {
+		t.Errorf("description = %q, want round-trip preserved", r2.Sprints[0].Description)
+	}
+}
+
+// I-405: sprints with no description round-trip cleanly — the saver
+// must omit the description: line entirely so existing pre-I-405
+// fixtures stay byte-identical.
+func TestSprintNoDescriptionOmitted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "epics.yaml")
+
+	r := &Registry{}
+	e := r.AddEpic("Epic")
+	r.AddSprint(e.ID, "Sprint")
+
+	if err := r.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), "description:") {
+		t.Errorf("empty description should not be serialized, got:\n%s", string(body))
+	}
+}
+
 func TestEpicSprintOrderRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "epics.yaml")

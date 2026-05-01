@@ -30,6 +30,7 @@ type Epic struct {
 type Sprint struct {
 	ID             string
 	Title          string
+	Description    string // optional free-form goal/intent (I-405)
 	Epic           string // parent epic ID
 	Status         string // active, completed
 	Items          []string
@@ -98,6 +99,7 @@ func Load(path string) (*Registry, error) {
 			s := Sprint{
 				ID:             current["id"],
 				Title:          current["title"],
+				Description:    current["description"],
 				Epic:           current["epic"],
 				Status:         current["status"],
 				PlanApproved:   current["plan_approved"] == "true",
@@ -210,6 +212,9 @@ func (r *Registry) Save(path string) error {
 		for _, s := range r.Sprints {
 			b.WriteString(fmt.Sprintf("  - id: %s\n", s.ID))
 			b.WriteString(fmt.Sprintf("    title: %s\n", yamlQuote(s.Title)))
+			if s.Description != "" {
+				b.WriteString(fmt.Sprintf("    description: %s\n", yamlQuote(s.Description)))
+			}
 			b.WriteString(fmt.Sprintf("    epic: %s\n", s.Epic))
 			b.WriteString(fmt.Sprintf("    status: %s\n", s.Status))
 			if len(s.Items) > 0 {

@@ -291,7 +291,7 @@ depends_on:
 	EpicCreate(cfg, "Test Epic")
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "Sprint 1")
+	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 	sprintID := r.Sprints[0].ID
 
@@ -586,7 +586,7 @@ title: Done task
 	EpicCreate(cfg, "Done Epic")
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "Done Sprint")
+	SprintCreate(cfg, epicID, "Done Sprint", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 	sprintID := r.Sprints[0].ID
 	SprintAdd(s, cfg, sprintID, []string{"T-001"})

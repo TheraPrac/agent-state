@@ -22,7 +22,7 @@ func setupSprintTestEnv(t *testing.T) (*store.Store, *config.Config, string, str
 	epicID := r.Epics[0].ID
 
 	// Create a sprint
-	SprintCreate(cfg, epicID, "Sprint 1")
+	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 	sprintID := r.Sprints[0].ID
 
@@ -354,8 +354,8 @@ func TestSprintCreateSetsSequence(t *testing.T) {
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 
-	SprintCreate(cfg, epicID, "Sprint 1")
-	SprintCreate(cfg, epicID, "Sprint 2")
+	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
+	SprintCreate(cfg, epicID, "Sprint 2", SprintCreateOpts{})
 
 	r, _ = registry.Load(cfg.EpicsPath())
 	if len(r.Sprints) != 2 {
@@ -717,7 +717,7 @@ depends_on:
 	EpicCreate(cfg, "Epic")
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "Sprint")
+	SprintCreate(cfg, epicID, "Sprint", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 	sprintID := r.Sprints[0].ID
 
@@ -755,7 +755,7 @@ depends_on:
 	EpicCreate(cfg, "Different Epic")
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "Sprint 1")
+	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
 	r, _ = registry.Load(cfg.EpicsPath())
 	sprintID := r.Sprints[0].ID
 

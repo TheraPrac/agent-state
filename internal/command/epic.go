@@ -83,8 +83,15 @@ func EpicMove(s *store.Store, cfg *config.Config, epicID string, pos int) int {
 	return 0
 }
 
+// SprintCreateOpts carries optional flags for `st sprint create`.
+// I-405 added Description. The struct shape leaves room for future
+// flags (start date, owner, etc.) without breaking callers.
+type SprintCreateOpts struct {
+	Description string
+}
+
 // SprintCreate creates a new sprint under an epic.
-func SprintCreate(cfg *config.Config, epicID, title string) int {
+func SprintCreate(cfg *config.Config, epicID, title string, opts SprintCreateOpts) int {
 	r, err := registry.Load(cfg.EpicsPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
@@ -95,6 +102,17 @@ func SprintCreate(cfg *config.Config, epicID, title string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
+	}
+	if opts.Description != "" {
+		// AddSprint appends by value; patch the slice entry by ID so
+		// Description survives Save.
+		for i := range r.Sprints {
+			if r.Sprints[i].ID == s.ID {
+				r.Sprints[i].Description = opts.Description
+				s.Description = opts.Description
+				break
+			}
+		}
 	}
 
 	if err := r.Save(cfg.EpicsPath()); err != nil {

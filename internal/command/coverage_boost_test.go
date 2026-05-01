@@ -143,7 +143,7 @@ func TestEpicCreateError(t *testing.T) {
 
 func TestSprintCreateNoEpic(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	code := SprintCreate(cfg, "nonexistent-epic-id", "Sprint")
+	code := SprintCreate(cfg, "nonexistent-epic-id", "Sprint", SprintCreateOpts{})
 	if code == 0 {
 		t.Error("sprint create with bad epic should fail")
 	}
@@ -660,7 +660,7 @@ func TestSprintCreateHappy(t *testing.T) {
 	}
 	epicID := r.Epics[0].ID
 
-	code := SprintCreate(cfg, epicID, "Sprint One")
+	code := SprintCreate(cfg, epicID, "Sprint One", SprintCreateOpts{})
 	if code != 0 {
 		t.Errorf("sprint create exit %d", code)
 	}
@@ -672,7 +672,7 @@ func TestSprintListWithEpic(t *testing.T) {
 
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
-	SprintCreate(cfg, epicID, "Sprint A")
+	SprintCreate(cfg, epicID, "Sprint A", SprintCreateOpts{})
 
 	code := SprintList(cfg, epicID)
 	if code != 0 {
@@ -763,7 +763,7 @@ func TestSprintCreateWithEpicV2(t *testing.T) {
 	}
 	epicID := r.Epics[0].ID
 
-	code := SprintCreate(cfg, epicID, "Sprint Alpha")
+	code := SprintCreate(cfg, epicID, "Sprint Alpha", SprintCreateOpts{})
 	if code != 0 {
 		t.Errorf("sprint create exit %d", code)
 	}

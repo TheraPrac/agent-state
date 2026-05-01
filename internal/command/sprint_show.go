@@ -49,6 +49,12 @@ func SprintShow(s *store.Store, cfg *config.Config, sprintID string) int {
 		fmt.Printf("Epic:   %s\n", sp.Epic)
 	}
 	fmt.Printf("Status: %s   Plan: %s%s\n", sp.Status, planStatus, planDate)
+	// I-405: show the description above the items table when set so
+	// the next person (or agent) opening the sprint sees the goal/
+	// intent without having to infer it from the included items.
+	if sp.Description != "" {
+		fmt.Printf("Goal:   %s\n", sp.Description)
+	}
 	fmt.Println()
 
 	if len(sp.Items) == 0 {

@@ -70,7 +70,7 @@ func TestEpicListLoadErr(t *testing.T) {
 
 func TestSprintCreateLoadErr(t *testing.T) {
 	_, cfg := corruptRegistryEnv(t)
-	code := SprintCreate(cfg, "epic-id", "Sprint 1")
+	code := SprintCreate(cfg, "epic-id", "Sprint 1", SprintCreateOpts{})
 	if code != 1 {
 		t.Errorf("expected 1, got %d", code)
 	}
@@ -82,7 +82,7 @@ func TestSprintCreateAddErr(t *testing.T) {
 	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
 	os.WriteFile(filepath.Join(root, ".as", "epics.yaml"), []byte(""), 0644)
 	cfg, _ := config.Load(root)
-	code := SprintCreate(cfg, "nonexistent-epic", "Sprint 1")
+	code := SprintCreate(cfg, "nonexistent-epic", "Sprint 1", SprintCreateOpts{})
 	if code != 1 {
 		t.Errorf("expected 1, got %d", code)
 	}

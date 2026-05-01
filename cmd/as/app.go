@@ -822,9 +822,13 @@ fields, and the SBAR composite stay on the single-field paths.`,
 		Short: "Create a sprint under an epic",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.SprintCreate(appCfg, args[0], args[1])
+			desc, _ := cmd.Flags().GetString("description")
+			exitCode = command.SprintCreate(appCfg, args[0], args[1], command.SprintCreateOpts{
+				Description: desc,
+			})
 		},
 	}
+	sprintCreateCmd.Flags().String("description", "", "optional free-form goal/intent for the sprint (I-405)")
 	sprintListCmd := &cobra.Command{
 		Use:     "list [epic-id]",
 		Short:   "List sprints",
