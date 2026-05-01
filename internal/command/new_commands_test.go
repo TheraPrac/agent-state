@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -546,6 +547,126 @@ func TestRunCreateEditor_VisualBeforeEditor(t *testing.T) {
 	if got != "visual-editor" {
 		t.Errorf("editor selection = %q, want visual-editor (VISUAL wins)", got)
 	}
+}
+
+// === I-493: st update <id> sbar editor flow ===
+
+// I-493: editor mode renders the 4 SBAR sections, lets the user edit,
+// and writes all sub-fields back atomically. This test stubs $EDITOR
+// with a script that overwrites the temp file with a known buffer
+// containing all four sections, then asserts the file's sbar block
+// reflects the new content.
+func TestUpdateSBAR_RoundtripViaEditor(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	editor := writeSBARStubEditor(t,
+		"situation: |-\n"+
+			"  api returns 500 on tenant creation\n"+
+			"background: |-\n"+
+			"  RLS context not set on conn pool\n"+
+			"assessment: |-\n"+
+			"  reproduces 100% on fresh signup\n"+
+			"recommendation: |-\n"+
+			"  switch to s.querier(ctx) in 4 callsites\n")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("VISUAL", "")
+
+	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 0 {
+		t.Fatalf("Update sbar returned %d, want 0", code)
+	}
+
+	path, _ := s.Path("I-001")
+	bodyB, _ := os.ReadFile(path)
+	body := string(bodyB)
+	for _, want := range []string{
+		"api returns 500 on tenant creation",
+		"RLS context not set on conn pool",
+		"reproduces 100% on fresh signup",
+		"switch to s.querier(ctx) in 4 callsites",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sbar update missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+// I-493: a buffer missing one of the four required sections is
+// rejected with exit 2 — the schema invariant from I-487 is that all
+// four sub-keys are present even when their bodies are blank.
+func TestUpdateSBAR_RejectsMissingSection(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	editor := writeSBARStubEditor(t,
+		"situation: |-\n"+
+			"  has situation\n"+
+			"background: |-\n"+
+			"  has background\n"+
+			"assessment: |-\n"+
+			"  has assessment\n")
+	// recommendation deliberately omitted.
+	t.Setenv("EDITOR", editor)
+	t.Setenv("VISUAL", "")
+
+	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 2 {
+		t.Errorf("Update sbar with missing section should exit 2, got %d", code)
+	}
+}
+
+// I-493: parseSBARBuffer must accept all valid YAML block-scalar
+// indicators (|-, |, >, >-, and a bare colon — which YAML treats as
+// a single-line null but the editor flow tolerates as an empty
+// block). Unit-test the parser directly to avoid coupling these
+// invariants to the full editor round-trip.
+func TestParseSBARBuffer_AcceptsBlockScalarVariants(t *testing.T) {
+	buf := "situation: |-\n  s text\n" +
+		"background: |\n  b text\n" +
+		"assessment: >-\n  a text\n" +
+		"recommendation:\n  r text\n"
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing sections: %v", missing)
+	}
+	if got.Situation != "s text" || got.Background != "b text" ||
+		got.Assessment != "a text" || got.Recommendation != "r text" {
+		t.Errorf("parsed SBAR = %+v", got)
+	}
+}
+
+// I-493: sbarSeedBuffer + parseSBARBuffer must round-trip an SBAR
+// struct unchanged so an editor that did not modify anything
+// produces zero spurious changes.
+func TestSBARRoundtrip_EditorNoOp(t *testing.T) {
+	orig := model.SBAR{
+		Situation:      "one",
+		Background:     "two\nlines",
+		Assessment:     "three",
+		Recommendation: "four",
+	}
+	buf := sbarSeedBuffer(orig)
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing: %v", missing)
+	}
+	if got != orig {
+		t.Errorf("roundtrip lost data: got %+v want %+v", got, orig)
+	}
+}
+
+// writeSBARStubEditor writes a shell script that overwrites its
+// argument (the temp file readFromEditor created) with `replacement`
+// when invoked. This simulates the user opening the editor and saving
+// the supplied buffer.
+func writeSBARStubEditor(t *testing.T, replacement string) string {
+	t.Helper()
+	dir := t.TempDir()
+	body := filepath.Join(dir, "body.txt")
+	if err := os.WriteFile(body, []byte(replacement), 0644); err != nil {
+		t.Fatalf("writing replacement body: %v", err)
+	}
+	script := filepath.Join(dir, "editor.sh")
+	scriptBody := "#!/bin/sh\ncp " + body + " \"$1\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0755); err != nil {
+		t.Fatalf("writing stub editor: %v", err)
+	}
+	return script
 }
 
 // === Finish with worktree ===

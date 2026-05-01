@@ -131,6 +131,14 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 			return 1
 		}
 	case UpdateModeEditor:
+		// I-493: `st update <id> sbar` opens the editor on the
+		// 4-section composite buffer, parses it back, and updates all
+		// four sub-fields atomically. The generic GetField path below
+		// would seed the buffer with an empty string (sbar is a block
+		// key, not a scalar), losing the user's existing content.
+		if field == "sbar" {
+			return updateSBARViaEditor(s, cfg, id, item)
+		}
 		current, _ := item.Doc.GetField(field)
 		new, code, ok := readFromEditor(id, field, current)
 		if !ok {
@@ -282,4 +290,161 @@ func readFromEditor(id, field, current string) (string, int, bool) {
 		return "", 1, false
 	}
 	return strings.TrimRight(string(data), "\n"), 0, true
+}
+
+// sbarSeedBuffer renders the 4 SBAR sections as a YAML buffer the
+// editor can present to the user. The wrapper `sbar:` line is
+// intentionally omitted so the user does not have to keep two-space
+// indentation correct on every line — the parser on the way back
+// in adds it conceptually. Empty sub-fields render as `key: |-`
+// followed by a single placeholder line so the user sees the section
+// even when it is unset.
+func sbarSeedBuffer(s model.SBAR) string {
+	var b strings.Builder
+	for _, sec := range []struct{ key, val string }{
+		{"situation", s.Situation},
+		{"background", s.Background},
+		{"assessment", s.Assessment},
+		{"recommendation", s.Recommendation},
+	} {
+		b.WriteString(sec.key)
+		b.WriteString(": |-\n")
+		body := sec.val
+		if body == "" {
+			b.WriteString("  TODO: fill in or leave blank\n")
+			continue
+		}
+		for _, ln := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+			b.WriteString("  ")
+			b.WriteString(ln)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// parseSBARBuffer reverses sbarSeedBuffer. Returns an SBAR struct and
+// the list of sub-keys that were missing from the input — empty list
+// means all four sections were present (even if their bodies were
+// empty). Order of keys is not enforced.
+func parseSBARBuffer(buf string) (model.SBAR, []string) {
+	want := map[string]bool{"situation": true, "background": true, "assessment": true, "recommendation": true}
+	got := map[string]string{}
+	var currentKey string
+	var currentBody []string
+
+	flush := func() {
+		if currentKey == "" {
+			return
+		}
+		// Strip trailing blank lines from the body for clean storage.
+		for len(currentBody) > 0 && strings.TrimSpace(currentBody[len(currentBody)-1]) == "" {
+			currentBody = currentBody[:len(currentBody)-1]
+		}
+		got[currentKey] = strings.Join(currentBody, "\n")
+		currentKey = ""
+		currentBody = nil
+	}
+
+	for _, raw := range strings.Split(buf, "\n") {
+		// Recognise a section header: `<key>: |-` (any block scalar
+		// indicator) at column 0 where <key> is one of the four
+		// SBAR sub-keys. Anything else is body content.
+		trimmed := strings.TrimRight(raw, " \t")
+		if !strings.HasPrefix(raw, " ") && !strings.HasPrefix(raw, "\t") {
+			// Possible header line at column 0.
+			colon := strings.Index(trimmed, ":")
+			if colon > 0 {
+				key := trimmed[:colon]
+				rest := strings.TrimSpace(trimmed[colon+1:])
+				if want[key] && (rest == "|-" || rest == "|" || rest == "" || rest == ">" || rest == ">-") {
+					flush()
+					currentKey = key
+					continue
+				}
+			}
+		}
+		if currentKey == "" {
+			// Pre-header noise (comment / blank). Silently ignore.
+			continue
+		}
+		// Body line — strip the 2-space seed indent if present so the
+		// stored value is byte-clean.
+		body := raw
+		body = strings.TrimPrefix(body, "  ")
+		// Skip auto-seeded TODO placeholder lines so an unedited
+		// scaffold round-trips back to an empty string instead of
+		// persisting "TODO: fill in or leave blank" as real content.
+		if strings.HasPrefix(strings.TrimSpace(body), "TODO: fill in or leave blank") {
+			continue
+		}
+		currentBody = append(currentBody, body)
+	}
+	flush()
+
+	var missing []string
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	return model.SBAR{
+		Situation:      got["situation"],
+		Background:     got["background"],
+		Assessment:     got["assessment"],
+		Recommendation: got["recommendation"],
+	}, missing
+}
+
+// updateSBARViaEditor implements the I-493 editor flow for the sbar
+// composite field. Returns the CLI exit code.
+func updateSBARViaEditor(s *store.Store, cfg *config.Config, id string, item *model.Item) int {
+	seed := sbarSeedBuffer(item.SBAR)
+	edited, code, ok := readFromEditor(id, "sbar", seed)
+	if !ok {
+		return code
+	}
+	if edited == strings.TrimRight(seed, "\n") {
+		fmt.Println("No changes.")
+		return 0
+	}
+	newSBAR, missing := parseSBARBuffer(edited)
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"update: SBAR buffer is missing required section(s): %s\n"+
+				"  Each of situation/background/assessment/recommendation must be present, even if blank.\n",
+			strings.Join(missing, ", "))
+		return 2
+	}
+	oldRendered := sbarSeedBuffer(item.SBAR)
+	mutateErr := s.Mutate(id, func(it *model.Item) error {
+		it.SBAR = newSBAR
+		it.Doc.SetSBARBlock(newSBAR)
+		return nil
+	})
+	if mutateErr != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, mutateErr)
+		return 1
+	}
+	changelog.Append(cfg, id, changelog.Entry{
+		Op: "update", Field: "sbar",
+		OldValue: truncateForChangelog(oldRendered),
+		NewValue: truncateForChangelog(sbarSeedBuffer(newSBAR)),
+	})
+	fmt.Printf("Updated %s.sbar\n", id)
+	if err := s.GitSync(fmt.Sprintf("st update: %s.sbar", id)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	}
+	return 0
+}
+
+// truncateForChangelog keeps the changelog readable when SBAR bodies
+// are paragraphs — the full content is in the file's git history; the
+// changelog just needs a recognizable signature.
+func truncateForChangelog(s string) string {
+	const max = 200
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

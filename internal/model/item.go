@@ -216,6 +216,92 @@ func buildScalarOrBlock(key, value, comment string) []Line {
 	return []Line{{Raw: raw, Key: key, Value: value, Comment: comment}}
 }
 
+// SetSBARBlock replaces the entire `sbar:` block — header line plus
+// all indented continuation lines — with a freshly-rendered version of
+// `s`. Each of the four sub-fields renders as a YAML block scalar
+// (`  key: |-` followed by indented body lines). Empty sub-fields are
+// emitted as `  key: |-` with a single empty body line, preserving the
+// schema invariant from I-487 that all four keys are present.
+//
+// I-493 needed this because SetNestedField only handles single-line
+// nested values; SBAR sub-fields are routinely multi-paragraph, so the
+// generic path produced malformed YAML when the editor returned a
+// multi-line section.
+func (d *ParsedDocument) SetSBARBlock(s SBAR) {
+	// Find the existing sbar: block (or the insertion point).
+	startIdx := -1
+	for i, line := range d.Lines {
+		if line.Key == "sbar" && line.Indent == 0 {
+			startIdx = i
+			break
+		}
+	}
+
+	newLines := buildSBARLines(s)
+
+	if startIdx < 0 {
+		// No sbar: block yet — insert before body separator (or append).
+		if idx := d.BodySeparatorIndex(); idx >= 0 {
+			tail := append([]Line{}, d.Lines[idx:]...)
+			d.Lines = append(d.Lines[:idx], append(newLines, tail...)...)
+		} else {
+			d.Lines = append(d.Lines, newLines...)
+		}
+		return
+	}
+
+	// Find the end of the sbar block: first line at Indent==0 that
+	// isn't an empty line. Empty lines inside the block (rare but
+	// allowed) are absorbed.
+	endIdx := startIdx + 1
+	for endIdx < len(d.Lines) {
+		l := d.Lines[endIdx]
+		if l.Indent == 0 && !l.IsEmpty {
+			break
+		}
+		endIdx++
+	}
+
+	tail := append([]Line{}, d.Lines[endIdx:]...)
+	d.Lines = append(d.Lines[:startIdx], append(newLines, tail...)...)
+}
+
+// buildSBARLines renders an SBAR struct as the line slice of a
+// `sbar:` block. Format mirrors cmd/migrate-sbar/renderSBARBlock so
+// freshly-edited blocks are byte-identical to migrated blocks.
+func buildSBARLines(s SBAR) []Line {
+	out := []Line{{Raw: "sbar:", Key: "sbar"}}
+	for _, sec := range []struct {
+		key, val string
+	}{
+		{"situation", s.Situation},
+		{"background", s.Background},
+		{"assessment", s.Assessment},
+		{"recommendation", s.Recommendation},
+	} {
+		out = append(out, Line{
+			Raw:      "  " + sec.key + ": |-",
+			Key:      sec.key,
+			Indent:   2,
+			BlockKey: "sbar",
+		})
+		body := sec.val
+		if body == "" {
+			out = append(out, Line{Raw: "    ", IsBlock: true, BlockKey: sec.key, Indent: 4})
+			continue
+		}
+		for _, ln := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+			out = append(out, Line{
+				Raw:      "    " + ln,
+				IsBlock:  true,
+				BlockKey: sec.key,
+				Indent:   4,
+			})
+		}
+	}
+	return out
+}
+
 // ReplaceList replaces an entire list field (key + all continuation lines)
 // with the new lines. Each line in values should be "- item text".
 func (d *ParsedDocument) ReplaceList(key string, values []string) {
