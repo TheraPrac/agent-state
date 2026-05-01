@@ -17,3 +17,11 @@ var legacyStatusAliases = map[string]string{
 func suggestStatus(input string) string {
 	return legacyStatusAliases[input]
 }
+
+// SuggestStatus is the exported variant for callers outside the validate
+// package (currently the CLI early-exit gate in command.preCheckVocab).
+// Sharing the lookup eliminates the drift risk of duplicate alias maps —
+// extending the legacy vocabulary in one place updates both gates.
+func SuggestStatus(input string) string {
+	return suggestStatus(input)
+}

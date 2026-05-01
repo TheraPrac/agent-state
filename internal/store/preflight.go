@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -100,9 +101,9 @@ func resolveGitDir(root string) (string, error) {
 		return "", err
 	}
 	const prefix = "gitdir:"
-	for _, line := range splitLines(string(data)) {
-		if len(line) > len(prefix) && line[:len(prefix)] == prefix {
-			path := trimSpace(line[len(prefix):])
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(filepath.Dir(dotGit), path)
 			}
@@ -115,30 +116,4 @@ func resolveGitDir(root string) (string, error) {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
-}
-
-// splitLines is a tiny replacement for strings.Split-by-newline that
-// keeps us free of the strings import in this small file. Trailing empty
-// element from a final newline is preserved (caller filters by prefix).
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	lines = append(lines, s[start:])
-	return lines
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t' || s[len(s)-1] == '\r' || s[len(s)-1] == '\n') {
-		s = s[:len(s)-1]
-	}
-	return s
 }

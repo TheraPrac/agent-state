@@ -180,6 +180,16 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 
 	root := s.cfg.ItemDir()
 
+	// Acquire lock to prevent concurrent git operations from parallel st
+	// processes. Done BEFORE PreFlightGitState so a peer agent can't
+	// transition the canonical clone into mid-rebase between our check
+	// and our lock — the lock holder is the only writer of git state.
+	unlock, err := acquireGitLock(root)
+	if err != nil {
+		return fmt.Errorf("git lock: %w", err)
+	}
+	defer unlock()
+
 	// I-501: refuse if the canonical clone is mid-rebase / mid-merge /
 	// holding a stale index.lock. The mutation that produced this call
 	// already wrote to disk; we still emit the recovery hint and stop
@@ -187,13 +197,6 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	if err := PreFlightGitState(root); err != nil {
 		return err
 	}
-
-	// Acquire lock to prevent concurrent git operations from parallel st processes
-	unlock, err := acquireGitLock(root)
-	if err != nil {
-		return fmt.Errorf("git lock: %w", err)
-	}
-	defer unlock()
 
 	// Pre-pull: fetch and integrate remote changes before committing.
 	// Snapshot locked items so the pull can't overwrite active work.
@@ -270,6 +273,14 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 // the conflict is understood. I-501.
 var ErrPushDiverged = errors.New("push rejected and replay diverged; local commit retained")
 
+// ErrPushRejectedButOriginUnchanged is returned when the push was
+// rejected by origin yet the fetch shows origin/main has not advanced
+// past our parent. This usually indicates a server-side gate (pre-receive
+// hook, branch protection, force-push refused) that retrying won't
+// resolve. We surface it immediately rather than spin the retry loop
+// up to maxRetries times only to emit the same generic push error. I-501.
+var ErrPushRejectedButOriginUnchanged = errors.New("push rejected and origin has not moved (likely a pre-receive hook or branch protection)")
+
 // pushWithRetry pushes refs/heads/main to origin. On rejection (peer
 // raced), it fetches origin and rebuilds the commit via plumbing on top
 // of the fresh origin/main, then retries the push.
@@ -300,6 +311,11 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 		if replayErr := s.replayCommitOnFetchedMain(root); replayErr != nil {
 			if errors.Is(replayErr, ErrPushDiverged) {
 				return replayErr
+			}
+			if errors.Is(replayErr, ErrPushRejectedButOriginUnchanged) {
+				// Retrying won't help — surface the original push error
+				// alongside the diagnostic so the operator sees both.
+				return fmt.Errorf("%w: %v", ErrPushRejectedButOriginUnchanged, err)
 			}
 			return fmt.Errorf("plumbing replay during push retry: %w", replayErr)
 		}
@@ -345,10 +361,12 @@ func (s *Store) replayCommitOnFetchedMain(root string) error {
 	originHead := strings.TrimSpace(originOut)
 
 	if originHead == localParent {
-		// Origin didn't move; nothing to replay. The push may have
-		// failed for a transient network reason — let the outer retry
-		// loop try the push again.
-		return nil
+		// Origin didn't move past our parent, yet our push was rejected.
+		// Nothing to replay — and retrying the same push will hit the
+		// same rejection. Surface the diagnostic immediately so the
+		// operator sees an actionable message instead of waiting for
+		// maxRetries retries to surface a generic "push failed."
+		return ErrPushRejectedButOriginUnchanged
 	}
 
 	// 3. List the files we changed in our local commit. Empty list ⇒
@@ -423,7 +441,10 @@ func (s *Store) replayCommitOnFetchedMain(root string) error {
 			return fmt.Errorf("stat %q: %w", abs, statErr)
 		}
 		// Hash the working-tree blob and stage it at rel in the temp index.
-		blobOut, err := gitOutput(root, "hash-object", "-w", "--", abs)
+		// `--path <rel>` makes git apply .gitattributes (text=auto, smudge/clean
+		// filters) the same way `git add` would, so the replayed tree's blob
+		// hash matches what a normal commit would produce.
+		blobOut, err := gitOutput(root, "hash-object", "-w", "--path", rel, "--", abs)
 		if err != nil {
 			return fmt.Errorf("hash-object %q: %w", abs, err)
 		}

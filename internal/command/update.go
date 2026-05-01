@@ -12,6 +12,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/jfinlinson/agent-state/internal/validate"
 )
 
 // listFields are top-level fields stored as YAML lists. Multi-line values
@@ -210,7 +211,7 @@ func preCheckVocab(item *model.Item, field, value string, cfg *config.Config) in
 			value, item.Type, strings.Join(valid, ", "))
 		// Hint via the same alias map the store-layer gate uses, so
 		// muscle-memory `open`/`resolved` writes land an actionable error.
-		if hint := suggestStatusAlias(value); hint != "" {
+		if hint := validate.SuggestStatus(value); hint != "" {
 			msg += fmt.Sprintf("\n  did you mean %q? (legacy alias from pre-I-433)", hint)
 		}
 		fmt.Fprintln(os.Stderr, msg)
@@ -228,20 +229,6 @@ func preCheckVocab(item *model.Item, field, value string, cfg *config.Config) in
 		return 2
 	}
 	return 0
-}
-
-// suggestStatusAlias mirrors the validate package's alias map so the
-// CLI early-exit can produce the same hint without importing validate's
-// internal helper. The map is intentionally tiny — duplicating four
-// entries here is cheaper than exposing the helper or building a
-// shared vocabulary package.
-func suggestStatusAlias(input string) string {
-	return map[string]string{
-		"open":      "queued",
-		"resolved":  "done",
-		"wontfix":   "abandoned",
-		"completed": "done",
-	}[input]
 }
 
 // readFromEditor seeds $EDITOR with the field's current value, runs it,
