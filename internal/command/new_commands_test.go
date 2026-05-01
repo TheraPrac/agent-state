@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -546,6 +547,232 @@ func TestRunCreateEditor_VisualBeforeEditor(t *testing.T) {
 	if got != "visual-editor" {
 		t.Errorf("editor selection = %q, want visual-editor (VISUAL wins)", got)
 	}
+}
+
+// === I-493: st update <id> sbar editor flow ===
+
+// I-493: editor mode renders the 4 SBAR sections, lets the user edit,
+// and writes all sub-fields back atomically. This test stubs $EDITOR
+// with a script that overwrites the temp file with a known buffer
+// containing all four sections, then asserts the file's sbar block
+// reflects the new content.
+func TestUpdateSBAR_RoundtripViaEditor(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	editor := writeSBARStubEditor(t,
+		"situation: |-\n"+
+			"  api returns 500 on tenant creation\n"+
+			"background: |-\n"+
+			"  RLS context not set on conn pool\n"+
+			"assessment: |-\n"+
+			"  reproduces 100% on fresh signup\n"+
+			"recommendation: |-\n"+
+			"  switch to s.querier(ctx) in 4 callsites\n")
+	t.Setenv("EDITOR", editor)
+	t.Setenv("VISUAL", "")
+
+	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 0 {
+		t.Fatalf("Update sbar returned %d, want 0", code)
+	}
+
+	path, _ := s.Path("I-001")
+	bodyB, _ := os.ReadFile(path)
+	body := string(bodyB)
+	for _, want := range []string{
+		"api returns 500 on tenant creation",
+		"RLS context not set on conn pool",
+		"reproduces 100% on fresh signup",
+		"switch to s.querier(ctx) in 4 callsites",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sbar update missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+// I-493: a buffer missing one of the four required sections is
+// rejected with exit 2 — the schema invariant from I-487 is that all
+// four sub-keys are present even when their bodies are blank.
+func TestUpdateSBAR_RejectsMissingSection(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	editor := writeSBARStubEditor(t,
+		"situation: |-\n"+
+			"  has situation\n"+
+			"background: |-\n"+
+			"  has background\n"+
+			"assessment: |-\n"+
+			"  has assessment\n")
+	// recommendation deliberately omitted.
+	t.Setenv("EDITOR", editor)
+	t.Setenv("VISUAL", "")
+
+	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 2 {
+		t.Errorf("Update sbar with missing section should exit 2, got %d", code)
+	}
+}
+
+// I-493: parseSBARBuffer must accept all valid YAML block-scalar
+// indicators (|-, |, >, >-, and a bare colon — which YAML treats as
+// a single-line null but the editor flow tolerates as an empty
+// block). Unit-test the parser directly to avoid coupling these
+// invariants to the full editor round-trip.
+func TestParseSBARBuffer_AcceptsBlockScalarVariants(t *testing.T) {
+	buf := "situation: |-\n  s text\n" +
+		"background: |\n  b text\n" +
+		"assessment: >-\n  a text\n" +
+		"recommendation:\n  r text\n"
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing sections: %v", missing)
+	}
+	if got.Situation != "s text" || got.Background != "b text" ||
+		got.Assessment != "a text" || got.Recommendation != "r text" {
+		t.Errorf("parsed SBAR = %+v", got)
+	}
+}
+
+// I-493 (review fix): user content starting with the literal
+// "TODO: fill in or leave blank" prefix must NOT be silently
+// dropped. The skip rule only fires when that text is the entire
+// body, not a prefix of real content.
+func TestParseSBARBuffer_KeepsContentStartingWithTODOPrefix(t *testing.T) {
+	buf := "situation: |-\n" +
+		"  TODO: fill in or leave blank — but also we know it is RLS\n" +
+		"background: |-\n" +
+		"  some history\n" +
+		"assessment: |-\n" +
+		"  diagnosed\n" +
+		"recommendation: |-\n" +
+		"  proposal\n"
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing: %v", missing)
+	}
+	want := "TODO: fill in or leave blank — but also we know it is RLS"
+	if got.Situation != want {
+		t.Errorf("situation = %q, want %q", got.Situation, want)
+	}
+}
+
+// I-493 (review fix): the unedited seed produces an SBAR with all
+// four sections empty — the literal "TODO: fill in or leave blank"
+// marker is treated as empty when it is the sole body line.
+func TestParseSBARBuffer_TODOOnlyLineMeansEmpty(t *testing.T) {
+	buf := "situation: |-\n" +
+		"  TODO: fill in or leave blank\n" +
+		"background: |-\n" +
+		"  TODO: fill in or leave blank\n" +
+		"assessment: |-\n" +
+		"  TODO: fill in or leave blank\n" +
+		"recommendation: |-\n" +
+		"  TODO: fill in or leave blank\n"
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing: %v", missing)
+	}
+	if got.Situation != "" || got.Background != "" || got.Assessment != "" || got.Recommendation != "" {
+		t.Errorf("expected all-empty SBAR after unedited seed, got %+v", got)
+	}
+}
+
+// I-493 (review fix): bodies indented at 4 spaces (common YAML
+// auto-indent default) must strip 4, not the hardcoded 2. Mixed
+// blank/indented lines are also handled — minimum-indent detection
+// preserves internal relative whitespace.
+func TestParseSBARBuffer_StripsAnyConsistentIndent(t *testing.T) {
+	buf := "situation: |-\n" +
+		"    line one\n" +
+		"    line two\n" +
+		"background: |-\n" +
+		"\tline tabbed\n" +
+		"assessment: |-\n" +
+		"  line one\n" +
+		"\n" +
+		"  line two\n" +
+		"recommendation: |-\n" +
+		"  ok\n"
+	got, _ := parseSBARBuffer(buf)
+	if got.Situation != "line one\nline two" {
+		t.Errorf("4-space body strip wrong: %q", got.Situation)
+	}
+	if got.Background != "line tabbed" {
+		t.Errorf("tab body strip wrong: %q", got.Background)
+	}
+	if got.Assessment != "line one\n\nline two" {
+		t.Errorf("multi-paragraph strip wrong: %q", got.Assessment)
+	}
+}
+
+// I-493 (review fix): SetSBARBlock must emit a trailing blank line so
+// the next top-level field has a visual separator. Without it, every
+// SBAR edit produces a spurious one-line whitespace diff.
+func TestSetSBARBlock_PreservesTrailingBlankSeparator(t *testing.T) {
+	doc := &model.ParsedDocument{
+		Lines: []model.Line{
+			{Raw: "id: I-001", Key: "id"},
+			{Raw: "sbar:", Key: "sbar"},
+			{Raw: "  situation: |-", Key: "situation", Indent: 2, BlockKey: "sbar"},
+			{Raw: "    old", IsBlock: true, BlockKey: "situation", Indent: 4},
+			{Raw: "", IsEmpty: true, IsBlock: true, BlockKey: "situation"},
+			{Raw: "next_actions:", Key: "next_actions"},
+		},
+	}
+	doc.SetSBARBlock(model.SBAR{
+		Situation: "new",
+	})
+	// Find the sbar block + next_actions; assert there's a blank
+	// IsEmpty line between the last block content and next_actions.
+	naIdx := -1
+	for i, l := range doc.Lines {
+		if l.Key == "next_actions" {
+			naIdx = i
+			break
+		}
+	}
+	if naIdx <= 0 {
+		t.Fatalf("next_actions not found in doc lines: %+v", doc.Lines)
+	}
+	if !doc.Lines[naIdx-1].IsEmpty {
+		t.Errorf("expected blank line before next_actions, got: %+v", doc.Lines[naIdx-1])
+	}
+}
+
+// I-493: sbarSeedBuffer + parseSBARBuffer must round-trip an SBAR
+// struct unchanged so an editor that did not modify anything
+// produces zero spurious changes.
+func TestSBARRoundtrip_EditorNoOp(t *testing.T) {
+	orig := model.SBAR{
+		Situation:      "one",
+		Background:     "two\nlines",
+		Assessment:     "three",
+		Recommendation: "four",
+	}
+	buf := sbarSeedBuffer(orig)
+	got, missing := parseSBARBuffer(buf)
+	if len(missing) > 0 {
+		t.Fatalf("missing: %v", missing)
+	}
+	if got != orig {
+		t.Errorf("roundtrip lost data: got %+v want %+v", got, orig)
+	}
+}
+
+// writeSBARStubEditor writes a shell script that overwrites its
+// argument (the temp file readFromEditor created) with `replacement`
+// when invoked. This simulates the user opening the editor and saving
+// the supplied buffer.
+func writeSBARStubEditor(t *testing.T, replacement string) string {
+	t.Helper()
+	dir := t.TempDir()
+	body := filepath.Join(dir, "body.txt")
+	if err := os.WriteFile(body, []byte(replacement), 0644); err != nil {
+		t.Fatalf("writing replacement body: %v", err)
+	}
+	script := filepath.Join(dir, "editor.sh")
+	scriptBody := "#!/bin/sh\ncp " + body + " \"$1\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0755); err != nil {
+		t.Fatalf("writing stub editor: %v", err)
+	}
+	return script
 }
 
 // === Finish with worktree ===
