@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
+	"golang.org/x/term"
 )
 
 // CreateOpts holds flags for the create command.
@@ -24,6 +26,11 @@ type CreateOpts struct {
 	Tag      string
 	Depends  string
 	Sprint   string // optional: assign to sprint on creation
+	// Editor opens $EDITOR on the new file post-creation. Opt-in
+	// (default false) so agent scripts that run `st create` in a
+	// non-interactive shell are not blocked. Even with Editor=true the
+	// editor is skipped when stdin is not a TTY or $EDITOR is unset.
+	Editor bool
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -129,6 +136,24 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	lines = append(lines, model.Line{Raw: "next_actions:", Key: "next_actions"})
 	lines = append(lines, model.Line{Raw: "- []", IsList: true})
 
+	// I-492: SBAR scaffold. Every new task/issue ships with the four
+	// I-487 sections pre-stubbed so the author (or `st update <id>
+	// sbar`) can fill them in immediately without touching the file
+	// shape. Idea/promotion types are excluded — SBAR is structured for
+	// work tracking, not idea capture.
+	if itemType == "task" || itemType == "issue" {
+		lines = append(lines, model.Line{Raw: ""})
+		lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
+		lines = append(lines, model.Line{Raw: "  situation: |-"})
+		lines = append(lines, model.Line{Raw: "    TODO: one-line symptom or trigger that's observable right now"})
+		lines = append(lines, model.Line{Raw: "  background: |-"})
+		lines = append(lines, model.Line{Raw: "    TODO: prior context — history, code paths, related items"})
+		lines = append(lines, model.Line{Raw: "  assessment: |-"})
+		lines = append(lines, model.Line{Raw: "    TODO: diagnosis — what's wrong, why, and how confident"})
+		lines = append(lines, model.Line{Raw: "  recommendation: |-"})
+		lines = append(lines, model.Line{Raw: "    TODO: proposed fix — scoped enough to be actionable"})
+	}
+
 	doc.Lines = lines
 
 	item := &model.Item{
@@ -199,6 +224,18 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		fmt.Printf("  Sprint: %s\n", opts.Sprint)
 	}
 
+	newPath, _ := s.Path(id)
+
+	// I-492: open $EDITOR on the new file so the author can fill in the
+	// SBAR scaffold immediately. Opt-in via --editor and gated on a TTY
+	// + resolvable editor — agent scripts that pipe stdin would block
+	// indefinitely on a missing editor without these guards. Editor
+	// failure is non-fatal; the item is on disk and a follow-up
+	// `st update <id> sbar` is always available.
+	if opts.Editor && newPath != "" {
+		runCreateEditor(newPath)
+	}
+
 	// Commit + push the new item so it can't be silently deleted by a
 	// subsequent command's pre-run GitPull (untracked file) and so other
 	// agents see it immediately. Best-effort: a sync failure still
@@ -208,9 +245,48 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-442: pass the new item's path so it actually gets staged.
 	// GitSync's `git add -u` only catches tracked changes; new files
 	// require explicit paths.
-	newPath, _ := s.Path(id)
 	if err := s.GitSync(fmt.Sprintf("st create: %s — %s", id, title), newPath); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync after create failed: %v\n", err)
 	}
 	return 0
+}
+
+// runCreateEditor launches $VISUAL (or $EDITOR) on path. No-op when
+// stdin is not a TTY (agent / piped contexts) or no editor is set —
+// silently skipping is preferable to an empty stdin prompt that would
+// hang an automated run.
+//
+// $VISUAL takes precedence over $EDITOR per the Unix convention
+// (VISUAL is the full-screen editor, EDITOR is the line editor); most
+// modern setups treat them as equivalent but users who set both
+// expect VISUAL to win.
+//
+// The editor value is shell-split via strings.Fields so common forms
+// like `EDITOR="code --wait"` or `EDITOR="vim -u NONE"` work.
+// exec.Command itself does not parse arguments out of its first
+// positional, so without splitting we would exec a binary literally
+// named "code --wait" and fail.
+func runCreateEditor(path string) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return
+	}
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		return
+	}
+	parts := strings.Fields(editor)
+	if len(parts) == 0 {
+		return
+	}
+	args := append(parts[1:], path)
+	cmd := exec.Command(parts[0], args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: editor failed: %v\n", err)
+	}
 }

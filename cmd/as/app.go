@@ -141,8 +141,10 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			tag, _ := cmd.Flags().GetString("tag")
 			depends, _ := cmd.Flags().GetString("depends")
 			sprint, _ := cmd.Flags().GetString("sprint")
+			editor, _ := cmd.Flags().GetBool("editor")
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
+				Editor: editor,
 			})
 		},
 	}
@@ -154,6 +156,9 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	createCmd.Flags().String("tag", "", "initial tag")
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")
+	// I-492: opt-in editor. Skips automatically in non-TTY contexts so
+	// agent scripts that pipe stdin do not block on a missing editor.
+	createCmd.Flags().Bool("editor", false, "open $EDITOR on the new item to fill the SBAR scaffold")
 	root.AddCommand(createCmd)
 
 	updateCmd := &cobra.Command{
