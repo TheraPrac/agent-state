@@ -263,7 +263,14 @@ func (b *S3Backend) appendCommonFlags(args *[]string) {
 	if b.Region != "" {
 		*args = append(*args, "--region", b.Region)
 	}
-	if b.Profile != "" {
+	// I-507: when the agent has its own per-session env-var
+	// credentials, do NOT forward `--profile`. The AWS CLI honours
+	// `--profile` above the env-var creds, which would silently
+	// defeat the env-clearing override in runAWSCLI and re-attempt
+	// the operator's stale profile. The Profile knob still applies
+	// for developers running st test --run from their own shell
+	// (no AWS_ACCESS_KEY_ID set).
+	if b.Profile != "" && !HasAgentCredentials() {
 		*args = append(*args, "--profile", b.Profile)
 	}
 }

@@ -89,6 +89,56 @@ func TestAWSCommandEnv_EmptyAccessKeyIsNoOverride(t *testing.T) {
 	}
 }
 
+// I-507 (review fix): AWS_DEFAULT_PROFILE is the SDK fallback when
+// AWS_PROFILE is empty/absent. Stripping only AWS_PROFILE would
+// leave the operator's stale AWS_DEFAULT_PROFILE intact, defeating
+// the override. Verify both are cleared.
+func TestAWSCommandEnv_ClearsBothProfileVars(t *testing.T) {
+	parent := []string{
+		"PATH=/usr/bin",
+		"AWS_PROFILE=jfinlinson_admin",
+		"AWS_DEFAULT_PROFILE=fallback",
+		"AWS_ACCESS_KEY_ID=AKIA...",
+	}
+	got := awsCommandEnv(parent)
+	awsProfileEmpty := false
+	awsDefaultEmpty := false
+	for _, kv := range got {
+		if kv == "AWS_PROFILE=" {
+			awsProfileEmpty = true
+		}
+		if kv == "AWS_DEFAULT_PROFILE=" {
+			awsDefaultEmpty = true
+		}
+		if len(kv) > len("AWS_PROFILE=") && kv[:len("AWS_PROFILE=")] == "AWS_PROFILE=" {
+			t.Errorf("non-empty AWS_PROFILE in env: %q", kv)
+		}
+		if len(kv) > len("AWS_DEFAULT_PROFILE=") && kv[:len("AWS_DEFAULT_PROFILE=")] == "AWS_DEFAULT_PROFILE=" {
+			t.Errorf("non-empty AWS_DEFAULT_PROFILE in env: %q", kv)
+		}
+	}
+	if !awsProfileEmpty || !awsDefaultEmpty {
+		t.Errorf("both profile vars should be empty in child env: AWS_PROFILE=%v AWS_DEFAULT_PROFILE=%v",
+			awsProfileEmpty, awsDefaultEmpty)
+	}
+}
+
+// I-507 (review fix): HasAgentCredentials reports whether the
+// process env carries an agent-minted access key. Used by callers
+// outside this package (S3Backend.appendCommonFlags) to skip the
+// --profile CLI flag — that flag wins over env-var creds in the
+// AWS CLI resolution order and would defeat the env override.
+func TestHasAgentCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	if HasAgentCredentials() {
+		t.Error("empty AWS_ACCESS_KEY_ID should report false")
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA...")
+	if !HasAgentCredentials() {
+		t.Error("populated AWS_ACCESS_KEY_ID should report true")
+	}
+}
+
 // I-507: when AWS_PROFILE is absent in the parent, the override
 // still injects an empty value so the AWS SDK has nothing to
 // resolve via profile config.

@@ -397,3 +397,37 @@ func TestEvidencePrefix(t *testing.T) {
 		t.Errorf("prefix = %q", prefix)
 	}
 }
+
+// I-507 (review fix): when agent env-var creds are present
+// (AWS_ACCESS_KEY_ID set), appendCommonFlags must NOT forward
+// --profile. The AWS CLI honours --profile above the env-var
+// override, which would silently defeat the env-clearing.
+func TestS3AppendCommonFlags_SkipsProfileWhenAgentCreds(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA...")
+	b := &S3Backend{Region: "us-east-1", Profile: "operator-profile"}
+	var args []string
+	b.appendCommonFlags(&args)
+	for i, a := range args {
+		if a == "--profile" {
+			t.Errorf("--profile should be suppressed when agent creds present, got args=%v at index %d", args, i)
+		}
+	}
+}
+
+// I-507 (review fix): without agent creds (developer flow), the
+// existing --profile passthrough behavior is preserved.
+func TestS3AppendCommonFlags_PassesProfileWhenNoAgentCreds(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	b := &S3Backend{Region: "us-east-1", Profile: "operator-profile"}
+	var args []string
+	b.appendCommonFlags(&args)
+	found := false
+	for i, a := range args {
+		if a == "--profile" && i+1 < len(args) && args[i+1] == "operator-profile" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --profile operator-profile in developer flow, got %v", args)
+	}
+}
