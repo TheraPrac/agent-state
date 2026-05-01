@@ -402,6 +402,37 @@ func TestUpdateSummaryRoutesToSBARBackground(t *testing.T) {
 	}
 }
 
+// I-494: multi-line summary writes (common via stdin / editor mode)
+// must produce valid YAML. SetNestedField writes inline `key: value`
+// only — using it for sbar.background would emit a malformed file
+// for any value containing a newline. The shim routes through
+// SetSBARBlock instead, which emits a proper block scalar.
+func TestUpdateSummaryMultilineWritesValidBlockScalar(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	origStderr := os.Stderr
+	_, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr; wPipe.Close() }()
+
+	multi := "first paragraph\n\nsecond paragraph\n  with indent"
+	if code := Update(s, cfg, "I-001", "summary", multi, UpdateModeValue); code != 0 {
+		t.Fatalf("Update summary returned %d", code)
+	}
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	item, ok := s2.Get("I-001")
+	if !ok {
+		t.Fatal("I-001 not found after re-parse")
+	}
+	if item.SBAR.Background != multi {
+		t.Errorf("sbar.background round-trip lost data:\n  got:  %q\n  want: %q",
+			item.SBAR.Background, multi)
+	}
+}
+
 // I-494: the changelog entry must record `field=sbar.background` so
 // future readers see which logical field changed — not the deprecated
 // `summary` alias the user typed.
