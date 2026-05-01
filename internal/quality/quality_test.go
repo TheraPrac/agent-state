@@ -45,10 +45,10 @@ func TestValidateSBAR_AllScaffold_FourViolations(t *testing.T) {
 	item := &model.Item{
 		ID: "I-003",
 		SBAR: model.SBAR{
-			Situation:      sbarPlaceholders["situation"],
-			Background:     sbarPlaceholders["background"],
-			Assessment:     sbarPlaceholders["assessment"],
-			Recommendation: sbarPlaceholders["recommendation"],
+			Situation:      model.SBARPlaceholders["situation"],
+			Background:     model.SBARPlaceholders["background"],
+			Assessment:     model.SBARPlaceholders["assessment"],
+			Recommendation: model.SBARPlaceholders["recommendation"],
 		},
 	}
 	v := ValidateSBAR(item)
@@ -68,7 +68,7 @@ func TestValidateSBAR_PartialFill_FlagsOnlyMissing(t *testing.T) {
 		SBAR: model.SBAR{
 			Situation:      "real",
 			Background:     "real",
-			Assessment:     sbarPlaceholders["assessment"],
+			Assessment:     model.SBARPlaceholders["assessment"],
 			Recommendation: "",
 		},
 	}

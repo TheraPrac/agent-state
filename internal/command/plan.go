@@ -55,6 +55,10 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// shallow plan" failure mode I-149 was filed to prevent. Non-
 	// strict approve still warns (below) so unfilled SBAR is visible
 	// every time even when the operator opts out of the hard gate.
+	//
+	// SBAR is only required on tasks/issues (per the I-487 schema);
+	// ideas and promotions skip the substance gate entirely.
+	sbarApplies := item.Type == "task" || item.Type == "issue"
 	if opts.Strict {
 		findings := loadStrictACFindings(cfg, id)
 		if len(findings) > 0 {
@@ -69,22 +73,24 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 				id, id)
 			return 2
 		}
-		if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
-			fmt.Fprintf(os.Stderr,
-				"%s --strict: SBAR substance gate failed (%d section(s) empty or still on the I-492 scaffold); refusing approval:\n",
-				id, len(vios))
-			for _, v := range vios {
-				fmt.Fprintf(os.Stderr, "  %s\n", v)
+		if sbarApplies {
+			if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
+				fmt.Fprintf(os.Stderr,
+					"%s --strict: SBAR substance gate failed (%d section(s) empty or still on the I-492 scaffold); refusing approval:\n",
+					id, len(vios))
+				for _, v := range vios {
+					fmt.Fprintf(os.Stderr, "  %s\n", v)
+				}
+				fmt.Fprintf(os.Stderr,
+					"Run `st update %s sbar` to fill the four sections, then re-run `st plan approve --strict %s`.\n",
+					id, id)
+				return 2
 			}
-			fmt.Fprintf(os.Stderr,
-				"Run `st update %s sbar` to fill the four sections, then re-run `st plan approve --strict %s`.\n",
-				id, id)
-			return 2
 		}
-	} else {
-		for _, v := range quality.ValidateSBAR(item) {
-			fmt.Fprintf(os.Stderr, "  %s\n", v)
-		}
+	} else if sbarApplies {
+		quality.PrintWarnings(os.Stderr,
+			fmt.Sprintf("  note: %s SBAR is incomplete — pass --strict to enforce, or run `st update %s sbar`:", id, id),
+			quality.ValidateSBAR(item))
 	}
 
 	approver := cfg.AgentID()

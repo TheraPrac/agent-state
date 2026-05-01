@@ -93,6 +93,20 @@ func (s SBAR) IsEmpty() bool {
 	return s.Situation == "" && s.Background == "" && s.Assessment == "" && s.Recommendation == ""
 }
 
+// SBARPlaceholders are the literal TODO strings written for each
+// unfilled SBAR sub-field. cmd/migrate-sbar (the one-shot backfill),
+// st create's scaffold lines, and the I-149 substance gate all
+// reference this map so a single edit (e.g., a copy-edit pass on
+// the placeholder wording) updates every consumer in lockstep.
+// Without this single source, the substance gate would silently
+// stop matching scaffolds that diverge from the older wording.
+var SBARPlaceholders = map[string]string{
+	"situation":      "TODO: one-line symptom or trigger that's observable right now",
+	"background":     "TODO: prior context — history, code paths, related items",
+	"assessment":     "TODO: diagnosis — what's wrong, why, and how confident",
+	"recommendation": "TODO: proposed fix — scoped enough to be actionable",
+}
+
 // SetNested updates a nested string field on the item, keeping the
 // in-memory typed map and the parsed document in sync. It is the single
 // canonical write entry point for nested scalars used by command

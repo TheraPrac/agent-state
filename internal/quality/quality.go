@@ -10,6 +10,8 @@
 package quality
 
 import (
+	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -46,19 +48,15 @@ func (v Violation) String() string {
 	return v.Severity.String() + ": " + v.Field + " — " + v.Message
 }
 
-// sbarPlaceholders are the literal TODO strings the I-487 scaffold
-// (and migrate-sbar / st create) writes for each unfilled section.
-// The substance gate treats a body equal to one of these as empty.
-var sbarPlaceholders = map[string]string{
-	"situation":      "TODO: one-line symptom or trigger that's observable right now",
-	"background":     "TODO: prior context — history, code paths, related items",
-	"assessment":     "TODO: diagnosis — what's wrong, why, and how confident",
-	"recommendation": "TODO: proposed fix — scoped enough to be actionable",
-}
-
 // ValidateSBAR reports a Violation per SBAR sub-field that is empty
 // or still equal to its TODO placeholder. All four sub-fields are
 // checked. Returns nil when the item is fully populated.
+//
+// SBAR is only required on tasks and issues per the I-487 schema —
+// ideas and promotions never carry SBAR, so callers should
+// short-circuit on those types before calling here. The validator
+// itself is type-agnostic; it just checks whatever SBAR struct it
+// is handed.
 //
 // This is the I-149 substance gate. I-487 made SBAR a required
 // composite field; I-492 / I-493 added scaffold + editor flows;
@@ -83,7 +81,7 @@ func ValidateSBAR(item *model.Item) []Violation {
 			})
 			continue
 		}
-		if body == sbarPlaceholders[sec.key] {
+		if body == model.SBARPlaceholders[sec.key] {
 			out = append(out, Violation{
 				Severity: SeverityError,
 				Field:    "sbar." + sec.key,
@@ -92,6 +90,25 @@ func ValidateSBAR(item *model.Item) []Violation {
 		}
 	}
 	return out
+}
+
+// PrintWarnings emits each violation as a "warning:" line under the
+// supplied header. Used by callers (e.g. `st create`, non-strict
+// `st plan approve`) that surface the violations as informational
+// nudges rather than blocking errors. Without this helper the
+// caller would have to choose between printing the raw violation
+// (which leads with "error:" — confusing when the command exits 0)
+// or duplicating the formatting logic.
+func PrintWarnings(w io.Writer, header string, vs []Violation) {
+	if len(vs) == 0 {
+		return
+	}
+	if header != "" {
+		fmt.Fprintln(w, header)
+	}
+	for _, v := range vs {
+		fmt.Fprintf(w, "  warning: %s — %s\n", v.Field, v.Message)
+	}
 }
 
 // HasError reports whether any Violation in the slice has
