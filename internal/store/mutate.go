@@ -12,6 +12,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/jfinlinson/agent-state/internal/validate"
 )
 
 // ErrLockTimeout is returned by Mutate / MutateMany when an exclusive
@@ -57,6 +58,13 @@ const lockPollInterval = 50 * time.Millisecond
 // write failure), the on-disk state is unchanged. fn errors propagate
 // verbatim; callers can use errors.Is to test for sentinel values.
 func (s *Store) Mutate(id string, fn func(*model.Item) error) error {
+	// I-501: refuse to mutate when the canonical clone is mid-rebase /
+	// mid-merge / holding a stale index.lock. Any write in those states
+	// would compound corruption; surface the recovery hint instead.
+	if err := PreFlightGitState(s.cfg.ItemDir()); err != nil {
+		return err
+	}
+
 	path, ok := s.paths[id]
 	if !ok {
 		return ErrItemMissing
@@ -75,7 +83,25 @@ func (s *Store) Mutate(id string, fn func(*model.Item) error) error {
 		return fmt.Errorf("re-parse %s: %w", path, err)
 	}
 
+	// I-508: snapshot the parsed pre-state for the delta check. We
+	// re-parse so the snapshot is independent of the in-memory item
+	// the closure mutates — fn may share pointers with `item`.
+	before, beforeErr := parse.File(path)
+	if beforeErr != nil {
+		// Pre-state read failure is non-fatal — fall back to vocab-only
+		// gate. The error path is already covered by the re-parse above.
+		before = nil
+	}
+
 	if err := fn(item); err != nil {
+		return err
+	}
+
+	// I-508: write-time gate. Vocab violations always reject. Required-
+	// field regressions reject only when the field was present before
+	// AND missing after, so legacy items that already lack a required
+	// field can still receive unrelated updates.
+	if err := validate.WriteOKDelta(before, item, s.cfg); err != nil {
 		return err
 	}
 
@@ -95,11 +121,26 @@ func (s *Store) Mutate(id string, fn func(*model.Item) error) error {
 // Returns an error if the item already exists in the cache (use
 // Mutate to update existing items).
 func (s *Store) Create(item *model.Item) error {
+	// I-501: same pre-flight as Mutate. A mid-rebase / mid-merge state
+	// must block new-item creation too — otherwise the new file lands
+	// on disk and the subsequent GitSync inherits the corrupt state.
+	if err := PreFlightGitState(s.cfg.ItemDir()); err != nil {
+		return err
+	}
+
 	if item.Doc == nil {
 		return fmt.Errorf("item %s has no ParsedDocument", item.ID)
 	}
 	if _, exists := s.items[item.ID]; exists {
 		return fmt.Errorf("item %s already exists — use Mutate to update", item.ID)
+	}
+
+	// I-508: same write-time vocab gate as Mutate. Reject before we
+	// route the file into a directory — an invalid status would
+	// otherwise produce a "no directory for type=X status=Y" message
+	// that hides the underlying bug.
+	if err := validate.WriteOK(item, s.cfg); err != nil {
+		return err
 	}
 
 	dir := s.cfg.DirectoryForStatus(item.Type, item.Status)
@@ -128,6 +169,12 @@ func (s *Store) MutateMany(ids []string, fn func(map[string]*model.Item) error) 
 	if len(ids) == 0 {
 		return nil
 	}
+	// I-501: same pre-flight gate as the single-item path. Catching it
+	// here means a multi-item commit-tree style write also refuses to
+	// run when the workspace is corrupt.
+	if err := PreFlightGitState(s.cfg.ItemDir()); err != nil {
+		return err
+	}
 	sorted := make([]string, len(ids))
 	copy(sorted, ids)
 	sort.Strings(sorted)
@@ -142,6 +189,7 @@ func (s *Store) MutateMany(ids []string, fn func(map[string]*model.Item) error) 
 	}()
 
 	items := make(map[string]*model.Item, len(sorted))
+	befores := make(map[string]*model.Item, len(sorted))
 	for _, id := range sorted {
 		path, ok := s.paths[id]
 		if !ok {
@@ -158,10 +206,25 @@ func (s *Store) MutateMany(ids []string, fn func(map[string]*model.Item) error) 
 			return fmt.Errorf("re-parse %s: %w", path, err)
 		}
 		items[id] = item
+
+		// I-508: independent pre-state snapshot for the delta check.
+		// Best-effort; a parse miss falls back to vocab-only gating.
+		if before, err := parse.File(path); err == nil {
+			befores[id] = before
+		}
 	}
 
 	if err := fn(items); err != nil {
 		return err
+	}
+
+	// I-508: validate every item post-fn against its pre-state. If any
+	// item would land invalid, abort the whole batch — two-phase
+	// commit semantics require all-or-nothing.
+	for _, id := range sorted {
+		if err := validate.WriteOKDelta(befores[id], items[id], s.cfg); err != nil {
+			return err
+		}
 	}
 
 	// Two-phase commit: write every item to a tmp file first. If any

@@ -798,13 +798,15 @@ func TestCloseNotFoundV3(t *testing.T) {
 
 func TestCloseUnknownType(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	// Inject item with unknown type
-	if err := s.Mutate("T-001", func(it *model.Item) error {
-		it.Type = "banana"
-		return nil
-	}); err != nil {
-		t.Fatalf("mutate T-001: %v", err)
+	// Inject item with unknown type. The I-508 write-time gate now
+	// rejects Mutate calls that would land an invalid type, so we
+	// corrupt the in-memory cache directly — tests own the synthetic
+	// "what if disk drift produced an unknown type" scenario.
+	it, _ := s.Get("T-001")
+	if it == nil {
+		t.Fatal("T-001 missing from setup fixture")
 	}
+	it.Type = "banana"
 	code := Close(s, cfg, "T-001", "done", CloseOpts{})
 	if code != 1 {
 		t.Errorf("close unknown type exit %d, want 1", code)

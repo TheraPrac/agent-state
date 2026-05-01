@@ -108,6 +108,23 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	}
 	lines = append(lines, model.Line{Raw: ""})
 
+	// I-508: emit `blocks:` when the type lists it as required so the
+	// write-time gate accepts the new file. Without this, every
+	// `st create` for task/issue types would reject. Other types (idea,
+	// promotion) don't list blocks as required and skip this entirely.
+	hasBlocksRequired := false
+	for _, rf := range tc.RequiredFields {
+		if rf == "blocks" {
+			hasBlocksRequired = true
+			break
+		}
+	}
+	if hasBlocksRequired {
+		lines = append(lines, model.Line{Raw: "blocks:", Key: "blocks"})
+		lines = append(lines, model.Line{Raw: "- []", IsList: true})
+		lines = append(lines, model.Line{Raw: ""})
+	}
+
 	// Next actions
 	lines = append(lines, model.Line{Raw: "next_actions:", Key: "next_actions"})
 	lines = append(lines, model.Line{Raw: "- []", IsList: true})

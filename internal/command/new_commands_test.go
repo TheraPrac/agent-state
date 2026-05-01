@@ -373,6 +373,34 @@ func TestUpdateRejectsOutOfRangePriority(t *testing.T) {
 	}
 }
 
+// I-508: `st update <id> status open` must exit 2 with a helpful
+// message naming valid statuses and the queued suggestion (legacy alias).
+func TestUpdateRejectsLegacyStatusValue(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	if code := Update(s, cfg, "I-001", "status", "open", UpdateModeValue); code != 2 {
+		t.Errorf("Update status=open should exit 2 (I-508 vocab gate), got %d", code)
+	}
+	if code := Update(s, cfg, "T-001", "status", "completed", UpdateModeValue); code != 2 {
+		t.Errorf("Update status=completed should exit 2 (legacy alias), got %d", code)
+	}
+}
+
+// I-508: `st update <id> type bogus` must exit 2 — unknown type vocab.
+func TestUpdateRejectsUnknownType(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	if code := Update(s, cfg, "T-001", "type", "banana", UpdateModeValue); code != 2 {
+		t.Errorf("Update type=banana should exit 2 (I-508 vocab gate), got %d", code)
+	}
+}
+
+// I-508: positive case — `st update <id> status active` succeeds.
+func TestUpdateValidStatusValue(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	if code := Update(s, cfg, "I-001", "status", "active", UpdateModeValue); code != 0 {
+		t.Errorf("Update status=active should succeed, got %d", code)
+	}
+}
+
 // I-406: priority must be 0-4. Out-of-range rejected at create time.
 func TestCreateRejectsOutOfRangePriority(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
