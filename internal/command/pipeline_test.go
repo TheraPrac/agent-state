@@ -261,12 +261,65 @@ func TestSmokeNotConfigured(t *testing.T) {
 
 // --- watchMainCI ---
 
+// dispatchByCmd dispatches a stub runCmd by inspecting the command
+// string. I-150 added an up-front `gh workflow list` call before the
+// poll loop, so single-callback stubs can no longer cover both
+// branches. Tests that want a specific workflow-list response use
+// this helper; tests that don't care can pass `"1"` for the
+// workflow-list count to skip the short-circuit and exercise the
+// poll loop.
+func dispatchByCmd(workflowListCount string, pollResp []byte, pollExit int) func(string) ([]byte, int, error) {
+	return func(cmd string) ([]byte, int, error) {
+		if strings.Contains(cmd, "gh workflow list") {
+			return []byte(workflowListCount + "\n"), 0, nil
+		}
+		return pollResp, pollExit, nil
+	}
+}
+
+// I-150: when no Deploy workflow exists in the repo, the up-front
+// check returns immediately without entering the poll loop.
+func TestWatchMainCISkipsWhenNoDeployWorkflow(t *testing.T) {
+	calls := 0
+	runCmd := func(cmd string) ([]byte, int, error) {
+		calls++
+		if strings.Contains(cmd, "gh workflow list") {
+			return []byte("0\n"), 0, nil
+		}
+		t.Errorf("poll-loop should not run when no Deploy workflow; got cmd=%q", cmd)
+		return nil, 1, nil
+	}
+	err := watchMainCI(runCmd)
+	if err != nil {
+		t.Errorf("watchMainCI returned error when skipping: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected exactly 1 runCmd call, got %d", calls)
+	}
+}
+
+// I-150: when `gh workflow list` itself fails (gh missing, no
+// auth), fall through to the poll loop's existing gh-failure
+// handling. The poll loop will then exit-skip on its own.
+func TestWatchMainCIFallsThroughWhenWorkflowListFails(t *testing.T) {
+	runCmd := func(cmd string) ([]byte, int, error) {
+		if strings.Contains(cmd, "gh workflow list") {
+			return []byte(""), 1, nil
+		}
+		// Poll loop's exitCode != 0 path: skip CI watch.
+		return []byte(""), 1, nil
+	}
+	err := watchMainCI(runCmd)
+	if err != nil {
+		t.Errorf("watchMainCI returned error on fall-through: %v", err)
+	}
+}
+
 func TestWatchMainCINullRuns(t *testing.T) {
 	// When gh returns "null null null" (no Deploy workflow), watchMainCI should
-	// skip gracefully instead of looping forever.
-	runCmd := func(cmd string) ([]byte, int, error) {
-		return []byte("null null null\n"), 0, nil
-	}
+	// skip gracefully instead of looping forever. Workflow-list returns "1"
+	// so we exercise the poll loop's null-handling path.
+	runCmd := dispatchByCmd("1", []byte("null null null\n"), 0)
 	err := watchMainCI(runCmd)
 	if err != nil {
 		t.Errorf("watchMainCI returned error for null runs: %v", err)
@@ -274,11 +327,10 @@ func TestWatchMainCINullRuns(t *testing.T) {
 }
 
 func TestWatchMainCIEmptyOutput(t *testing.T) {
-	// When gh returns empty output (no runs at all), should keep polling.
-	// But if exit code != 0, should skip.
-	runCmd := func(cmd string) ([]byte, int, error) {
-		return []byte(""), 1, nil
-	}
+	// When gh poll returns exit != 0 (gh missing mid-loop), should
+	// skip. Workflow-list returns "1" to bypass the up-front
+	// short-circuit and exercise the poll loop's gh-failure path.
+	runCmd := dispatchByCmd("1", []byte(""), 1)
 	err := watchMainCI(runCmd)
 	if err != nil {
 		t.Errorf("watchMainCI returned error for gh failure: %v", err)
@@ -286,9 +338,7 @@ func TestWatchMainCIEmptyOutput(t *testing.T) {
 }
 
 func TestWatchMainCISuccess(t *testing.T) {
-	runCmd := func(cmd string) ([]byte, int, error) {
-		return []byte("12345 completed success\n"), 0, nil
-	}
+	runCmd := dispatchByCmd("1", []byte("12345 completed success\n"), 0)
 	err := watchMainCI(runCmd)
 	if err != nil {
 		t.Errorf("watchMainCI returned error for success: %v", err)
@@ -296,9 +346,7 @@ func TestWatchMainCISuccess(t *testing.T) {
 }
 
 func TestWatchMainCIFailed(t *testing.T) {
-	runCmd := func(cmd string) ([]byte, int, error) {
-		return []byte("12345 completed failure\n"), 0, nil
-	}
+	runCmd := dispatchByCmd("1", []byte("12345 completed failure\n"), 0)
 	err := watchMainCI(runCmd)
 	if err == nil {
 		t.Error("watchMainCI should return error for failed CI")

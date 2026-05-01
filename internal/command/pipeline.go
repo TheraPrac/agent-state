@@ -334,6 +334,20 @@ func getStepConfig(cfg *config.Config, step string) *config.PipelineStepConfig {
 func watchMainCI(runCmd func(string) ([]byte, int, error)) error {
 	fmt.Println("Watching CI on main branch...")
 
+	// I-150: short-circuit on repos that have no Deploy workflow at
+	// all (theraprac-infra is Terraform — `terraform apply` is run
+	// manually, never via CI). Without this check, the poll loop
+	// below sleeps for 20 minutes waiting for a workflow run that
+	// will never happen — the operator had to Ctrl+C three times
+	// to escape last incident.
+	out, exitCode, _ := runCmd(`gh workflow list --json name --jq '[.[] | select(.name | test("Deploy"; "i"))] | length' 2>/dev/null`)
+	if exitCode == 0 && strings.TrimSpace(string(out)) == "0" {
+		fmt.Println("  no Deploy workflow found — skipping CI watch")
+		return nil
+	}
+	// Non-zero exit (gh missing, no auth, etc.) falls through to
+	// the existing poll-loop gh-failure handling below.
+
 	// Use gh run list to find the latest in-progress run, then watch it
 	// gh run list --branch main --limit 1 --json databaseId,status,conclusion
 	deadline := time.Now().Add(20 * time.Minute)
