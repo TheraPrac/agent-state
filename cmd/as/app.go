@@ -218,8 +218,29 @@ fields, and the SBAR composite stay on the single-field paths.`,
 				exitCode = command.Update(appStore, appCfg, id, field, args[2], command.UpdateModeValue)
 			case command.StdinIsPiped():
 				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
-			default:
+			case field == "sbar":
+				// I-493: sbar is the one field with a 4-section
+				// composite editor. The generic-field $EDITOR
+				// fallback is rejected per I-503 (CLI is agent-
+				// driven and a non-TTY editor blocks forever),
+				// but sbar has no positional / single-stdin form
+				// that captures the structure, so the editor
+				// remains its canonical edit path.
 				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeEditor)
+			default:
+				// I-503: no value, no --stdin, no piped stdin →
+				// reject. The historical $EDITOR fallback was
+				// useless in agent contexts (no TTY for
+				// vim/nano) and silently blocked. Surface a
+				// clear usage hint instead.
+				fmt.Fprintf(os.Stderr,
+					"update: no value supplied for %s.%s\n"+
+						"  st update <id> <field> <value>           # short value\n"+
+						"  st update <id> <field> --stdin            # multi-line via stdin\n"+
+						"  st update <id> field1=v field2=v ...     # batch (I-504)\n"+
+						"  st update <id> sbar                       # SBAR composite editor (I-493)\n",
+					id, field)
+				exitCode = 2
 			}
 		},
 	}
