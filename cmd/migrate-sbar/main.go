@@ -30,6 +30,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/jfinlinson/agent-state/internal/model"
 )
 
 // fileResult tracks one item migration outcome for the final report.
@@ -217,11 +219,15 @@ func insertSBAR(content, summary string) (string, string) {
 // renderSBARBlock builds the lines of a sbar: block. background is
 // seeded from `summary` when non-empty; the other three fields are
 // always written as empty multiline blocks so the schema is uniform.
+//
+// I-149: placeholder strings come from model.SBARPlaceholders so this
+// migration, st create's scaffold, and the substance gate share a
+// single source of truth.
 func renderSBARBlock(summary string) []string {
 	lines := []string{
 		"sbar:",
 		"  situation: |-",
-		"    TODO: one-line symptom or trigger that's observable right now",
+		"    " + model.SBARPlaceholders["situation"],
 	}
 	if summary != "" {
 		lines = append(lines, "  background: |-")
@@ -230,13 +236,13 @@ func renderSBARBlock(summary string) []string {
 		}
 	} else {
 		lines = append(lines, "  background: |-",
-			"    TODO: prior context — history, code paths, related items")
+			"    "+model.SBARPlaceholders["background"])
 	}
 	lines = append(lines,
 		"  assessment: |-",
-		"    TODO: diagnosis — what's wrong, why, and how confident",
+		"    "+model.SBARPlaceholders["assessment"],
 		"  recommendation: |-",
-		"    TODO: proposed fix — scoped enough to be actionable",
+		"    "+model.SBARPlaceholders["recommendation"],
 		"")
 	return lines
 }

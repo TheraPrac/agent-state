@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
+	"github.com/jfinlinson/agent-state/internal/model"
 )
 
 // I-178: PlanApprove flips PlanApproved + sets audit fields + writes a
@@ -123,5 +124,50 @@ func TestPlanApprovalPersistsAcrossReload(t *testing.T) {
 	}
 	if !strings.Contains(out, "user") {
 		t.Errorf("show output missing approver: %q", out)
+	}
+}
+
+// I-149: --strict refuses approval when SBAR is empty or still on the
+// I-492 TODO scaffold. The test items shipped from setupTestEnv have
+// no SBAR (legacy fixture), so a strict-mode approve must reject.
+func TestPlanApproveStrict_RefusesEmptySBAR(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Strict: true}); code != 2 {
+		t.Errorf("strict approve with empty SBAR should exit 2, got %d", code)
+	}
+	item, _ := s.Get("T-001")
+	if item.PlanApproved {
+		t.Error("strict approve should not have flipped PlanApproved on rejected item")
+	}
+}
+
+// I-149: once the SBAR is fully populated, --strict approves cleanly.
+// AC verifiability is independent (I-511) and not exercised here —
+// the test fixture has no plan sidecar so the I-511 path is a no-op.
+func TestPlanApproveStrict_PassesWithPopulatedSBAR(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SBAR = model.SBAR{
+			Situation:      "real",
+			Background:     "real",
+			Assessment:     "real",
+			Recommendation: "real",
+		}
+		it.Doc.SetSBARBlock(it.SBAR)
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding SBAR: %v", err)
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Strict: true}); code != 0 {
+		t.Errorf("strict approve with populated SBAR should exit 0, got %d", code)
+	}
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("populated SBAR should pass strict gate and flip PlanApproved")
 	}
 }

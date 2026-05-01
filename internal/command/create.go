@@ -10,6 +10,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"golang.org/x/term"
@@ -139,19 +140,20 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-492: SBAR scaffold. Every new task/issue ships with the four
 	// I-487 sections pre-stubbed so the author (or `st update <id>
 	// sbar`) can fill them in immediately without touching the file
-	// shape. Idea/promotion types are excluded — SBAR is structured for
-	// work tracking, not idea capture.
+	// shape. Idea/promotion types are excluded — SBAR is structured
+	// for work tracking, not idea capture.
+	//
+	// I-149 centralised the placeholder strings on `model.SBARPlaceholders`
+	// so this scaffold, the migrate-sbar backfill, and the substance
+	// gate share a single source of truth — a copy-edit pass on any
+	// one wording would otherwise silently disable the gate.
 	if itemType == "task" || itemType == "issue" {
 		lines = append(lines, model.Line{Raw: ""})
 		lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
-		lines = append(lines, model.Line{Raw: "  situation: |-"})
-		lines = append(lines, model.Line{Raw: "    TODO: one-line symptom or trigger that's observable right now"})
-		lines = append(lines, model.Line{Raw: "  background: |-"})
-		lines = append(lines, model.Line{Raw: "    TODO: prior context — history, code paths, related items"})
-		lines = append(lines, model.Line{Raw: "  assessment: |-"})
-		lines = append(lines, model.Line{Raw: "    TODO: diagnosis — what's wrong, why, and how confident"})
-		lines = append(lines, model.Line{Raw: "  recommendation: |-"})
-		lines = append(lines, model.Line{Raw: "    TODO: proposed fix — scoped enough to be actionable"})
+		for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
+			lines = append(lines, model.Line{Raw: "  " + key + ": |-"})
+			lines = append(lines, model.Line{Raw: "    " + model.SBARPlaceholders[key]})
+		}
 	}
 
 	doc.Lines = lines
@@ -222,6 +224,19 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	fmt.Printf("Created %s — %s\n", id, title)
 	if opts.Sprint != "" {
 		fmt.Printf("  Sprint: %s\n", opts.Sprint)
+	}
+
+	// I-149: surface SBAR substance gaps as warnings. New items
+	// always have the I-492 scaffold; this nudges the author to fill
+	// the four sections before plan approval will hard-block them.
+	// Warning-only here — creation must succeed even for triage items
+	// that intentionally start as a placeholder. Ideas/promotions
+	// never carry SBAR per the I-487 schema, so the gate is gated on
+	// task/issue types only.
+	if itemType == "task" || itemType == "issue" {
+		quality.PrintWarnings(os.Stderr,
+			fmt.Sprintf("  note: %s SBAR scaffold needs filling — run `st update %s sbar`:", id, id),
+			quality.ValidateSBAR(item))
 	}
 
 	newPath, _ := s.Path(id)

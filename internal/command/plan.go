@@ -9,6 +9,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -47,6 +48,17 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// acceptance criteria fail the verifiability check. The default
 	// (non-strict) approve path stays lenient — operators opt in by
 	// passing --strict when they want the gate to be hard.
+	//
+	// I-149: --strict also refuses approval when the item's SBAR is
+	// empty or still on the I-492 TODO scaffold. Plans approved
+	// against a placeholder SBAR are the original "shallow item →
+	// shallow plan" failure mode I-149 was filed to prevent. Non-
+	// strict approve still warns (below) so unfilled SBAR is visible
+	// every time even when the operator opts out of the hard gate.
+	//
+	// SBAR is only required on tasks/issues (per the I-487 schema);
+	// ideas and promotions skip the substance gate entirely.
+	sbarApplies := item.Type == "task" || item.Type == "issue"
 	if opts.Strict {
 		findings := loadStrictACFindings(cfg, id)
 		if len(findings) > 0 {
@@ -61,6 +73,24 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 				id, id)
 			return 2
 		}
+		if sbarApplies {
+			if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
+				fmt.Fprintf(os.Stderr,
+					"%s --strict: SBAR substance gate failed (%d section(s) empty or still on the I-492 scaffold); refusing approval:\n",
+					id, len(vios))
+				for _, v := range vios {
+					fmt.Fprintf(os.Stderr, "  %s\n", v)
+				}
+				fmt.Fprintf(os.Stderr,
+					"Run `st update %s sbar` to fill the four sections, then re-run `st plan approve --strict %s`.\n",
+					id, id)
+				return 2
+			}
+		}
+	} else if sbarApplies {
+		quality.PrintWarnings(os.Stderr,
+			fmt.Sprintf("  note: %s SBAR is incomplete — pass --strict to enforce, or run `st update %s sbar`:", id, id),
+			quality.ValidateSBAR(item))
 	}
 
 	approver := cfg.AgentID()
