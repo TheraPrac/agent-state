@@ -349,6 +349,167 @@ func TestCreateIssueWithPriority(t *testing.T) {
 	}
 }
 
+// I-494: `st update <id> summary "<text>"` must continue to work
+// during the deprecation window — but route the new content to
+// sbar.background and emit a deprecation notice. The shim runs
+// before the existing nested-field path takes over.
+func TestUpdateSummaryRoutesToSBARBackground(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// Capture stderr to assert on the deprecation notice without
+	// needing a separate test for it.
+	origStderr := os.Stderr
+	rPipe, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr }()
+
+	code := Update(s, cfg, "I-001", "summary", "the new content", UpdateModeValue)
+	wPipe.Close()
+	stderrOut := readAll(t, rPipe)
+
+	if code != 0 {
+		t.Errorf("Update summary should exit 0 (shim), got %d", code)
+	}
+
+	if !strings.Contains(stderrOut, "deprecated") {
+		t.Errorf("expected deprecation notice on stderr, got: %q", stderrOut)
+	}
+	if !strings.Contains(stderrOut, "sbar.background") {
+		t.Errorf("expected sbar.background pointer on stderr, got: %q", stderrOut)
+	}
+
+	// File should now have the value under sbar.background, NOT under a
+	// new top-level summary: line.
+	path, _ := s.Path("I-001")
+	body, _ := os.ReadFile(path)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "the new content") {
+		t.Errorf("expected new content to land in file, body:\n%s", bodyStr)
+	}
+
+	// Re-load store and assert SBAR struct picked up the value.
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	item, ok := s2.Get("I-001")
+	if !ok {
+		t.Fatal("I-001 not found after re-parse")
+	}
+	if !strings.Contains(item.SBAR.Background, "the new content") {
+		t.Errorf("expected sbar.background to contain new content, got: %q", item.SBAR.Background)
+	}
+}
+
+// I-494 (review fix): writing the same value that already lives in
+// sbar.background must be a no-op — no Mutate, no changelog entry,
+// no GitSync commit, no deprecation notice (the user did not change
+// anything, so the warning would be noise).
+func TestUpdateSummary_NoOpWhenUnchanged(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// Seed sbar.background with a known value via the shim itself.
+	if code := Update(s, cfg, "I-001", "summary", "stable text", UpdateModeValue); code != 0 {
+		t.Fatalf("seed Update returned %d", code)
+	}
+	beforeEntries, _ := changelog.Read(cfg, "I-001")
+	beforeCount := len(beforeEntries)
+
+	// Capture stderr so we can also assert no deprecation notice for the no-op.
+	origStderr := os.Stderr
+	rPipe, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr }()
+
+	if code := Update(s, cfg, "I-001", "summary", "stable text", UpdateModeValue); code != 0 {
+		t.Fatalf("no-op Update returned %d, want 0", code)
+	}
+	wPipe.Close()
+	stderrOut := readAll(t, rPipe)
+
+	afterEntries, _ := changelog.Read(cfg, "I-001")
+	if len(afterEntries) != beforeCount {
+		t.Errorf("changelog grew from %d to %d on no-op", beforeCount, len(afterEntries))
+	}
+	if strings.Contains(stderrOut, "deprecated") {
+		t.Errorf("no-op should not emit deprecation notice; got: %q", stderrOut)
+	}
+}
+
+// I-494: multi-line summary writes (common via stdin / editor mode)
+// must produce valid YAML. SetNestedField writes inline `key: value`
+// only — using it for sbar.background would emit a malformed file
+// for any value containing a newline. The shim routes through
+// SetSBARBlock instead, which emits a proper block scalar.
+func TestUpdateSummaryMultilineWritesValidBlockScalar(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	origStderr := os.Stderr
+	_, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr; wPipe.Close() }()
+
+	multi := "first paragraph\n\nsecond paragraph\n  with indent"
+	if code := Update(s, cfg, "I-001", "summary", multi, UpdateModeValue); code != 0 {
+		t.Fatalf("Update summary returned %d", code)
+	}
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("re-opening store: %v", err)
+	}
+	item, ok := s2.Get("I-001")
+	if !ok {
+		t.Fatal("I-001 not found after re-parse")
+	}
+	if item.SBAR.Background != multi {
+		t.Errorf("sbar.background round-trip lost data:\n  got:  %q\n  want: %q",
+			item.SBAR.Background, multi)
+	}
+}
+
+// I-494: the changelog entry must record `field=sbar.background` so
+// future readers see which logical field changed — not the deprecated
+// `summary` alias the user typed.
+func TestUpdateSummaryChangelogRecordsSBARField(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	// Suppress stderr noise.
+	origStderr := os.Stderr
+	_, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+	defer func() { os.Stderr = origStderr; wPipe.Close() }()
+
+	if code := Update(s, cfg, "I-001", "summary", "shim test", UpdateModeValue); code != 0 {
+		t.Fatalf("Update summary returned %d, want 0", code)
+	}
+	entries, _ := changelog.Read(cfg, "I-001")
+	found := false
+	for _, e := range entries {
+		if e.Op == "update" && e.Field == "sbar.background" && e.NewValue == "shim test" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected changelog entry with field=sbar.background, got %+v", entries)
+	}
+}
+
+// readAll reads everything from r into a string. Helper for stderr-
+// pipe-capture tests.
+func readAll(t *testing.T, r *os.File) string {
+	t.Helper()
+	buf := make([]byte, 0, 4096)
+	chunk := make([]byte, 1024)
+	for {
+		n, err := r.Read(chunk)
+		if n > 0 {
+			buf = append(buf, chunk[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	return string(buf)
+}
+
 // I-406: `st update <id> severity <anything>` must exit non-zero with
 // the migration pointer rather than silently writing a deprecated field.
 func TestUpdateRejectsSeverity(t *testing.T) {

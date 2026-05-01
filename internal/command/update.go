@@ -71,6 +71,21 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 		return 2
 	}
 
+	// I-494: `summary` was the legacy single-blob description field. Per
+	// I-487 it is replaced by `sbar.background`. The shim emits a
+	// deprecation notice and routes the write to sbar.background so
+	// existing scripts and muscle memory keep working.
+	//
+	// Routing through SetSBARBlock (rather than just renaming `field`
+	// to "sbar.background" and letting the dot-path branch take over)
+	// is deliberate: SetNestedField writes inline `key: value` only,
+	// which produces malformed YAML for multi-line content. Multi-line
+	// summary writes were common via `--stdin` and editor mode; this
+	// path keeps them working.
+	if field == "summary" {
+		return updateSummaryShim(s, cfg, id, value, mode)
+	}
+
 	// I-406: priority must be 0-4. Reject explicit out-of-range values
 	// at the CLI boundary so a typo like `st update X priority 9` fails
 	// loud rather than silently corrupting the schema. Use strconv.Atoi
@@ -479,4 +494,78 @@ func truncateForChangelog(s string) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// updateSummaryShim implements the I-494 backwards-compat path for
+// `st update <id> summary <value>`. Resolves the value from the
+// caller's mode (positional / stdin / editor), then writes it under
+// sbar.background via SetSBARBlock so multi-line content lands as a
+// proper YAML block scalar instead of malformed inline output.
+//
+// The deprecation notice is emitted only AFTER value resolution
+// succeeds — printing it first would mislead the user when stdin is
+// empty or the editor errors, implying the routing happened when it
+// did not.
+//
+// `oldValue` is captured INSIDE the Mutate closure (under flock) per
+// the T-304 purity rule, so a concurrent peer-agent write does not
+// produce a stale changelog OldValue.
+func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mode UpdateMode) int {
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+
+	switch mode {
+	case UpdateModeStdin:
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reading stdin: %v\n", err)
+			return 1
+		}
+		value = strings.TrimRight(string(data), "\n")
+		if value == "" {
+			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
+			return 1
+		}
+	case UpdateModeEditor:
+		newVal, code, ok := readFromEditor(id, "sbar.background", item.SBAR.Background)
+		if !ok {
+			return code
+		}
+		value = newVal
+	}
+
+	if value == item.SBAR.Background {
+		fmt.Println("No changes.")
+		return 0
+	}
+
+	fmt.Fprintln(os.Stderr,
+		"update: summary is deprecated (I-487). Routing content to sbar.background.\n"+
+			"  Use: st update <id> sbar.background \"<text>\"\n"+
+			"  Or:  st update <id> sbar  (opens editor on the 4-section block)")
+
+	var oldValue string
+	mutateErr := s.Mutate(id, func(it *model.Item) error {
+		oldValue = it.SBAR.Background
+		it.SBAR.Background = value
+		it.Doc.SetSBARBlock(it.SBAR)
+		return nil
+	})
+	if mutateErr != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, mutateErr)
+		return 1
+	}
+	changelog.Append(cfg, id, changelog.Entry{
+		Op: "update", Field: "sbar.background",
+		OldValue: truncateForChangelog(oldValue),
+		NewValue: truncateForChangelog(value),
+	})
+	fmt.Printf("Updated %s.sbar.background\n", id)
+	if err := s.GitSync(fmt.Sprintf("st update: %s.sbar.background", id)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	}
+	return 0
 }
