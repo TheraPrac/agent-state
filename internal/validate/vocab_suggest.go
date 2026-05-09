@@ -19,9 +19,10 @@ func suggestStatus(input string) string {
 }
 
 // SuggestStatus is the exported variant for callers outside the validate
-// package (currently the CLI early-exit gate in command.preCheckVocab).
-// Sharing the lookup eliminates the drift risk of duplicate alias maps —
-// extending the legacy vocabulary in one place updates both gates.
+// package: command.preCheckVocab (CLI early-exit gate) and
+// command.fixLegacyAliases (st check auto-rewrite). Sharing the lookup
+// eliminates the drift risk of duplicate alias maps — extending the
+// legacy vocabulary in one place updates every gate.
 func SuggestStatus(input string) string {
 	return suggestStatus(input)
 }
