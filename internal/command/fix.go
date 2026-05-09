@@ -13,15 +13,6 @@ import (
 
 var slugPattern = regexp.MustCompile(`^([A-Z]-\d{3,})-\S+`)
 
-// legacyStatusAliases maps deprecated status values to their current vocabulary.
-// The validator's suggestion engine recognizes these aliases (and prints
-// "did you mean X? (legacy alias from pre-I-433)") but does not rewrite —
-// this map closes that gap so st check converges on legacy items without
-// needing manual intervention or a guard bypass.
-var legacyStatusAliases = map[string]string{
-	"open": "queued", // pre-I-433 issue status
-}
-
 // Fix applies auto-repairs for deterministic issues. Returns the number of fixes applied.
 func Fix(s *store.Store, cfg *config.Config) int {
 	var fixed int
@@ -41,16 +32,18 @@ func Fix(s *store.Store, cfg *config.Config) int {
 }
 
 // fixLegacyAliases rewrites items whose status field matches a known
-// pre-I-433 alias (see legacyStatusAliases). Returns the number of items
-// rewritten.
+// pre-I-433 alias to the current vocabulary. The alias map lives in
+// internal/validate (vocab_suggest.go) — sharing the lookup keeps fix
+// and the validator's suggestion engine in sync, so a new alias landing
+// there is auto-rewritten here too. Returns the number of items rewritten.
 func fixLegacyAliases(s *store.Store, _ *config.Config) int {
 	var fixed int
 	for _, item := range s.All() {
 		if item.Doc == nil {
 			continue
 		}
-		newStatus, ok := legacyStatusAliases[item.Status]
-		if !ok {
+		newStatus := validate.SuggestStatus(item.Status)
+		if newStatus == "" {
 			continue
 		}
 		itemID := item.ID

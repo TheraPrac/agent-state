@@ -146,9 +146,12 @@ func TestFixFull(t *testing.T) {
 }
 
 // TestFixLegacyAliases covers Bug A from I-562: items whose status is a
-// known pre-I-433 alias (e.g. `open`) must be auto-rewritten to the
-// current vocabulary (e.g. `queued`) so st check converges without
-// requiring a manual guard bypass.
+// known pre-I-433 alias must be auto-rewritten to the current vocabulary
+// so st check converges without requiring a manual guard bypass. The
+// alias map lives in internal/validate/vocab_suggest.go — this test
+// covers every entry there to catch coverage drift if a new alias is
+// added but the rewrite path forgets to inherit it (regression of the
+// PR-79 review finding).
 func TestFixLegacyAliases(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
@@ -156,22 +159,36 @@ func TestFixLegacyAliases(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
 
-	// Issue with the legacy `open` alias — would otherwise be rejected
-	// by the validator's vocab gate with no auto-rewrite path.
-	writeFile(t, filepath.Join(root, "issues", "I-001-legacy-open.md"), `id: I-001
-type: issue
-status: open
+	// One fixture per known legacy alias. Issues use open/resolved/wontfix;
+	// tasks use completed (the pre-I-433 task-side alias for `done`).
+	cases := []struct {
+		path       string
+		typeKind   string
+		oldStatus  string
+		wantStatus string
+	}{
+		{"issues/I-001-legacy-open.md", "issue", "open", "queued"},
+		{"issues/I-002-legacy-resolved.md", "issue", "resolved", "done"},
+		{"issues/I-003-legacy-wontfix.md", "issue", "wontfix", "abandoned"},
+		{"tasks/T-001-legacy-completed.md", "task", "completed", "done"},
+	}
+	for _, c := range cases {
+		body := "id: " + strings.TrimSuffix(strings.Split(c.path, "/")[1], ".md")[:5] + `
+type: ` + c.typeKind + `
+status: ` + c.oldStatus + `
 created: 2026-03-25T10:00:00-06:00
 last_touched: 2026-03-25T10:00:00-06:00
-title: Issue with legacy open status
+title: Legacy ` + c.oldStatus + ` fixture
 depends_on:
 - []
 blocks:
 - []
-`)
+`
+		writeFile(t, filepath.Join(root, c.path), body)
+	}
 
-	// Issue already on the current vocabulary — must NOT be rewritten.
-	writeFile(t, filepath.Join(root, "issues", "I-002-already-queued.md"), `id: I-002
+	// Negative case: already on current vocabulary, must not be rewritten.
+	writeFile(t, filepath.Join(root, "issues", "I-099-already-queued.md"), `id: I-099
 type: issue
 status: queued
 created: 2026-03-25T10:00:00-06:00
@@ -193,29 +210,32 @@ blocks:
 	}
 
 	fixed := fixLegacyAliases(s, cfg)
-	if fixed != 1 {
-		t.Errorf("expected 1 alias rewrite, got %d", fixed)
+	if fixed != len(cases) {
+		t.Errorf("expected %d alias rewrites, got %d", len(cases), fixed)
 	}
 
-	// I-001 must now have status: queued on disk
-	content, err := os.ReadFile(filepath.Join(root, "issues", "I-001-legacy-open.md"))
+	for _, c := range cases {
+		content, err := os.ReadFile(filepath.Join(root, c.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "status: " + c.wantStatus
+		if !strings.Contains(string(content), want) {
+			t.Errorf("%s should have %q, got:\n%s", c.path, want, string(content))
+		}
+		stale := "status: " + c.oldStatus
+		if strings.Contains(string(content), stale) {
+			t.Errorf("%s should not still contain %q, got:\n%s", c.path, stale, string(content))
+		}
+	}
+
+	// Already-current item must be untouched.
+	content, err := os.ReadFile(filepath.Join(root, "issues", "I-099-already-queued.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(content), "status: queued") {
-		t.Errorf("I-001 should have status: queued, got:\n%s", string(content))
-	}
-	if strings.Contains(string(content), "status: open") {
-		t.Errorf("I-001 should not still contain status: open, got:\n%s", string(content))
-	}
-
-	// I-002 must be untouched
-	content2, err := os.ReadFile(filepath.Join(root, "issues", "I-002-already-queued.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(content2), "status: queued") {
-		t.Errorf("I-002 should still have status: queued, got:\n%s", string(content2))
+		t.Errorf("I-099 should still have status: queued, got:\n%s", string(content))
 	}
 
 	// Idempotence: a second pass produces zero rewrites.
