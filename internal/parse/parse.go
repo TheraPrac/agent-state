@@ -126,11 +126,18 @@ func File(path string) (*model.Item, error) {
 			// IsBlock and prevents top-level fields after the markdown
 			// body (`blocks:`, `last_touched_by:`) from being parsed —
 			// see I-562 Bug B / TestParseBlockEndingOnFenceOpener.
+			//
+			// `inFence` is guaranteed false here: the top-of-loop fence
+			// handler `continue`s every line while `inFence` is true,
+			// which prevents the block-detection branch from running and
+			// thus prevents `inBlock` from becoming true inside a fence.
+			// So the two states are mutually exclusive, and we can set
+			// inFence directly rather than toggle.
 			if strings.HasPrefix(trimmed, "```") {
 				line.IsBlock = true
 				line.BlockKey = currentKey
 				doc.Lines = append(doc.Lines, line)
-				inFence = !inFence
+				inFence = true
 				continue
 			}
 		}
