@@ -145,6 +145,86 @@ func TestFixFull(t *testing.T) {
 	}
 }
 
+// TestFixLegacyAliases covers Bug A from I-562: items whose status is a
+// known pre-I-433 alias (e.g. `open`) must be auto-rewritten to the
+// current vocabulary (e.g. `queued`) so st check converges without
+// requiring a manual guard bypass.
+func TestFixLegacyAliases(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Issue with the legacy `open` alias — would otherwise be rejected
+	// by the validator's vocab gate with no auto-rewrite path.
+	writeFile(t, filepath.Join(root, "issues", "I-001-legacy-open.md"), `id: I-001
+type: issue
+status: open
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Issue with legacy open status
+depends_on:
+- []
+blocks:
+- []
+`)
+
+	// Issue already on the current vocabulary — must NOT be rewritten.
+	writeFile(t, filepath.Join(root, "issues", "I-002-already-queued.md"), `id: I-002
+type: issue
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Issue already on current vocabulary
+depends_on:
+- []
+blocks:
+- []
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	fixed := fixLegacyAliases(s, cfg)
+	if fixed != 1 {
+		t.Errorf("expected 1 alias rewrite, got %d", fixed)
+	}
+
+	// I-001 must now have status: queued on disk
+	content, err := os.ReadFile(filepath.Join(root, "issues", "I-001-legacy-open.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "status: queued") {
+		t.Errorf("I-001 should have status: queued, got:\n%s", string(content))
+	}
+	if strings.Contains(string(content), "status: open") {
+		t.Errorf("I-001 should not still contain status: open, got:\n%s", string(content))
+	}
+
+	// I-002 must be untouched
+	content2, err := os.ReadFile(filepath.Join(root, "issues", "I-002-already-queued.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content2), "status: queued") {
+		t.Errorf("I-002 should still have status: queued, got:\n%s", string(content2))
+	}
+
+	// Idempotence: a second pass produces zero rewrites.
+	fixed2 := fixLegacyAliases(s, cfg)
+	if fixed2 != 0 {
+		t.Errorf("second pass should produce 0 rewrites, got %d", fixed2)
+	}
+}
+
 func TestCheckWithFix(t *testing.T) {
 	s, cfg, _ := setupFixEnv(t)
 

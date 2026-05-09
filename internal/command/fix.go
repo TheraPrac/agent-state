@@ -13,10 +13,23 @@ import (
 
 var slugPattern = regexp.MustCompile(`^([A-Z]-\d{3,})-\S+`)
 
+// legacyStatusAliases maps deprecated status values to their current vocabulary.
+// The validator's suggestion engine recognizes these aliases (and prints
+// "did you mean X? (legacy alias from pre-I-433)") but does not rewrite —
+// this map closes that gap so st check converges on legacy items without
+// needing manual intervention or a guard bypass.
+var legacyStatusAliases = map[string]string{
+	"open": "queued", // pre-I-433 issue status
+}
+
 // Fix applies auto-repairs for deterministic issues. Returns the number of fixes applied.
 func Fix(s *store.Store, cfg *config.Config) int {
 	var fixed int
 
+	// Legacy-alias rewrite must run first: downstream fixes (and the validator
+	// itself) reject items whose status is not in the current enum, so an
+	// unrewritten alias would block every other auto-fix on that item.
+	fixed += fixLegacyAliases(s, cfg)
 	fixed += fixRequiredFields(s, cfg)
 	fixed += fixStaleDeps(s, cfg)
 	fixed += fixReciprocalDeps(s, cfg)
@@ -24,6 +37,36 @@ func Fix(s *store.Store, cfg *config.Config) int {
 	fixed += fixDeliveryGate(s, cfg)
 	fixed += fixIndex(s, cfg)
 
+	return fixed
+}
+
+// fixLegacyAliases rewrites items whose status field matches a known
+// pre-I-433 alias (see legacyStatusAliases). Returns the number of items
+// rewritten.
+func fixLegacyAliases(s *store.Store, _ *config.Config) int {
+	var fixed int
+	for _, item := range s.All() {
+		if item.Doc == nil {
+			continue
+		}
+		newStatus, ok := legacyStatusAliases[item.Status]
+		if !ok {
+			continue
+		}
+		itemID := item.ID
+		oldStatus := item.Status
+		target := newStatus
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			item.Status = target
+			item.Doc.SetField("status", target)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
+			continue
+		}
+		fixed++
+		fmt.Printf("  \033[33m⟳\033[0m %s: rewrote legacy status alias %q → %q\n", itemID, oldStatus, target)
+	}
 	return fixed
 }
 
