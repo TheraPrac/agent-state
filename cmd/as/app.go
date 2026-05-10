@@ -1158,6 +1158,27 @@ implement step during st run.`,
 	prepCmd.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
 	root.AddCommand(prepCmd)
 
+	splitCmd := &cobra.Command{
+		Use:   "split <id>",
+		Short: "Split a full-stack item into linked Part A (backend) + Part B (frontend) items",
+		Long: `Split splits a full-stack item into two linked items so a review
+finding in one layer doesn't cascade into reworking the other.
+
+Part A inherits the api/contract scope and api-shaped acceptance
+criteria. Part B inherits the web scope, frontend ACs, and
+depends_on Part A.
+
+The parent is closed with resolution=split and scope_flags pointing
+at the linked items. The decision is recorded so retrospective
+analysis can correlate split-vs-unified outcomes against ci_fix
+rates. I-180.`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.SplitCommand(appStore, appCfg, args[0])
+		},
+	}
+	root.AddCommand(splitCmd)
+
 	advanceCmd := &cobra.Command{
 		Use:   "advance <sprint>",
 		Short: "Execute pipeline steps for the next unblocked sprint item",

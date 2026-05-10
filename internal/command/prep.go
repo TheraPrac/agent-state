@@ -483,7 +483,30 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			continue // re-run review
 		}
 
-		choice := showReviewGate(ReviewGateInfo{
+		// I-180: full-stack split candidate detection. When the plan
+		// classifies as full-stack with 5+ ACs, print a SPLIT
+		// RECOMMENDATION banner and append a fifth menu choice. The
+		// recommendation is advisory — declining is a single keystroke
+		// and proceeds to normal Accept; the decision is recorded in
+		// scope_flags for retrospective analysis.
+		splitCandidate := plan.DetectFullStack(p, 5)
+		if splitCandidate {
+			printSplitRecommendation(itemID, item, p)
+		}
+
+		menuOpts := []menuOption{
+			{"1", "Accept      — save plan and proceed"},
+			{"2", "Reject      — skip this item"},
+			{"3", "Feedback    — type direction, claude revises (constrained)"},
+			{"4", "Interactive — full claude session (escape hatch)"},
+		}
+		if splitCandidate {
+			menuOpts = append(menuOpts, menuOption{
+				"5", "Split       — create linked Part A + Part B items and reject this plan",
+			})
+		}
+
+		gateInfo := ReviewGateInfo{
 			ItemID:         itemID,
 			Title:          item.Title,
 			GateType:       "Plan Review",
@@ -491,14 +514,34 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			Recommendation: rec,
 			ReviewDuration: reviewDur,
 			AcsTotal:       len(p.ACs),
-		}, []menuOption{
-			{"1", "Accept      — save plan and proceed"},
-			{"2", "Reject      — skip this item"},
-			{"3", "Feedback    — type direction, claude revises (constrained)"},
-			{"4", "Interactive — full claude session (escape hatch)"},
-		}, engine)
+		}
+		if splitCandidate {
+			// I-180: don't let claude's positive review auto-proceed
+			// past the split recommendation — the operator must
+			// explicitly choose Accept (kept-unified) or Split.
+			gateInfo.BlockAutoProceed = true
+			gateInfo.BlockReason = "full-stack split recommendation present"
+		}
+		choice := showReviewGate(gateInfo, menuOpts, engine)
 
 		if choice == "^C" {
+			return "rejected"
+		}
+		if choice == "5" && splitCandidate {
+			// Split: create child items and reject this plan. The
+			// parent is closed by Split() with resolution=split, so
+			// returning "rejected" here just stops further processing
+			// of the parent's plan. On error, also return "rejected"
+			// so the review loop doesn't re-enter (a failed Split
+			// usually means the parent is already split — re-running
+			// would loop forever; the operator can re-prep manually).
+			idA, idB, err := Split(s, cfg, itemID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] split failed: %v\n", itemID, err)
+				return "rejected"
+			}
+			fmt.Printf("[%s] Split into linked items: %s (backend) + %s (frontend, depends_on %s)\n",
+				itemID, idA, idB, idA)
 			return "rejected"
 		}
 		if choice == "1" {
@@ -570,6 +613,18 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 						item.LinkedPlans = append(item.LinkedPlans, sidecarRel)
 						item.Doc.ReplaceList("linked_plans", item.LinkedPlans)
 					}
+				}
+				// I-180: when the operator declines a SPLIT
+				// RECOMMENDATION, stamp scope_flags so retrospective
+				// analysis can correlate split-vs-unified outcomes
+				// against ci_fix rates. SetNestedField writes a true
+				// nested block (`scope_flags:` parent + indented
+				// child) so downstream readers using GetNestedField
+				// see the values.
+				if splitCandidate {
+					item.Doc.SetNestedField("scope_flags.full_stack", "true")
+					item.Doc.SetNestedField("scope_flags.split_recommended", "true")
+					item.Doc.SetNestedField("scope_flags.split_decision", "kept-unified")
 				}
 				return nil
 			}); err != nil {
@@ -757,6 +812,36 @@ func relativeReportPath(plansDir, root, itemID string) string {
 		return abs
 	}
 	return rel
+}
+
+// printSplitRecommendation renders the I-180 SPLIT RECOMMENDATION
+// banner shown when DetectFullStack returns true. The output lists
+// the parent's scope and AC count, plus a partition preview of how
+// the AC list would be split between Part A (backend) and Part B
+// (frontend) so the operator can decide before hitting the gate.
+//
+// Advisory only — declining is a single keystroke ("Accept") and
+// proceeds normally.
+func printSplitRecommendation(itemID string, item *model.Item, p *plan.Plan) {
+	apiACs, webACs := plan.PartitionACsByLayer(p.ACs)
+	fmt.Println()
+	fmt.Println("=== SPLIT RECOMMENDATION (I-180) ===")
+	fmt.Printf("%s — full-stack item with %d ACs detected.\n", itemID, len(p.ACs))
+	fmt.Printf("Cost data: full-stack items average $15.61/item — 2.2× the cost of single-layer items.\n")
+	fmt.Printf("Splitting caps the blast radius of a review finding to one layer.\n\n")
+	fmt.Printf("Proposed Part A (backend, theraprac-api): %s (Part A: backend)\n", item.Title)
+	fmt.Printf("  ACs (%d):\n", len(apiACs))
+	for _, ac := range apiACs {
+		fmt.Printf("    - %s\n", truncate(ac, 96))
+	}
+	fmt.Printf("Proposed Part B (frontend, theraprac-web; depends_on Part A): %s (Part B: frontend)\n", item.Title)
+	fmt.Printf("  ACs (%d):\n", len(webACs))
+	for _, ac := range webACs {
+		fmt.Printf("    - %s\n", truncate(ac, 96))
+	}
+	fmt.Println()
+	fmt.Println("Choose Split (option 5) to create the linked items and reject this plan.")
+	fmt.Println("Choose Accept to keep unified — your decision is recorded for retrospective analysis.")
 }
 
 // buildPrepPrompt creates the exploration prompt for plan generation.
