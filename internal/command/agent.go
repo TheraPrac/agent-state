@@ -33,9 +33,13 @@ type AgentAuthOpts struct {
 }
 
 type AgentWorkspaceCreateOpts struct {
-	Agent   string
-	Branch  string
-	Full    bool
+	Agent  string
+	Branch string
+	// Yes confirms a non-dry-run create. Without it, the command
+	// prints the plan and refuses to apply. (Renamed from `Full` —
+	// the old name implied a symlink-vs-clone toggle, but the field
+	// has always just been a confirmation gate. I-559.)
+	Yes     bool
 	DryRun  bool
 	Repair  bool
 	SkipAWS bool
@@ -116,13 +120,13 @@ func AgentWorkspaceCreate(cfg *config.Config, opts AgentWorkspaceCreateOpts) int
 		fmt.Fprintf(os.Stderr, "agent workspace create: %v\n", err)
 		return 1
 	}
-	printAgentWorkspacePlan(plan, opts.DryRun, opts.Full, opts.Repair)
+	printAgentWorkspacePlan(plan, opts.DryRun, opts.Repair)
 	printIdentityBootstrapPlan(plan.AgentID, opts.SkipAWS, opts.SkipGH)
 	if opts.DryRun {
 		return 0
 	}
-	if !opts.Full {
-		fmt.Fprintln(os.Stderr, "agent workspace create: non-dry-run create requires --full")
+	if !opts.Yes {
+		fmt.Fprintln(os.Stderr, "agent workspace create: non-dry-run create requires --yes")
 		return 2
 	}
 	if err := applyWorkspaceCreate(plan, opts.Repair); err != nil {
@@ -297,11 +301,11 @@ func buildAgentWorkspacePlan(cfg *config.Config, agentArg, branch string) (agent
 	return plan, nil
 }
 
-func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, full, repair bool) {
+func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, repair bool) {
 	fmt.Printf("Agent workspace create plan: %s\n", plan.AgentID)
 	fmt.Printf("  target: %s\n", plan.TargetDir)
 	fmt.Printf("  branch: %s\n", plan.Branch)
-	fmt.Printf("  mode: full=%t repair=%t dry-run=%t\n", full, repair, dryRun)
+	fmt.Printf("  mode: dry-run=%t repair=%t\n", dryRun, repair)
 	fmt.Printf("  ports: api=%d web=%d db=%d mailpit=%d stripe=%d\n",
 		plan.Ports.API, plan.Ports.Web, plan.Ports.DB, plan.Ports.Mailpit, plan.Ports.Stripe)
 	fmt.Printf("  compose_project: %s\n", plan.ComposeProject)

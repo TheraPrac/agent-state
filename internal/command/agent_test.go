@@ -113,7 +113,7 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "b", Branch: "main", Full: true, DryRun: true,
+			Agent: "b", Branch: "main", Yes: true, DryRun: true,
 		})
 		if code != 0 {
 			t.Fatalf("AgentWorkspaceCreate returned %d", code)
@@ -124,6 +124,10 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 		"Agent workspace create plan: agent-b",
 		filepath.Join(agentsRoot, "theraprac-agent-b"),
 		"branch: main",
+		// I-559: dropping `full=` from the mode line — assert the new shape so
+		// a future regression to printAgentWorkspacePlan can't silently
+		// corrupt or remove it.
+		"mode: dry-run=true repair=false",
 		"theraprac-api",
 		"theraprac-web",
 		"theraprac-infra",
@@ -172,7 +176,7 @@ func TestAgentWorkspaceCreatePlanHonorsBootstrapSkipFlags(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "b", Branch: "main", Full: true, DryRun: true,
+			Agent: "b", Branch: "main", Yes: true, DryRun: true,
 			SkipAWS: true, SkipGH: true,
 		})
 		if code != 0 {
@@ -203,7 +207,7 @@ func TestAgentWorkspaceCreatePlanShowsAsInstallForExistingClone(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "b", Branch: "main", Full: true, DryRun: true,
+			Agent: "b", Branch: "main", Yes: true, DryRun: true,
 		})
 		if code != 0 {
 			t.Fatalf("AgentWorkspaceCreate returned %d", code)
@@ -241,7 +245,7 @@ func TestAgentWorkspaceCreateDryRunDetectsPartialSymlink(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "agent-b", Branch: "main", Full: true, DryRun: true,
+			Agent: "agent-b", Branch: "main", Yes: true, DryRun: true,
 		})
 		if code != 0 {
 			t.Fatalf("AgentWorkspaceCreate returned %d", code)
@@ -264,7 +268,7 @@ func TestAgentWorkspaceCreatePlanShowsSharedWorkspaceSymlink(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "agent-c", Branch: "main", Full: true, DryRun: true,
+			Agent: "agent-c", Branch: "main", Yes: true, DryRun: true,
 		})
 		if code != 0 {
 			t.Fatalf("AgentWorkspaceCreate returned %d", code)
@@ -311,7 +315,7 @@ func TestAgentWorkspaceCreatePlanVerifiesCorrectSymlink(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "agent-c", Branch: "main", Full: true, DryRun: true,
+			Agent: "agent-c", Branch: "main", Yes: true, DryRun: true,
 		})
 		if code != 0 {
 			t.Fatalf("AgentWorkspaceCreate returned %d", code)
@@ -673,7 +677,7 @@ func TestAgentWorkspaceCreateChainsBootstrapWithOpts(t *testing.T) {
 
 	captureStdout(t, func() {
 		code := AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
-			Agent: "z", Branch: "main", Full: true, DryRun: false,
+			Agent: "z", Branch: "main", Yes: true, DryRun: false,
 			SkipAWS: true, SkipGH: false, Owner: "TheraPrac",
 		})
 		if code != 0 {
@@ -684,6 +688,55 @@ func TestAgentWorkspaceCreateChainsBootstrapWithOpts(t *testing.T) {
 	want := call{agent: "agent-z", owner: "TheraPrac", skipAWS: true, skipGH: false}
 	if got != want {
 		t.Errorf("chain did not propagate opts: got %+v, want %+v", got, want)
+	}
+}
+
+// I-559: AgentWorkspaceCreate refuses to apply when --yes is missing.
+// Renamed from --full so the flag name describes what it does
+// (confirmation gate, not symlink toggle).
+func TestAgentWorkspaceCreateRefusesWithoutYes(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	agentsRoot := filepath.Join(t.TempDir(), "theraprac-agents")
+	t.Setenv("THERAPRAC_AGENTS_ROOT", agentsRoot)
+
+	origApply := applyWorkspaceCreate
+	origBoot := runIdentityBootstrap
+	defer func() {
+		applyWorkspaceCreate = origApply
+		runIdentityBootstrap = origBoot
+	}()
+	applyWorkspaceCreate = func(plan agentWorkspacePlan, repair bool) error {
+		t.Fatalf("apply must not run without --yes")
+		return nil
+	}
+	runIdentityBootstrap = func(_ *config.Config, agent, owner string, skipAWS, skipGH bool) error {
+		t.Fatalf("identity bootstrap must not run without --yes")
+		return nil
+	}
+
+	// Capture stderr so the assertion can match the refusal message.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	var code int
+	captureStdout(t, func() {
+		code = AgentWorkspaceCreate(cfg, AgentWorkspaceCreateOpts{
+			Agent: "z", Branch: "main", Yes: false, DryRun: false,
+			SkipAWS: true, SkipGH: true,
+		})
+	})
+	w.Close()
+	os.Stderr = origStderr
+	stderrData, _ := io.ReadAll(r)
+
+	if code != 2 {
+		t.Errorf("expected exit 2 without --yes, got %d", code)
+	}
+	if !strings.Contains(string(stderrData), "requires --yes") {
+		t.Errorf("expected stderr to mention 'requires --yes'; got %q", string(stderrData))
 	}
 }
 

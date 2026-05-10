@@ -361,20 +361,20 @@ fields, and the SBAR composite stay on the single-field paths.`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			branch, _ := cmd.Flags().GetString("branch")
-			full, _ := cmd.Flags().GetBool("full")
+			yes, _ := cmd.Flags().GetBool("yes")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			repair, _ := cmd.Flags().GetBool("repair")
 			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
 			skipGH, _ := cmd.Flags().GetBool("skip-gh")
 			owner, _ := cmd.Flags().GetString("owner")
 			exitCode = command.AgentWorkspaceCreate(appCfg, command.AgentWorkspaceCreateOpts{
-				Agent: args[0], Branch: branch, Full: full, DryRun: dryRun, Repair: repair,
+				Agent: args[0], Branch: branch, Yes: yes, DryRun: dryRun, Repair: repair,
 				SkipAWS: skipAWS, SkipGH: skipGH, Owner: owner,
 			})
 		},
 	}
 	agentWorkspaceCreateCmd.Flags().String("branch", "main", "branch to check out in each repo")
-	agentWorkspaceCreateCmd.Flags().Bool("full", false, "create independent non-symlink clones")
+	agentWorkspaceCreateCmd.Flags().Bool("yes", false, "confirm non-dry-run create (without it, the command refuses to apply)")
 	agentWorkspaceCreateCmd.Flags().Bool("dry-run", false, "print the plan without filesystem, git, or Docker changes")
 	agentWorkspaceCreateCmd.Flags().Bool("repair", false, "replace known-safe partial workspace symlinks")
 	agentWorkspaceCreateCmd.Flags().Bool("skip-aws", false, "do not chain AWS identity bootstrap")
