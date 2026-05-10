@@ -124,6 +124,10 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 		"Agent workspace create plan: agent-b",
 		filepath.Join(agentsRoot, "theraprac-agent-b"),
 		"branch: main",
+		// I-559: dropping `full=` from the mode line — assert the new shape so
+		// a future regression to printAgentWorkspacePlan can't silently
+		// corrupt or remove it.
+		"mode: dry-run=true repair=false",
 		"theraprac-api",
 		"theraprac-web",
 		"theraprac-infra",
