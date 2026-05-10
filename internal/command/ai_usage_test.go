@@ -98,7 +98,7 @@ func TestSessionLogPayloadFromUsage(t *testing.T) {
 	if got.Provider != AIProviderOpenAI || got.ResponseID != "resp" || got.ItemID != "T-001" {
 		t.Errorf("payload metadata wrong: %+v", got)
 	}
-	if got.RegInputTokens != 10 || got.CacheInTokens != 20 || got.RegOutputTokens != 30 ||
+	if got.RegInputTokens != 10 || got.CacheReadInputTokens != 20 || got.RegOutputTokens != 30 ||
 		got.ReasoningTokens != 7 || got.TotalTokens != 60 {
 		t.Errorf("payload token mapping wrong: %+v", got)
 	}

@@ -177,8 +177,8 @@ func sessionLogPayloadFromUsage(u AIUsage, itemID string) SessionLogPayload {
 		AIMs:            u.AIMs,
 		RegInputTokens:  u.RegInputTokens,
 		RegOutputTokens: u.RegOutputTokens,
-		CacheInTokens:   u.CachedInTokens,
-		CacheOutTokens:  u.CacheWriteTokens,
+		CacheReadInputTokens:   u.CachedInTokens,
+		CacheCreation5mInputTokens:  u.CacheWriteTokens,
 		ReasoningTokens: u.ReasoningTokens,
 		TotalTokens:     u.TotalTokens,
 		CostUSD:         u.CostUSD,
@@ -198,12 +198,12 @@ func applyUsageToStepResult(sr *StepResult, u AIUsage) {
 	sr.ResponseID = u.ResponseID
 	sr.AIDurationMs = u.AIMs
 	sr.RegInputTokens = u.RegInputTokens
-	sr.CacheInTokens = u.CachedInTokens
-	sr.CacheOutTokens = u.CacheWriteTokens
+	sr.CacheReadInputTokens = u.CachedInTokens
+	sr.CacheCreation5mInputTokens = u.CacheWriteTokens
 	sr.OutputTokens = u.RegOutputTokens
 	sr.ReasoningTokens = u.ReasoningTokens
 	sr.TotalTokens = u.TotalTokens
 	sr.CostUSD = u.CostUSD
 	sr.CostSource = u.CostSource
-	sr.InputTokens = sr.RegInputTokens + sr.CacheInTokens + sr.CacheOutTokens
+	sr.InputTokens = sr.RegInputTokens + sr.CacheReadInputTokens + sr.CacheCreation5mInputTokens
 }

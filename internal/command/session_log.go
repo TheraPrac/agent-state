@@ -34,16 +34,20 @@ type SessionLogPayload struct {
 	AIMs            int64  `json:"ai_ms"`
 	RegInputTokens  int    `json:"reg_input_tokens"`
 	RegOutputTokens int    `json:"reg_output_tokens"`
-	CacheInTokens   int    `json:"cache_in_tokens"`
-	// CacheOutTokens is the 5-minute cache write bucket (1.25x input rate).
+	// I-569 step 9: JSON tags now match Anthropic SDK exactly. Hooks
+	// (stop-metrics.sh) emit these keys; older producers sending the
+	// pre-step-9 names silently lose tokens — single PR, no shim per
+	// the plan.
+	CacheReadInputTokens   int    `json:"cache_read_input_tokens"`
+	// CacheCreation5mInputTokens is the 5-minute cache write bucket (1.25x input rate).
 	// Existing producers that don't split by tier should send their total
 	// here; it's treated as all-5m and priced at 1.25x.
-	CacheOutTokens int `json:"cache_out_tokens"`
-	// CacheOut1hTokens is the 1-hour cache write bucket (2x input rate).
+	CacheCreation5mInputTokens int `json:"cache_creation_5m_input_tokens"`
+	// CacheCreation1hInputTokens is the 1-hour cache write bucket (2x input rate).
 	// When the producer can split by tier (Stop hook parses
 	// ephemeral_5m/1h_input_tokens), populate this field; pricing applies
 	// the 2x rate. Zero is safe — older producers still work.
-	CacheOut1hTokens int     `json:"cache_out_1h_tokens,omitempty"`
+	CacheCreation1hInputTokens int     `json:"cache_creation_1h_input_tokens,omitempty"`
 	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	CostUSD          float64 `json:"cost_usd,omitempty"` // if 0, computed from tokens × pricing
@@ -175,7 +179,7 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		computed, err := pricing.EstimateSyntheticCostUSD(
 			payload.Model,
 			payload.RegInputTokens, payload.RegOutputTokens,
-			payload.CacheInTokens, payload.CacheOutTokens, payload.CacheOut1hTokens,
+			payload.CacheReadInputTokens, payload.CacheCreation5mInputTokens, payload.CacheCreation1hInputTokens,
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "session log: %v (tokens recorded without cost)\n", err)
@@ -217,7 +221,7 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		if payload.Step == "subagent" && hasTokens(payload) && isDuplicateRecentTurn(item, payload, capturedNow, 60) {
 			fmt.Fprintf(os.Stderr,
 				"session log: dropped duplicate subagent turn for %s (cache_in=%d reg_out=%d within 60s)\n",
-				itemID, payload.CacheInTokens, payload.RegOutputTokens)
+				itemID, payload.CacheReadInputTokens, payload.RegOutputTokens)
 			return nil
 		}
 
@@ -236,12 +240,12 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 				fmt.Sprintf("%d", readIntField(item, "time_tracking", "reasoning_tokens")+payload.ReasoningTokens))
 		}
 		item.SetNested("time_tracking", "cache_in_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_in_tokens")+payload.CacheInTokens))
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_in_tokens")+payload.CacheReadInputTokens))
 		item.SetNested("time_tracking", "cache_out_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_tokens")+payload.CacheOutTokens))
-		if payload.CacheOut1hTokens > 0 || readIntField(item, "time_tracking", "cache_out_1h_tokens") > 0 {
+			fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_tokens")+payload.CacheCreation5mInputTokens))
+		if payload.CacheCreation1hInputTokens > 0 || readIntField(item, "time_tracking", "cache_out_1h_tokens") > 0 {
 			item.SetNested("time_tracking", "cache_out_1h_tokens",
-				fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheOut1hTokens))
+				fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheCreation1hInputTokens))
 		}
 
 		// Derived totals — kept in the file so consumers don't need to compute
@@ -354,8 +358,8 @@ func upsertByModel(item *model.Item, p SessionLogPayload, cost float64) {
 	existing.Turns++
 	existing.RegIn += p.RegInputTokens
 	existing.RegOut += p.RegOutputTokens
-	existing.CacheIn += p.CacheInTokens
-	existing.CacheOut += p.CacheOutTokens + p.CacheOut1hTokens // aggregate total cache writes per model
+	existing.CacheIn += p.CacheReadInputTokens
+	existing.CacheOut += p.CacheCreation5mInputTokens + p.CacheCreation1hInputTokens // aggregate total cache writes per model
 	existing.Cost += cost
 
 	line := formatByModelLine(key, existing)
@@ -548,11 +552,11 @@ func formatAITurnLine(p SessionLogPayload, cost float64, at string) string {
 	sb.WriteString(fmt.Sprintf(" process:%ds ai:%ds reg_in:%d reg_out:%d cache_in:%d cache_out:%d",
 		p.ProcessMs/1000, p.AIMs/1000,
 		p.RegInputTokens, p.RegOutputTokens,
-		p.CacheInTokens, p.CacheOutTokens))
-	if p.CacheOut1hTokens > 0 {
+		p.CacheReadInputTokens, p.CacheCreation5mInputTokens))
+	if p.CacheCreation1hInputTokens > 0 {
 		// Only emit the 1h field when non-zero — keeps legacy grep patterns
 		// that don't expect cache_out_1h from breaking.
-		sb.WriteString(fmt.Sprintf(" cache_out_1h:%d", p.CacheOut1hTokens))
+		sb.WriteString(fmt.Sprintf(" cache_out_1h:%d", p.CacheCreation1hInputTokens))
 	}
 	if p.ReasoningTokens > 0 {
 		sb.WriteString(fmt.Sprintf(" reasoning:%d", p.ReasoningTokens))
@@ -687,10 +691,10 @@ func isDuplicateRecentTurn(item *model.Item, p SessionLogPayload, nowStr string,
 		if at.Before(cutoff) {
 			continue
 		}
-		if extractIntField(entry, "cache_in:") != p.CacheInTokens {
+		if extractIntField(entry, "cache_in:") != p.CacheReadInputTokens {
 			continue
 		}
-		if extractIntField(entry, "cache_out:") != p.CacheOutTokens {
+		if extractIntField(entry, "cache_out:") != p.CacheCreation5mInputTokens {
 			continue
 		}
 		if extractIntField(entry, "reg_in:") != p.RegInputTokens {
@@ -699,7 +703,7 @@ func isDuplicateRecentTurn(item *model.Item, p SessionLogPayload, nowStr string,
 		if extractIntField(entry, "reg_out:") != p.RegOutputTokens {
 			continue
 		}
-		if extractIntField(entry, "cache_out_1h:") != p.CacheOut1hTokens {
+		if extractIntField(entry, "cache_out_1h:") != p.CacheCreation1hInputTokens {
 			continue
 		}
 		if extractField(entry, "model:") != p.Model {
@@ -790,7 +794,7 @@ func writeOrphanLog(cfg *config.Config, p SessionLogPayload) error {
 
 func hasTokens(p SessionLogPayload) bool {
 	return p.RegInputTokens > 0 || p.RegOutputTokens > 0 ||
-		p.CacheInTokens > 0 || p.CacheOutTokens > 0 || p.CacheOut1hTokens > 0 ||
+		p.CacheReadInputTokens > 0 || p.CacheCreation5mInputTokens > 0 || p.CacheCreation1hInputTokens > 0 ||
 		p.ReasoningTokens > 0 || p.TotalTokens > 0
 }
 

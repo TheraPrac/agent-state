@@ -248,8 +248,8 @@ func buildMetaReport(entries []orphanLogEntry, cutoff time.Time, agentFilter, gr
 			row = &metaRow{Key: key}
 			buckets[key] = row
 		}
-		inTok := e.Payload.RegInputTokens + e.Payload.CacheInTokens +
-			e.Payload.CacheOutTokens + e.Payload.CacheOut1hTokens
+		inTok := e.Payload.RegInputTokens + e.Payload.CacheReadInputTokens +
+			e.Payload.CacheCreation5mInputTokens + e.Payload.CacheCreation1hInputTokens
 		outTok := e.Payload.RegOutputTokens
 
 		// I-569 step 7: synthetic cost computed on demand per-turn from
@@ -263,7 +263,7 @@ func buildMetaReport(entries []orphanLogEntry, cutoff time.Time, agentFilter, gr
 			if c, err := pricing.EstimateSyntheticCostUSD(
 				e.Payload.Model,
 				e.Payload.RegInputTokens, e.Payload.RegOutputTokens,
-				e.Payload.CacheInTokens, e.Payload.CacheOutTokens, e.Payload.CacheOut1hTokens,
+				e.Payload.CacheReadInputTokens, e.Payload.CacheCreation5mInputTokens, e.Payload.CacheCreation1hInputTokens,
 			); err == nil {
 				cost = c
 			}

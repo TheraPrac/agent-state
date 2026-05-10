@@ -120,8 +120,8 @@ type StepResult struct {
 	InputTokens     int    `json:"input_tokens,omitempty"`
 	OutputTokens    int    `json:"output_tokens,omitempty"`
 	RegInputTokens  int    `json:"reg_input_tokens,omitempty"`
-	CacheInTokens   int    `json:"cache_in_tokens,omitempty"`  // cache reads
-	CacheOutTokens  int    `json:"cache_out_tokens,omitempty"` // cache writes
+	CacheReadInputTokens   int    `json:"cache_in_tokens,omitempty"`  // cache reads
+	CacheCreation5mInputTokens  int    `json:"cache_out_tokens,omitempty"` // cache writes
 	ReasoningTokens int    `json:"reasoning_tokens,omitempty"`
 	TotalTokens     int    `json:"total_tokens,omitempty"`
 	Provider        string `json:"provider,omitempty"`
@@ -1796,7 +1796,7 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 		// combined InputTokens.
 		if sr.CostUSD == 0 &&
 			sr.RegInputTokens == 0 && sr.OutputTokens == 0 &&
-			sr.CacheInTokens == 0 && sr.CacheOutTokens == 0 {
+			sr.CacheReadInputTokens == 0 && sr.CacheCreation5mInputTokens == 0 {
 			continue
 		}
 		payload := SessionLogPayload{
@@ -1808,8 +1808,8 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 			AIMs:            sr.AIDurationMs,
 			RegInputTokens:  sr.RegInputTokens,
 			RegOutputTokens: sr.OutputTokens,
-			CacheInTokens:   sr.CacheInTokens,
-			CacheOutTokens:  sr.CacheOutTokens,
+			CacheReadInputTokens:   sr.CacheReadInputTokens,
+			CacheCreation5mInputTokens:  sr.CacheCreation5mInputTokens,
 			ReasoningTokens: sr.ReasoningTokens,
 			TotalTokens:     sr.TotalTokens,
 			CostUSD:         sr.CostUSD,

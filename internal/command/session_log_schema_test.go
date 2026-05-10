@@ -22,9 +22,9 @@ func TestSessionLog_RealTokensCumulative(t *testing.T) {
 			Model:            "claude-opus-4-7",
 			RegInputTokens:   100,
 			RegOutputTokens:  50,
-			CacheInTokens:    1000,
-			CacheOutTokens:   200,
-			CacheOut1hTokens: 30,
+			CacheReadInputTokens:    1000,
+			CacheCreation5mInputTokens:   200,
+			CacheCreation1hInputTokens: 30,
 			ProcessMs:        5000,
 		})
 	}
@@ -65,7 +65,7 @@ func TestSessionLog_ByStepUpsert(t *testing.T) {
 		SessionLog(env.S, env.Cfg, SessionLogPayload{
 			SessionID: "sess-1", Model: "claude-opus-4-7",
 			Step:           "interactive",
-			RegInputTokens: 100, CacheInTokens: 1000,
+			RegInputTokens: 100, CacheReadInputTokens: 1000,
 			ProcessMs: 3000,
 		})
 	}
@@ -85,7 +85,7 @@ func TestSessionLog_ByStepUpsert(t *testing.T) {
 			SessionID: sub.sid, Model: "claude-haiku-4-5",
 			Step:           "subagent",
 			Role:           "Explore",
-			RegInputTokens: sub.in, CacheInTokens: 500,
+			RegInputTokens: sub.in, CacheReadInputTokens: 500,
 			ProcessMs: sub.ms,
 		})
 	}
@@ -158,7 +158,7 @@ func TestSessionLog_BySessionUpsert(t *testing.T) {
 	// Three turns on session A, then one on session B, then one more on A.
 	for _, p := range []SessionLogPayload{
 		{SessionID: "sess-A", ProjectDir: "/proj/a", Model: "claude-opus-4-7", RegInputTokens: 100},
-		{SessionID: "sess-A", ProjectDir: "/proj/a", Model: "claude-opus-4-7", RegInputTokens: 200, CacheInTokens: 5000},
+		{SessionID: "sess-A", ProjectDir: "/proj/a", Model: "claude-opus-4-7", RegInputTokens: 200, CacheReadInputTokens: 5000},
 		{SessionID: "sess-A", ProjectDir: "/proj/a", Model: "claude-opus-4-7", RegInputTokens: 300},
 		{SessionID: "sess-B", ProjectDir: "/proj/b", Model: "claude-haiku-4-5", RegInputTokens: 10},
 		{SessionID: "sess-A", ProjectDir: "/proj/a", Model: "claude-opus-4-7", RegInputTokens: 50},

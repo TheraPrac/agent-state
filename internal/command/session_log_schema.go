@@ -41,9 +41,9 @@ func realTokensFromPayload(p SessionLogPayload) realTokens {
 	return realTokens{
 		Input:           p.RegInputTokens,
 		Output:          p.RegOutputTokens,
-		CacheRead:       p.CacheInTokens,
-		CacheCreation5m: p.CacheOutTokens,
-		CacheCreation1h: p.CacheOut1hTokens,
+		CacheRead:       p.CacheReadInputTokens,
+		CacheCreation5m: p.CacheCreation5mInputTokens,
+		CacheCreation1h: p.CacheCreation1hInputTokens,
 	}
 }
 

@@ -23,8 +23,8 @@ func TestSessionLog_BasicAccrual(t *testing.T) {
 		AIMs:            38_000,
 		RegInputTokens:  1000,
 		RegOutputTokens: 500,
-		CacheInTokens:   10_000,
-		CacheOutTokens:  200,
+		CacheReadInputTokens:   10_000,
+		CacheCreation5mInputTokens:  200,
 	}
 	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
 		t.Fatalf("SessionLog exit=%d", code)
@@ -316,7 +316,7 @@ func TestSessionLog_ByModel_SingleModel(t *testing.T) {
 		SessionLog(env.S, env.Cfg, SessionLogPayload{
 			SessionID: "s", Model: "claude-opus-4-7",
 			RegInputTokens: 1000, RegOutputTokens: 500,
-			CacheInTokens: 100, CacheOutTokens: 50,
+			CacheReadInputTokens: 100, CacheCreation5mInputTokens: 50,
 		})
 	}
 
@@ -425,8 +425,8 @@ func TestSessionLog_1hCacheTierAccruedAndPriced(t *testing.T) {
 	// 100k 5m + 50k 1h = 100,000 * 6.25/M + 50,000 * 10/M = 0.625 + 0.5 = 1.125
 	p := SessionLogPayload{
 		SessionID: "s", Model: "claude-opus-4-7",
-		CacheOutTokens:   100_000, // 5m
-		CacheOut1hTokens: 50_000,  // 1h
+		CacheCreation5mInputTokens:   100_000, // 5m
+		CacheCreation1hInputTokens: 50_000,  // 1h
 	}
 	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
 		t.Fatalf("exit=%d", code)
@@ -687,8 +687,8 @@ func TestSessionLog_DropsDuplicateSubagentTurnsWithin60s(t *testing.T) {
 		Model:            "claude-opus-4-7",
 		RegInputTokens:   45676,
 		RegOutputTokens:  1050962,
-		CacheInTokens:    601116722,
-		CacheOut1hTokens: 5849169,
+		CacheReadInputTokens:    601116722,
+		CacheCreation1hInputTokens: 5849169,
 	}
 
 	// First subagent — should accrue.
