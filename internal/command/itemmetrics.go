@@ -70,13 +70,18 @@ func ExtractItemMetrics(item *model.Item, manifestDir string, now time.Time, isD
 		m.AITime = time.Duration(secs * float64(time.Second))
 	}
 
-	// Cost — typed map first; fall through to doc walker for partially-
-	// populated items (matches the same dual-path pattern as tokens below).
-	if tt := item.TimeTracking; tt != nil {
-		m.CostUSD = floatField(tt, "ai_cost_usd")
-	}
+	// I-569 step 5: render cost on demand from real_tokens × current
+	// pricing. Falls back to the legacy stored ai_cost_usd field for
+	// items not yet migrated by step 8 — once migration runs and strips
+	// ai_cost_usd, this fallback becomes a no-op.
+	m.CostUSD = EstimateItemCostUSD(item)
 	if m.CostUSD == 0 {
-		m.CostUSD = readFloatField(item, "time_tracking", "ai_cost_usd")
+		if tt := item.TimeTracking; tt != nil {
+			m.CostUSD = floatField(tt, "ai_cost_usd")
+		}
+		if m.CostUSD == 0 {
+			m.CostUSD = readFloatField(item, "time_tracking", "ai_cost_usd")
+		}
 	}
 
 	// Tokens — typed TimeTracking map is the canonical source after parse;

@@ -192,7 +192,13 @@ func renderTimeTracking(w io.Writer, item *modelItemRef) {
 	}
 	turns := readIntField(item, "time_tracking", "turn_count")
 	sessions := readIntField(item, "time_tracking", "session_count")
-	cost := readFloatField(item, "time_tracking", "ai_cost_usd")
+	// I-569 step 5: synthetic cost from real_tokens × current pricing,
+	// not the stored ai_cost_usd field. Falls back to legacy storage for
+	// items not yet migrated by step 8.
+	cost := EstimateItemCostUSD(item)
+	if cost == 0 {
+		cost = readFloatField(item, "time_tracking", "ai_cost_usd")
+	}
 	unknownCostTurns := readIntField(item, "time_tracking", "unknown_cost_turns")
 	regIn := readIntField(item, "time_tracking", "reg_input_tokens")
 	regOut := readIntField(item, "time_tracking", "reg_output_tokens")
@@ -227,13 +233,11 @@ func renderTimeTracking(w io.Writer, item *modelItemRef) {
 			formatDuration(time.Duration(aiSec)*time.Second))
 	}
 	if cost > 0 {
-		// %.6f matches storage precision (session_log.go) so operators comparing
-		// st show against raw YAML see the same value.
-		if unknownCostTurns > 0 {
-			fmt.Fprintf(w, "    known cost: $%.6f  (%d turns across %d sessions, %d missing cost)\n", cost, turns, sessions, unknownCostTurns)
-		} else {
-			fmt.Fprintf(w, "    cost: $%.6f  (%d turns across %d sessions)\n", cost, turns, sessions)
-		}
+		// I-569 step 5: labeled "synthetic" because the rate table is the
+		// single source of truth (Max plan has no per-call billing) and
+		// the number can shift retroactively when rates change.
+		fmt.Fprintf(w, "    cost (%s): $%.6f  (%d turns across %d sessions)\n",
+			SyntheticCostLabel, cost, turns, sessions)
 	} else if turns > 0 {
 		if unknownCostTurns > 0 {
 			fmt.Fprintf(w, "    turns: %d across %d sessions  (%d missing cost)\n", turns, sessions, unknownCostTurns)

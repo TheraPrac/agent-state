@@ -39,7 +39,7 @@ func TestRenderTimeTracking_ShowsAll1hCacheBuckets(t *testing.T) {
 	for _, want := range []string{
 		"time_tracking:",
 		"process: ",
-		"cost: $",
+		"): $",
 		"tokens:",
 		"cache: ",
 		// Both split buckets must appear in the display
@@ -52,12 +52,12 @@ func TestRenderTimeTracking_ShowsAll1hCacheBuckets(t *testing.T) {
 	}
 
 	// cost uses %.6f — should contain 6 decimal digits after the dollar sign
-	if !strings.Contains(out, "cost: $") {
+	if !strings.Contains(out, "): $") {
 		t.Fatalf("expected cost line, got:\n%s", out)
 	}
 	costLine := ""
 	for _, ln := range strings.Split(out, "\n") {
-		if strings.Contains(ln, "cost: $") {
+		if strings.Contains(ln, "): $") {
 			costLine = ln
 			break
 		}

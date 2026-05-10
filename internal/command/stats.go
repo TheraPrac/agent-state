@@ -124,20 +124,19 @@ func Stats(s *store.Store, cfg *config.Config, opts StatsOpts) int {
 }
 
 // renderTimeStats prints the cross-item time/cost rollup. Writer is injectable
-// so tests can capture output. Cost fields use %.6f to match storage precision
-// in session_log.go — stops st stats readings from looking different than
-// the raw time_tracking.ai_cost_usd field.
+// so tests can capture output.
+//
+// I-569 step 5: cost rendered as a "synthetic API cost estimate" — computed
+// at render time from real_tokens × current pricing rates. The number is
+// not a real billing line (Max plan has no per-call billing) and shifts
+// when the rate table changes, so the label calls that out.
 func renderTimeStats(w io.Writer, t *timeStats) {
 	fmt.Fprintf(w, "\n\033[1m━━━ TIME & COST ━━━\033[0m\n")
 	fmt.Fprintf(w, "  Items with metrics: %d\n", t.ItemsWithMetrics)
 	if t.ItemsWithMetrics == 0 {
 		return
 	}
-	if t.UnknownCostTurns > 0 {
-		fmt.Fprintf(w, "  Known cost:      $%.6f  (%d turns missing cost)\n", t.TotalCostUSD, t.UnknownCostTurns)
-	} else {
-		fmt.Fprintf(w, "  Total cost:      $%.6f\n", t.TotalCostUSD)
-	}
+	fmt.Fprintf(w, "  %s: $%.6f\n", SyntheticCostLabel, t.TotalCostUSD)
 	fmt.Fprintf(w, "  Total turns:     %d across %d distinct sessions\n", t.TotalTurns, t.TotalSessions)
 	if t.TotalProcessSecs > 0 {
 		fmt.Fprintf(w, "  Process time:    %s  (ai: %s)\n",
@@ -196,7 +195,13 @@ func computeTimeStats(s *store.Store) *timeStats {
 			continue
 		}
 		turns := readIntField(item, "time_tracking", "turn_count")
-		cost := readFloatField(item, "time_tracking", "ai_cost_usd")
+		// I-569 step 5: synthetic cost computed on demand from real_tokens.
+		// Falls back to legacy ai_cost_usd for items not yet migrated by
+		// step 8 — once the migration runs, that fallback returns 0.
+		cost := EstimateItemCostUSD(item)
+		if cost == 0 {
+			cost = readFloatField(item, "time_tracking", "ai_cost_usd")
+		}
 		if turns == 0 && cost == 0 {
 			continue
 		}
