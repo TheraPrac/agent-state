@@ -103,8 +103,25 @@ func (r *menuRecorder) engine() RunEngine {
 				if r.menuChoice != "" {
 					return r.menuChoice
 				}
-			} else {
-				r.otherMenuCalls++
+				if len(opts) > 0 {
+					return opts[0].Key
+				}
+				return ""
+			}
+			// Non-sprint menus (per-item plan review, etc.): pick the
+			// option whose label starts with "Reject" so a stray
+			// prepItem invocation in a test fixture can't accidentally
+			// stamp plan_approved on an item the test didn't intend to
+			// approve, AND can't fall through to the "Interactive"
+			// escape hatch (which would exec the real claude binary
+			// and hang the test). We deliberately do NOT return the
+			// last option — the per-item plan-review menu's last
+			// option is Interactive, not Reject.
+			r.otherMenuCalls++
+			for _, o := range opts {
+				if strings.HasPrefix(strings.TrimSpace(o.Label), "Reject") {
+					return o.Key
+				}
 			}
 			if len(opts) > 0 {
 				return opts[0].Key
@@ -312,6 +329,25 @@ func TestPrepSkipsWhenSprintAlreadyApproved(t *testing.T) {
 	sp2, _ := reg2.SprintByID(sprintID)
 	if sp2.PlanApprovedBy != "previous" {
 		t.Errorf("approver should be unchanged; got %q", sp2.PlanApprovedBy)
+	}
+}
+
+// I-558: --write-only must not trigger the interactive sprint-plan
+// gate (it's the agent-drivable path; approval is a separate step).
+func TestPrepWriteOnlySkipsAutoApprove(t *testing.T) {
+	s, cfg, _, sprintID := setupSprintTestEnv(t)
+	prepStampSprintItems(t, s, cfg, sprintID, []string{"T-001", "T-002"}, []string{"T-001", "T-002"})
+
+	rec := &menuRecorder{menuChoice: "1"}
+	_ = Prep(s, cfg, sprintID, PrepOpts{WriteOnly: true}, rec.engine())
+
+	if rec.sprintGateCalls != 0 {
+		t.Errorf("--write-only must not invoke the auto-approve gate; got %d", rec.sprintGateCalls)
+	}
+	reg, _ := registry.Load(cfg.EpicsPath())
+	sp, _ := reg.SprintByID(sprintID)
+	if sp.PlanApproved {
+		t.Error("--write-only must not set sprint PlanApproved")
 	}
 }
 

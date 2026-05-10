@@ -210,7 +210,15 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 	} else {
 		fmt.Printf("\nPlanned %d/%d item(s)\n", planned, len(unplanned))
 	}
-	maybeAutoApproveSprintPlan(s, cfg, sprintID, opts, engine)
+	// Only auto-approve when the loop fully succeeded. On partial
+	// success, maybeAutoApproveSprintPlan would still short-circuit
+	// (since the failed items lack plan_approved), but skipping the
+	// call entirely keeps the UX honest and avoids a spurious "still
+	// unplanned" notice when the operator already saw the per-item
+	// failure messages.
+	if planned == len(unplanned) {
+		maybeAutoApproveSprintPlan(s, cfg, sprintID, opts, engine)
+	}
 	return 0
 }
 
@@ -224,6 +232,8 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 //   - opts.ItemFilter is set (single-item retry — sprint-level approval
 //     should not fire from a partial run).
 //   - opts.DryRun is set.
+//   - opts.WriteOnly is set (--write-only is non-interactive by
+//     contract; sprint approval is the operator's separate step).
 //   - sp.PlanApproved is already true (idempotent).
 //   - any non-terminal item still lacks plan_approved (prints the
 //     "still unplanned" notice listing the missing IDs).
@@ -233,7 +243,7 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 // to "revise" via Feedback / Interactive. To re-prep specific items,
 // the operator just re-runs `st prep`.
 func maybeAutoApproveSprintPlan(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, engine RunEngine) {
-	if opts.ItemFilter != "" || opts.DryRun {
+	if opts.ItemFilter != "" || opts.DryRun || opts.WriteOnly {
 		return
 	}
 
@@ -278,7 +288,10 @@ func maybeAutoApproveSprintPlan(s *store.Store, cfg *config.Config, sprintID str
 	}
 
 	fmt.Printf("\n━━━ All items prepped — reviewing sprint plan ━━━\n\n")
-	SprintPlan(freshStore, cfg, sprintID)
+	if code := SprintPlan(freshStore, cfg, sprintID); code != 0 {
+		fmt.Fprintf(os.Stderr, "sprint plan analysis failed (exit %d) — sprint not auto-approved\n", code)
+		return
+	}
 
 	choice := showReviewGate(ReviewGateInfo{
 		ItemID:   sprintID,
@@ -289,6 +302,12 @@ func maybeAutoApproveSprintPlan(s *store.Store, cfg *config.Config, sprintID str
 		{"2", "Reject — leave sprint unapproved"},
 	}, engine)
 
+	// Treat Ctrl-C the same as Reject — never silently approve when
+	// the operator interrupts, and don't print the "approve later" hint
+	// (the abort signal speaks for itself).
+	if choice == "^C" {
+		return
+	}
 	if choice != "1" {
 		fmt.Printf("Sprint plan not approved — run `st sprint plan %s` to approve later\n", sprintID)
 		return
