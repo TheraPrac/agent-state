@@ -28,8 +28,10 @@ type ClassifyOpts struct {
 	Files []string
 	// DryRun prints the assembled prompt to stdout and exits without
 	// calling the model — useful for prompt iteration without burning
-	// tokens. Deny-list / cache paths still run, since they bypass
-	// the model regardless.
+	// tokens. Short-circuits before the classifier, so deny-list and
+	// cache are NOT evaluated on a dry-run: operators iterating on
+	// prompt wording want to see the prompt regardless of whether
+	// the change would otherwise hit a hard-red rule.
 	DryRun bool
 	// Model injects a Model implementation. Tests inject a stub; CLI
 	// production leaves this nil so Classify constructs the default
@@ -45,8 +47,11 @@ type ClassifyOpts struct {
 //
 //	0 — verdict computed and persisted (or dry-run prompt printed)
 //	1 — error (item not found, persist failed, model error)
-//	2 — reserved for misconfiguration sentinels (currently unused now
-//	    that the default ClaudeModel is wired)
+//	2 — misconfiguration sentinel: the classifier surfaced
+//	    classify.ErrModelNotWired. Production wiring constructs a real
+//	    ClaudeModel so this is unreachable via the CLI today, but the
+//	    sentinel path remains as defense in depth for callers (tests,
+//	    future embedders) that pass a Classifier with Model=nil.
 func Classify(s *store.Store, cfg *config.Config, id string, opts ClassifyOpts) int {
 	item, ok := s.Get(id)
 	if !ok {

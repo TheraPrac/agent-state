@@ -247,6 +247,33 @@ func TestParseModelOutput_LenientUnknownFields(t *testing.T) {
 	}
 }
 
+// TestParseModelOutput_RejectsMissingConfidence guards against a model
+// emitting verdict + reason but omitting confidence. Without this the
+// missing field would decode to 0.0 silently and look like a
+// low-confidence verdict instead of a schema violation. Symmetric
+// with the empty-reason rejection.
+func TestParseModelOutput_RejectsMissingConfidence(t *testing.T) {
+	out := `{"verdict":"green","reason":"safe doc edit"}`
+	_, err := ParseModelOutput(out)
+	if err == nil {
+		t.Fatal("expected error for missing confidence, got nil")
+	}
+	if !strings.Contains(err.Error(), "confidence") {
+		t.Errorf("err = %v; want substring 'confidence'", err)
+	}
+}
+
+// TestParseModelOutput_RejectsNullConfidence covers the JSON-null
+// case — explicitly written `"confidence": null` should fail the
+// same way as an absent field.
+func TestParseModelOutput_RejectsNullConfidence(t *testing.T) {
+	out := `{"verdict":"green","reason":"safe","confidence":null}`
+	_, err := ParseModelOutput(out)
+	if err == nil {
+		t.Fatal("expected error for null confidence, got nil")
+	}
+}
+
 // TestFindLastJSONObject_HandlesStringLiterals verifies the byte
 // scanner doesn't get tripped up by braces inside string literals.
 func TestFindLastJSONObject_HandlesStringLiterals(t *testing.T) {

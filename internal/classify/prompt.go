@@ -10,11 +10,14 @@ import (
 
 // verdictPayload is the JSON schema the model is asked to emit.
 // Decoded by ParseModelOutput; classifier validates verdict/confidence
-// before constructing a Result.
+// before constructing a Result. Confidence is *float64 (pointer) so
+// we can distinguish absent (nil) from explicit 0.0, and reject the
+// former — a model that emits a verdict without a confidence value
+// is violating the schema, not asserting low confidence.
 type verdictPayload struct {
-	Verdict    string  `json:"verdict"`
-	Reason     string  `json:"reason"`
-	Confidence float64 `json:"confidence"`
+	Verdict    string   `json:"verdict"`
+	Reason     string   `json:"reason"`
+	Confidence *float64 `json:"confidence"`
 }
 
 func decodeVerdictPayload(s string) (verdictPayload, error) {
@@ -219,8 +222,11 @@ func ParseModelOutput(out string) (Result, error) {
 	if strings.TrimSpace(parsed.Reason) == "" {
 		return Result{}, fmt.Errorf("model returned empty reason")
 	}
+	if parsed.Confidence == nil {
+		return Result{}, fmt.Errorf("model omitted required confidence field")
+	}
 
-	conf := parsed.Confidence
+	conf := *parsed.Confidence
 	if conf < 0 {
 		conf = 0
 	}

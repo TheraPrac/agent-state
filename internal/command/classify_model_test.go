@@ -96,6 +96,32 @@ func TestClaudeModel_SubprocessNonzeroExitErrors(t *testing.T) {
 	}
 }
 
+// TestClaudeModel_SubtypeNonSuccessErrors verifies that an envelope
+// with a non-"success" subtype is rejected, matching the behavior of
+// proposePlan (run.go:3371) and executeClaude (run.go:2008). Without
+// this check a "subtype":"error_during_execution" + is_error=false
+// envelope with a partial Result would be silently treated as a
+// successful classification.
+func TestClaudeModel_SubtypeNonSuccessErrors(t *testing.T) {
+	envelope := `{"type":"result","subtype":"error_during_execution","result":"{\"verdict\":\"green\",\"reason\":\"x\",\"confidence\":0.5}","is_error":false}`
+	cfg := &config.Config{}
+	m := &ClaudeModel{
+		Cfg: cfg,
+		Engine: RunEngine{
+			RunClaude: func(cwd string, args, env []string) ([]byte, int, error) {
+				return []byte(envelope), 0, nil
+			},
+		},
+	}
+	_, err := m.Classify(classify.Inputs{ItemID: "T-345"})
+	if err == nil {
+		t.Fatal("expected error for non-success subtype, got nil")
+	}
+	if !strings.Contains(err.Error(), "subtype") {
+		t.Errorf("err = %v; want substring 'subtype'", err)
+	}
+}
+
 // TestClaudeModel_EnvelopeErrorPropagates verifies that claude
 // reporting is_error=true (a model-level failure, distinct from a
 // subprocess crash) surfaces as an error rather than a phantom

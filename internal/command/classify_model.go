@@ -69,6 +69,11 @@ func (m *ClaudeModel) Classify(in classify.Inputs) (classify.Result, error) {
 	if parsed.IsError {
 		return classify.Result{}, fmt.Errorf("claude reported error: %v", parsed.Errors)
 	}
+	// Match proposePlan/executeClaude behavior: a non-empty subtype that
+	// isn't "success" is a model-side failure even when is_error is false.
+	if parsed.Subtype != "" && parsed.Subtype != "success" {
+		return classify.Result{}, fmt.Errorf("claude returned subtype %q: %v", parsed.Subtype, parsed.Errors)
+	}
 
 	res, err := classify.ParseModelOutput(parsed.Result)
 	if err != nil {
@@ -91,9 +96,17 @@ func truncateOutput(s string) string {
 // `claude -p` subprocess via DefaultRunEngine. CLI production wiring
 // calls this from Classify when opts.Model is nil. Tests inject their
 // own classify.Model via opts.Model and never hit this path.
+//
+// Forces permission mode "plan" — the classifier's only legitimate
+// output is a JSON verdict; it never needs to edit files or shell out.
+// Pinning the mode here defends against an operator running with
+// cfg.RunPermissionMode() = "dangerously-skip-permissions" globally;
+// without this override, a misbehaving model could fire tool calls
+// during classification.
 func newDefaultClaudeModel(cfg *config.Config) *ClaudeModel {
 	return &ClaudeModel{
 		Cfg:    cfg,
 		Engine: DefaultRunEngine(),
+		Opts:   RunOpts{PermissionMode: "plan"},
 	}
 }
