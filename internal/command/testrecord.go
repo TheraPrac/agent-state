@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/awsauth"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/coverage"
@@ -149,6 +150,28 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	if suiteCmd == "" {
 		fmt.Fprintf(os.Stderr, "suite %q has no command configured\n", suite)
 		return 1
+	}
+
+	// I-586: load the agent's AWS session into env vars BEFORE the
+	// preflight so the probe upload uses the right credentials.
+	// No-op when no agent identity (developer running st test --run
+	// from their own shell) or when AWS_ACCESS_KEY_ID is already set
+	// (operator sourced agent-aws-auth.sh themselves).
+	if err := awsauth.EnsureAgentSession(cfg.AgentID(), cfg.Root()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not load agent AWS session: %v\n", err)
+		// Don't fail here — let the preflight surface the resulting
+		// upload failure with its own clear message + runbook.
+	}
+
+	// I-587: preflight evidence-write. A 1-byte probe upload to a
+	// __health/preflight-* key proves the configured backend can
+	// write before we sink minutes into the test command. Hard-fail
+	// if it can't; the opt-out env var exists for offline/dev cases
+	// where deliberately recording without uploading is fine.
+	if os.Getenv("AS_SKIP_EVIDENCE_PREFLIGHT") != "1" {
+		if rc := preflightEvidenceWrite(cfg, opts); rc != 0 {
+			return rc
+		}
 	}
 
 	cmd := suiteCmd
@@ -821,4 +844,55 @@ func evidenceConfigFromCfg(cfg *config.Config) evidence.Config {
 		Backend:  "local",
 		LocalDir: cfg.EvidenceDir(),
 	}
+}
+
+// preflightEvidenceWrite verifies the configured evidence backend can
+// accept a 1-byte write before the test command runs. Returns 0 on
+// success (proceed with test); non-zero on failure (caller should
+// return that exit code).
+//
+// Why hard-fail rather than warn: the prior best-effort behavior
+// silently dropped audit logs whenever the AWS profile was misconfigured,
+// and the warning scrolled past in pages of test output. A 200-ms probe
+// surfaces the misconfiguration up-front with a clear runbook.
+func preflightEvidenceWrite(cfg *config.Config, opts TestRecordOpts) int {
+	backend := opts.Backend
+	if backend == nil {
+		var err error
+		backend, err = evidence.New(evidenceConfigFromCfg(cfg))
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"evidence preflight FAILED: backend init error: %v\n"+
+					"  set AS_SKIP_EVIDENCE_PREFLIGHT=1 to record without uploading\n",
+				err)
+			return 2
+		}
+	}
+
+	// Unique key per probe so concurrent invocations from different
+	// agents don't race. Use unix-nano + pid which is sufficient
+	// uniqueness without pulling in a uuid dependency.
+	probeKey := fmt.Sprintf("__health/preflight-%d-%d.txt", time.Now().UnixNano(), os.Getpid())
+	uri, err := backend.Upload(probeKey, strings.NewReader("ok"))
+	if err != nil {
+		backendName := "local"
+		if cfg.Evidence != nil && cfg.Evidence.Backend != "" {
+			backendName = cfg.Evidence.Backend
+		}
+		fmt.Fprintf(os.Stderr,
+			"evidence write preflight FAILED:\n"+
+				"  backend: %s\n"+
+				"  error:   %v\n"+
+				"  runbook: source theraprac-infra/scripts/agent-aws-auth.sh --name %s\n"+
+				"           (or fix the configured S3 profile / set AS_SKIP_EVIDENCE_PREFLIGHT=1 to record without uploading)\n",
+			backendName, err, cfg.AgentID())
+		return 2
+	}
+	// Best-effort cleanup so health probes don't accumulate. Don't
+	// fail the run on cleanup errors — the probe upload IS the
+	// success signal.
+	if err := backend.Delete(probeKey); err != nil {
+		fmt.Fprintf(os.Stderr, "  (note: preflight probe at %s could not be deleted: %v)\n", uri, err)
+	}
+	return 0
 }

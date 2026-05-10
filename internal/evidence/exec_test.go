@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -21,14 +22,11 @@ func TestAWSCommandEnv_ClearsProfileWhenAccessKeyPresent(t *testing.T) {
 	}
 	got := awsCommandEnv(parent)
 
-	awsProfileEntries := 0
 	regionPresent, secretPresent, tokenPresent := false, false, false
 	for _, kv := range got {
 		switch {
-		case kv == "AWS_PROFILE=":
-			awsProfileEntries++
-		case len(kv) > len("AWS_PROFILE=") && kv[:len("AWS_PROFILE=")] == "AWS_PROFILE=":
-			t.Errorf("unexpected non-empty AWS_PROFILE in env: %q", kv)
+		case strings.HasPrefix(kv, "AWS_PROFILE="):
+			t.Errorf("AWS_PROFILE should be ABSENT from child env (I-586), got %q — empty makes the aws CLI error \"config profile () could not be found\"", kv)
 		case kv == "AWS_REGION=us-east-1":
 			regionPresent = true
 		case kv == "AWS_SECRET_ACCESS_KEY=secret":
@@ -36,9 +34,6 @@ func TestAWSCommandEnv_ClearsProfileWhenAccessKeyPresent(t *testing.T) {
 		case kv == "AWS_SESSION_TOKEN=token":
 			tokenPresent = true
 		}
-	}
-	if awsProfileEntries != 1 {
-		t.Errorf("AWS_PROFILE= should appear exactly once in env, got %d", awsProfileEntries)
 	}
 	if !regionPresent || !secretPresent || !tokenPresent {
 		t.Errorf("other AWS env vars should pass through unchanged: region=%v secret=%v token=%v",
@@ -101,25 +96,17 @@ func TestAWSCommandEnv_ClearsBothProfileVars(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=AKIA...",
 	}
 	got := awsCommandEnv(parent)
-	awsProfileEmpty := false
-	awsDefaultEmpty := false
+	// I-586 update: AWS_PROFILE / AWS_DEFAULT_PROFILE must be ABSENT
+	// from the child env (not set to empty string). The aws CLI errors
+	// on AWS_PROFILE="" with "config profile () could not be found",
+	// which is exactly the symptom that drove the I-586 fix.
 	for _, kv := range got {
-		if kv == "AWS_PROFILE=" {
-			awsProfileEmpty = true
+		if strings.HasPrefix(kv, "AWS_PROFILE=") {
+			t.Errorf("AWS_PROFILE should be absent from child env, got %q (empty or otherwise)", kv)
 		}
-		if kv == "AWS_DEFAULT_PROFILE=" {
-			awsDefaultEmpty = true
+		if strings.HasPrefix(kv, "AWS_DEFAULT_PROFILE=") {
+			t.Errorf("AWS_DEFAULT_PROFILE should be absent from child env, got %q", kv)
 		}
-		if len(kv) > len("AWS_PROFILE=") && kv[:len("AWS_PROFILE=")] == "AWS_PROFILE=" {
-			t.Errorf("non-empty AWS_PROFILE in env: %q", kv)
-		}
-		if len(kv) > len("AWS_DEFAULT_PROFILE=") && kv[:len("AWS_DEFAULT_PROFILE=")] == "AWS_DEFAULT_PROFILE=" {
-			t.Errorf("non-empty AWS_DEFAULT_PROFILE in env: %q", kv)
-		}
-	}
-	if !awsProfileEmpty || !awsDefaultEmpty {
-		t.Errorf("both profile vars should be empty in child env: AWS_PROFILE=%v AWS_DEFAULT_PROFILE=%v",
-			awsProfileEmpty, awsDefaultEmpty)
 	}
 }
 
@@ -139,22 +126,20 @@ func TestHasAgentCredentials(t *testing.T) {
 	}
 }
 
-// I-507: when AWS_PROFILE is absent in the parent, the override
-// still injects an empty value so the AWS SDK has nothing to
-// resolve via profile config.
-func TestAWSCommandEnv_InjectsEmptyProfileWhenAbsent(t *testing.T) {
+// I-586: AWS_PROFILE / AWS_DEFAULT_PROFILE must be entirely ABSENT
+// (not set to ""). Setting them to empty was the original I-507
+// approach but the aws CLI errors with "config profile () could not
+// be found" when it sees AWS_PROFILE="". Absence is what makes the
+// env-var creds win.
+func TestAWSCommandEnv_OmitsProfileWhenAbsent(t *testing.T) {
 	parent := []string{
 		"PATH=/usr/bin",
 		"AWS_ACCESS_KEY_ID=AKIA...",
 	}
 	got := awsCommandEnv(parent)
-	found := false
 	for _, kv := range got {
-		if kv == "AWS_PROFILE=" {
-			found = true
+		if strings.HasPrefix(kv, "AWS_PROFILE=") || strings.HasPrefix(kv, "AWS_DEFAULT_PROFILE=") {
+			t.Errorf("AWS_PROFILE/AWS_DEFAULT_PROFILE should be absent (got %q) — empty string makes the aws CLI error", kv)
 		}
-	}
-	if !found {
-		t.Error("AWS_PROFILE= should be appended when AWS_ACCESS_KEY_ID is set, even if not present in parent")
 	}
 }

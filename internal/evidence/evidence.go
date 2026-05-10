@@ -28,6 +28,11 @@ type Backend interface {
 
 	// URI returns the canonical URI for a key (without uploading).
 	URI(key string) string
+
+	// Delete removes a single key. Used for the preflight probe so
+	// __health/preflight-* objects don't accumulate. Best-effort —
+	// callers may ignore errors.
+	Delete(key string) error
 }
 
 // Config holds evidence backend configuration.
@@ -155,6 +160,14 @@ func (b *LocalBackend) URI(key string) string {
 	return "file://" + filepath.Join(b.Dir, filepath.FromSlash(key))
 }
 
+func (b *LocalBackend) Delete(key string) error {
+	path := filepath.Join(b.Dir, filepath.FromSlash(key))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // --- S3 Backend ---
 
 // S3Backend stores evidence in an S3 bucket via the aws CLI.
@@ -257,6 +270,15 @@ func (b *S3Backend) List(prefix string) ([]string, error) {
 
 func (b *S3Backend) URI(key string) string {
 	return b.s3URI(key)
+}
+
+func (b *S3Backend) Delete(key string) error {
+	args := []string{"s3", "rm", b.s3URI(key)}
+	b.appendCommonFlags(&args)
+	if _, err := b.run(args...); err != nil {
+		return fmt.Errorf("aws s3 rm: %w", err)
+	}
+	return nil
 }
 
 func (b *S3Backend) appendCommonFlags(args *[]string) {

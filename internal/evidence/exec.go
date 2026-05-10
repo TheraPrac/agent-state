@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,6 +23,19 @@ func runAWSCLI(args ...string) (string, error) {
 	cmd := exec.Command("aws", args...)
 	cmd.Env = awsCommandEnv(os.Environ())
 	out, err := cmd.Output()
+	if err != nil {
+		// Surface the aws CLI's stderr so callers (e.g. the
+		// preflight) can show a useful diagnostic instead of just
+		// "exit status 1". *exec.ExitError carries the captured
+		// stderr in .Stderr when Output() was called (the docs are
+		// explicit about this).
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			if stderr != "" {
+				return string(out), fmt.Errorf("%w: %s", err, stderr)
+			}
+		}
+	}
 	return string(out), err
 }
 
@@ -51,14 +65,20 @@ func awsCommandEnv(parent []string) []string {
 	if !hasAccessKey {
 		return parent
 	}
-	out := make([]string, 0, len(parent)+2)
+	// I-586: drop AWS_PROFILE / AWS_DEFAULT_PROFILE entirely rather
+	// than re-adding them with an empty value. The aws CLI treats
+	// `AWS_PROFILE=` (empty string) as "look up the profile named ''
+	// in ~/.aws/config" and errors with "The config profile () could
+	// not be found". Setting them to empty was the original I-507
+	// approach but it surfaces this CLI behavior. Plain absence
+	// makes the env-var creds win as intended.
+	out := make([]string, 0, len(parent))
 	for _, kv := range parent {
 		if strings.HasPrefix(kv, "AWS_PROFILE=") || strings.HasPrefix(kv, "AWS_DEFAULT_PROFILE=") {
 			continue
 		}
 		out = append(out, kv)
 	}
-	out = append(out, "AWS_PROFILE=", "AWS_DEFAULT_PROFILE=")
 	return out
 }
 

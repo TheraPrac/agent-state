@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -726,3 +727,112 @@ var _ = filepath.Join
 var _ = os.ErrNotExist
 var _ = fmt.Errorf
 var _ manifest.PRRecord
+
+// --- Preflight (I-587) ---
+
+// preflightFakeBackend satisfies evidence.Backend with an injectable
+// Upload error so the preflight test can simulate "AWS creds expired"
+// without an actual S3 dependency.
+type preflightFakeBackend struct {
+	uploadErr   error
+	uploadCalls int
+	deleteCalls int
+}
+
+func (b *preflightFakeBackend) Upload(string, io.Reader) (string, error) {
+	b.uploadCalls++
+	return "fake://uploaded", b.uploadErr
+}
+func (b *preflightFakeBackend) Download(string, io.Writer) error { return nil }
+func (b *preflightFakeBackend) List(string) ([]string, error)    { return nil, nil }
+func (b *preflightFakeBackend) URI(k string) string              { return "fake://" + k }
+func (b *preflightFakeBackend) Delete(string) error              { b.deleteCalls++; return nil }
+
+func TestTestRunPreflight_BlocksOnUploadFailure(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	t.Setenv("AS_SKIP_EVIDENCE_PREFLIGHT", "")
+
+	fake := &preflightFakeBackend{uploadErr: fmt.Errorf("AccessDenied")}
+	opts := TestRecordOpts{
+		Run: true,
+		GitHeadSHA: func(string) (string, error) {
+			return "abc1234567890", nil
+		},
+		// Run a command that would FAIL if invoked — proves the
+		// preflight aborted before reaching the test cmd.
+		RunCmd: func(string) ([]byte, int, error) {
+			t.Fatal("RunCmd should not be invoked when preflight fails")
+			return nil, 0, nil
+		},
+		Backend: fake,
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 2 {
+		t.Errorf("returned %d, want 2 (preflight failure exit code)", code)
+	}
+	if fake.uploadCalls != 1 {
+		t.Errorf("upload calls = %d, want 1 (the preflight probe)", fake.uploadCalls)
+	}
+}
+
+func TestTestRunPreflight_OptOutEnvSkipsProbe(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	t.Setenv("AS_SKIP_EVIDENCE_PREFLIGHT", "1")
+
+	// Backend would fail upload — but with opt-out set the preflight
+	// should be skipped entirely and the test should run normally.
+	fake := &preflightFakeBackend{uploadErr: fmt.Errorf("AccessDenied")}
+	opts := TestRecordOpts{
+		Run: true,
+		GitHeadSHA: func(string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(string) ([]byte, int, error) {
+			return []byte("PASS"), 0, nil
+		},
+		Backend: fake,
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 0 {
+		t.Errorf("returned %d, want 0 (test should pass when preflight is opted out)", code)
+	}
+	// Upload was attempted for the actual test artifacts (log.txt +
+	// summary.json) but NOT for the preflight probe — so calls = 2,
+	// not 3.
+	if fake.uploadCalls != 2 {
+		t.Errorf("upload calls = %d, want 2 (log.txt + summary.json, no preflight probe)", fake.uploadCalls)
+	}
+}
+
+func TestTestRunPreflight_SuccessProceedsWithCleanup(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	t.Setenv("AS_SKIP_EVIDENCE_PREFLIGHT", "")
+
+	fake := &preflightFakeBackend{uploadErr: nil}
+	opts := TestRecordOpts{
+		Run: true,
+		GitHeadSHA: func(string) (string, error) {
+			return "abc1234567890", nil
+		},
+		RunCmd: func(string) ([]byte, int, error) {
+			return []byte("PASS"), 0, nil
+		},
+		Backend: fake,
+	}
+
+	code := TestRecord(s, cfg, "T-003", "api_unit", opts)
+	if code != 0 {
+		t.Errorf("returned %d, want 0", code)
+	}
+	// preflight: 1 upload + 1 delete; test record: 2 uploads (log + summary)
+	if fake.uploadCalls != 3 {
+		t.Errorf("upload calls = %d, want 3 (probe + log.txt + summary.json)", fake.uploadCalls)
+	}
+	if fake.deleteCalls != 1 {
+		t.Errorf("delete calls = %d, want 1 (the preflight probe cleanup)", fake.deleteCalls)
+	}
+}
+
+var _ io.Reader = (*bytes.Reader)(nil) // keep io import live
