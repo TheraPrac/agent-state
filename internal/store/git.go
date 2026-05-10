@@ -18,6 +18,18 @@ import (
 // gitLockTimeout is how long to wait for the git lock before giving up.
 const gitLockTimeout = 15 * time.Second
 
+// autoStageSubdirs is the I-575 list of agent-state subdirectories whose
+// untracked files SHOULD be picked up automatically by GitSync. This is
+// deliberately narrow — `.plans/<id>.md` files dropped by `st prep` /
+// `st start` are unambiguously agent-state and benefit nobody by sitting
+// untracked, so they're auto-staged. Item directories (issues/, tasks/,
+// archive/) are NOT in this list because peer agents' brand-new untracked
+// item files (e.g. mid-`st create`, pre-GitSync) live there and must keep
+// I-442's no-sweep protection — otherwise we re-commit them under the
+// wrong agent's attribution. Add new entries here as the agent-state
+// convention grows; never switch to `.` or `git add -A`.
+var autoStageSubdirs = []string{".plans"}
+
 // acquireGitLock takes an exclusive file lock on a .st-git.lock file
 // in the item directory. Returns an unlock function. If the lock can't
 // be acquired within gitLockTimeout, returns an error.
@@ -151,17 +163,30 @@ func restoreLockedItems(snapshots map[string][]byte) {
 }
 
 // GitSync stages, commits, and pushes changes in the item root directory.
-// Message is the commit message. Optional newPaths is the list of NEW
-// (currently-untracked) files this caller wants committed; existing
-// tracked files that the caller modified are picked up automatically
-// via `git add -u`.
+// Message is the commit message.
+//
+// What gets staged (in order):
+//  1. `git add -u` — every tracked file with modifications.
+//  2. `git add -- <sub>` for each entry in autoStageSubdirs — untracked
+//     files inside the narrow set of agent-state subdirs that are safe
+//     to auto-commit (currently just `.plans/`). I-575.
+//  3. `newPaths` (variadic, optional) — explicit absolute paths the
+//     caller knows about. Used by callers that create files in
+//     locations OUTSIDE autoStageSubdirs and outside the item-dir
+//     (e.g. `mail.Send` writing to the workspace mailbox), and as a
+//     defense-in-depth signal for any caller that wants to assert
+//     "this specific file MUST be in the commit." Files inside
+//     autoStageSubdirs no longer need to be passed here — they're
+//     picked up by step 2.
 //
 // I-442: switching from `git add -A` to `git add -u` + explicit
 // new-file paths fixes the canonical-clone bleed. The shared workspace
 // clone holds in-progress edits from peer agents on feature branches;
 // `git add -A` swept those untracked files into whatever sync command
 // happened to fire next, scrambling commit attribution. `git add -u`
-// only stages tracked-and-modified files, so peer-WIP doesn't leak.
+// stages only tracked-and-modified files, so peer-WIP elsewhere in the
+// canonical clone (and peer-untracked item files in agent-state's
+// issues/ / tasks/ / archive/ subdirs) stays untouched.
 //
 // Pre-fetches before committing to minimize conflicts. If push fails
 // (remote ahead), retries with fetch + rebuild-commit-on-fetched-main +
@@ -206,33 +231,41 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		restoreLockedItems(snap)
 	}
 
-	// Stage tracked-modified files only — peer agents' untracked WIP
-	// files in the shared canonical clone DO NOT get swept.
+	// Stage tracked-modified files anywhere in the item-dir. I-442's
+	// canonical-clone bleed protection (peer-WIP at the WORKSPACE-clone
+	// root: `.as/sessions/`, `.claude/`, build artifacts) is preserved
+	// because `git add -u` only touches already-tracked paths.
 	if err := gitCmd(root, "add", "-u"); err != nil {
 		return fmt.Errorf("git add -u: %w", err)
 	}
 
 	// I-575: also stage untracked-or-modified files inside the
-	// item-dir itself (== agent-state/). The I-442 protection above is
-	// about peer agents' WIP at the WORKSPACE-clone root (.as/sessions/,
-	// .claude/, build artifacts) — none of those live under agent-state/.
-	// New files inside agent-state/ (especially the very common case of
-	// agent-state/.plans/<id>.md plan files dropped by `st prep` or `st
-	// start`) ARE supposed to be committed. Without this, the
-	// session-stop hook keeps nagging until the operator manually
-	// `git add agent-state/.plans/<file>` themselves.
+	// agent-state plan-files subdirectory. `.plans/<id>.md` files are
+	// dropped by `st prep` and `st start` and are unambiguously
+	// agent-state — they have to land in a commit or the session-stop
+	// hook nags every turn until the operator manually
+	// `git add agent-state/.plans/<file>`.
 	//
-	// Bounding the path to `root` (== agent-state/) is what keeps the
-	// I-442 invariant intact: this command can never reach files
-	// outside the item-dir, so peer WIP in `.as/sessions/` / `.claude/`
-	// stays untracked.
-	if err := gitCmd(root, "add", "--", "."); err != nil {
-		return fmt.Errorf("git add agent-state: %w", err)
+	// IMPORTANT — narrow scope to `.plans/` ONLY, NOT the full item-dir.
+	// I-442's protection covers peer agents' brand-new untracked item
+	// files in `issues/` / `tasks/` (e.g. another agent's `st create`
+	// crashed before its own GitSync ran); those still must NOT be
+	// swept here. Add new safe subdirectories to this list explicitly
+	// as the agent-state convention evolves; do not switch to `.` or
+	// `-A`.
+	for _, sub := range autoStageSubdirs {
+		subPath := filepath.Join(root, sub)
+		if _, err := os.Stat(subPath); os.IsNotExist(err) {
+			continue
+		}
+		if err := gitCmd(root, "add", "--", sub); err != nil {
+			return fmt.Errorf("git add agent-state/%s: %w", sub, err)
+		}
 	}
 
 	// Stage explicit new files (callers that create files pass them).
-	// Reject paths outside `root` — defense in depth for the bleed
-	// this PR is fixing. A bugged caller passing a sibling agent's
+	// Reject paths outside `root` — defense in depth for the I-442
+	// canonical-clone bleed. A bugged caller passing a sibling agent's
 	// path would otherwise produce a `../..` rel and git would happily
 	// stage it. `--` defangs pathspecs that begin with `-`.
 	for _, p := range newPaths {

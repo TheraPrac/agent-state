@@ -14,6 +14,17 @@ import (
 
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
+	// Mirror production .gitignore so test commits don't pick up
+	// transient runtime files. `.st-git.lock` exists on disk during the
+	// I-575 `git add` calls because acquireGitLock holds it; without
+	// this ignore line, the auto-stage step would commit the lock file
+	// in tests and the assertions would silently disagree with what
+	// production sees. The production workspace .gitignore covers it
+	// at workspace level; tests need a local one in their temp repo.
+	gitignore := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(gitignore); os.IsNotExist(err) {
+		os.WriteFile(gitignore, []byte("**/.st-git.lock\n"), 0644)
+	}
 	git := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -120,26 +131,19 @@ func TestGitSyncNothingToCommit(t *testing.T) {
 	}
 }
 
-// I-442: GitSync MUST NOT sweep peer agents' untracked files. The
-// canonical workspace clone is shared across agents — a peer's
-// in-progress work-in-progress files (an untracked .md item another
-// agent created but hasn't synced yet) sit in the same directory tree
-// when this agent's GitSync fires. Pre-fix, `git add -A` swept those
-// untracked files into whatever sync command happened to fire next,
-// scrambling commit attribution. Now `git add -u` stages only
-// tracked-modified files, leaving untracked peer files alone.
-// I-442 + I-575: GitSync stages tracked-modified files (always), plus
-// untracked files INSIDE the item-dir (the agent-state/ root). It must
-// NOT sweep untracked files that live OUTSIDE the item-dir — that's
-// where peer agents' WIP and other workspace-root junk live (.as/sessions/,
-// .claude/, build artifacts).
+// I-442 + I-575: GitSync's auto-stage scope is deliberately narrow.
 //
-// This test uses a realistic layout: workspace root with a nested
-// agent-state/ items dir + sibling .as/ where peer-WIP lives. Pre-I-575
-// peer WIP inside the items dir was also protected, but in practice the
-// items dir contains agent-state files that ALL agents are supposed to
-// commit (e.g. .plans/<id>.md), so the post-I-575 invariant only protects
-// outside-items-dir paths. See git.go's GitSync comment block.
+// Tracked-and-modified anywhere under the item-dir is always staged
+// (via `git add -u`). Untracked files inside the autoStageSubdirs list
+// (currently just `.plans/`) are also auto-staged — that's the I-575
+// addition. Everything else stays untracked, including:
+//   - peer-WIP at the WORKSPACE root: .as/sessions/, .claude/,
+//     build artifacts (this test's primary subject)
+//   - peer-WIP item files in agent-state/issues/, /tasks/, /archive/
+//     (covered separately by TestGitSyncDoesNotSweepUntrackedPeerItemFiles)
+//
+// Test layout mirrors production: workspace root with a nested
+// agent-state/ items dir + sibling .as/ where peer-session WIP lives.
 func TestGitSyncDoesNotSweepUntrackedPeerFilesOutsideItemDir(t *testing.T) {
 	workspace := t.TempDir()
 	itemDir := filepath.Join(workspace, "agent-state")
@@ -209,10 +213,83 @@ depends_on:
 	}
 }
 
-// I-575: the inverse of the above — untracked files INSIDE the item-dir
-// (agent-state/) DO get swept into the commit. This is the very behavior
-// the issue called for: agent-state/.plans/<id>.md created by `st prep`
-// or `st start` no longer requires a manual `git add` after `st sync`.
+// I-442 + I-575: peer-agent untracked item files (e.g. agent-b ran
+// `st create` but its own GitSync was rejected before retry) live in
+// agent-state/issues/, /tasks/, or /archive/ — autoStageSubdirs
+// deliberately excludes these subdirs so this agent's GitSync does NOT
+// sweep them. Without this protection the peer's not-yet-committed
+// item file lands under the wrong agent's commit attribution. Filed
+// during PR #89 code review as a regression of the I-442 invariant
+// the original test (now repurposed for outside-item-dir paths) was
+// guarding.
+func TestGitSyncDoesNotSweepUntrackedPeerItemFiles(t *testing.T) {
+	workspace := t.TempDir()
+	itemDir := filepath.Join(workspace, "agent-state")
+	for _, dir := range []string{"tasks", "issues", "archive", ".plans"} {
+		os.MkdirAll(filepath.Join(itemDir, dir), 0755)
+	}
+	writeItem(t, filepath.Join(itemDir, "tasks", "T-001-first-task.md"), `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: First task
+
+depends_on:
+- []
+`)
+	asDir := filepath.Join(workspace, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: agent-state\n"), 0644)
+	initGitRepo(t, workspace)
+
+	cfg, _ := config.LoadFrom(filepath.Join(asDir, "config.yaml"))
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+
+	s, _ := New(cfg)
+
+	// This agent modifies a tracked item.
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	// Peer agent's mid-flight item file: created on disk but never
+	// passed to GitSync (their GitSync crashed / was rejected). Lives
+	// in issues/, NOT in .plans/.
+	peerItem := filepath.Join(itemDir, "issues", "I-999-peer-mid-create.md")
+	os.WriteFile(peerItem, []byte("id: I-999\ntype: issue\nstatus: queued\ntitle: peer mid-create\n"), 0644)
+
+	if err := s.GitSync("agent-c: update T-001"); err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
+
+	cmd := exec.Command("git", "show", "--stat", "--name-only", "HEAD")
+	cmd.Dir = workspace
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git show: %v", err)
+	}
+	body := string(out)
+
+	if !contains(body, "T-001") {
+		t.Errorf("HEAD commit should include the modified T-001 file. got:\n%s", body)
+	}
+	// The peer's item file MUST NOT be swept — that's the I-442 invariant.
+	if contains(body, "I-999") || contains(body, "peer-mid-create") {
+		t.Errorf("HEAD commit swept up a peer agent's untracked item file (I-442 regression). got:\n%s", body)
+	}
+	// And the peer's file must still exist on disk, untracked, ready
+	// for the peer agent's own next GitSync to commit.
+	if _, err := os.Stat(peerItem); err != nil {
+		t.Errorf("peer item file disappeared: %v", err)
+	}
+}
+
+// I-575: untracked files inside autoStageSubdirs (currently `.plans/`)
+// DO get swept into the commit. This is the very behavior I-575 called
+// for: agent-state/.plans/<id>.md created by `st prep` or `st start`
+// no longer requires a manual `git add` after `st sync`.
 func TestGitSyncStagesUntrackedFilesInsideItemDir(t *testing.T) {
 	workspace := t.TempDir()
 	itemDir := filepath.Join(workspace, "agent-state")
