@@ -718,6 +718,50 @@ func TestSessionLog_DropsDuplicateSubagentTurnsWithin60s(t *testing.T) {
 	}
 }
 
+// I-569: provenance-only subagent payloads (no tokens, step:subagent)
+// must NOT be silently dropped by the I-448 dedup. With all-zero token
+// tuples, every provenance marker tuple-matches every other one — the
+// pre-fix dedup would treat the second, third, ... markers as
+// duplicates and drop them, losing per-subagent attribution. The fix
+// guards the dedup behind hasTokens(payload) so zero-token markers
+// always accrue.
+func TestSessionLog_ProvenanceOnlySubagentNotDeduped(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
+
+	marker := SessionLogPayload{
+		Step: "subagent",
+		Role: "Explore",
+		// No model, no tokens — pure provenance signal.
+	}
+
+	first := marker
+	first.SessionID = "agent-aaa"
+	if code := SessionLog(env.S, env.Cfg, first); code != 0 {
+		t.Fatalf("first marker SessionLog exit=%d", code)
+	}
+
+	second := marker
+	second.SessionID = "agent-bbb"
+	if code := SessionLog(env.S, env.Cfg, second); code != 0 {
+		t.Fatalf("second marker SessionLog exit=%d", code)
+	}
+
+	third := marker
+	third.SessionID = "agent-ccc"
+	if code := SessionLog(env.S, env.Cfg, third); code != 0 {
+		t.Fatalf("third marker SessionLog exit=%d", code)
+	}
+
+	env.Reload(t)
+	item, _ := env.S.Get("T-003")
+
+	// All three markers must have accrued — turn_count == 3, not 1.
+	if got := readIntField(item, "time_tracking", "turn_count"); got != 3 {
+		t.Errorf("turn_count = %d, want 3 (provenance-only markers must not dedup)", got)
+	}
+}
+
 // --- helpers ---
 
 func assertInt(t *testing.T, item *model.Item, parent, key string, want int) {

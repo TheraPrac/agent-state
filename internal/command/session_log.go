@@ -200,7 +200,14 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		// I-441 / I-443 24-billion-token / $15K bug. Scoped to subagent
 		// payloads only so legitimate same-session same-token
 		// accumulation (rare, but seen in unit tests) is unaffected.
-		if payload.Step == "subagent" && isDuplicateRecentTurn(item, payload, capturedNow, 60) {
+		//
+		// I-569: also require hasTokens(payload). A subagent payload
+		// with all-zero tokens (e.g., a provenance-only marker, or any
+		// future caller using step:subagent purely for attribution)
+		// tuple-matches every other zero-token subagent payload and
+		// would be silently dropped — a regression vector now that
+		// I-569 has detached subagent provenance from the token sum.
+		if payload.Step == "subagent" && hasTokens(payload) && isDuplicateRecentTurn(item, payload, capturedNow, 60) {
 			fmt.Fprintf(os.Stderr,
 				"session log: dropped duplicate subagent turn for %s (cache_in=%d reg_out=%d within 60s)\n",
 				itemID, payload.CacheInTokens, payload.RegOutputTokens)
