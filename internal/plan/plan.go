@@ -40,6 +40,41 @@ func Exists(dir, id string) bool {
 	return err == nil
 }
 
+// ReportPath returns the plan-review report sidecar path for itemID.
+// I-565: when prep runs in --write-only mode, the verbose plan-review
+// narrative is saved alongside the plan as <id>.report.md.
+func ReportPath(dir, id string) string {
+	return filepath.Join(dir, id+".report.md")
+}
+
+// ReportExists checks if a plan-review report sidecar exists.
+func ReportExists(dir, id string) bool {
+	_, err := os.Stat(ReportPath(dir, id))
+	return err == nil
+}
+
+// LoadReport reads a plan-review report sidecar. Returns ("", nil) if
+// the file does not exist, mirroring Load's missing-file semantics.
+func LoadReport(dir, id string) (string, error) {
+	data, err := os.ReadFile(ReportPath(dir, id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// SaveReport writes a plan-review report sidecar verbatim, creating the
+// directory if needed.
+func SaveReport(dir, id, body string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(ReportPath(dir, id), []byte(body), 0644)
+}
+
 // Load reads a plan sidecar from .plans/<id>.md.
 // Returns nil, nil if the file does not exist.
 func Load(dir, id string) (*Plan, error) {

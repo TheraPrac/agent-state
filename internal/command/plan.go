@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
@@ -185,7 +186,9 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 }
 
 // PlanShow renders a detailed view of an item's plan-approval state plus
-// any linked plan-file paths.
+// any linked plan-file paths. I-565 extends it to inline the plan body
+// and the plan-review report (when sidecars exist) so an agent can read
+// both artifacts in one call.
 func PlanShow(s *store.Store, cfg *config.Config, id string) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -206,6 +209,34 @@ func PlanShow(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Printf("  Linked plans:\n")
 		for _, p := range item.LinkedPlans {
 			fmt.Printf("    - %s\n", p)
+		}
+	}
+
+	// I-565: inline the plan body from .plans/<id>.md if it exists.
+	plansDir := cfg.PlansDir()
+	if loaded, err := plan.Load(plansDir, id); err == nil && loaded != nil {
+		fmt.Printf("\n=== Plan: .plans/%s.md ===\n", id)
+		if loaded.RawText != "" {
+			fmt.Print(loaded.RawText)
+			if !strings.HasSuffix(loaded.RawText, "\n") {
+				fmt.Println()
+			}
+		} else {
+			fmt.Print(plan.Render(loaded))
+		}
+	}
+
+	// And the plan-review report (write-only prep produces this).
+	fmt.Printf("\n=== Report: .plans/%s.report.md ===\n", id)
+	report, err := plan.LoadReport(plansDir, id)
+	if err != nil {
+		fmt.Printf("(error loading report: %v)\n", err)
+	} else if report == "" {
+		fmt.Printf("(no report — write-only prep was not used or report was deleted)\n")
+	} else {
+		fmt.Print(report)
+		if !strings.HasSuffix(report, "\n") {
+			fmt.Println()
 		}
 	}
 	return 0

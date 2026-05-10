@@ -278,6 +278,44 @@ func TestSaveWithOptsStrictAcceptsVerifiableACs(t *testing.T) {
 	}
 }
 
+// TestSaveLoadReport round-trips a plan-review report sidecar (I-565).
+// Asserts that ReportExists is false on a fresh dir, true after
+// SaveReport, and that LoadReport returns the body verbatim.
+// Confirms a missing report gives ("", nil) — same semantics as Load.
+func TestSaveLoadReport(t *testing.T) {
+	dir := t.TempDir()
+
+	if ReportExists(dir, "T-001") {
+		t.Error("ReportExists should be false before save")
+	}
+	body, err := LoadReport(dir, "T-001")
+	if err != nil {
+		t.Fatalf("LoadReport on missing file: %v", err)
+	}
+	if body != "" {
+		t.Errorf("LoadReport on missing file = %q, want empty", body)
+	}
+
+	want := "## Recommendation\nAccept\n\n## Notes\n- Confidence: high\n"
+	if err := SaveReport(dir, "T-001", want); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if !ReportExists(dir, "T-001") {
+		t.Error("ReportExists should be true after save")
+	}
+	got, err := LoadReport(dir, "T-001")
+	if err != nil {
+		t.Fatalf("LoadReport: %v", err)
+	}
+	if got != want {
+		t.Errorf("LoadReport = %q, want %q", got, want)
+	}
+
+	if want, got := filepath.Join(dir, "T-001.report.md"), ReportPath(dir, "T-001"); want != got {
+		t.Errorf("ReportPath = %q, want %q", got, want)
+	}
+}
+
 // TestSaveWithOptsRejectedSkipsACValidation verifies that Rejected
 // plans bypass both completeness AND AC-quality checks. Drafts may
 // have empty / vague ACs while still being saved as rejection

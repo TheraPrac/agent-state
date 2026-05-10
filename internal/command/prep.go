@@ -36,6 +36,12 @@ type PrepOpts struct {
 	Model           string
 	ItemFilter      string // --item: prep only this item
 	IncludeRejected bool   // --include-rejected: re-process rejected plans
+	// WriteOnly drives prep without the interactive Accept/Reject/Chat
+	// gate. Each unplanned item produces TWO sidecar files:
+	// .plans/<id>.md (draft, plan_approved=false) and
+	// .plans/<id>.report.md (verbose plan-review narrative). Approval
+	// is then a separate step via `st plan approve <id>`. I-565.
+	WriteOnly bool
 }
 
 // PrepInteractive shows sprint selection and runs prep on the selected sprint.
@@ -133,6 +139,13 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 			if p != nil && p.Rejected && !opts.IncludeRejected {
 				continue // explicitly rejected — skip unless overridden
 			}
+			// I-565: in --write-only mode, an item with BOTH a draft
+			// plan AND a report sidecar has been fully prepped and is
+			// awaiting `st plan approve`. Skip it so re-running the
+			// same prep doesn't re-pay the LLM cost.
+			if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && plan.ReportExists(cfg.PlansDir(), itemID) {
+				continue
+			}
 		}
 		unplanned = append(unplanned, itemID)
 	}
@@ -176,7 +189,12 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 			}
 		}
 
-		result := prepItem(s, cfg, itemID, item, opts, engine, worktreeDir)
+		var result string
+		if opts.WriteOnly {
+			result = prepItemWriteOnly(s, cfg, itemID, item, opts, engine, worktreeDir)
+		} else {
+			result = prepItem(s, cfg, itemID, item, opts, engine, worktreeDir)
+		}
 		if result == "accepted" {
 			planned++
 		} else if result == "abort" {
@@ -186,7 +204,11 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 		fmt.Println()
 	}
 
-	fmt.Printf("\nPlanned %d/%d item(s)\n", planned, len(unplanned))
+	if opts.WriteOnly {
+		fmt.Printf("\nWrote %d plan(s); review reports in .plans/*.report.md; approve with `st plan approve <id>`\n", planned)
+	} else {
+		fmt.Printf("\nPlanned %d/%d item(s)\n", planned, len(unplanned))
+	}
 	return 0
 }
 
@@ -486,6 +508,124 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)
 		}
 	}
+}
+
+// prepItemWriteOnly runs plan generation + plan-review for a single
+// item without showing the interactive Accept/Reject/Chat gate. Both
+// the plan and the verbose review narrative are saved as sidecars
+// under cfg.PlansDir(). Approval is a separate gate via the existing
+// `st plan approve <id>` command. I-565.
+//
+// Returns "accepted" on success (a plan + report were saved) and
+// "rejected" on per-item failure. Per-item failures emit a `[<id>]
+// FAILED: ...` line and the caller continues with the next item.
+func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *model.Item, opts PrepOpts, engine RunEngine, worktreeDir string) string {
+	cwd := worktreeDir
+	if cwd == "" {
+		cwd = cfg.Root()
+	}
+
+	// Reuse the same draft-on-disk recovery as prepItem so a previous
+	// failed write-only run (plan saved but report missing) doesn't
+	// re-pay the plan-generation cost on retry.
+	var p *plan.Plan
+	if plan.Exists(cfg.PlansDir(), itemID) {
+		draft, _ := plan.Load(cfg.PlansDir(), itemID)
+		if draft != nil && !draft.Approved {
+			p = draft
+			if p.Rejected {
+				p.Rejected = false
+				p.RejectedAt = ""
+			}
+		}
+	}
+
+	// Generate a new plan if no usable draft exists.
+	if p == nil {
+		prompt := buildPrepPrompt(cfg, itemID, item)
+
+		runOpts := RunOpts{Model: opts.Model}
+		args := buildClaudeArgs(cfg, prompt, runOpts, cwd)
+		sessionID := generateSessionID()
+		env := []string{
+			"AS_SESSION_ID=" + sessionID,
+			"ST_RUN_ITEM=" + itemID,
+			"ST_RUN_STEP=prep",
+		}
+		if agentID := cfg.AgentID(); agentID != "" {
+			env = append(env, "AS_AGENT_ID="+agentID)
+		}
+
+		fmt.Printf("[%s] Exploring codebase and generating plan...\n", itemID)
+		output, exitCode, err := engine.RunClaude(cwd, args, env)
+		if err != nil {
+			fmt.Printf("[%s] FAILED: claude error: %v\n", itemID, err)
+			return "rejected"
+		}
+
+		planText := ""
+		claudeResult, parseErr := parseClaudeOutput(output)
+		if parseErr == nil {
+			planText = claudeResult.Result
+		} else if exitCode == 0 {
+			planText = string(output)
+		} else {
+			fmt.Printf("[%s] FAILED: claude exited %d\n", itemID, exitCode)
+			return "rejected"
+		}
+
+		p, _ = plan.Parse(planText)
+		if p == nil {
+			p = &plan.Plan{RawText: planText}
+		}
+
+		// Reload item — claude may have updated it via `st update`
+		s, _ = store.New(cfg)
+		item, _ = s.Get(itemID)
+
+		if len(p.ACs) == 0 && len(item.AcceptanceCriteria) > 0 {
+			p.ACs = item.AcceptanceCriteria
+		}
+		if len(p.ScopeRepos) == 0 {
+			p.ScopeRepos = inferRepos(cfg, p)
+		}
+
+		p.Revisions = append(p.Revisions, plan.Revision{
+			Timestamp: plan.Now(),
+			Summary:   "Initial plan generated by claude (write-only)",
+		})
+
+		if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
+			fmt.Printf("[%s] FAILED: save draft plan: %v\n", itemID, err)
+			return "rejected"
+		}
+	}
+
+	// Run the plan-review subprocess (same call shape as prepItem)
+	// but capture the narrative output to a sidecar instead of
+	// gating on the recommendation interactively.
+	reviewPrompt := buildPlanReviewPrompt(itemID, item)
+	reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+	reviewStep.SetName("plan_review")
+	runOpts := RunOpts{Model: opts.Model}
+	reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
+	if reviewSR.Error != "" && reviewSR.FullOutput == "" {
+		fmt.Printf("[%s] FAILED: plan-review error: %s\n", itemID, reviewSR.Error)
+		return "rejected"
+	}
+
+	if err := plan.SaveReport(cfg.PlansDir(), itemID, reviewSR.FullOutput); err != nil {
+		fmt.Printf("[%s] FAILED: save report: %v\n", itemID, err)
+		return "rejected"
+	}
+
+	planRel := relativePlanPath(cfg.PlansDir(), cfg.Root(), itemID)
+	reportRel := planRel
+	if strings.HasSuffix(reportRel, ".md") {
+		reportRel = strings.TrimSuffix(reportRel, ".md") + ".report.md"
+	}
+	fmt.Printf("[%s] plan saved (%s), report saved (%s), pending approval\n", itemID, planRel, reportRel)
+	return "accepted"
 }
 
 // buildPrepPrompt creates the exploration prompt for plan generation.

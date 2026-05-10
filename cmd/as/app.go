@@ -1104,11 +1104,13 @@ implement step during st run.`,
 			item, _ := cmd.Flags().GetString("item")
 			model, _ := cmd.Flags().GetString("model")
 			includeRejected, _ := cmd.Flags().GetBool("include-rejected")
+			writeOnly, _ := cmd.Flags().GetBool("write-only")
 			opts := command.PrepOpts{
 				DryRun:          dryRun,
 				Model:           model,
 				ItemFilter:      item,
 				IncludeRejected: includeRejected,
+				WriteOnly:       writeOnly,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) > 0 {
@@ -1153,6 +1155,7 @@ implement step during st run.`,
 	prepCmd.Flags().String("item", "", "prep only this item ID")
 	prepCmd.Flags().String("model", "", "model to use (overrides config)")
 	prepCmd.Flags().Bool("include-rejected", false, "re-process previously rejected plans")
+	prepCmd.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
 	root.AddCommand(prepCmd)
 
 	advanceCmd := &cobra.Command{
