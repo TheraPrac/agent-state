@@ -487,20 +487,26 @@ Evaluation order:
      secrets terraform, *.pem/*.key) — any match forces red.
   2. Cached prior verdict (cache key = sha256(inputs)) — skipped with
      --force.
-  3. LLM judge (T-345 phase 2 / I-590 — not yet wired; non-deny-list
-     classifications currently return exit code 2 with "Model not wired").`,
+  3. LLM judge — a one-shot ` + "`claude -p`" + ` subprocess that emits a
+     JSON {verdict, reason, confidence} envelope.
+
+Use --dry-run to print the assembled prompt without calling the model
+(useful for prompt iteration without burning tokens).`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			force, _ := cmd.Flags().GetBool("force")
 			files, _ := cmd.Flags().GetStringSlice("files")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			exitCode = command.Classify(appStore, appCfg, args[0], command.ClassifyOpts{
-				Force: force,
-				Files: files,
+				Force:  force,
+				Files:  files,
+				DryRun: dryRun,
 			})
 		},
 	}
 	classifyCmd.Flags().Bool("force", false, "bypass cache; re-run even when input_hash matches")
 	classifyCmd.Flags().StringSlice("files", nil, "comma-separated touched-file paths (overrides manifest-derived list)")
+	classifyCmd.Flags().Bool("dry-run", false, "print the assembled prompt and exit without calling the model")
 	root.AddCommand(classifyCmd)
 
 	readyCmd := &cobra.Command{
