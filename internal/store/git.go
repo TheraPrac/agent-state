@@ -212,6 +212,24 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		return fmt.Errorf("git add -u: %w", err)
 	}
 
+	// I-575: also stage untracked-or-modified files inside the
+	// item-dir itself (== agent-state/). The I-442 protection above is
+	// about peer agents' WIP at the WORKSPACE-clone root (.as/sessions/,
+	// .claude/, build artifacts) — none of those live under agent-state/.
+	// New files inside agent-state/ (especially the very common case of
+	// agent-state/.plans/<id>.md plan files dropped by `st prep` or `st
+	// start`) ARE supposed to be committed. Without this, the
+	// session-stop hook keeps nagging until the operator manually
+	// `git add agent-state/.plans/<file>` themselves.
+	//
+	// Bounding the path to `root` (== agent-state/) is what keeps the
+	// I-442 invariant intact: this command can never reach files
+	// outside the item-dir, so peer WIP in `.as/sessions/` / `.claude/`
+	// stays untracked.
+	if err := gitCmd(root, "add", "--", "."); err != nil {
+		return fmt.Errorf("git add agent-state: %w", err)
+	}
+
 	// Stage explicit new files (callers that create files pass them).
 	// Reject paths outside `root` — defense in depth for the bleed
 	// this PR is fixing. A bugged caller passing a sibling agent's
