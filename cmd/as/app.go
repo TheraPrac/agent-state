@@ -473,6 +473,36 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	closeCmd.Flags().Bool("force", false, "bypass gate checks")
 	root.AddCommand(closeCmd)
 
+	classifyCmd := &cobra.Command{
+		Use:   "classify <id>",
+		Short: "Run the binary autonomy classifier on an item (green/red verdict)",
+		Long: `Run the binary autonomy classifier on an item.
+
+The classifier returns a binary verdict: green (auto-run the full
+delivery loop) or red (stop and surface to operator). Verdict and
+reason are persisted under the item's classification.* fields.
+
+Evaluation order:
+  1. Static deny-list (theraprac-infra/state/, RBAC handlers, IAM/
+     secrets terraform, *.pem/*.key) — any match forces red.
+  2. Cached prior verdict (cache key = sha256(inputs)) — skipped with
+     --force.
+  3. LLM judge (T-345 phase 2 / I-590 — not yet wired; non-deny-list
+     classifications currently return exit code 2 with "Model not wired").`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			force, _ := cmd.Flags().GetBool("force")
+			files, _ := cmd.Flags().GetStringSlice("files")
+			exitCode = command.Classify(appStore, appCfg, args[0], command.ClassifyOpts{
+				Force: force,
+				Files: files,
+			})
+		},
+	}
+	classifyCmd.Flags().Bool("force", false, "bypass cache; re-run even when input_hash matches")
+	classifyCmd.Flags().StringSlice("files", nil, "comma-separated touched-file paths (overrides manifest-derived list)")
+	root.AddCommand(classifyCmd)
+
 	readyCmd := &cobra.Command{
 		Use:   "ready",
 		Short: "Show unblocked items ready to start",
