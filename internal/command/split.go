@@ -35,7 +35,7 @@ func Split(s *store.Store, cfg *config.Config, parentID string) (string, string,
 
 	// Refuse to split if the parent is already split or already done.
 	if parent.Doc != nil {
-		if v, ok := parent.Doc.GetField("scope_flags.split_decision"); ok && v == "split" {
+		if v, ok := parent.Doc.GetNestedField("scope_flags.split_decision"); ok && v == "split" {
 			return "", "", fmt.Errorf("%s is already split (scope_flags.split_decision=split)", parentID)
 		}
 	}
@@ -77,15 +77,29 @@ func Split(s *store.Store, cfg *config.Config, parentID string) (string, string,
 		return "", "", fmt.Errorf("creating Part B: %w", err)
 	}
 
-	// Stamp parent with scope_flags + resolution=split and note the
-	// children in the SBAR background.
+	// Stamp parent with scope_flags + resolution=split, close the
+	// parent, and note the children in the SBAR background.
 	if err := s.Mutate(parentID, func(it *model.Item) error {
-		it.Doc.SetField("scope_flags.full_stack", "true")
-		it.Doc.SetField("scope_flags.split_recommended", "true")
-		it.Doc.SetField("scope_flags.split_decision", "split")
-		it.Doc.SetField("scope_flags.split_into", fmt.Sprintf("%s, %s", idA, idB))
+		// I-180: scope_flags is a nested map. SetNestedField creates
+		// the parent block + indented child line so consumers reading
+		// via GetNestedField (`st show`, retrospective analysis, etc.)
+		// see the values. SetField with a dotted path would write a
+		// flat top-level key with the literal "." in the name, which
+		// nested readers wouldn't find.
+		it.Doc.SetNestedField("scope_flags.full_stack", "true")
+		it.Doc.SetNestedField("scope_flags.split_recommended", "true")
+		it.Doc.SetNestedField("scope_flags.split_decision", "split")
+		it.Doc.SetNestedField("scope_flags.split_into", fmt.Sprintf("%s, %s", idA, idB))
+		// resolution is a list field; the renderer expects each value
+		// to include the leading "- " marker since ReplaceList writes
+		// Raw verbatim. Keep the in-memory typed field aligned with
+		// what the parser would read back from that on-disk form.
 		it.Resolution = []string{"split"}
 		it.Doc.ReplaceList("resolution", []string{"- split"})
+		// Close the parent so the active queue stops surfacing it.
+		// Children carry the work going forward.
+		it.Status = "done"
+		it.Doc.SetField("status", "done")
 		// Append a note to the SBAR background pointing at the
 		// children so future readers see the lineage.
 		note := fmt.Sprintf("\n\nI-180 split: replaced by %s (Part A: backend) + %s (Part B: frontend).",

@@ -128,7 +128,7 @@ func TestPrepFullStackBanner_AcceptSplitCreatesChildren(t *testing.T) {
 	if !ok {
 		t.Fatal("parent T-001 missing after split")
 	}
-	val, _ := parent.Doc.GetField("scope_flags.split_decision")
+	val, _ := parent.Doc.GetNestedField("scope_flags.split_decision")
 	if val != "split" {
 		t.Errorf("parent scope_flags.split_decision = %q, want %q", val, "split")
 	}
@@ -164,7 +164,7 @@ func TestPrepFullStackBanner_DeclineRecordsKeptUnified(t *testing.T) {
 	if !ok {
 		t.Fatal("parent T-001 missing")
 	}
-	val, _ := parent.Doc.GetField("scope_flags.split_decision")
+	val, _ := parent.Doc.GetNestedField("scope_flags.split_decision")
 	if val != "kept-unified" {
 		t.Errorf("parent scope_flags.split_decision = %q, want %q", val, "kept-unified")
 	}

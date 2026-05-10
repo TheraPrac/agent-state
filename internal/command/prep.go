@@ -617,11 +617,14 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				// I-180: when the operator declines a SPLIT
 				// RECOMMENDATION, stamp scope_flags so retrospective
 				// analysis can correlate split-vs-unified outcomes
-				// against ci_fix rates.
+				// against ci_fix rates. SetNestedField writes a true
+				// nested block (`scope_flags:` parent + indented
+				// child) so downstream readers using GetNestedField
+				// see the values.
 				if splitCandidate {
-					item.Doc.SetField("scope_flags.full_stack", "true")
-					item.Doc.SetField("scope_flags.split_recommended", "true")
-					item.Doc.SetField("scope_flags.split_decision", "kept-unified")
+					item.Doc.SetNestedField("scope_flags.full_stack", "true")
+					item.Doc.SetNestedField("scope_flags.split_recommended", "true")
+					item.Doc.SetNestedField("scope_flags.split_decision", "kept-unified")
 				}
 				return nil
 			}); err != nil {

@@ -82,7 +82,7 @@ func TestSplit(t *testing.T) {
 		}
 		fresh, _ := store.New(cfg)
 		parent, _ := fresh.Get("T-001")
-		val, ok := parent.Doc.GetField("scope_flags.split_decision")
+		val, ok := parent.Doc.GetNestedField("scope_flags.split_decision")
 		if !ok || val != "split" {
 			t.Errorf("scope_flags.split_decision = %q (ok=%v), want %q", val, ok, "split")
 		}
