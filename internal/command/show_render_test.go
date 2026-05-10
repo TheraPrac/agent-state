@@ -178,7 +178,7 @@ func TestFormatAITurnLine_Emits1hBucketWhenNonZero(t *testing.T) {
 	line := formatAITurnLine(SessionLogPayload{
 		SessionID: "s", Model: "claude-opus-4-7",
 		CacheOutTokens: 500, CacheOut1hTokens: 300,
-	}, 0.1, CostSourceProvided, "2026-04-23T12:00:00-07:00")
+	}, 0.1, "2026-04-23T12:00:00-07:00")
 	if !strings.Contains(line, "cache_out:500") {
 		t.Errorf("missing cache_out:500 in %s", line)
 	}
@@ -189,7 +189,7 @@ func TestFormatAITurnLine_Emits1hBucketWhenNonZero(t *testing.T) {
 	// When 1h is zero, the token should NOT appear (legacy form preserved)
 	lineNo1h := formatAITurnLine(SessionLogPayload{
 		SessionID: "s", Model: "claude-opus-4-7", CacheOutTokens: 500,
-	}, 0.1, CostSourceProvided, "2026-04-23T12:00:00-07:00")
+	}, 0.1, "2026-04-23T12:00:00-07:00")
 	if strings.Contains(lineNo1h, "cache_out_1h:") {
 		t.Errorf("should omit cache_out_1h when zero, got: %s", lineNo1h)
 	}

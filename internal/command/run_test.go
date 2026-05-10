@@ -30,7 +30,7 @@ func setupRunTestEnv(t *testing.T) (*store.Store, *config.Config) {
 
 run:
   permission_mode: dangerously-skip-permissions
-  default_model: sonnet
+  default_model: claude-sonnet-4-6
   max_parallelism: 1
   default_budget_usd: 2.00
   step_order: [implement, merge, uat, approval, close]
@@ -472,7 +472,7 @@ func TestMetricsAccumulation(t *testing.T) {
 
 run:
   permission_mode: dangerously-skip-permissions
-  default_model: sonnet
+  default_model: claude-sonnet-4-6
   max_parallelism: 1
   default_budget_usd: 2.00
   step_order: [implement, code_review, approval, close]
@@ -534,23 +534,27 @@ time_tracking:
 		t.Fatal(err)
 	}
 
-	// Mock engine: implement costs $0.08, code_review costs $0.03
-	// Auto-approve gate
+	// Mock engine: implement turns send tokens that compute to ~$0.0825,
+	// code_review turns to ~$0.0325 at sonnet rates (Sonnet 4.6: input $3,
+	// output $15 per MTok). I-569 step 3 ignores TotalCostUSD on the wire
+	// and always recomputes from tokens × pricing — the fixture has to
+	// supply a usage block large enough to hit the test's $0.10 floor over
+	// the two-step run.
 	callNum := 0
 	engine := RunEngine{
 		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
 			callNum++
-			cost := 0.08
+			usage := ClaudeUsage{InputTokens: 25_000, OutputTokens: 500} // ~$0.0825
 			if callNum%2 == 0 {
-				cost = 0.03 // code_review
+				usage = ClaudeUsage{InputTokens: 10_000, OutputTokens: 200} // ~$0.033
 			}
 			result := ClaudeResult{
-				Type:         "result",
-				Subtype:      "success",
-				TotalCostUSD: cost,
-				DurationMs:   15000,
-				SessionID:    fmt.Sprintf("session-%d", callNum),
-				Result:       "done",
+				Type:       "result",
+				Subtype:    "success",
+				DurationMs: 15000,
+				SessionID:  fmt.Sprintf("session-%d", callNum),
+				Result:     "done",
+				Usage:      usage,
 			}
 			data, _ := json.Marshal(result)
 			return data, 0, nil
@@ -565,6 +569,11 @@ time_tracking:
 	opts := RunOpts{
 		ItemFilter: "T-010",
 		StepFilter: "code_review", // stop after code_review, before gate/close
+		// I-569 step 3: cost is recomputed from tokens × pricing, which
+		// requires a canonical model id. The config parser's
+		// `run.default_model` path is broken for level-1 scalars (pre-
+		// existing bug, separate from I-569), so pin the model on opts.
+		Model: "claude-sonnet-4-6",
 	}
 	code := Advance(s, cfg, "metrics-sprint", opts, engine)
 	if code != 0 {

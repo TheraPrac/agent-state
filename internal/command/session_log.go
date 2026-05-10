@@ -18,8 +18,13 @@ import (
 
 // SessionLogPayload is the per-turn metrics payload AI providers send to
 // `st session log`. All token and duration fields are for the single turn; the
-// command accrues them onto the resolved item. Legacy Claude producers can omit
-// Provider/CostSource and still get the historical behavior.
+// command accrues them onto the resolved item.
+//
+// I-569 step 3: CostUSD and CostSource are accepted on the wire (older
+// Claude Code producers still send them) but ignored. Cost is always
+// recomputed from tokens × pricing inside SessionLog so the rate table is
+// the single source of truth and migrations on price changes are
+// unnecessary.
 type SessionLogPayload struct {
 	Provider        string `json:"provider,omitempty"`
 	SessionID       string `json:"session_id"`
@@ -158,16 +163,15 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		return 0
 	}
 
-	// Compute cost if not provided. Unknown model/provider is surfaced as a
-	// warning to stderr; we still record token counts so operators can backfill
-	// later, and mark the turn's cost source as unknown instead of implying
-	// $0.00.
-	cost := payload.CostUSD
-	costSource := strings.TrimSpace(payload.CostSource)
-	if costSource == "" && cost > 0 {
-		costSource = CostSourceProvided
-	}
-	if cost == 0 && shouldComputeCost(payload) {
+	// I-569 step 3: synthetic cost is ALWAYS recomputed from tokens × the
+	// pricing rate table. payload.CostUSD and payload.CostSource are
+	// accepted on the wire (back-compat for older producers) but ignored
+	// in logic — the only authoritative source is `pricing.ComputeCost`,
+	// and unknown model just means cost stays at 0 for this turn (no
+	// per-turn "unknown" bookkeeping; the absence is derivable from
+	// non-zero tokens with zero cost).
+	var cost float64
+	if shouldComputeCost(payload) {
 		computed, err := pricing.ComputeCost(
 			payload.Model,
 			payload.RegInputTokens, payload.RegOutputTokens,
@@ -175,27 +179,22 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "session log: %v (tokens recorded without cost)\n", err)
-			costSource = CostSourceUnknown
 		} else {
 			cost = computed
-			costSource = CostSourceComputed
 		}
-	} else if cost == 0 && hasTokens(payload) && costSource == "" {
-		costSource = CostSourceUnknown
 	}
 
 	// Capture computed values for the Mutate closure (cost computation is
 	// done above — pure arithmetic, no I/O — so it's safe to run before
 	// acquiring the lock).
 	capturedCost := cost
-	capturedCostSource := costSource
 	capturedNow := time.Now().Format(time.RFC3339)
 	toucher := cfg.AgentID()
 	if toucher == "" {
 		toucher = "stop-hook"
 	}
 	capturedToucher := toucher
-	capturedTurnLine := formatAITurnLine(payload, capturedCost, capturedCostSource, capturedNow)
+	capturedTurnLine := formatAITurnLine(payload, capturedCost, capturedNow)
 
 	if err := s.Mutate(itemID, func(item *model.Item) error {
 		// I-448: drop tuple-identical SUBAGENT turns within the last 60s.
@@ -262,15 +261,10 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		if capturedCost > 0 {
 			// 6-decimal precision matches by_model cost precision so the two
 			// aggregates don't drift apart across round-trips. See formatByModelLine.
+			// I-569 step 5 will move this to render-time (computed from
+			// real_tokens × current rates instead of accumulated).
 			item.SetNested("time_tracking", "ai_cost_usd",
 				fmt.Sprintf("%.6f", readFloatField(item, "time_tracking", "ai_cost_usd")+capturedCost))
-		}
-		if capturedCostSource != "" {
-			item.SetNested("time_tracking", "last_cost_source", capturedCostSource)
-			if capturedCostSource == CostSourceUnknown {
-				item.SetNested("time_tracking", "unknown_cost_turns",
-					fmt.Sprintf("%d", readIntField(item, "time_tracking", "unknown_cost_turns")+1))
-			}
 		}
 
 		item.SetNested("time_tracking", "turn_count",
@@ -310,7 +304,7 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		// Upsert per-provider/model aggregate. Historical entries without Provider
 		// keep their model-only key for backwards compatibility.
 		if payload.Model != "" {
-			upsertByModel(item, payload, capturedCost, capturedCostSource)
+			upsertByModel(item, payload, capturedCost)
 		}
 
 		// I-569 step 2: canonical real_tokens block, plus per-step and
@@ -347,7 +341,14 @@ type byModelAggregate struct {
 // upsertByModel finds the existing provider/model line under
 // time_tracking.by_model (if any), adds the payload's deltas, and writes the
 // updated line back. If no line exists, it appends a new one.
-func upsertByModel(item *model.Item, p SessionLogPayload, cost float64, costSource string) {
+//
+// I-569 step 3: no longer takes a cost source. Per-turn unknown_cost_turns
+// tracking has been retired — a turn with non-zero tokens and zero cost is
+// implicitly "unknown" and stats can derive that on demand. Existing
+// unknown_cost_turns values on legacy by_model lines remain readable
+// (parseByModelLine still accepts them) but are not incremented going
+// forward.
+func upsertByModel(item *model.Item, p SessionLogPayload, cost float64) {
 	key := providerModelKey(p)
 	existing := readByModel(item, key)
 	existing.Turns++
@@ -356,9 +357,6 @@ func upsertByModel(item *model.Item, p SessionLogPayload, cost float64, costSour
 	existing.CacheIn += p.CacheInTokens
 	existing.CacheOut += p.CacheOutTokens + p.CacheOut1hTokens // aggregate total cache writes per model
 	existing.Cost += cost
-	if costSource == CostSourceUnknown {
-		existing.UnknownCostTurns++
-	}
 
 	line := formatByModelLine(key, existing)
 
@@ -521,7 +519,11 @@ func updateListLine(item *model.Item, parent, key string, match func(raw string)
 // formatAITurnLine produces the provenance line appended to time_tracking.ai_turns.
 // Format is space-separated key:value pairs — grep-friendly and stable enough to
 // be parsed by downstream reporting without a dedicated parser.
-func formatAITurnLine(p SessionLogPayload, cost float64, costSource string, at string) string {
+//
+// I-569 step 3: cost source is no longer tracked. cost: always renders as
+// $%.6f (zero when not computable). The implicit "unknown" signal — non-zero
+// tokens with zero cost — is derivable by any consumer that cares.
+func formatAITurnLine(p SessionLogPayload, cost float64, at string) string {
 	step := p.Step
 	if step == "" {
 		step = "interactive"
@@ -542,14 +544,7 @@ func formatAITurnLine(p SessionLogPayload, cost float64, costSource string, at s
 	if p.ResponseID != "" {
 		sb.WriteString(fmt.Sprintf("response:%s ", p.ResponseID))
 	}
-	costText := fmt.Sprintf("$%.6f", cost)
-	if costSource == CostSourceUnknown {
-		costText = "unknown"
-	}
-	sb.WriteString(fmt.Sprintf("session:%s model:%s cost:%s", sid, p.Model, costText))
-	if costSource != "" {
-		sb.WriteString(fmt.Sprintf(" cost_source:%s", costSource))
-	}
+	sb.WriteString(fmt.Sprintf("session:%s model:%s cost:$%.6f", sid, p.Model, cost))
 	sb.WriteString(fmt.Sprintf(" process:%ds ai:%ds reg_in:%d reg_out:%d cache_in:%d cache_out:%d",
 		p.ProcessMs/1000, p.AIMs/1000,
 		p.RegInputTokens, p.RegOutputTokens,
