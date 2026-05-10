@@ -55,11 +55,19 @@ type SessionCache struct {
 //     operator sourced agent-aws-auth.sh themselves, or the agent
 //     parent process did)
 //
+// `workspaceRoot` is the agent's workspace path (e.g., the result of
+// cfg.Root() — typically `/.../theraprac-agent-X/theraprac-workspace`).
+// theraprac-infra is expected as a sibling of that root, and the
+// refresh script is resolved as `<sibling-dir>/theraprac-infra/scripts/agent-aws-auth.sh`.
+// Pass "" to fall back to a CWD walk (used by tests; risks finding a
+// stray theraprac-infra elsewhere in the path, so callers should
+// supply the workspace root whenever they have one).
+//
 // Returns nil success, or an error describing why the session
 // couldn't be loaded. Callers decide whether to fail-loud or fall
 // through (e.g., the evidence preflight in testrecord.go fails the
 // run; an interactive `st show` might choose to keep going).
-func EnsureAgentSession(agentName string) error {
+func EnsureAgentSession(agentName, workspaceRoot string) error {
 	if agentName == "" {
 		return nil
 	}
@@ -73,7 +81,7 @@ func EnsureAgentSession(agentName string) error {
 		return fmt.Errorf("read agent session cache: %w", err)
 	}
 	if !ok || needsRefresh(cache) {
-		if err := refreshSession(agentName); err != nil {
+		if err := refreshSession(agentName, workspaceRoot); err != nil {
 			return fmt.Errorf("refresh agent session via agent-aws-auth.sh: %w", err)
 		}
 		cache, ok, err = readSessionCache(agentName)
@@ -144,13 +152,13 @@ func needsRefresh(c SessionCache) bool {
 // where agent-aws-auth.sh lives. Indirection so tests can swap it.
 var refreshScript = "theraprac-infra/scripts/agent-aws-auth.sh"
 
-// agentWorkspaceRoot returns the parent directory of the workspace
-// (e.g., /Users/.../theraprac-agent-a) where theraprac-infra is
-// expected to live as a sibling to theraprac-workspace. Falls back to
-// CWD walking if the env var is unset.
+// agentWorkspaceRoot is the CWD-walk fallback used when the caller
+// can't supply an explicit workspaceRoot. Risk: if the developer has
+// a personal theraprac-infra checkout above CWD on the path, the
+// walker will find it and exec the wrong script. Prefer passing
+// workspaceRoot to refreshSession when the caller has access to
+// cfg.Root().
 var agentWorkspaceRoot = func() string {
-	// CWD is typically the workspace, infra is a sibling. Walk up
-	// looking for theraprac-infra/scripts/agent-aws-auth.sh.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ""
@@ -163,8 +171,28 @@ var agentWorkspaceRoot = func() string {
 	return ""
 }
 
-func refreshSession(agentName string) error {
-	root := agentWorkspaceRoot()
+// resolveScriptDir picks the directory to look for theraprac-infra in.
+// Prefers the caller-supplied workspaceRoot's parent (the canonical
+// agent root, e.g., /.../theraprac-agent-X) so we never resolve to a
+// stray theraprac-infra elsewhere on the filesystem path. Falls back
+// to the CWD walk only when no workspaceRoot is supplied (tests).
+func resolveScriptDir(workspaceRoot string) string {
+	if workspaceRoot != "" {
+		// theraprac-infra is a sibling of theraprac-workspace under
+		// the agent root, so candidate = parent of workspaceRoot.
+		candidate := filepath.Dir(workspaceRoot)
+		if _, err := os.Stat(filepath.Join(candidate, refreshScript)); err == nil {
+			return candidate
+		}
+		// workspaceRoot was supplied but infra isn't a sibling —
+		// fall through to the CWD walk rather than fail; lets a
+		// nonstandard layout still work, with the documented risk.
+	}
+	return agentWorkspaceRoot()
+}
+
+func refreshSession(agentName, workspaceRoot string) error {
+	root := resolveScriptDir(workspaceRoot)
 	if root == "" {
 		return fmt.Errorf("could not locate %s — is theraprac-infra checked out as a sibling of the agent workspace?", refreshScript)
 	}

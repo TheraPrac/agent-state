@@ -108,13 +108,6 @@ func TestAWSCommandEnv_ClearsBothProfileVars(t *testing.T) {
 			t.Errorf("AWS_DEFAULT_PROFILE should be absent from child env, got %q", kv)
 		}
 	}
-	_ = parent
-	// Suppress old vars that the original assertion referenced.
-	awsProfileEmpty, awsDefaultEmpty := true, true
-	if !awsProfileEmpty || !awsDefaultEmpty {
-		t.Errorf("both profile vars should be empty in child env: AWS_PROFILE=%v AWS_DEFAULT_PROFILE=%v",
-			awsProfileEmpty, awsDefaultEmpty)
-	}
 }
 
 // I-507 (review fix): HasAgentCredentials reports whether the

@@ -157,7 +157,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	// No-op when no agent identity (developer running st test --run
 	// from their own shell) or when AWS_ACCESS_KEY_ID is already set
 	// (operator sourced agent-aws-auth.sh themselves).
-	if err := awsauth.EnsureAgentSession(cfg.AgentID()); err != nil {
+	if err := awsauth.EnsureAgentSession(cfg.AgentID(), cfg.Root()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load agent AWS session: %v\n", err)
 		// Don't fail here — let the preflight surface the resulting
 		// upload failure with its own clear message + runbook.
