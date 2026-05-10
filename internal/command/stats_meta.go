@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/pricing"
 )
 
 // StatsMetaOpts holds flags for `st stats meta`.
@@ -251,25 +252,36 @@ func buildMetaReport(entries []orphanLogEntry, cutoff time.Time, agentFilter, gr
 			e.Payload.CacheOutTokens + e.Payload.CacheOut1hTokens
 		outTok := e.Payload.RegOutputTokens
 
+		// I-569 step 7: synthetic cost computed on demand per-turn from
+		// pricing × tokens. The orphan log used to carry e.Payload.CostUSD
+		// from the producer; that field is ignored everywhere now (step 3).
+		// Unknown model means cost contributes 0 to the row but the turn
+		// still counts (no UnknownCost bookkeeping — derivable from
+		// non-zero tokens with zero cost).
+		cost := 0.0
+		if e.Payload.Model != "" {
+			if c, err := pricing.EstimateSyntheticCostUSD(
+				e.Payload.Model,
+				e.Payload.RegInputTokens, e.Payload.RegOutputTokens,
+				e.Payload.CacheInTokens, e.Payload.CacheOutTokens, e.Payload.CacheOut1hTokens,
+			); err == nil {
+				cost = c
+			}
+		}
+
 		row.Turns++
 		row.ProcessSeconds += e.Payload.ProcessMs / 1000
 		row.AISeconds += e.Payload.AIMs / 1000
-		row.CostUSD += e.Payload.CostUSD
+		row.CostUSD += cost
 		row.InputTokens += inTok
 		row.OutputTokens += outTok
-		if e.Payload.CostSource == CostSourceUnknown {
-			row.UnknownCost++
-		}
 
 		total.Turns++
 		total.ProcessSeconds += e.Payload.ProcessMs / 1000
 		total.AISeconds += e.Payload.AIMs / 1000
-		total.CostUSD += e.Payload.CostUSD
+		total.CostUSD += cost
 		total.InputTokens += inTok
 		total.OutputTokens += outTok
-		if e.Payload.CostSource == CostSourceUnknown {
-			total.UnknownCost++
-		}
 	}
 	total.Key = "total"
 

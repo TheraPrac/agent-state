@@ -104,9 +104,14 @@ func TestStatsMeta_GroupsByAgent(t *testing.T) {
 	for _, row := range r.Rows {
 		rowsByKey[row.Key] = row
 	}
+	// I-569 step 7: cost is recomputed on demand from tokens × pricing,
+	// not pulled from the (now-ignored) payload.CostUSD. agent-a turns:
+	//   opus 1000in/500out  = 1000×$5/M  + 500×$25/M = $0.0175
+	//   haiku 500in/200out  = 500×$1/M   + 200×$5/M  = $0.0015
+	//   total                                          $0.0190
 	a := rowsByKey["agent-a"]
-	if a.Turns != 2 || a.ProcessSeconds != 90 || a.CostUSD < 0.59 || a.CostUSD > 0.61 {
-		t.Errorf("agent-a row = %+v, want turns=2 process=90 cost~0.60", a)
+	if a.Turns != 2 || a.ProcessSeconds != 90 || a.CostUSD < 0.018 || a.CostUSD > 0.020 {
+		t.Errorf("agent-a row = %+v, want turns=2 process=90 cost~0.019 (recomputed from tokens)", a)
 	}
 	b := rowsByKey["agent-b"]
 	if b.Turns != 1 || b.ProcessSeconds != 45 {
@@ -346,7 +351,12 @@ func TestStatsMeta_TextRendersHeaderAndRows(t *testing.T) {
 	env := testutil.NewEnv(t)
 	dir := env.Cfg.SessionsDir()
 	now := time.Now().UTC().Format(time.RFC3339)
-	writeOrphan(t, dir, "agent-a", now, SessionLogPayload{Model: "x", ProcessMs: 600_000, CostUSD: 1.50, CostSource: CostSourceProvided})
+	// I-569 step 7: cost is recomputed from tokens × pricing. Use a real
+	// model id and tokens that compute to $1.50 at opus rates: 300_000 in
+	// → 300_000 × $5/M = $1.50.
+	writeOrphan(t, dir, "agent-a", now, SessionLogPayload{
+		Model: "claude-opus-4-7", ProcessMs: 600_000, RegInputTokens: 300_000,
+	})
 
 	out := captureStdout(t, func() {
 		StatsMeta(env.Cfg, StatsMetaOpts{Since: "7d"})
