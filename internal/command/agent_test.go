@@ -82,6 +82,81 @@ func TestAgentBootstrapRunsSelectedScripts(t *testing.T) {
 	}
 }
 
+// I-560: AgentBootstrap prints exactly one canonical flow-level
+// completion marker after both step scripts succeed, so monitoring
+// scripts can grep one unambiguous line for "the wrapped flow
+// finished" instead of seeing "Bootstrap complete." twice (once per
+// step) and not knowing which marker to anchor on.
+func TestAgentBootstrapPrintsFlowCompletionMarker(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	scriptsDir := fakeAgentScripts(t)
+	t.Setenv("ST_AGENT_SCRIPTS_DIR", scriptsDir)
+
+	stdout := captureStdout(t, func() {
+		code := AgentBootstrap(cfg, AgentBootstrapOpts{Name: "agent-d"})
+		if code != 0 {
+			t.Fatalf("AgentBootstrap returned %d", code)
+		}
+	})
+
+	want := "agent bootstrap complete: agent-d (aws=ok gh=ok)"
+	if !strings.Contains(stdout, want) {
+		t.Errorf("missing flow-level marker %q:\n%s", want, stdout)
+	}
+	if got := strings.Count(stdout, "agent bootstrap complete:"); got != 1 {
+		t.Errorf("flow-level marker should appear exactly once; got %d:\n%s", got, stdout)
+	}
+}
+
+// I-560: --skip-gh / --skip-aws produce a "skipped" state in the
+// completion marker so an operator can tell at a glance which halves
+// of the flow ran. Verifies the wrapper's state-tracking honors the
+// opt-out flags.
+func TestAgentBootstrapSkipFlagShowsSkippedInCompletionMarker(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	scriptsDir := fakeAgentScripts(t)
+	t.Setenv("ST_AGENT_SCRIPTS_DIR", scriptsDir)
+
+	stdout := captureStdout(t, func() {
+		code := AgentBootstrap(cfg, AgentBootstrapOpts{Name: "agent-d", SkipGH: true})
+		if code != 0 {
+			t.Fatalf("AgentBootstrap returned %d", code)
+		}
+	})
+
+	want := "agent bootstrap complete: agent-d (aws=ok gh=skipped)"
+	if !strings.Contains(stdout, want) {
+		t.Errorf("missing flow-level marker %q:\n%s", want, stdout)
+	}
+}
+
+// I-560: a step-script failure short-circuits before the marker prints,
+// so a non-zero exit + missing marker means "the flow did not finish."
+// Critical invariant for monitoring scripts: presence of the marker
+// means full success, absence means "do not treat this run as done."
+func TestAgentBootstrapNoCompletionMarkerOnFailure(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	scriptsDir := fakeAgentScripts(t)
+	// Overwrite the gh script to fail so the AWS step succeeds but
+	// the GH step short-circuits before the marker.
+	writeExecutable(t, filepath.Join(scriptsDir, "agent-bootstrap-gh.sh"), `#!/usr/bin/env bash
+echo "GH $* (simulated failure)"
+exit 1
+`)
+	t.Setenv("ST_AGENT_SCRIPTS_DIR", scriptsDir)
+
+	stdout := captureStdout(t, func() {
+		code := AgentBootstrap(cfg, AgentBootstrapOpts{Name: "agent-d"})
+		if code == 0 {
+			t.Fatalf("expected non-zero exit on script failure, got 0")
+		}
+	})
+
+	if strings.Contains(stdout, "agent bootstrap complete:") {
+		t.Errorf("flow-level marker must NOT print on failure:\n%s", stdout)
+	}
+}
+
 func TestAgentAutoAuthBestEffort(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	scriptsDir := fakeAgentScripts(t)

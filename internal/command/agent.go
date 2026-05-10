@@ -82,6 +82,9 @@ func AgentBootstrap(cfg *config.Config, opts AgentBootstrapOpts) int {
 		return 1
 	}
 
+	awsState := "skipped"
+	ghState := "skipped"
+
 	if !opts.SkipAWS {
 		args := []string{"--name", name}
 		if opts.RotateKey {
@@ -93,6 +96,7 @@ func AgentBootstrap(cfg *config.Config, opts AgentBootstrapOpts) int {
 		if code := runAgentScript(filepath.Join(dir, "agent-bootstrap-aws.sh"), args, os.Stdout, os.Stderr); code != 0 {
 			return code
 		}
+		awsState = "ok"
 	}
 
 	if !opts.SkipGH {
@@ -109,8 +113,16 @@ func AgentBootstrap(cfg *config.Config, opts AgentBootstrapOpts) int {
 		if code := runAgentScript(filepath.Join(dir, "agent-bootstrap-gh.sh"), args, os.Stdout, os.Stderr); code != 0 {
 			return code
 		}
+		ghState = "ok"
 	}
 
+	// I-560: single flow-level completion marker. The step scripts
+	// print step-level markers ("AWS step complete." / "GitHub step
+	// complete."); this is the one canonical line monitoring/watcher
+	// scripts can grep to know the wrapped flow finished. Failure
+	// short-circuits earlier and never reaches this line, so an exit
+	// code of 0 plus this marker means full success.
+	fmt.Fprintf(os.Stdout, "agent bootstrap complete: %s (aws=%s gh=%s)\n", name, awsState, ghState)
 	return 0
 }
 
