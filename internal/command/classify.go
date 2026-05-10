@@ -26,10 +26,16 @@ type ClassifyOpts struct {
 	// command reads files from the item's manifest. Used for testing
 	// the deny-list path without staging a real branch diff.
 	Files []string
-	// Model injects a Model implementation. Production wiring leaves
-	// this nil — phase 1 of T-345 ships without a real Model, so any
-	// non-deny-list classification returns ErrModelNotWired until
-	// I-590 (phase 2) lands.
+	// DryRun prints the assembled prompt to stdout and exits without
+	// calling the model — useful for prompt iteration without burning
+	// tokens. Short-circuits before the classifier, so deny-list and
+	// cache are NOT evaluated on a dry-run: operators iterating on
+	// prompt wording want to see the prompt regardless of whether
+	// the change would otherwise hit a hard-red rule.
+	DryRun bool
+	// Model injects a Model implementation. Tests inject a stub; CLI
+	// production leaves this nil so Classify constructs the default
+	// ClaudeModel via newDefaultClaudeModel (uses DefaultRunEngine).
 	Model classify.Model
 }
 
@@ -39,10 +45,13 @@ type ClassifyOpts struct {
 //
 // Return codes:
 //
-//	0 — verdict computed and persisted
+//	0 — verdict computed and persisted (or dry-run prompt printed)
 //	1 — error (item not found, persist failed, model error)
-//	2 — Model not wired (phase-2 sentinel; not a hard error, see
-//	    classify.ErrModelNotWired)
+//	2 — misconfiguration sentinel: the classifier surfaced
+//	    classify.ErrModelNotWired. Production wiring constructs a real
+//	    ClaudeModel so this is unreachable via the CLI today, but the
+//	    sentinel path remains as defense in depth for callers (tests,
+//	    future embedders) that pass a Classifier with Model=nil.
 func Classify(s *store.Store, cfg *config.Config, id string, opts ClassifyOpts) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -53,9 +62,19 @@ func Classify(s *store.Store, cfg *config.Config, id string, opts ClassifyOpts) 
 	in := buildClassifyInputs(cfg, id, item, opts.Files)
 	cached := readCachedResult(item)
 
+	if opts.DryRun {
+		fmt.Println(classify.BuildPrompt(in, nil))
+		return 0
+	}
+
+	model := opts.Model
+	if model == nil {
+		model = newDefaultClaudeModel(cfg)
+	}
+
 	classifier := classify.Classifier{
 		DenyList: classify.HardRedPatterns,
-		Model:    opts.Model,
+		Model:    model,
 	}
 
 	res, err := classifier.Classify(in, cached, opts.Force)

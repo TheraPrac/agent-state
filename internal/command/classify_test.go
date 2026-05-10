@@ -1,6 +1,7 @@
 package command
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,26 +46,92 @@ func TestClassify_DenyListPersists(t *testing.T) {
 	}
 }
 
-// TestClassify_ModelNotWiredReturnsRC2 covers the phase-1 sentinel:
-// when no deny-list pattern matches and no Model is wired (production
-// state today), Classify exits 2 with a "Model not wired" diagnostic.
-// This is intentionally separate from rc=1 (real error) so callers
-// can distinguish "feature pending" from "broken".
-func TestClassify_ModelNotWiredReturnsRC2(t *testing.T) {
+// stubClassifyModel returns a fixed Result for command-level tests so
+// the real claude -p subprocess is never invoked from `go test`. The
+// phase-1 path that returned ErrModelNotWired no longer exists in the
+// default wiring (production now constructs a real ClaudeModel), so
+// all command-level Classify tests must inject this stub.
+type stubClassifyModel struct {
+	res classify.Result
+	err error
+}
+
+func (m *stubClassifyModel) Classify(in classify.Inputs) (classify.Result, error) {
+	if m.err != nil {
+		return classify.Result{}, m.err
+	}
+	return m.res, nil
+}
+
+// TestClassify_ModelPathPersists verifies the model branch — when the
+// deny-list does not short-circuit and a Model is provided, the
+// returned verdict is persisted to the item file.
+func TestClassify_ModelPathPersists(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
+	stub := &stubClassifyModel{res: classify.Result{
+		Verdict:      classify.VerdictGreen,
+		Reason:       "small refactor, well-tested",
+		Confidence:   0.85,
+		ClassifiedBy: "model:claude",
+	}}
 	rc := Classify(s, cfg, "T-001", ClassifyOpts{
 		Files: []string{"theraprac-api/internal/billing/stripe.go"},
+		Model: stub,
 	})
-	if rc != 2 {
-		t.Errorf("Classify rc = %d; want 2 (Model not wired)", rc)
+	if rc != 0 {
+		t.Fatalf("Classify rc = %d; want 0", rc)
 	}
 
-	// Verdict should NOT have been persisted when the classifier
-	// errors out — partial state would mislead T-346's `st decide`.
+	item, _ := s.Get("T-001")
+	verdict, _ := item.Doc.GetNestedField("classification.verdict")
+	if verdict != "green" {
+		t.Errorf("classification.verdict = %q; want green", verdict)
+	}
+	reason, _ := item.Doc.GetNestedField("classification.reason")
+	if !strings.Contains(reason, "small refactor") {
+		t.Errorf("reason = %q; want substring 'small refactor'", reason)
+	}
+}
+
+// TestClassify_ModelErrorReturnsRC1 covers the model-failure path —
+// if Model.Classify returns an error, rc=1 and nothing is persisted.
+func TestClassify_ModelErrorReturnsRC1(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	stub := &stubClassifyModel{err: fmt.Errorf("simulated model failure")}
+	rc := Classify(s, cfg, "T-001", ClassifyOpts{
+		Files: []string{"theraprac-api/internal/billing/stripe.go"},
+		Model: stub,
+	})
+	if rc != 1 {
+		t.Errorf("Classify rc = %d; want 1 (model error)", rc)
+	}
+
 	item, _ := s.Get("T-001")
 	if verdict, _ := item.Doc.GetNestedField("classification.verdict"); verdict != "" {
-		t.Errorf("classification.verdict = %q; want empty (no persistence on error)", verdict)
+		t.Errorf("classification.verdict = %q; want empty (no persistence on model error)", verdict)
+	}
+}
+
+// TestClassify_DryRunPrintsPromptAndSkipsModel covers --dry-run: the
+// command exits 0 without consulting the model and without persisting
+// a verdict.
+func TestClassify_DryRunPrintsPromptAndSkipsModel(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	stub := &stubClassifyModel{err: fmt.Errorf("model should not be called in dry-run")}
+	rc := Classify(s, cfg, "T-001", ClassifyOpts{
+		Files:  []string{"docs/README.md"},
+		DryRun: true,
+		Model:  stub, // dry-run must short-circuit before consulting Model
+	})
+	if rc != 0 {
+		t.Fatalf("Classify rc = %d; want 0 (dry-run)", rc)
+	}
+	item, _ := s.Get("T-001")
+	if verdict, _ := item.Doc.GetNestedField("classification.verdict"); verdict != "" {
+		t.Errorf("classification.verdict = %q; want empty (dry-run should not persist)", verdict)
 	}
 }
 
