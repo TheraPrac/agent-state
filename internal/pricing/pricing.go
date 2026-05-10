@@ -123,10 +123,10 @@ func EstimateSyntheticCostBreakdown(model string, regIn, regOut, cacheIn, cacheO
 	return b, nil
 }
 
-// ComputeCost is kept as a thin alias to EstimateSyntheticCostUSD during the
-// I-569 transition. New call sites use the explicit name; legacy callers
-// (run.go, the recompute-tokens binary) compile unchanged. Step 10 removes
-// the alias.
+// ComputeCost is kept as a thin alias to EstimateSyntheticCostUSD. All
+// internal call sites have already moved to the explicit name; the alias
+// only exists for any out-of-tree consumer compiled against the old API.
+// Safe to delete once that audit completes.
 //
 // Deprecated: use EstimateSyntheticCostUSD.
 func ComputeCost(model string, regIn, regOut, cacheIn, cacheOut5m, cacheOut1h int) (float64, error) {

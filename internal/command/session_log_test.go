@@ -39,8 +39,16 @@ func TestSessionLog_BasicAccrual(t *testing.T) {
 	assertInt(t, item, "time_tracking", "reg_output_tokens", 500)
 	assertInt(t, item, "time_tracking", "cache_in_tokens", 10_000)
 	assertInt(t, item, "time_tracking", "cache_out_tokens", 200)
-	assertInt(t, item, "time_tracking", "total_input_tokens", 1000+10_000+200)
-	assertInt(t, item, "time_tracking", "total_output_tokens", 500)
+	// I-569 finding-3: total_input_tokens / total_output_tokens are no
+	// longer written (migrate-strip-cost retired them; SessionLog stopped
+	// resurrecting them on the next turn). real_tokens has the same data.
+	rt := readRealTokens(item)
+	if got := rt.Input + rt.CacheRead + rt.CacheCreation5m; got != 1000+10_000+200 {
+		t.Errorf("real_tokens input+cache total = %d, want %d", got, 1000+10_000+200)
+	}
+	if rt.Output != 500 {
+		t.Errorf("real_tokens.output = %d, want 500", rt.Output)
+	}
 	assertInt(t, item, "time_tracking", "turn_count", 1)
 	assertInt(t, item, "time_tracking", "session_count", 1)
 	assertString(t, item, "time_tracking", "last_session", "sess-1")
@@ -436,8 +444,12 @@ func TestSessionLog_1hCacheTierAccruedAndPriced(t *testing.T) {
 
 	assertInt(t, item, "time_tracking", "cache_out_tokens", 100_000)
 	assertInt(t, item, "time_tracking", "cache_out_1h_tokens", 50_000)
-	// total_input_tokens = reg_in + cache_in + cache_out + cache_out_1h
-	assertInt(t, item, "time_tracking", "total_input_tokens", 150_000)
+	// I-569 finding-3: total_input_tokens retired in favor of real_tokens.
+	rt := readRealTokens(item)
+	if rt.CacheCreation5m != 100_000 || rt.CacheCreation1h != 50_000 {
+		t.Errorf("real_tokens cache split = (5m:%d, 1h:%d), want (100000, 50000)",
+			rt.CacheCreation5m, rt.CacheCreation1h)
+	}
 
 	cost := readFloatField(item, "time_tracking", "ai_cost_usd")
 	want := 1.125
@@ -689,6 +701,10 @@ func TestSessionLog_DropsDuplicateSubagentTurnsWithin60s(t *testing.T) {
 		RegOutputTokens:  1050962,
 		CacheReadInputTokens:    601116722,
 		CacheCreation1hInputTokens: 5849169,
+		// I-569 step 10 soft cap: 601M cache_read on a 0ms turn would be
+		// rejected as physically impossible. Set ProcessMs above the
+		// 60s minimum so the dedup logic gets a chance to run.
+		ProcessMs: 120_000,
 	}
 
 	// First subagent — should accrue.

@@ -33,10 +33,12 @@ func (a realTokens) add(b realTokens) realTokens {
 	}
 }
 
-// realTokensFromPayload maps the legacy per-turn payload field names onto the
-// canonical Anthropic field names. Step 9 of I-569 will rename the payload
-// fields to match exactly, at which point this mapping function collapses to
-// a struct copy.
+// realTokensFromPayload maps the per-turn payload field names onto the
+// canonical Anthropic field names. After I-569 step 9 the cache fields
+// already match (CacheReadInputTokens / CacheCreation5mInputTokens /
+// CacheCreation1hInputTokens); the regular-input/output fields keep the
+// `Reg*` prefix for now to disambiguate from the cumulative-item view's
+// `Input`/`Output` aggregate.
 func realTokensFromPayload(p SessionLogPayload) realTokens {
 	return realTokens{
 		Input:           p.RegInputTokens,
@@ -214,16 +216,54 @@ type bySessionAggregate struct {
 // formatBySessionLine produces a stable, single-line representation. Fields
 // outside the tokens blob use space-separated `key=value` pairs; the tokens
 // blob lives in the middle of the line and reuses the same key=value format.
-// project_dir paths can contain spaces in theory, but Claude Code's project
-// slug derivation already requires path safety upstream; if an embedded space
-// ever appears it will land in the next field and the parser will recover
-// (worst case: project_dir gets truncated, no crash).
+//
+// project_dir is URL-encoded so paths containing spaces (`/Users/john doe/...`)
+// survive the strings.Fields tokenization on the parse side. Reconcile-tokens'
+// JSONL slug derivation requires the original path back; without encoding, a
+// space-containing path would silently truncate at the first space and
+// reconcile would emit a "no JSONL truth" row with the wrong slug.
 func formatBySessionLine(a bySessionAggregate) string {
 	return fmt.Sprintf(
 		"sid=%s project_dir=%s started_at=%s ended_at=%s turns=%d %s",
-		a.SID, a.ProjectDir, a.StartedAt, a.EndedAt, a.Turns,
+		a.SID, encodeFieldValue(a.ProjectDir), a.StartedAt, a.EndedAt, a.Turns,
 		formatRealTokensBlob(a.Tokens),
 	)
+}
+
+// encodeFieldValue makes a value safe for the space-separated `key=value`
+// format used in time_tracking list lines. Only spaces are encoded — every
+// other path character (slashes, dots, dashes) is left unchanged so the
+// rendered line stays grep-friendly. Decoding is the inverse via
+// decodeFieldValue.
+func encodeFieldValue(s string) string {
+	if !strings.ContainsAny(s, " \t") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ' ':
+			b.WriteString("%20")
+		case '\t':
+			b.WriteString("%09")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// decodeFieldValue reverses encodeFieldValue. A bare value with no encoded
+// sequences passes through unchanged so legacy lines (written before the
+// encoding shipped) keep working.
+func decodeFieldValue(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "%20", " ")
+	s = strings.ReplaceAll(s, "%09", "\t")
+	return s
 }
 
 // bySessionLineMatches returns true when a list entry's `sid=` field equals
@@ -241,7 +281,8 @@ func bySessionLineMatches(raw, sid string) bool {
 	return false
 }
 
-// parseBySessionLine inverts formatBySessionLine.
+// parseBySessionLine inverts formatBySessionLine. project_dir is decoded via
+// decodeFieldValue so encoded spaces survive round-trip.
 func parseBySessionLine(entry string) bySessionAggregate {
 	var a bySessionAggregate
 	for _, tok := range strings.Fields(entry) {
@@ -254,7 +295,7 @@ func parseBySessionLine(entry string) bySessionAggregate {
 		case "sid":
 			a.SID = val
 		case "project_dir":
-			a.ProjectDir = val
+			a.ProjectDir = decodeFieldValue(val)
 		case "started_at":
 			a.StartedAt = val
 		case "ended_at":

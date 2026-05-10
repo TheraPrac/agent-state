@@ -46,7 +46,7 @@ func parseBySessionLines(lines []string) []bySessionLine {
 			case "sid":
 				s.SID = v
 			case "project_dir":
-				s.ProjectDir = v
+				s.ProjectDir = decodeFieldValue(v)
 			case "started_at":
 				if t, err := time.Parse(time.RFC3339, v); err == nil {
 					s.StartedAt = t
@@ -148,6 +148,18 @@ func readRecordedRealTokens(item *model.Item) realTokens {
 		}
 	}
 	return t
+}
+
+// decodeFieldValue mirrors session_log_schema.go's encoder. project_dir
+// fields are URL-encoded for spaces / tabs so they survive the
+// strings.Fields tokenization on parse. Bare values pass through unchanged.
+func decodeFieldValue(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "%20", " ")
+	s = strings.ReplaceAll(s, "%09", "\t")
+	return s
 }
 
 // formatRealTokensLine matches the writer in session_log_schema.go.
@@ -290,32 +302,50 @@ func cmdApply(args []string) int {
 	rewrites := 0
 	scanned := 0
 	process := func(item *model.Item) {
+		// I-569 finding-4: read recorded tokens INSIDE the Mutate closure so
+		// a concurrent st session log can't slip a write between our snapshot
+		// and the rewrite (T-304's purity-under-lock rule). Truth is computed
+		// from JSONL files outside the lock — that's fine because JSONL is
+		// append-only and reconcile sees a consistent snapshot.
+		var (
+			recorded realTokens
+			truth    realTokens
+			sessions int
+			jsonls   int
+			row      reconcileRow
+			err      error
+			rewrite  bool
+		)
 		bs := extractTimeTrackingListLines(item, "by_session")
 		if len(bs) == 0 {
 			return
 		}
-		recorded := readRecordedRealTokens(item)
-		truth, sessions, jsonls, err := reconcileItem(itemTTLines{lines: bs}, recorded)
+		// Compute truth outside the lock — JSONL is the source of ground truth
+		// and isn't mutated by SessionLog.
+		// (recorded gets re-read fresh inside Mutate just below.)
+		_ = recorded // populated below
+		truth, sessions, jsonls, err = reconcileItem(itemTTLines{lines: bs}, realTokens{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "reconcile-tokens apply: %s: %v\n", item.ID, err)
 			return
 		}
 		scanned++
-		row := driftRow(item.ID, recorded, truth, sessions, jsonls)
-		if row.TruthTokens.sum() == 0 {
-			return // nothing to compare
-		}
-		if row.DriftPct/100 < *threshold {
-			return
-		}
-		// Rewrite real_tokens to truth.
 		if err := s.Mutate(item.ID, func(it *model.Item) error {
+			recorded = readRecordedRealTokens(it)
+			row = driftRow(item.ID, recorded, truth, sessions, jsonls)
+			if row.TruthTokens.sum() == 0 || row.DriftPct/100 < *threshold {
+				return nil // nothing to do; closure exits without writing
+			}
 			it.SetNested("time_tracking", "real_tokens", formatRealTokensLine(truth))
 			it.SetNested("time_tracking", "last_reconciled_at", time.Now().Format(time.RFC3339))
+			rewrite = true
 			return nil
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "reconcile-tokens apply: %s: %v\n", item.ID, err)
 			return
+		}
+		if !rewrite {
+			return // below threshold or no truth — closure already returned cleanly
 		}
 		rewrites++
 		fmt.Fprintf(logF, "%s\t%s\trecorded=%d\ttruth=%d\tdrift=%.1f%%\tx_factor=%.2f\tsessions=%d\n",

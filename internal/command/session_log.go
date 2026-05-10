@@ -149,7 +149,12 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 	// in under 60 seconds is rejected with a stderr warning. Real Anthropic
 	// throughput cannot produce that mix; the only known cause is the
 	// fan-out attribution bug fixed in I-448 / detached in I-569 step 1.
-	if payload.CacheReadInputTokens > softCapCacheRead && payload.ProcessMs > 0 && payload.ProcessMs < softCapMinProcessMs {
+	//
+	// ProcessMs == 0 ("unknown / unset") is treated as MORE suspicious than
+	// 23 seconds, not less — a producer claiming 894M cache_read with no
+	// reported duration is exactly the I-432 shape from a broken hook.
+	// Reject anything < softCapMinProcessMs, including zero.
+	if payload.CacheReadInputTokens > softCapCacheRead && payload.ProcessMs < softCapMinProcessMs {
 		fmt.Fprintf(os.Stderr,
 			"session log: rejecting payload — cache_read=%d on %dms turn exceeds soft cap (>%d on <%dms)\n",
 			payload.CacheReadInputTokens, payload.ProcessMs, softCapCacheRead, softCapMinProcessMs)
@@ -189,7 +194,8 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 	// I-569 step 3: synthetic cost is ALWAYS recomputed from tokens × the
 	// pricing rate table. payload.CostUSD and payload.CostSource are
 	// accepted on the wire (back-compat for older producers) but ignored
-	// in logic — the only authoritative source is `pricing.ComputeCost`,
+	// in logic — the only authoritative source is
+	// `pricing.EstimateSyntheticCostUSD`,
 	// and unknown model just means cost stays at 0 for this turn (no
 	// per-turn "unknown" bookkeeping; the absence is derivable from
 	// non-zero tokens with zero cost).
@@ -267,15 +273,12 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 				fmt.Sprintf("%d", readIntField(item, "time_tracking", "cache_out_1h_tokens")+payload.CacheCreation1hInputTokens))
 		}
 
-		// Derived totals — kept in the file so consumers don't need to compute
-		item.SetNested("time_tracking", "total_input_tokens",
-			fmt.Sprintf("%d",
-				readIntField(item, "time_tracking", "reg_input_tokens")+
-					readIntField(item, "time_tracking", "cache_in_tokens")+
-					readIntField(item, "time_tracking", "cache_out_tokens")+
-					readIntField(item, "time_tracking", "cache_out_1h_tokens")))
-		item.SetNested("time_tracking", "total_output_tokens",
-			fmt.Sprintf("%d", readIntField(item, "time_tracking", "reg_output_tokens")))
+		// I-569 finding-3: total_input_tokens / total_output_tokens are no
+		// longer written. The migrate-strip-cost subcommand removes them
+		// from existing items; without dropping the writers here too, the
+		// next per-turn payload would resurrect them and the migration's
+		// audit trail would look like it was undone. real_tokens has the
+		// same data in canonical Anthropic-named form.
 		if payload.TotalTokens > 0 || readIntField(item, "time_tracking", "total_tokens") > 0 {
 			item.SetNested("time_tracking", "total_tokens",
 				fmt.Sprintf("%d", readIntField(item, "time_tracking", "total_tokens")+payload.TotalTokens))

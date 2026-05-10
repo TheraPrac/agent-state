@@ -117,6 +117,14 @@ type StepResult struct {
 	// Tokens. InputTokens is the legacy combined total (regular + cache reads +
 	// cache writes) and is retained for back-compat with existing ItemResult
 	// consumers. For metrics accrual via SessionLog we use the separated fields.
+	//
+	// I-569 step 9 renamed the Go field names to Anthropic-canonical names
+	// (CacheReadInputTokens / CacheCreation5mInputTokens) but the JSON tags
+	// here deliberately keep the legacy `cache_in_tokens` / `cache_out_tokens`
+	// keys — StepResult is serialized into ItemResult on disk for st run
+	// reports, and external dashboards / scripts read those keys. The
+	// SessionLogPayload (per-turn wire payload) DID move to the new tags;
+	// the two surfaces diverge intentionally during the transition.
 	InputTokens     int    `json:"input_tokens,omitempty"`
 	OutputTokens    int    `json:"output_tokens,omitempty"`
 	RegInputTokens  int    `json:"reg_input_tokens,omitempty"`

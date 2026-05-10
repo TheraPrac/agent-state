@@ -262,6 +262,35 @@ func TestSessionLog_BySessionStartedAtIsSticky(t *testing.T) {
 	}
 }
 
+// I-569 finding-2: project_dir paths containing spaces (e.g.
+// /Users/john doe/Dev/repo) used to truncate at the first space because
+// parseBySessionLine relies on strings.Fields. The encode/decode pair
+// keeps the path intact through write→read round-trip so reconcile-
+// tokens derives the right ~/.claude/projects/<slug> directory.
+func TestSessionLog_BySessionPreservesProjectDirWithSpaces(t *testing.T) {
+	env := testutil.NewEnv(t)
+	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
+
+	pdir := "/Users/john doe/Dev/My Project"
+	SessionLog(env.S, env.Cfg, SessionLogPayload{
+		SessionID: "sess-X", ProjectDir: pdir,
+		Model: "claude-opus-4-7", RegInputTokens: 1,
+	})
+
+	env.Reload(t)
+	item, _ := env.S.Get("T-003")
+	got := readBySession(item, "sess-X")
+	if got.ProjectDir != pdir {
+		t.Errorf("project_dir = %q, want %q (encoding/decoding broke spaces)", got.ProjectDir, pdir)
+	}
+	// And confirm the on-disk encoding is the URL-encoded form (no raw spaces
+	// inside the project_dir token) so strings.Fields tokenization stays intact.
+	rendered := item.Doc.String()
+	if !strings.Contains(rendered, "project_dir=/Users/john%20doe/Dev/My%20Project") {
+		t.Errorf("on-disk project_dir not URL-encoded. File:\n%s", rendered)
+	}
+}
+
 // I-569 step 10 soft cap: a payload with cache_read > 500M on a turn
 // shorter than 60s is physically impossible (the I-432 / I-441 fan-out
 // attribution bug shipped exactly this shape). SessionLog must reject it
@@ -288,6 +317,19 @@ func TestSessionLog_SoftCapRejectsImplausibleSubMinuteCacheRead(t *testing.T) {
 	}
 	if got := readIntField(item, "time_tracking", "cache_in_tokens"); got != 0 {
 		t.Errorf("cache_in_tokens = %d, want 0 (payload should be rejected)", got)
+	}
+
+	// ProcessMs==0 ("unknown duration") with the same huge cache_read is
+	// even more suspicious than the 23s case — must also be rejected.
+	zeroDuration := implausible
+	zeroDuration.ProcessMs = 0
+	if code := SessionLog(env.S, env.Cfg, zeroDuration); code != 0 {
+		t.Errorf("zero-duration impossible payload exit=%d, want 0 (silently rejected)", code)
+	}
+	env.Reload(t)
+	item, _ = env.S.Get("T-003")
+	if got := readIntField(item, "time_tracking", "turn_count"); got != 0 {
+		t.Errorf("turn_count after ProcessMs=0 reject = %d, want 0", got)
 	}
 
 	// A long-running turn with the same large cache_read passes — the cap

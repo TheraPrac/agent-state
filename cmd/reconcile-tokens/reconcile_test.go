@@ -3,9 +3,30 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
+
+// I-569 finding-8: the realTokens struct is duplicated between this binary
+// and internal/command/session_log_schema.go to keep the binary's
+// dependency surface small. There's no compile-time check tying the two
+// definitions together. This test pins the local field set so a future
+// addition (e.g. a sixth token class) at least fails here, prompting the
+// author to update both definitions in lockstep.
+func TestRealTokens_FieldSetMatchesInternalSchema(t *testing.T) {
+	want := []string{"Input", "Output", "CacheRead", "CacheCreation5m", "CacheCreation1h"}
+	rt := realTokens{}
+	rv := reflect.TypeOf(rt)
+	if rv.NumField() != len(want) {
+		t.Fatalf("realTokens has %d fields, want %d (sync with internal/command/session_log_schema.go)", rv.NumField(), len(want))
+	}
+	for i, name := range want {
+		if got := rv.Field(i).Name; got != name {
+			t.Errorf("field %d = %q, want %q (out of sync with internal/command/session_log_schema.go)", i, got, name)
+		}
+	}
+}
 
 func TestProjectSlug(t *testing.T) {
 	cases := []struct{ in, want string }{
