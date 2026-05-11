@@ -495,7 +495,7 @@ func TestQueueShowSkipsSprintItems(t *testing.T) {
 	s, _ = store.New(cfg)
 
 	// Queue show should still work (displays the item since QueueShow doesn't filter)
-	code := QueueShow(s, cfg)
+	code := QueueShow(s, cfg, QueueShowOpts{})
 	if code != 0 {
 		t.Errorf("QueueShow returned %d, want 0", code)
 	}

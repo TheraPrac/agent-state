@@ -705,6 +705,10 @@ verdict drifts toward what the operator actually accepts.`,
 			sortStr, _ := cmd.Flags().GetString("sort")
 			since, _ := cmd.Flags().GetString("since")
 			jsonOut, _ := cmd.Flags().GetBool("json")
+			// T-347: --global overrides agent-scoping inside an agent
+			// workspace. --all also implies AgentAll so the operator's
+			// "show me everything" knob is consistent.
+			globalView, _ := cmd.Flags().GetBool("global")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
@@ -713,6 +717,7 @@ verdict drifts toward what the operator actually accepts.`,
 				SprintsAll: sprintsAll, SprintsClosed: sprintsClosed,
 				SprintsRunning: sprintsRunning,
 				Filters: filters, Sort: sortStr, Since: since, JSON: jsonOut,
+				AgentAll: globalView || all,
 			})
 		},
 	}
@@ -738,6 +743,7 @@ verdict drifts toward what the operator actually accepts.`,
 	statusCmd.Flags().String("since", "",
 		"only items touched within this duration (e.g. 7d, 24h, 30m)")
 	statusCmd.Flags().Bool("json", false, "emit JSON instead of human-readable text")
+	statusCmd.Flags().Bool("global", false, "show items from every agent (default inside an agent workspace is to scope to that agent)")
 	root.AddCommand(statusCmd)
 
 	statsCmd := &cobra.Command{
@@ -828,12 +834,36 @@ verdict drifts toward what the operator actually accepts.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			format, _ := cmd.Flags().GetString("format")
 			compact, _ := cmd.Flags().GetBool("compact")
-			exitCode = command.Prime(appStore, appCfg, command.PrimeOpts{Format: format, Compact: compact})
+			globalView, _ := cmd.Flags().GetBool("global")
+			exitCode = command.Prime(appStore, appCfg, command.PrimeOpts{
+				Format: format, Compact: compact, AgentAll: globalView,
+			})
 		},
 	}
 	primeCmd.Flags().String("format", "markdown", "output format (markdown, json)")
 	primeCmd.Flags().Bool("compact", false, "minimal output for hook injection")
+	primeCmd.Flags().Bool("global", false, "show items from every agent (default inside an agent workspace is to scope to that agent)")
 	root.AddCommand(primeCmd)
+
+	redCmd := &cobra.Command{
+		Use:   "red",
+		Short: "List items awaiting an operator decision (binary autonomy loop)",
+		Long: `List items currently parked in awaiting_decision with each
+item's decision card rendered inline.
+
+From inside an agent workspace, defaults to the current agent's items
+only — peer-agent reds stay hidden so the operator's attention isn't
+fragmented. ` + "`--all`" + ` shows every agent's awaiting items, plus the
+` + "`owner:`" + ` line on each so the operator can tell who owns what.
+
+Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			all, _ := cmd.Flags().GetBool("all")
+			exitCode = command.Red(appStore, appCfg, command.RedOpts{AgentAll: all})
+		},
+	}
+	redCmd.Flags().Bool("all", false, "show awaiting items from every agent (not just the current agent)")
+	root.AddCommand(redCmd)
 
 	logCmd := &cobra.Command{
 		Use:   "log [id]",
@@ -1329,14 +1359,17 @@ rates. I-180.`,
 		},
 	})
 	queueCmd.Commands()[0].Flags().String("reason", "", "why this item is in the queue")
-	queueCmd.AddCommand(&cobra.Command{
+	queueShowCmd := &cobra.Command{
 		Use:     "show",
 		Short:   "Display the ordered work queue",
 		Aliases: []string{"ls"},
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.QueueShow(appStore, appCfg)
+			all, _ := cmd.Flags().GetBool("all")
+			exitCode = command.QueueShow(appStore, appCfg, command.QueueShowOpts{AgentAll: all})
 		},
-	})
+	}
+	queueShowCmd.Flags().Bool("all", false, "show global queue without agent-scoped visual treatment")
+	queueCmd.AddCommand(queueShowCmd)
 	queueNextCmd := &cobra.Command{
 		Use:   "next",
 		Short: "Print the next approved, unblocked item",

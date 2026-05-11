@@ -346,6 +346,37 @@ func (c *Config) AgentID() string {
 	return c.Identity().ID
 }
 
+// AgentContext is the resolved (current-agent, scoped?) pair that
+// agent-facing st renderers consult to decide their default filter.
+//
+//   - From inside an agent workspace (cwd under theraprac-agents/
+//     theraprac-agent-<x>/, or anywhere AS_AGENT_ID resolves),
+//     CurrentAgent is the agent id and Scoped is true. Renderers
+//     default to "show this agent's items only".
+//   - From the workspace root (or any cwd where no agent identity
+//     can be resolved), CurrentAgent is "" and Scoped is false.
+//     Renderers default to the global view.
+//
+// `--all` flags on commands flip Scoped to false even inside an
+// agent workspace so the operator can see the whole picture on
+// demand. T-347.
+type AgentContext struct {
+	CurrentAgent string
+	Scoped       bool
+}
+
+// ResolveAgentContext returns the rendering scope for the current st
+// invocation. T-347 introduces this so every agent-facing renderer
+// shares a single rule for "show me only items relevant to where I
+// am" — see the AgentContext docstring for the exact semantics.
+func (c *Config) ResolveAgentContext() AgentContext {
+	id := c.AgentID()
+	return AgentContext{
+		CurrentAgent: id,
+		Scoped:       id != "",
+	}
+}
+
 // EpicsPath returns the path to the epics/sprints registry file.
 func (c *Config) EpicsPath() string {
 	return filepath.Join(c.root, ".as", "epics.yaml")

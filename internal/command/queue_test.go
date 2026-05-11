@@ -39,7 +39,7 @@ func TestQueueAddShow(t *testing.T) {
 	}
 
 	// Show should not error
-	code = QueueShow(s, cfg)
+	code = QueueShow(s, cfg, QueueShowOpts{})
 	if code != 0 {
 		t.Errorf("QueueShow returned %d", code)
 	}
@@ -251,7 +251,7 @@ func TestQueueApproveNotFound(t *testing.T) {
 
 func TestQueueShowEmpty(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := QueueShow(s, cfg)
+	code := QueueShow(s, cfg, QueueShowOpts{})
 	if code != 0 {
 		t.Errorf("QueueShow empty returned %d", code)
 	}
