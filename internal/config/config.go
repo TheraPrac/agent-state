@@ -597,22 +597,27 @@ func Defaults() *Config {
 			// type-specific directories during start (tasks/, issues/);
 			// terminal statuses route to archive/ as before.
 			"task": {
-				IDPrefix:         "T",
-				Statuses:         []string{"queued", "active", "done", "abandoned", "archived"},
+				IDPrefix: "T",
+				// T-346: `awaiting_decision` is a non-terminal pause state
+				// — set by the binary autonomy loop when the classifier
+				// returns red, cleared by `st decide`. Stays in tasks/
+				// (not archived) so it's visible in the normal scope.
+				Statuses:         []string{"queued", "active", "awaiting_decision", "done", "abandoned", "archived"},
 				StartStatus:      "queued",
 				ActiveStatus:     "active",
 				TerminalStatuses: []string{"done", "abandoned", "archived"},
 				RequiredFields:   []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
-					"queued":    "tasks",
-					"active":    "tasks",
-					"done":      "archive",
-					"abandoned": "archive",
+					"queued":            "tasks",
+					"active":            "tasks",
+					"awaiting_decision": "tasks",
+					"done":              "archive",
+					"abandoned":         "archive",
 				},
 			},
 			"issue": {
 				IDPrefix:         "I",
-				Statuses:         []string{"queued", "active", "done", "abandoned", "archived"},
+				Statuses:         []string{"queued", "active", "awaiting_decision", "done", "abandoned", "archived"},
 				StartStatus:      "queued",
 				ActiveStatus:     "active",
 				TerminalStatuses: []string{"done", "abandoned", "archived"},
@@ -621,10 +626,11 @@ func Defaults() *Config {
 				// the schema level — create.go fills a default of 2.
 				RequiredFields: []string{"depends_on", "blocks"},
 				DirectoryMap: map[string]string{
-					"queued":    "issues",
-					"active":    "issues",
-					"done":      "archive",
-					"abandoned": "archive",
+					"queued":            "issues",
+					"active":            "issues",
+					"awaiting_decision": "issues",
+					"done":              "archive",
+					"abandoned":         "archive",
 				},
 			},
 			"idea": {

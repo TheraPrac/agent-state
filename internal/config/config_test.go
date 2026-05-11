@@ -21,7 +21,9 @@ func TestDefaults(t *testing.T) {
 	// I-433: unified status vocabulary across types — `done` replaces
 	// `completed` (task) and `resolved` (issue); `abandoned` replaces
 	// `wontfix` (issue).
-	wantStatuses := []string{"queued", "active", "done", "abandoned", "archived"}
+	// T-346: `awaiting_decision` added as a non-terminal pause state
+	// for the binary autonomy loop.
+	wantStatuses := []string{"queued", "active", "awaiting_decision", "done", "abandoned", "archived"}
 	if len(taskType.Statuses) != len(wantStatuses) {
 		t.Fatalf("task statuses = %v, want %v", taskType.Statuses, wantStatuses)
 	}
@@ -65,8 +67,9 @@ func TestValidStatuses(t *testing.T) {
 		itemType string
 		want     int
 	}{
-		{"task", 5},
-		{"issue", 5},
+		// T-346: task/issue gained `awaiting_decision`.
+		{"task", 6},
+		{"issue", 6},
 		{"idea", 3},
 		{"nonexistent", 0},
 	}

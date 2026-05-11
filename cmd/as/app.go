@@ -509,6 +509,37 @@ Use --dry-run to print the assembled prompt without calling the model
 	classifyCmd.Flags().Bool("dry-run", false, "print the assembled prompt and exit without calling the model")
 	root.AddCommand(classifyCmd)
 
+	decideCmd := &cobra.Command{
+		Use:   "decide <id> <approve|reject|defer>",
+		Short: "Resolve an item paused in awaiting_decision (binary autonomy loop)",
+		Long: `Resolve a paused item the binary autonomy loop has handed off.
+
+The classifier flips an item to awaiting_decision when it returns red.
+The agent halts there with a decision card describing risk, files
+touched, and the ask. ` + "`st decide`" + ` is how the operator clears that pause.
+
+Actions:
+  approve  — back to active; agent resumes the delivery loop
+  reject   — close as abandoned (requires --reason)
+  defer    — back to queued; classification cache cleared so the next
+             ` + "`st classify`" + ` re-runs
+
+Every decision is appended to .as/classify-corpus.jsonl. The classifier
+reads recent entries as in-context examples on subsequent calls so the
+verdict drifts toward what the operator actually accepts.`,
+		Args: cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			id, action := args[0], args[1]
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.Decide(appStore, appCfg, id, command.DecideOpts{
+				Action: command.DecideAction(action),
+				Reason: reason,
+			})
+		},
+	}
+	decideCmd.Flags().String("reason", "", "operator reason (required for reject; recorded in changelog + corpus)")
+	root.AddCommand(decideCmd)
+
 	readyCmd := &cobra.Command{
 		Use:   "ready",
 		Short: "Show unblocked items ready to start",

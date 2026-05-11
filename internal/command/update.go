@@ -225,20 +225,57 @@ func preCheckVocab(item *model.Item, field, value string, cfg *config.Config) in
 	switch field {
 	case "status":
 		valid := cfg.ValidStatuses(item.Type)
+		var inVocab bool
 		for _, v := range valid {
 			if v == value {
-				return 0
+				inVocab = true
+				break
 			}
 		}
-		msg := fmt.Sprintf("update: invalid status %q for type %q — valid: %s",
-			value, item.Type, strings.Join(valid, ", "))
-		// Hint via the same alias map the store-layer gate uses, so
-		// muscle-memory `open`/`resolved` writes land an actionable error.
-		if hint := validate.SuggestStatus(value); hint != "" {
-			msg += fmt.Sprintf("\n  did you mean %q? (legacy alias from pre-I-433)", hint)
+		if !inVocab {
+			msg := fmt.Sprintf("update: invalid status %q for type %q — valid: %s",
+				value, item.Type, strings.Join(valid, ", "))
+			if hint := validate.SuggestStatus(value); hint != "" {
+				msg += fmt.Sprintf("\n  did you mean %q? (legacy alias from pre-I-433)", hint)
+			}
+			fmt.Fprintln(os.Stderr, msg)
+			return 2
 		}
-		fmt.Fprintln(os.Stderr, msg)
-		return 2
+		// T-346 transition rules for `awaiting_decision`. The
+		// classifier writes via FlipToAwaitingDecision (Mutate,
+		// bypasses preCheckVocab); these rules constrain the manual
+		// `st update` path so the pause status isn't reachable by
+		// side door and the supported exits route through `st decide`.
+		//
+		// Read the current status from the parsed document — the typed
+		// item.Status field doesn't always reflect the latest write
+		// (Mutate updates item.Doc but not item.Status on subsequent
+		// reads), so doc.GetField is the authoritative live value.
+		currentStatus := item.Status
+		if item.Doc != nil {
+			if v, ok := item.Doc.GetField("status"); ok && v != "" {
+				currentStatus = v
+			}
+		}
+		if value == AwaitingDecisionStatus && currentStatus != "active" {
+			fmt.Fprintf(os.Stderr,
+				"update: cannot enter awaiting_decision from %q — only active items can pause "+
+					"(use `st classify` + the binary autonomy loop for the normal path)\n",
+				currentStatus)
+			return 2
+		}
+		if currentStatus == AwaitingDecisionStatus {
+			switch value {
+			case "active", "abandoned", "queued":
+				// allowed manual exits (mirror `st decide`)
+			default:
+				fmt.Fprintf(os.Stderr,
+					"update: cannot leave awaiting_decision for %q — use `st decide approve|reject|defer`\n",
+					value)
+				return 2
+			}
+		}
+		return 0
 	case "type":
 		if _, ok := cfg.Types[value]; ok {
 			return 0
