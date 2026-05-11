@@ -137,15 +137,28 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// a later guard (assignment, claim race) doesn't leave a misleading
 	// bypass record.
 	forceBypassedPending := false
+	autoApprovedByClassifier := false
 	if IsQueuePending(cfg, id) {
-		if !opts.Force {
+		switch {
+		case binaryAutonomyEnabled() && classifierGreen(item):
+			// T-346: binary autonomy — when the classifier verdict on
+			// this item is green and ST_BINARY_AUTONOMY=1, bypass the
+			// per-item approval gate. This is the "concentrate operator
+			// attention on red items" half of the loop. The audit fires
+			// post-Mutate via a dedicated reason string so the green
+			// auto-approve is distinguishable from --force in the
+			// changelog.
+			autoApprovedByClassifier = true
+			fmt.Fprintf(os.Stderr, "auto-approved %s (classifier verdict=green, ST_BINARY_AUTONOMY=1)\n", id)
+		case opts.Force:
+			forceBypassedPending = true
+			fmt.Fprintf(os.Stderr, "warning: --force bypassed pending-approval gate for %s\n", id)
+		default:
 			fmt.Fprintf(os.Stderr,
 				"%s is pending operator approval — run `st queue approve %s` first (or `st start %s --force` to bypass)\n",
 				id, id, id)
 			return 1
 		}
-		forceBypassedPending = true
-		fmt.Fprintf(os.Stderr, "warning: --force bypassed pending-approval gate for %s\n", id)
 	}
 
 	// Check: not assigned to another agent
@@ -340,6 +353,15 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		_ = changelog.Append(cfg, id, changelog.Entry{
 			Op:     "start_force",
 			Reason: "bypassed I-490 queue approval gate via --force",
+		})
+	}
+	// T-346: record the binary-autonomy auto-approve. A distinct op
+	// label keeps the audit clean — operators reviewing the log can
+	// tell auto-approves from manual --force bypasses.
+	if autoApprovedByClassifier {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "start_auto_approved",
+			Reason: "classifier verdict=green; ST_BINARY_AUTONOMY=1 bypassed I-490 queue approval gate",
 		})
 	}
 
@@ -538,6 +560,27 @@ func symlinkEnvFiles(mainPath, wtPath string) {
 		os.Symlink(envFile, target)
 		fmt.Printf("  symlinked %s\n", base)
 	}
+}
+
+// binaryAutonomyEnabled reports whether the T-346 auto-approve-green
+// behavior is opt-in active. Gated on ST_BINARY_AUTONOMY=1 so the
+// rollout can be paused without a revert — see the plan's rollback
+// section.
+func binaryAutonomyEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("ST_BINARY_AUTONOMY"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// classifierGreen reports whether the item's persisted classifier
+// verdict is green. T-345 writes verdict under classification.verdict;
+// missing/empty verdict counts as not-green so an unclassified item
+// stays on the normal approval path.
+func classifierGreen(item *model.Item) bool {
+	if item == nil || item.Doc == nil {
+		return false
+	}
+	v, _ := item.Doc.GetNestedField("classification.verdict")
+	return v == "green"
 }
 
 func writeWorkinfo(workDir, id, branch string, repos []string) {
