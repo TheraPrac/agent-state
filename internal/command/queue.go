@@ -164,7 +164,17 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 	return 0
 }
 
-func QueueShow(s *store.Store, cfg *config.Config) int {
+// QueueShowOpts holds rendering flags for the queue listing.
+//
+// T-347 introduces AgentAll — from inside an agent workspace, queue
+// rows visually distinguish current-agent / unassigned / peer items.
+// AgentAll suppresses the visual treatment so the operator sees the
+// raw global queue.
+type QueueShowOpts struct {
+	AgentAll bool
+}
+
+func QueueShow(s *store.Store, cfg *config.Config, opts QueueShowOpts) int {
 	entries := LoadQueue(cfg)
 	if len(entries) == 0 {
 		fmt.Println("Queue is empty")
@@ -178,7 +188,14 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 	// we just skip the chain row.
 	r, _ := registry.Load(cfg.EpicsPath())
 
-	fmt.Printf("%sWork Queue%s (%d items)\n\n", cBold, cReset, len(entries))
+	scope := cfg.ResolveAgentContext()
+	applyAgentClass := scope.Scoped && !opts.AgentAll
+
+	headerSuffix := ""
+	if applyAgentClass {
+		headerSuffix = fmt.Sprintf(" %s(scoped: %s; --all to clear)%s", cDim, scope.CurrentAgent, cReset)
+	}
+	fmt.Printf("%sWork Queue%s (%d items)%s\n\n", cBold, cReset, len(entries), headerSuffix)
 	for i, e := range entries {
 		item, ok := s.Get(e.ID)
 		title := "(not found)"
@@ -203,8 +220,30 @@ func QueueShow(s *store.Store, cfg *config.Config) int {
 			active = fmt.Sprintf("  %s● active%s", cGreen, cReset)
 		}
 
-		fmt.Printf("  %d. %s%-8s%s %s  %s(%s)%s%s%s%s\n",
-			i+1, cBold, e.ID, cReset, title, cDim, status, cReset, active, blocked, approval)
+		// T-347 visual treatment. Bright (cBold) is the default for
+		// the current agent's items, peer-assigned items render
+		// dimmed so the operator can scan their own work quickly;
+		// unassigned items keep the legacy single-style rendering.
+		// Outside an agent context (workspace root) every row is
+		// "self" so behavior is unchanged.
+		bullet := " "
+		rowColor := cBold
+		owner := ""
+		if applyAgentClass && ok {
+			switch classifyAgentOwnership(item, scope.CurrentAgent) {
+			case "self":
+				bullet = "▶"
+			case "peer":
+				rowColor = cDim
+				bullet = "·"
+				owner = fmt.Sprintf("  %s[%s]%s", cDim, item.AssignedTo, cReset)
+			case "open":
+				bullet = " "
+			}
+		}
+
+		fmt.Printf("  %s %d. %s%-8s%s %s  %s(%s)%s%s%s%s%s\n",
+			bullet, i+1, rowColor, e.ID, cReset, title, cDim, status, cReset, active, blocked, approval, owner)
 
 		// Chain row — epic › sprint, only when at least one is set.
 		if ok && (item.Epic != "" || item.Sprint != "") {

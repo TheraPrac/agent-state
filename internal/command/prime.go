@@ -20,6 +20,12 @@ import (
 type PrimeOpts struct {
 	Format  string // "markdown" (default) or "json"
 	Compact bool   // compact output for hook injection (~50 lines)
+
+	// T-347: AgentAll overrides the default agent-scoping. Inside an
+	// agent workspace, the prime export's Active/Ready lists default
+	// to current-agent items (assignable to me); AgentAll restores
+	// the global view.
+	AgentAll bool
 }
 
 type primeData struct {
@@ -335,6 +341,16 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	g := deps.Build(s.All(), cfg)
 	data := buildPrimeData(s, cfg, g)
 
+	// T-347: agent-scope the Active/Ready lists when the operator is
+	// inside an agent workspace and didn't pass --all. Counts at the
+	// bottom (open issues / queued / archived) stay global — they're
+	// summary metrics, not the "what should I work on" surface.
+	scope := cfg.ResolveAgentContext()
+	if scope.Scoped && !opts.AgentAll {
+		data.Active = filterPrimeItemsByAgent(data.Active, scope.CurrentAgent)
+		data.Ready = filterPrimeItemsByAgent(data.Ready, scope.CurrentAgent)
+	}
+
 	if opts.Format == "json" {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -568,6 +584,7 @@ func buildPrimeData(s *store.Store, cfg *config.Config, g *deps.Graph) primeData
 			ID:       item.ID,
 			Title:    item.Title,
 			Priority: p,
+			Assigned: item.AssignedTo,
 		}
 		pi.fillSBAR(item)
 		data.Ready = append(data.Ready, pi)

@@ -66,6 +66,14 @@ type StatusOpts struct {
 	Sort    string   // "field" or "field,asc"/"field,desc"
 	Since   string   // duration like "7d", "24h", "30m"
 	JSON    bool     // emit JSON instead of human-readable text
+
+	// T-347: AgentAll overrides the default agent-scoping when set
+	// from inside an agent workspace. When false (the default) and
+	// ResolveAgentContext reports Scoped, Active Work / queue / next
+	// surface only items assignable to the current agent. AgentAll
+	// flips back to the global view — the operator's "show me
+	// everything" knob.
+	AgentAll bool
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
@@ -214,11 +222,21 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 	if len(filters) > 0 || !sinceCutoff.IsZero() || ss.Field != "" {
 		active = applyStatusQuery(active, filters, ss, sinceCutoff, cfg, cfg.ManifestDir(), time.Now())
 	}
+	// T-347: default-scope to the current agent's items when running
+	// from inside an agent workspace. --all flips back to global.
+	scope := cfg.ResolveAgentContext()
+	if scope.Scoped && !opts.AgentAll {
+		active = filterByAgent(active, scope.CurrentAgent)
+	}
 	if ss.Field == "" {
 		sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
 	}
 
-	fmt.Printf("%s━━━ ACTIVE WORK ━━━%s\n", cBoldW, cReset)
+	headerSuffix := ""
+	if scope.Scoped && !opts.AgentAll {
+		headerSuffix = fmt.Sprintf(" %s(%s; --all for global)%s", cDim, scope.CurrentAgent, cReset)
+	}
+	fmt.Printf("%s━━━ ACTIVE WORK ━━━%s%s\n", cBoldW, cReset, headerSuffix)
 	if len(active) == 0 {
 		fmt.Printf("  %s(none)%s\n", cDim, cReset)
 	} else {
@@ -245,6 +263,13 @@ func statusDashboard(s *store.Store, cfg *config.Config, opts StatusOpts, filter
 		}
 	}
 	fmt.Println()
+
+	// T-347: AWAITING DECISION surfaces items the binary autonomy
+	// loop has paused on, with the decision card content rendered
+	// inline (not just a count). Scoped to current-agent by default;
+	// --all/--global flips to global. Section is omitted when no
+	// items are awaiting so dashboards stay clean.
+	renderAwaitingDecisionSection(s, cfg, opts.AgentAll)
 
 	// I-382: YOUR STACK section surfaces the per-agent work stack
 	// (I-383) on the dashboard so operators see "what am I focused
