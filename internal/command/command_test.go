@@ -24,6 +24,13 @@ func setupTestEnv(t *testing.T) (*store.Store, *config.Config) {
 	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
 
 	// Items
+	//
+	// I-589: every task/issue fixture carries a one-line meaningful SBAR
+	// so the now-hard-blocking SBAR substance gate at `st plan approve`
+	// doesn't reject the many tests that call `PlanApprove(..., {})` on
+	// these items. Tests that need the EMPTY-SBAR branch (e.g.
+	// TestPlanApproveBlocksEmptySBARByDefault) seed their own item with
+	// an explicitly empty SBAR rather than relying on this baseline.
 	writeFile(t, filepath.Join(root, "tasks", "T-001-first.md"), `id: T-001
 type: task
 status: queued
@@ -39,6 +46,16 @@ depends_on:
 
 next_actions:
 - []
+
+sbar:
+  situation: |-
+    First task fixture used across many tests.
+  background: |-
+    Standard baseline item; queued and ready.
+  assessment: |-
+    No diagnosis required for fixture use.
+  recommendation: |-
+    Keep fixture stable across the test suite.
 `)
 
 	writeFile(t, filepath.Join(root, "tasks", "T-002-second.md"), `id: T-002
@@ -56,6 +73,16 @@ depends_on:
 
 next_actions:
 - []
+
+sbar:
+  situation: |-
+    Second task fixture that depends on T-001.
+  background: |-
+    Exists to exercise dependency-aware tests.
+  assessment: |-
+    Useful baseline for chained-item flows.
+  recommendation: |-
+    Keep the depends_on link to T-001 stable.
 `)
 
 	writeFile(t, filepath.Join(root, "tasks", "T-003-active.md"), `id: T-003
@@ -74,6 +101,16 @@ depends_on:
 
 next_actions:
 - []
+
+sbar:
+  situation: |-
+    Active-status fixture used by start/run path tests.
+  background: |-
+    Assigned to agent-a so claim-state assertions resolve.
+  assessment: |-
+    Useful baseline for activity-state coverage.
+  recommendation: |-
+    Keep this item active in the fixture.
 `)
 
 	writeFile(t, filepath.Join(root, "issues", "I-001-bug.md"), `id: I-001
@@ -84,6 +121,16 @@ last_touched: 2026-03-25T10:00:00-06:00
 
 title: A bug
 priority: 1
+
+sbar:
+  situation: |-
+    Fixture issue used by issue-shaped tests.
+  background: |-
+    Sample bug record with priority 1.
+  assessment: |-
+    Used to exercise issue lifecycle assertions.
+  recommendation: |-
+    Keep priority and queued status stable.
 `)
 
 	writeFile(t, filepath.Join(root, "archive", "T-004-done.md"), `id: T-004

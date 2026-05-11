@@ -1,12 +1,16 @@
 package command
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // I-178: PlanApprove flips PlanApproved + sets audit fields + writes a
@@ -128,20 +132,222 @@ func TestPlanApprovalPersistsAcrossReload(t *testing.T) {
 	}
 }
 
-// I-149: --strict refuses approval when SBAR is empty or still on the
-// I-492 TODO scaffold. The test items shipped from setupTestEnv have
-// no SBAR (legacy fixture), so a strict-mode approve must reject.
-func TestPlanApproveStrict_RefusesEmptySBAR(t *testing.T) {
+// I-589: the SBAR substance gate is hard-blocking by default — no
+// `--strict` opt-in. Seed a fresh empty-SBAR item to exercise the
+// default-branch rejection. (The shared T-001 fixture now carries a
+// populated SBAR per I-589, so it can't be used for the empty-branch
+// assertion.)
+func TestPlanApproveBlocksEmptySBARByDefault(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	seedEmptySBARTask(t, cfg, "T-901")
+	s, _ = reloadStore(t, cfg) // pick up the new file
+
+	if code := PlanApprove(s, cfg, "T-901", PlanApproveOpts{}); code != 2 {
+		t.Errorf("default approve with empty SBAR should exit 2, got %d", code)
+	}
+	item, _ := s.Get("T-901")
+	if item != nil && item.PlanApproved {
+		t.Error("default approve should not have flipped PlanApproved on rejected item")
+	}
+}
+
+// I-589: scaffold SBAR (the I-492 TODO placeholder strings) is treated
+// the same as empty — the gate blocks. Without this, an author could
+// `st create` a task and immediately `st plan approve` it before the
+// I-588 sub-agent review has filled the SBAR, leaking scaffold through.
+func TestPlanApproveBlocksScaffoldSBARByDefault(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	seedScaffoldSBARTask(t, cfg, "T-902")
+	s, _ = reloadStore(t, cfg)
+
+	if code := PlanApprove(s, cfg, "T-902", PlanApproveOpts{}); code != 2 {
+		t.Errorf("default approve with scaffold SBAR should exit 2, got %d", code)
+	}
+}
+
+// I-589: default approve with a fully populated SBAR succeeds. The
+// baseline T-001 fixture now carries a real SBAR per the same item.
+func TestPlanApprovePassesWithPopulatedSBARByDefault(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "")
 	s, cfg := setupTestEnv(t)
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Strict: true}); code != 2 {
-		t.Errorf("strict approve with empty SBAR should exit 2, got %d", code)
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Errorf("default approve with populated SBAR should exit 0, got %d", code)
 	}
 	item, _ := s.Get("T-001")
-	if item.PlanApproved {
-		t.Error("strict approve should not have flipped PlanApproved on rejected item")
+	if !item.PlanApproved {
+		t.Error("default approve with populated SBAR should flip PlanApproved")
 	}
+}
+
+// I-589: `--strict` is preserved for backward compatibility but is now
+// a no-op for SBAR (the SBAR gate runs unconditionally). The flag still
+// governs the I-511 AC verifiability gate. Here we verify that --strict
+// behaves identically to default for the SBAR rejection — same exit code.
+func TestPlanApproveStrictFlagAcceptedAsNoopForSBAR(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	seedEmptySBARTask(t, cfg, "T-903")
+	seedEmptySBARTask(t, cfg, "T-904")
+	s, _ = reloadStore(t, cfg)
+
+	defaultCode := PlanApprove(s, cfg, "T-903", PlanApproveOpts{})
+	strictCode := PlanApprove(s, cfg, "T-904", PlanApproveOpts{Strict: true})
+	if defaultCode != strictCode || defaultCode != 2 {
+		t.Errorf("--strict should be a no-op for SBAR: default=%d strict=%d (both should be 2)", defaultCode, strictCode)
+	}
+}
+
+// I-589: ideas and promotions don't carry SBAR per the I-487 schema,
+// so the substance gate is skipped entirely for those types. Seed a
+// fresh idea with no SBAR and verify the approve succeeds.
+func TestPlanApproveSkipsSBARGateForIdeaAndPromotion(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	seedIdeaWithoutSBAR(t, cfg, "ID-901")
+	s, _ = reloadStore(t, cfg)
+
+	if code := PlanApprove(s, cfg, "ID-901", PlanApproveOpts{}); code != 0 {
+		t.Errorf("idea approve with no SBAR should exit 0 (gate skipped); got %d", code)
+	}
+}
+
+// I-589 / hook contract: `st plan check` (called by
+// plan-before-code-guard.sh) blocks when an approved item's SBAR has
+// been knocked back to the I-492 scaffold (e.g., by a direct-file
+// edit). Without this re-validation, the hook would keep allowing
+// Edit/Write after the SBAR was emptied.
+func TestPlanCheckBlocksOnIncompleteSBAR(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("baseline approve: %d", code)
+	}
+	if code := PlanCheck(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("check on approved+populated should exit 0; got %d", code)
+	}
+
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SBAR = model.SBAR{
+			Situation:      model.SBARPlaceholders["situation"],
+			Background:     model.SBARPlaceholders["background"],
+			Assessment:     model.SBARPlaceholders["assessment"],
+			Recommendation: model.SBARPlaceholders["recommendation"],
+		}
+		it.Doc.SetSBARBlock(it.SBAR)
+		return nil
+	}); err != nil {
+		t.Fatalf("revert SBAR: %v", err)
+	}
+	s, _ = reloadStore(t, cfg) // re-read from disk so PlanCheck sees the new SBAR
+
+	if code := PlanCheck(s, cfg, "T-001"); code != 1 {
+		t.Errorf("check after SBAR knocked back to scaffold should exit 1; got %d", code)
+	}
+}
+
+// I-589: PlanCheck on an approved idea succeeds even with no SBAR.
+func TestPlanCheckSkipsSBARGateForIdeaAndPromotion(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	seedIdeaWithoutSBAR(t, cfg, "ID-902")
+	s, _ = reloadStore(t, cfg)
+
+	if code := PlanApprove(s, cfg, "ID-902", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("idea approve: %d", code)
+	}
+	if code := PlanCheck(s, cfg, "ID-902"); code != 0 {
+		t.Errorf("check on approved idea (no SBAR) should exit 0; got %d", code)
+	}
+}
+
+// reloadStore rebuilds the store from disk so newly-written fixture
+// files are picked up. Used after seedEmpty/Scaffold/Idea helpers that
+// drop raw YAML files outside the store's mutate path.
+func reloadStore(t *testing.T, cfg *config.Config) (*store.Store, error) {
+	t.Helper()
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	return s, nil
+}
+
+// seedEmptySBARTask drops a task file at <id>-empty.md with no SBAR
+// block. Used by the negative-path approve/check tests.
+func seedEmptySBARTask(t *testing.T, cfg *config.Config, id string) {
+	t.Helper()
+	path := filepath.Join(cfg.Root(), "tasks", id+"-empty.md")
+	writeFile(t, path, `id: `+id+`
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Empty SBAR fixture
+
+depends_on:
+- []
+
+next_actions:
+- []
+`)
+}
+
+// seedScaffoldSBARTask drops a task file whose SBAR sub-fields all
+// hold the literal I-492 TODO placeholder strings. The substance gate
+// must treat these as equivalent to empty.
+func seedScaffoldSBARTask(t *testing.T, cfg *config.Config, id string) {
+	t.Helper()
+	path := filepath.Join(cfg.Root(), "tasks", id+"-scaffold.md")
+	writeFile(t, path, `id: `+id+`
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+completed: null
+
+title: Scaffold SBAR fixture
+
+depends_on:
+- []
+
+next_actions:
+- []
+
+sbar:
+  situation: |-
+    `+model.SBARPlaceholders["situation"]+`
+  background: |-
+    `+model.SBARPlaceholders["background"]+`
+  assessment: |-
+    `+model.SBARPlaceholders["assessment"]+`
+  recommendation: |-
+    `+model.SBARPlaceholders["recommendation"]+`
+`)
+}
+
+// seedIdeaWithoutSBAR drops an idea file with no SBAR.
+func seedIdeaWithoutSBAR(t *testing.T, cfg *config.Config, id string) {
+	t.Helper()
+	path := filepath.Join(cfg.Root(), "ideas", id+"-no-sbar.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, `id: `+id+`
+type: idea
+status: captured
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: Idea without SBAR
+`)
 }
 
 // I-565: when a plan sidecar exists, PlanApprove back-fills the I-512

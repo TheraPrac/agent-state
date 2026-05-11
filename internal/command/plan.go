@@ -17,6 +17,12 @@ import (
 // PlanApproveOpts holds flags for `st plan approve`. I-511 added
 // Strict, which refuses approval if any linked plan sidecar contains
 // an un-verifiable acceptance criterion (per plan.ValidateACs).
+//
+// I-589: Strict no longer governs the SBAR substance gate — the SBAR
+// gate is now hard-blocking by default at every approval. The flag is
+// preserved as a no-op alias for SBAR (still fires the I-511 AC
+// verifiability gate) so existing CI invocations passing `--strict`
+// keep working unchanged.
 type PlanApproveOpts struct {
 	Strict bool
 }
@@ -45,21 +51,35 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		return 1
 	}
 
-	// I-511: --strict refuses approval when the plan sidecar's
-	// acceptance criteria fail the verifiability check. The default
-	// (non-strict) approve path stays lenient — operators opt in by
-	// passing --strict when they want the gate to be hard.
+	// I-589: SBAR substance is hard-blocked by default on every
+	// `st plan approve` (no `--strict` opt-in, no `--allow-incomplete-sbar`
+	// escape hatch). Plans approved against a placeholder SBAR were the
+	// "shallow item → shallow plan" failure mode I-149 was filed to
+	// prevent; warn-only mode was load-bearing on author goodwill and
+	// the author kept skipping. Triage items get a light-but-substantive
+	// SBAR (one or two sentences per field is fine; raw `TODO:` scaffold
+	// or single-word "TBD" is not). SBAR is only required on tasks/issues
+	// (per the I-487 schema); ideas and promotions skip the gate entirely.
 	//
-	// I-149: --strict also refuses approval when the item's SBAR is
-	// empty or still on the I-492 TODO scaffold. Plans approved
-	// against a placeholder SBAR are the original "shallow item →
-	// shallow plan" failure mode I-149 was filed to prevent. Non-
-	// strict approve still warns (below) so unfilled SBAR is visible
-	// every time even when the operator opts out of the hard gate.
-	//
-	// SBAR is only required on tasks/issues (per the I-487 schema);
-	// ideas and promotions skip the substance gate entirely.
+	// I-511: --strict additionally refuses approval when the plan
+	// sidecar's acceptance criteria fail the verifiability check. The
+	// flag is preserved here purely for that AC gate — its SBAR role
+	// from I-149 is gone (the SBAR check now runs unconditionally).
 	sbarApplies := item.Type == "task" || item.Type == "issue"
+	if sbarApplies {
+		if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
+			fmt.Fprintf(os.Stderr,
+				"%s: SBAR substance gate failed (%d section(s) empty or still on the I-492 scaffold); refusing approval:\n",
+				id, len(vios))
+			for _, v := range vios {
+				fmt.Fprintf(os.Stderr, "  %s\n", v)
+			}
+			fmt.Fprintf(os.Stderr,
+				"Run `st update %s sbar` to fill the four sections (one or two sentences per field), then re-run `st plan approve %s`.\n",
+				id, id)
+			return 2
+		}
+	}
 	if opts.Strict {
 		findings := loadStrictACFindings(cfg, id)
 		if len(findings) > 0 {
@@ -74,24 +94,6 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 				id, id)
 			return 2
 		}
-		if sbarApplies {
-			if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
-				fmt.Fprintf(os.Stderr,
-					"%s --strict: SBAR substance gate failed (%d section(s) empty or still on the I-492 scaffold); refusing approval:\n",
-					id, len(vios))
-				for _, v := range vios {
-					fmt.Fprintf(os.Stderr, "  %s\n", v)
-				}
-				fmt.Fprintf(os.Stderr,
-					"Run `st update %s sbar` to fill the four sections, then re-run `st plan approve --strict %s`.\n",
-					id, id)
-				return 2
-			}
-		}
-	} else if sbarApplies {
-		quality.PrintWarnings(os.Stderr,
-			fmt.Sprintf("  note: %s SBAR is incomplete — pass --strict to enforce, or run `st update %s sbar`:", id, id),
-			quality.ValidateSBAR(item))
 	}
 
 	approver := cfg.AgentID()
@@ -206,18 +208,34 @@ func PlanReset(s *store.Store, cfg *config.Config, id string) int {
 // 1 if not. Designed for the `plan-before-code-guard.sh` hook to call as
 // `st plan check $ITEM_ID > /dev/null` so the hook can deny Edit/Write
 // when the gate is closed.
+//
+// I-589: the check now re-validates the SBAR substance gate alongside
+// the PlanApproved flag, so a post-approval SBAR clear or direct-file
+// edit that knocks an SBAR sub-field back to the I-492 scaffold closes
+// the gate at the hook surface without requiring an explicit
+// `st plan reset`. Ideas/promotions skip the SBAR check (they don't
+// carry SBAR per the I-487 schema) and rely purely on PlanApproved.
 func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
 		return 1
 	}
-	if item.PlanApproved {
-		fmt.Printf("approved by %s at %s\n", fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
-		return 0
+	if !item.PlanApproved {
+		fmt.Printf("not approved\n")
+		return 1
 	}
-	fmt.Printf("not approved\n")
-	return 1
+	if item.Type == "task" || item.Type == "issue" {
+		if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
+			fmt.Printf("approved but SBAR substance gate now failing — re-fill SBAR or run `st plan reset %s`\n", id)
+			for _, v := range vios {
+				fmt.Fprintf(os.Stderr, "  %s\n", v)
+			}
+			return 1
+		}
+	}
+	fmt.Printf("approved by %s at %s\n", fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
+	return 0
 }
 
 // PlanShow renders a detailed view of an item's plan-approval state plus
