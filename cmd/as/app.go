@@ -145,6 +145,10 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
 				Editor: editor,
+				// I-588: wire the run engine so post-create spawns the
+				// SBAR/title sub-agent self-review. In-process callers
+				// (tests, migrations) leave Engine zero and skip the review.
+				Engine: command.DefaultRunEngine(),
 			})
 		},
 	}

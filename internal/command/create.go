@@ -10,7 +10,6 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"golang.org/x/term"
@@ -32,6 +31,11 @@ type CreateOpts struct {
 	// non-interactive shell are not blocked. Even with Editor=true the
 	// editor is skipped when stdin is not a TTY or $EDITOR is unset.
 	Editor bool
+	// Engine is the run engine used by the I-588 post-create item review.
+	// The CLI wires this to DefaultRunEngine() so interactive `st create`
+	// spawns the sub-agent SBAR/title self-review; in-process callers
+	// (tests, migrations) leave it zero, which skips the review entirely.
+	Engine RunEngine
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -226,18 +230,12 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		fmt.Printf("  Sprint: %s\n", opts.Sprint)
 	}
 
-	// I-149: surface SBAR substance gaps as warnings. New items
-	// always have the I-492 scaffold; this nudges the author to fill
-	// the four sections before plan approval will hard-block them.
-	// Warning-only here — creation must succeed even for triage items
-	// that intentionally start as a placeholder. Ideas/promotions
-	// never carry SBAR per the I-487 schema, so the gate is gated on
-	// task/issue types only.
-	if itemType == "task" || itemType == "issue" {
-		quality.PrintWarnings(os.Stderr,
-			fmt.Sprintf("  note: %s SBAR scaffold needs filling — run `st update %s sbar`:", id, id),
-			quality.ValidateSBAR(item))
-	}
+	// I-588: the warning-only `quality.PrintWarnings` nudge that lived
+	// here is gone. The post-GitSync runItemReview() below spawns an
+	// active Claude sub-agent that fixes weak SBAR/title in-band instead
+	// of asking the author to do it after the fact. Ideas and promotions
+	// don't carry SBAR per the I-487 schema, so the review function
+	// short-circuits on those types.
 
 	newPath, _ := s.Path(id)
 
@@ -263,6 +261,14 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	if err := s.GitSync(fmt.Sprintf("st create: %s — %s", id, title), newPath); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync after create failed: %v\n", err)
 	}
+
+	// I-588: spawn the Claude sub-agent self-review on task/issue creates.
+	// runItemReview is a no-op for non-task/issue types and when the engine
+	// is nil, so this safely covers in-process callers (tests, migrations)
+	// that don't wire an engine. The review may auto-fix SBAR/title via
+	// `st update` calls and may archive the item if the verdict is Reject.
+	runItemReview(s, cfg, id, item, opts.Engine)
+
 	return 0
 }
 

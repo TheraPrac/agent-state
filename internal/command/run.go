@@ -5222,6 +5222,72 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	return b.String()
 }
 
+// buildItemReviewPrompt creates a prompt for claude to critically review a
+// freshly-created task or issue across TITLE and the four SBAR sub-fields.
+// I-588: mirrors buildPlanReviewPrompt's auto-fix loop so weak content gets
+// fixed in-band instead of warned about and ignored.
+func buildItemReviewPrompt(itemID string, item *model.Item) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("You are reviewing newly-created item %s for substance.\n\n", itemID))
+	b.WriteString(fmt.Sprintf("Type: %s\n", item.Type))
+	b.WriteString(fmt.Sprintf("Title: %s\n", item.Title))
+	b.WriteString("\nCurrent SBAR:\n")
+	b.WriteString(fmt.Sprintf("  situation:      %s\n", oneLine(item.SBAR.Situation)))
+	b.WriteString(fmt.Sprintf("  background:     %s\n", oneLine(item.SBAR.Background)))
+	b.WriteString(fmt.Sprintf("  assessment:     %s\n", oneLine(item.SBAR.Assessment)))
+	b.WriteString(fmt.Sprintf("  recommendation: %s\n", oneLine(item.SBAR.Recommendation)))
+	b.WriteString("\nReview the item across five dimensions and FIX weak content before reporting.\n\n")
+	b.WriteString("## Dimensions\n\n")
+	b.WriteString("1. TITLE — concise (under ~100 chars), specific, names the symptom or change.\n")
+	b.WriteString("   Bad: \"fix bug\", \"misc cleanup\". Good: \"st create writes blocks list inverted on issue type\".\n")
+	b.WriteString("2. SBAR.situation — observable symptom/trigger right now (what just broke or what triggered the item).\n")
+	b.WriteString("   Not the fix. Not the diagnosis. The observable signal.\n")
+	b.WriteString("3. SBAR.background — prior context: history, code paths, related items.\n")
+	b.WriteString("   Scope and context ONLY — do NOT put the implementation plan here.\n")
+	b.WriteString("4. SBAR.assessment — diagnosis plus confidence: what's wrong, why, how confident you are.\n")
+	b.WriteString("5. SBAR.recommendation — proposed fix scoped enough to be actionable.\n")
+	b.WriteString("   Concrete enough that a future agent can start work without re-deriving the approach.\n\n")
+	b.WriteString("## Instructions\n\n")
+	b.WriteString("1. For ANY field that is empty, still on the I-492 TODO scaffold (\"TODO: ...\"),\n")
+	b.WriteString("   single-word, or otherwise weak — FIX IT NOW via st commands:\n")
+	b.WriteString("   - Title: `st update " + itemID + " title \"<new title>\"`\n")
+	b.WriteString("   - SBAR sub-fields: `cat <<'EOF' | st update " + itemID + " sbar.<field> --stdin`\n")
+	b.WriteString("     where <field> is one of: situation, background, assessment, recommendation.\n")
+	b.WriteString("     Always use `--stdin` for multi-line values; never rely on $EDITOR here.\n")
+	b.WriteString("   You may write 1-3 sentences per SBAR sub-field — concise but substantive beats a paragraph of filler.\n")
+	b.WriteString("   Do NOT just list problems for the user to fix — resolve them yourself.\n\n")
+	b.WriteString("2. Produce a concise report:\n")
+	b.WriteString("   - TITLE — assessment (1 line)\n")
+	b.WriteString("   - SBAR — per-field assessment (1 line each)\n")
+	b.WriteString("   - CHANGES MADE — list what you fixed (if anything)\n")
+	b.WriteString("   - REMAINING CONCERNS — only issues you could NOT fix (e.g., the item is fundamentally\n")
+	b.WriteString("     incoherent and should be archived, or context is missing that only the operator has)\n")
+	b.WriteString("   - RECOMMENDATION — MUST be exactly one of these three:\n")
+	b.WriteString("     a) \"Accept\" — item is substantive, no issues remain.\n")
+	b.WriteString("     b) \"Reject\" — item is fundamentally a non-item (duplicate, incoherent, no diagnosable\n")
+	b.WriteString("        signal) and should be archived.\n")
+	b.WriteString("     c) \"Feedback\" — item has a design question that only the operator can resolve.\n")
+	b.WriteString("        Use Feedback ONLY when you genuinely cannot proceed without human input.\n")
+	b.WriteString("     State which one and why in one sentence.\n\n")
+	b.WriteString("IMPORTANT: Do NOT use \"Accept with notes\". Fix the issue yourself (then Accept), or\n")
+	b.WriteString("escalate it (Feedback). There is no middle ground.\n")
+	return b.String()
+}
+
+// oneLine renders an SBAR sub-field as a single line for the review prompt.
+// Multi-line bodies collapse to first-line plus ellipsis so the prompt stays
+// scannable; the reviewer will read full content via `st show` if needed.
+func oneLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(empty)"
+	}
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		return s[:idx] + " …"
+	}
+	return s
+}
+
 // planRecommendation evaluates a plan/design and returns a recommendation string.
 // extractRecommendation pulls the recommendation from claude's review output
 // and returns it as a one-line string. Looks for Accept/Reject/Chat keywords.
