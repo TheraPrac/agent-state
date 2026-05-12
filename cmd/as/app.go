@@ -1959,6 +1959,25 @@ Kinds:
 	reconcileCmd.Flags().Bool("dry-run", false, "show updates without applying")
 	root.AddCommand(reconcileCmd)
 
+	inferStageCmd := &cobra.Command{
+		Use:   "infer-stage [<id>]",
+		Short: "Infer delivery.stage from branch/PR state (forward-only)",
+		Long: "Probes branch-on-remote and gh PR state to advance delivery.stage when an interactive\n" +
+			"workflow (git push, gh pr create, GitHub UI merge) bypassed the verb side that would\n" +
+			"normally call advanceDeliveryStage. With no id arg, infers for the stack-top item.\n" +
+			"Forward-only — never regresses a later stage. Returns 0 on every nothing-to-do path\n" +
+			"so stop hooks can call this without ever blocking session end.",
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			id := ""
+			if len(args) > 0 {
+				id = args[0]
+			}
+			exitCode = command.InferStage(appStore, appCfg, id, command.InferStageOpts{})
+		},
+	}
+	root.AddCommand(inferStageCmd)
+
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version + build identity",
