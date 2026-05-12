@@ -342,3 +342,27 @@ func SaveStack(cfg *config.Config, entries []StackEntry) error {
 	}
 	return os.WriteFile(cfg.StackPath(), []byte(sb.String()), 0644)
 }
+
+// removeFromStackSilently drops the entry with the given ID from the
+// stack regardless of position. Symmetric twin of
+// removeFromQueueSilently — returns (true, nil) when it removed an
+// entry, (false, nil) when the stack had no matching entry. I-232.
+func removeFromStackSilently(cfg *config.Config, id string) (bool, error) {
+	entries := LoadStack(cfg)
+	found := false
+	var updated []StackEntry
+	for _, e := range entries {
+		if e.ID == id {
+			found = true
+			continue
+		}
+		updated = append(updated, e)
+	}
+	if !found {
+		return false, nil
+	}
+	if err := SaveStack(cfg, updated); err != nil {
+		return false, err
+	}
+	return true, nil
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,8 +104,23 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	n = reconcileArchive(s, cfg, opts)
 	updates += n
 
-	// Phase 5: Regenerate index
-	fmt.Println("Phase 5: Regenerate index")
+	// Phase 5: Drop terminal items from the work queue
+	fmt.Println("Phase 5: Queue cleanup (drop terminal items)")
+	n = reconcileQueueCleanup(s, cfg, opts)
+	updates += n
+
+	// Phase 6: Drop terminal items from the agent stack
+	fmt.Println("Phase 6: Stack cleanup (drop terminal items)")
+	n = reconcileStackCleanup(s, cfg, opts)
+	updates += n
+
+	// Phase 7: Release stuck-active items with no worktree / open PR / recent touch
+	fmt.Println("Phase 7: Release stale-active items")
+	n = reconcileStaleActive(s, cfg, opts)
+	updates += n
+
+	// Phase 8: Regenerate index
+	fmt.Println("Phase 8: Regenerate index")
 	if !opts.DryRun {
 		Index(s, cfg)
 	}
@@ -706,4 +722,139 @@ func touchItem(item *model.Item, cfg *config.Config) {
 
 func formatNow() string {
 	return time.Now().Format(time.RFC3339)
+}
+
+// reconcileQueueCleanup drops queue entries pointing at terminal items
+// (closed, abandoned, etc.) so `st queue show` doesn't carry forward
+// resolved work between sessions. I-232.
+func reconcileQueueCleanup(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	entries := LoadQueue(cfg)
+	if len(entries) == 0 {
+		return 0
+	}
+	var kept []QueueEntry
+	updates := 0
+	for _, e := range entries {
+		item, ok := s.Get(e.ID)
+		if !ok {
+			kept = append(kept, e)
+			continue
+		}
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			updates++
+			fmt.Printf("  %s: dropped from queue (status: %s)\n", e.ID, item.Status)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if updates == 0 {
+		return 0
+	}
+	if !opts.DryRun {
+		if err := SaveQueue(cfg, kept); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: save queue: %v\n", err)
+		}
+	}
+	return updates
+}
+
+// reconcileStackCleanup drops stack entries pointing at terminal items.
+// LoadStack already resolves the legacy-vs-per-agent path, so this
+// piggybacks on that. I-232.
+func reconcileStackCleanup(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	entries := LoadStack(cfg)
+	if len(entries) == 0 {
+		return 0
+	}
+	var kept []StackEntry
+	updates := 0
+	for _, e := range entries {
+		item, ok := s.Get(e.ID)
+		if !ok {
+			kept = append(kept, e)
+			continue
+		}
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			updates++
+			fmt.Printf("  %s: dropped from stack (status: %s)\n", e.ID, item.Status)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if updates == 0 {
+		return 0
+	}
+	if !opts.DryRun {
+		if err := SaveStack(cfg, kept); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: save stack: %v\n", err)
+		}
+	}
+	return updates
+}
+
+// reconcileStaleActive releases items whose status is the type's
+// ActiveStatus AND:
+//   - no worktree exists at either the per-agent or legacy locations
+//   - no open PR is associated with the recorded branch
+//   - last_touched is older than the stale threshold (default 7 days,
+//     overridable via ST_STALE_ACTIVE_DAYS)
+//
+// Calls Release() to reset the item back to its StartStatus. I-232.
+func reconcileStaleActive(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	threshold := 7 * 24 * time.Hour
+	if env := os.Getenv("ST_STALE_ACTIVE_DAYS"); env != "" {
+		var days int
+		if _, err := fmt.Sscanf(env, "%d", &days); err == nil && days > 0 {
+			threshold = time.Duration(days) * 24 * time.Hour
+		}
+	}
+	now := time.Now()
+	updates := 0
+	for _, item := range s.List() {
+		tc, ok := cfg.Types[item.Type]
+		if !ok {
+			continue
+		}
+		if item.Status != tc.ActiveStatus {
+			continue
+		}
+		// Recent touch — owner is probably still working.
+		if !item.LastTouched.IsZero() && now.Sub(item.LastTouched) < threshold {
+			continue
+		}
+		// Worktree present anywhere — owner has on-disk state.
+		wtNew := filepath.Join(cfg.WorktreeBase(), item.ID)
+		wtLegacy := filepath.Join(cfg.WorktreeBaseLegacy(), item.ID)
+		if _, err := os.Stat(wtNew); err == nil {
+			continue
+		}
+		if _, err := os.Stat(wtLegacy); err == nil {
+			continue
+		}
+		// Open PR — owner is mid-review.
+		if branch, _ := getNestedField(item, "work_tracking", "branch"); branch != "" && branch != "null" {
+			prState, _ := opts.prFetch()(cfg, branch)
+			if prState == "OPEN" || prState == "PR_OPEN" {
+				continue
+			}
+		}
+		updates++
+		fmt.Printf("  %s: releasing stale-active (last_touched %s ago)\n",
+			item.ID, formatStaleAge(now.Sub(item.LastTouched)))
+		if !opts.DryRun {
+			Release(s, cfg, item.ID)
+		}
+	}
+	return updates
+}
+
+// formatStaleAge renders a duration as the simplest human form for the
+// reconcile log line ("12d" / "36h" / "240h0m0s" → "10d"). Doesn't try
+// to be precise — operators are looking at orders of magnitude here.
+func formatStaleAge(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days >= 1 {
+		return fmt.Sprintf("%dd", days)
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }

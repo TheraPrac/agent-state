@@ -136,6 +136,15 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Printf("Released %s — recovered from stuck-active%s\n", id, statusNote)
 	}
 
+	// I-232: a released item is back to queued/start status; if it was
+	// also sitting on the agent's stack, drop the ghost entry so
+	// `st stack` doesn't keep advertising work the operator no longer
+	// owns. Symmetric with the queue/stack auto-cleanup on close.
+	// Best-effort: never blocks the release.
+	if _, serr := removeFromStackSilently(cfg, id); serr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove %s from stack: %v\n", id, serr)
+	}
+
 	// Commit + push so the claim release is visible to other sessions
 	// immediately. Best-effort — on failure the on-disk state is still
 	// correct and a later sync will propagate it.

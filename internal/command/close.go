@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -191,6 +192,21 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 			item.Doc.SetField("claimed_by", "")
 			item.Doc.SetField("claimed_at", "")
 		}
+
+		// I-232: clear work_tracking.branch/worktree when the recorded
+		// branch no longer exists anywhere (any configured repo, local
+		// OR remote). Worktrees on the disk are torn down on `st
+		// finish`, but the branch field can linger pointing at a
+		// branch that's been merged + deleted, misleading
+		// `st queue show` and `st stack` displays. Best-effort — a
+		// missing branch check (no configured repos, no .git, etc.)
+		// simply leaves the fields alone.
+		if recordedBranch, ok := getNestedField(item, "work_tracking", "branch"); ok && recordedBranch != "" {
+			if !branchExistsAnywhere(cfg, recordedBranch) {
+				item.Doc.RemoveNestedField("work_tracking.branch")
+				item.Doc.RemoveNestedField("work_tracking.worktree")
+			}
+		}
 		return nil
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
@@ -268,6 +284,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		} else {
 			fmt.Println("Stack is now empty")
 		}
+	} else {
+		// I-232: closed item wasn't on top, but may be sitting
+		// mid-stack (operator pushed something on top, then closed
+		// the lower one). removeFromStackSilently no-ops when not
+		// present, so this is the safety net.
+		if removed, serr := removeFromStackSilently(cfg, id); serr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove %s from stack: %v\n", id, serr)
+		} else if removed {
+			fmt.Printf("  also removed from stack (mid-stack ghost)\n")
+		}
 	}
 
 	// Commit + push the close to git immediately. Previously the move to
@@ -299,6 +325,44 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	}
 
 	return 0
+}
+
+// branchExistsAnywhere reports whether `branch` is present on any of
+// the configured repos, either locally or on origin. Returns true when
+// the branch check can't be performed (no worktree config, no .git
+// directories) so the caller's "clear stale fields" path stays
+// conservative: it only clears when we're confident the branch is
+// gone. I-232.
+func branchExistsAnywhere(cfg *config.Config, branch string) bool {
+	if cfg == nil || cfg.Worktree == nil || len(cfg.Worktree.Repos) == 0 {
+		return true // conservative — no config to check against
+	}
+	parentDir := cfg.Worktree.ParentDir
+	if parentDir == "" {
+		parentDir = cfg.Root()
+	}
+	if !filepath.IsAbs(parentDir) {
+		parentDir = filepath.Join(cfg.Root(), parentDir)
+	}
+	checkedAny := false
+	for _, repoShort := range cfg.Worktree.Repos {
+		repoDir := cfg.Worktree.RepoMap[repoShort]
+		if repoDir == "" {
+			repoDir = repoShort
+		}
+		repoPath := filepath.Join(parentDir, repoDir)
+		if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+			continue // repo missing — skip, but don't claim "gone"
+		}
+		checkedAny = true
+		if branchExists(repoPath, branch) || remoteBranchExists(repoPath, branch) {
+			return true
+		}
+	}
+	if !checkedAny {
+		return true // no repo we could query — stay conservative
+	}
+	return false
 }
 
 // autoArchiveSprintAndEpic checks if all items in the sprint are terminal.

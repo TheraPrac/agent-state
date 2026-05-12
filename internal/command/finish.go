@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -127,10 +128,60 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 		os.RemoveAll(wtDir)
 		// Release item lock
 		store.UnlockItem(cfg, id)
+
+		// I-232: drop stale work_tracking fields and reset a still-active
+		// item back to its type's start status. The worktree is gone, so
+		// the branch field points at a dead reference; status:active on
+		// an item with no worktree is the exact "stuck active" pattern
+		// I-408 surfaced. Mirrors release.go's stuck-active recovery so
+		// re-running `st finish` after a hand-deleted worktree leaves
+		// the item in a recoverable shape. Best-effort: never blocks.
+		clearStaleWorkTrackingAfterFinish(s, cfg, id)
+
 		fmt.Printf("Finished %s — worktrees cleaned up\n", id)
 	}
 
 	return 0
+}
+
+// clearStaleWorkTrackingAfterFinish removes work_tracking.branch /
+// work_tracking.worktree and resets `status: active` items back to
+// their type's StartStatus. Called after a successful, non-dry-run
+// worktree removal. Best-effort — failures only log. I-232.
+func clearStaleWorkTrackingAfterFinish(s *store.Store, cfg *config.Config, id string) {
+	if s == nil {
+		return
+	}
+	item, ok := s.Get(id)
+	if !ok {
+		return
+	}
+	// If the item is already terminal, the close path handled the
+	// fields; don't fight it.
+	if cfg.IsTerminalStatus(item.Type, item.Status) {
+		return
+	}
+	if err := s.Mutate(id, func(item *model.Item) error {
+		item.Doc.RemoveNestedField("work_tracking.branch")
+		item.Doc.RemoveNestedField("work_tracking.worktree")
+		if tc, ok := cfg.Types[item.Type]; ok && item.Status == tc.ActiveStatus {
+			item.Status = tc.StartStatus
+			item.Doc.SetField("status", tc.StartStatus)
+		}
+		if item.AssignedTo != "" {
+			item.AssignedTo = ""
+			item.Doc.SetField("assigned_to", "")
+		}
+		if item.ClaimedBy != "" {
+			item.ClaimedBy = ""
+			item.ClaimedAt = ""
+			item.Doc.SetField("claimed_by", "")
+			item.Doc.SetField("claimed_at", "")
+		}
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clearing stale work_tracking for %s: %v\n", id, err)
+	}
 }
 
 func listWorktrees(baseDir string) int {
@@ -250,5 +301,14 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 	// Remove the now-empty wt parent dir. Item lock is already released
 	// upstream in Close() (close.go:177), so we don't unlock here.
 	_ = os.RemoveAll(wtDir)
+
+	// I-232: drop stale work_tracking fields and reset a still-active
+	// item. The Close path normally reaches terminal status before this
+	// runs, but TryAutoFinishWorktree can also be called from non-close
+	// paths (test harnesses, future call sites), so do the cleanup
+	// defensively. Best-effort: a missing store just no-ops.
+	if s, err := store.New(cfg); err == nil {
+		clearStaleWorkTrackingAfterFinish(s, cfg, id)
+	}
 	return true, false
 }
