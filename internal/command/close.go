@@ -123,24 +123,29 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// Record completion time tracking
 		item.SetNested("time_tracking", "completed_at", nowStr)
 
-		// total_duration_seconds = closed_at - created_at (calendar wall
-		// time from item creation, includes idle periods). Always computed.
-		if !item.Created.IsZero() {
-			item.SetNested("time_tracking", "total_duration_seconds",
-				fmt.Sprintf("%d", int(now.Sub(item.Created).Seconds())))
-		}
-
-		// work_duration_seconds = closed_at - started_at (from when work
-		// was first activated). Coexists with legacy wall_time_hours for
-		// back-compat readers.
+		// I-514: emit all four duration fields from a single wallDur so
+		// they agree to the second / rounding. Prefer started_at; fall
+		// back to item.Created only when started_at is missing or
+		// unparseable (back-compat for legacy items closed without one).
+		var wallDur time.Duration
+		var anchored bool
 		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
 			if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
-				wallDur := now.Sub(t)
-				item.SetNested("time_tracking", "work_duration_seconds",
-					fmt.Sprintf("%d", int(wallDur.Seconds())))
-				item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
-				item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
+				wallDur = now.Sub(t)
+				anchored = true
 			}
+		}
+		if !anchored && !item.Created.IsZero() {
+			wallDur = now.Sub(item.Created)
+			anchored = true
+		}
+		if anchored {
+			item.SetNested("time_tracking", "total_duration_seconds",
+				fmt.Sprintf("%d", int(wallDur.Seconds())))
+			item.SetNested("time_tracking", "work_duration_seconds",
+				fmt.Sprintf("%d", int(wallDur.Seconds())))
+			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
+			item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
 		}
 
 		// Apply the precomputed LOC snapshot. computed outside the lock
