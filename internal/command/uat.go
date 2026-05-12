@@ -27,6 +27,12 @@ type checkResult struct {
 	Passed  bool   `json:"passed"`
 	Detail  string `json:"detail"`
 	Pending bool   `json:"pending,omitempty"` // manual review needed
+	// Skipped is true when the value was an intentional `skip: <reason>`
+	// — typically a scope suite the operator marked N/A for this change.
+	// Skipped rows render as ⊘ and do NOT count as auto-fail. Check
+	// before Passed in render/count branches so a Passed=true Skipped=true
+	// row still renders ⊘ rather than ✓.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // UAT runs automated acceptance criteria verification and produces a report.
@@ -67,13 +73,16 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 	results = append(results, acResults...)
 
 	// --- Render report ---
-	autoPass, autoFail, manual := 0, 0, 0
+	autoPass, autoFail, manual, skipped := 0, 0, 0, 0
 	for _, r := range results {
-		if r.Pending {
+		switch {
+		case r.Pending:
 			manual++
-		} else if r.Passed {
+		case r.Skipped:
+			skipped++
+		case r.Passed:
 			autoPass++
-		} else {
+		default:
 			autoFail++
 		}
 	}
@@ -87,8 +96,13 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 		if r.Mode == "manual" || r.Mode == "cmd" {
 			continue // show in AC section
 		}
+		// Skipped must be checked BEFORE Passed so a Passed=true
+		// Skipped=true row still renders ⊘ instead of ✓.
 		icon := fmt.Sprintf("%s✓%s", cGreen, cReset)
-		if !r.Passed {
+		switch {
+		case r.Skipped:
+			icon = fmt.Sprintf("%s⊘%s", cBlue, cReset)
+		case !r.Passed:
 			icon = fmt.Sprintf("%s✗%s", cRed, cReset)
 		}
 		fmt.Printf("  %s %s: %s\n", icon, r.Label, r.Detail)
@@ -99,10 +113,14 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 	if len(acResults) > 0 {
 		fmt.Printf("%sACCEPTANCE CRITERIA:%s\n", cBold, cReset)
 		for i, r := range acResults {
+			// Branch order: Pending → Skipped → !Passed → default (✓).
 			icon := fmt.Sprintf("%s✓%s", cGreen, cReset)
-			if r.Pending {
+			switch {
+			case r.Pending:
 				icon = fmt.Sprintf("%s⬜%s", cYellow, cReset)
-			} else if !r.Passed {
+			case r.Skipped:
+				icon = fmt.Sprintf("%s⊘%s", cBlue, cReset)
+			case !r.Passed:
 				icon = fmt.Sprintf("%s✗%s", cRed, cReset)
 			}
 			mode := r.Mode
@@ -121,6 +139,9 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 		fmt.Printf("%s%d auto-fail%s, ", cRed, autoFail, cReset)
 	} else {
 		fmt.Printf("0 auto-fail, ")
+	}
+	if skipped > 0 {
+		fmt.Printf("%s%d skipped%s, ", cBlue, skipped, cReset)
 	}
 	if manual > 0 {
 		fmt.Printf("%s%d manual review%s\n", cYellow, manual, cReset)
@@ -181,6 +202,19 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 				Mode:   "auto",
 				Passed: false,
 				Detail: "required but not recorded",
+			})
+			continue
+		}
+		// I-540: `skip: <reason>` (written by `st test <id> <suite> --skip`)
+		// is an explicit operator marker that this scope suite is N/A for
+		// the current change. Render as ⊘ skipped, not auto-fail.
+		if strings.HasPrefix(val, "skip:") {
+			results = append(results, checkResult{
+				Label:   name,
+				Mode:    "auto",
+				Passed:  true,
+				Skipped: true,
+				Detail:  val,
 			})
 			continue
 		}
@@ -318,6 +352,11 @@ func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, r
 					if s, ok := v.(string); ok {
 						val = s
 					}
+				}
+				// I-540: a prose AC mentioning a scope suite marked
+				// `skip: <reason>` must render as ⊘ skipped, not ✗ fail.
+				if strings.HasPrefix(val, "skip:") {
+					return checkResult{Label: criterion, Mode: "auto", Passed: true, Skipped: true, Detail: val}
 				}
 				passed := strings.HasPrefix(val, "pass")
 				return checkResult{Label: criterion, Mode: "auto", Passed: passed, Detail: val}
