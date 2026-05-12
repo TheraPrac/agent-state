@@ -430,7 +430,8 @@ func normalizeSlug(id, slug string) (string, error) {
 
 // createWorktrees creates git worktrees for the given item.
 // Absorbs start-work.sh logic: pull main, create branch, worktree add,
-// symlink .env files, npm install for web repos.
+// symlink .env files, npm install for Node repos (via
+// maybeInstallNodeDeps — I-526).
 func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (string, error) {
 	wt := cfg.Worktree
 	repos := opts.Repos
@@ -513,6 +514,16 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 
 		// Symlink .env files from main checkout
 		symlinkEnvFiles(mainRepoPath, wtPath)
+
+		// I-526: legacy start-work.sh ran `make install` for node
+		// projects so the worktree's node_modules/.bin had tsc / vitest
+		// on PATH for `make type-check` and `make test-unit`. The Go
+		// port had dropped that step, so every fresh worktree's web
+		// suites failed with `sh: tsc: command not found`. Re-add it,
+		// but only for newly-created worktrees (the existing-worktree
+		// branch above continues with `continue`, so we never reach
+		// here for those).
+		maybeInstallNodeDeps(wtPath)
 	}
 
 	// Write .workinfo metadata
@@ -581,6 +592,58 @@ func classifierGreen(item *model.Item) bool {
 	}
 	v, _ := item.Doc.GetNestedField("classification.verdict")
 	return v == "green"
+}
+
+// installerFunc is the underlying installer that runs `make install`
+// or `npm ci` inside wtPath. Routed through a package-level variable
+// so unit tests can inject a fake and assert call behavior without
+// shelling out. I-526.
+type installerFunc func(wtPath string) error
+
+// defaultInstaller is the production implementation: prefer
+// `make install` when a Makefile is present (matches project
+// convention and uses --legacy-peer-deps), fall back to
+// `npm ci --legacy-peer-deps`.
+func defaultInstaller(wtPath string) error {
+	if _, err := os.Stat(filepath.Join(wtPath, "Makefile")); err == nil {
+		cmd := exec.Command("make", "install")
+		cmd.Dir = wtPath
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	cmd := exec.Command("npm", "ci", "--legacy-peer-deps")
+	cmd.Dir = wtPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// nodeInstaller is the package-level installer. Tests overwrite this
+// in a t.Cleanup-restored swap.
+var nodeInstaller installerFunc = defaultInstaller
+
+// maybeInstallNodeDeps installs node dependencies in wtPath when the
+// worktree looks like a Node project (package.json present) and the
+// dependency tree isn't already in place. No-op for non-Node repos
+// (theraprac-api, theraprac-infra) and for repos whose node_modules
+// already exists. I-526.
+func maybeInstallNodeDeps(wtPath string) {
+	if _, err := os.Stat(filepath.Join(wtPath, "package.json")); err != nil {
+		return // not a Node project
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "node_modules")); err == nil {
+		return // already installed
+	}
+	fmt.Printf("  %s: installing node_modules...\n", filepath.Base(wtPath))
+	if err := nodeInstaller(wtPath); err != nil {
+		// Non-fatal: we'd rather hand the operator a partially-set-up
+		// worktree than abort the whole `st start` because npm is being
+		// flaky. Subsequent `make` invocations will surface the same
+		// error in a more discoverable place.
+		fmt.Printf("  %s: install failed (%v) — run `cd %s && make install` manually\n",
+			filepath.Base(wtPath), err, wtPath)
+	}
 }
 
 func writeWorkinfo(workDir, id, branch string, repos []string) {
