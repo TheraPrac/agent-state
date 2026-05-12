@@ -276,12 +276,97 @@ fields, and the SBAR composite stay on the single-field paths.`,
 
 	agentCmd := &cobra.Command{
 		Use:   "agent",
-		Short: "Manage local agent identity and auth",
+		Short: "Manage local agent identity, auth, and isolated agent workspaces",
+		Long: `Manage local agent identity, auth, and isolated workspaces.
+
+An "agent workspace" is one fully-isolated copy of the project on disk
+that runs as its own logical operator. Multiple agents can run in
+parallel against the same upstream repos without stepping on each
+other because each agent gets:
+
+  - its own filesystem checkout under theraprac-agents/theraprac-agent-<x>
+  - its own AWS access key (assumed role + per-agent SSM scope)
+  - its own GitHub App installation token (cached at
+    ~/.theraprac/gh-agent-<x>-session.json)
+  - its own host port block (a→100, b→200, c→300, …; per-letter offset
+    so dev-services on parallel agents don't collide)
+
+The shared spine is theraprac-workspace: there is a single canonical
+clone at theraprac-agents/theraprac-workspace, and each agent's
+theraprac-agent-<x>/theraprac-workspace is a SYMLINK to it (I-418).
+All agent-state writes serialize through one .git, eliminating
+push/rebase contention between agents. Use --full on create to opt
+out of the symlink and get a real clone instead — almost never needed.
+
+Lifecycle, in order:
+
+  1. st agent workspace create <name>    one-shot: clone repos, start
+                                         Docker, bootstrap AWS+GH
+  2. st agent bootstrap                   (auto-chained by create)
+                                         provisions AWS key + GH App
+                                         install for the new agent
+  3. st agent auth                        refresh cached AWS+GH
+                                         sessions; emit shell exports
+  4. st agent workspace status            inspect resolved paths /
+                                         ports / repo state
+  5. st agent workspace destroy <name>    tear down after safety
+                                         checks (or --force after
+                                         operator review)
+
+bootstrap is one-time per agent; auth is the routine refresh. The
+agent identity is derived from the parent directory name
+(theraprac-agent-<x>), so .as/local-agent.yaml is gitignored to
+keep identity from clobbering across agents.`,
+		Example: `  # see who I am and where my workspace points
+  st agent identity show
+
+  # list every agent registered on this machine
+  st agent list
+
+  # stand up a brand-new agent end-to-end
+  st agent workspace create agent-c
+
+  # refresh creds (typical: cache hit, no AWS/GH calls)
+  st agent auth`,
 	}
 	agentBootstrapCmd := &cobra.Command{
 		Use:   "bootstrap",
 		Short: "Bootstrap AWS and GitHub credentials for an agent",
-		Args:  cobra.NoArgs,
+		Long: `Bootstrap AWS and GitHub credentials for an agent — one-time per agent.
+
+Provisions a per-agent AWS access key (rotatable via --rotate-key) and
+walks through the GitHub App install flow so the agent can mint
+installation tokens going forward. Idempotent: re-running on a fully
+bootstrapped agent is a no-op unless --rotate-key is set.
+
+Prerequisites:
+  - Caller has aws sso login session (covers the bootstrap call itself).
+  - For --skip-gh runs: nothing else.
+  - For full runs: a browser to authorize the GitHub App install
+    against the org you control. The command prints the URL to paste —
+    it never opens a browser itself (this machine's "open" routes to a
+    cmux embedded browser with no github.com session — T-301).
+
+Side effects:
+  - Creates / rotates IAM access key for theraprac-agent-<name>.
+  - Writes ~/.theraprac/agent-<name>-aws.json (cached SSO session).
+  - Triggers GitHub App install; on success caches
+    ~/.theraprac/gh-agent-<name>-session.json.
+  - On --rotate-key, the previous access key is scheduled for
+    deactivation (not immediate delete — gives time for rolling).
+
+--skip-aws / --skip-gh let you redo just half of the dance when only
+one identity is broken (e.g., rotating the GH App without touching
+AWS).`,
+		Example: `  # full bootstrap, first time for this agent
+  st agent bootstrap --name agent-c
+
+  # rotate AWS access key for the current agent (most common use)
+  st agent bootstrap --rotate-key --skip-gh
+
+  # dry-run AWS-only to preview what would change without mutating
+  st agent bootstrap --skip-gh --dry-run --rotate-key`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			name, _ := cmd.Flags().GetString("name")
 			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
@@ -310,7 +395,36 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentAuthCmd := &cobra.Command{
 		Use:   "auth",
 		Short: "Refresh agent AWS/GitHub auth and print shell exports",
-		Args:  cobra.NoArgs,
+		Long: `Refresh the cached AWS and GitHub sessions for an agent and emit
+shell-eval-able export lines for AWS_ACCESS_KEY_ID / AWS_SESSION_TOKEN /
+GH_TOKEN. This is the routine refresh path; bootstrap is the
+one-time provisioning path.
+
+Behavior:
+  - When a cache hit is available (~/.theraprac/agent-<name>-aws.json
+    and ~/.theraprac/gh-agent-<name>-session.json have time-left), the
+    command exits in milliseconds and prints the cached exports —
+    suitable to wrap in 'eval "$(st agent auth)"' in a shell prompt.
+  - On cache miss (or --force), re-mints from the upstream identity
+    sources: assumes the per-agent AWS role and mints a fresh GH App
+    installation token. This makes API calls, so don't loop it.
+
+Prerequisites:
+  - agent must already have completed 'st agent bootstrap' once. If
+    not, auth fails fast with a "no bootstrap state" message and points
+    you at bootstrap. auth never silently bootstraps.
+
+--skip-aws / --skip-gh print only the half you ask for.
+--force ignores the cache and re-mints regardless of TTL.`,
+		Example: `  # eval into the current shell — typical invocation
+  eval "$(st agent auth)"
+
+  # force a re-mint after rotating the AWS access key
+  st agent auth --force --skip-gh
+
+  # only show GitHub token (e.g., piping to gh auth setup-git)
+  st agent auth --skip-aws`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			name, _ := cmd.Flags().GetString("name")
 			skipAWS, _ := cmd.Flags().GetBool("skip-aws")
@@ -328,7 +442,20 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List configured local agents",
-		Args:  cobra.NoArgs,
+		Long: `List every agent registered on this machine, by name, with the
+status of each one's AWS/GH session caches and workspace path.
+
+Source of truth is the union of:
+  - directories matching theraprac-agents/theraprac-agent-<x>/
+  - ~/.theraprac/agent-*-aws.json session caches
+  - ~/.theraprac/gh-agent-*-session.json session caches
+
+An agent listed with no workspace clone usually means its directory
+was removed manually without 'st agent workspace destroy' — re-run
+destroy with --force to clean up the dangling session caches.`,
+		Example: `  # see who's registered locally
+  st agent list`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.AgentList(appCfg)
 		},
@@ -338,11 +465,33 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentIdentityCmd := &cobra.Command{
 		Use:   "identity",
 		Short: "Inspect resolved agent identity",
+		Long: `Inspect the agent identity that 'st' resolves for the current
+process — useful when ST_ROOT, AS_AGENT_ID, or .as/local-agent.yaml
+disagree about who this shell is.`,
+		Example: `  # show resolved identity for the current shell
+  st agent identity show`,
 	}
 	agentIdentityShowCmd := &cobra.Command{
 		Use:   "show",
 		Short: "Print the resolved agent identity (id, source, parent/root heritage)",
-		Args:  cobra.NoArgs,
+		Long: `Print the agent ID 'st' resolved for this invocation, plus the
+source it came from (env var, .as/local-agent.yaml, or parent-dir
+inference) and the parent/root heritage chain when the agent was
+spawned by another agent (T-326).
+
+Use this when:
+  - You're inside a worktree and unsure which agent you'll act as.
+  - 'st queue add' or 'st commit' is attributing work to the wrong
+    agent (check the source field).
+  - Debugging why ST_ROOT routes you to an unexpected agent root.
+
+Side effects: none — pure read of resolved config.`,
+		Example: `  # who am I in this shell?
+  st agent identity show
+
+  # combined with a worktree cd to confirm identity resolution
+  cd worktrees/I-402 && st agent identity show`,
+		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.AgentIdentityShow(appCfg)
 		},
@@ -353,15 +502,75 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentWorkspaceCmd := &cobra.Command{
 		Use:   "workspace",
 		Short: "Create, inspect, and remove local agent workspaces",
+		Long: `Manage the on-disk lifecycle of an agent workspace. An agent
+workspace is the directory theraprac-agents/theraprac-agent-<x>/
+plus the symlinks/clones it owns: theraprac-api, theraprac-web,
+theraprac-infra, as, and a theraprac-workspace symlink to the
+canonical workspace (I-418).
+
+Subcommands:
+  create  — stand up a brand-new workspace end-to-end
+  status  — inspect resolved paths, ports, repo state
+  destroy — tear down after safety checks (or --force)`,
+		Example: `  # see what's there for a specific agent
+  st agent workspace status agent-c
+
+  # stand up a new agent (chains bootstrap)
+  st agent workspace create agent-d
+
+  # remove an agent after safety checks
+  st agent workspace destroy agent-d`,
 	}
 	agentWorkspaceCreateCmd := &cobra.Command{
 		Use:   "create <agent>",
 		Short: "Create or repair an independent agent workspace (auto-chains AWS+GH identity bootstrap)",
-		Long: "Create or repair an independent agent workspace.\n\n" +
-			"After cloning repos and starting Docker services, this command auto-chains\n" +
-			"`st agent bootstrap` for the new agent, provisioning both AWS and GitHub\n" +
-			"identities. Use --skip-aws / --skip-gh to opt out of either half (e.g., to\n" +
-			"reuse a shared identity).",
+		Long: `Create or repair an independent agent workspace.
+
+Stands up theraprac-agents/theraprac-agent-<name>/ with:
+  - clones (or symlinks per I-418) of theraprac-api, theraprac-web,
+    theraprac-infra, and as
+  - a theraprac-workspace symlink pointing at the canonical workspace
+  - per-agent Docker services brought up on the agent's port block
+  - chained 'st agent bootstrap' to provision AWS+GH identity
+
+After cloning repos and starting Docker services, this command
+auto-chains 'st agent bootstrap' for the new agent, provisioning
+both AWS and GitHub identities. Use --skip-aws / --skip-gh to opt
+out of either half (e.g., to reuse a shared identity).
+
+--repair fixes a known-safe partial state:
+  - missing theraprac-workspace symlink → recreate
+  - dangling per-agent Docker compose project → re-create with the
+    canonical name
+  - missing .as/local-agent.yaml → write fresh with the parent-dir
+    inferred ID
+  - half-cloned repos (clone exists but .git is empty) → re-clone
+It does NOT touch dirty working trees, won't overwrite a non-empty
+.as/local-agent.yaml, and won't touch the workspace canonical clone.
+Anything else (missing creds, broken Docker, bad SSO) it leaves alone
+so you can see what's wrong.
+
+Prerequisites:
+  - Caller has aws sso login (chained bootstrap needs it).
+  - Docker daemon running locally if you want the per-agent services.
+  - For non-dry-run: --yes (the gate that turns plan into apply).
+
+Side effects:
+  - Disk writes under theraprac-agents/theraprac-agent-<name>/
+  - Docker compose up on the per-agent port block
+  - IAM access key issued (chained bootstrap)
+  - GitHub App install request (chained bootstrap)`,
+		Example: `  # plan-only: see what create would do
+  st agent workspace create agent-d --dry-run
+
+  # apply: confirm with --yes; chains AWS+GH bootstrap
+  st agent workspace create agent-d --yes
+
+  # heal a partially-broken workspace without re-bootstrapping creds
+  st agent workspace create agent-d --repair --skip-aws --skip-gh
+
+  # reuse a shared GH App install (skip the chained --gh half)
+  st agent workspace create agent-d --yes --skip-gh`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			branch, _ := cmd.Flags().GetString("branch")
@@ -389,7 +598,28 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentWorkspaceStatusCmd := &cobra.Command{
 		Use:   "status [agent]",
 		Short: "Show resolved paths, ports, repo state, and service-health placeholders",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Show the resolved layout of an agent workspace.
+
+Reports:
+  - workspace root path (theraprac-agents/theraprac-agent-<x>/)
+  - per-repo presence + dirty/clean working-tree state
+  - allocated port block (a→100, b→200, …)
+  - cached AWS / GH session expiry
+  - service-health placeholders (Postgres / cmux / mail relay) — these
+    are currently stubbed; the cells are wired in but the actual health
+    checks land later. Treat the service column as advisory until that
+    work merges.
+
+With no agent argument, reports on the current shell's resolved
+agent (per 'st agent identity show').
+
+Side effects: none — pure read.`,
+		Example: `  # current shell's agent
+  st agent workspace status
+
+  # specific agent
+  st agent workspace status agent-c`,
+		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			agent := ""
 			if len(args) > 0 {
@@ -403,7 +633,37 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	agentWorkspaceDestroyCmd := &cobra.Command{
 		Use:   "destroy <agent>",
 		Short: "Remove an agent workspace after safety checks",
-		Args:  cobra.ExactArgs(1),
+		Long: `Tear down an agent workspace after running safety checks.
+
+Safety checks (all must pass without --force):
+  - working tree clean in every per-agent repo clone (theraprac-api,
+    theraprac-web, theraprac-infra, as) — uncommitted work is the #1
+    way agents lose hours, so destroy refuses by default.
+  - no unpushed commits on any agent-owned branch.
+  - per-agent Docker compose project is shut down or already absent.
+  - no in-flight 'st run' / 'st start' for any item on the agent.
+
+When all checks pass, destroy:
+  - stops per-agent Docker services and removes the compose project
+  - deletes the per-agent IAM access key
+  - removes ~/.theraprac/agent-<name>-*.json session caches
+  - rm -rf theraprac-agents/theraprac-agent-<name>/
+
+--force overrides the working-tree-clean and unpushed-commits checks
+after operator review. It does NOT bypass the in-flight-run check —
+nothing should kill an executing pipeline mid-step. To clear an
+in-flight, run 'st release' against the active items first.
+
+--dry-run prints the full action plan without doing anything.`,
+		Example: `  # always start here
+  st agent workspace destroy agent-d --dry-run
+
+  # apply after dry-run looks right
+  st agent workspace destroy agent-d
+
+  # I reviewed the dirty repos and accept the data loss
+  st agent workspace destroy agent-d --force`,
+		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			force, _ := cmd.Flags().GetBool("force")
