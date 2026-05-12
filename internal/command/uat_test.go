@@ -240,3 +240,83 @@ func TestValidateACsyntax(t *testing.T) {
 		t.Errorf("expected 1 error for empty command, got %d", len(errors))
 	}
 }
+
+// TestUATScopeSuiteSkipped verifies I-540: scope suites marked
+// `skip: <reason>` via `st test --skip` render as informational
+// ⊘ skipped, not ✗ auto-fail, and the UAT exit code stays 0.
+func TestUATScopeSuiteSkipped(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "web_e2e", "skip: workspace-only change")
+		it.SetNested("testing_evidence", "api_integration", "skip: infra-only change")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := UATOpts{
+		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("hello\n"), 0, nil },
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := UAT(s, cfg, "T-003", opts)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if code != 0 {
+		t.Fatalf("UAT returned %d, want 0 (skipped scope suites must not fail)\noutput: %s", code, output)
+	}
+	if !strings.Contains(output, "skipped") {
+		t.Errorf("expected SUMMARY to mention 'skipped', got:\n%s", output)
+	}
+	if !strings.Contains(output, "skip: workspace-only change") {
+		t.Errorf("expected skip reason rendered, got:\n%s", output)
+	}
+	// The auto-fail counter must NOT be inflated by the two skipped rows.
+	if !strings.Contains(output, "0 auto-fail") {
+		t.Errorf("expected 0 auto-fail in summary, got:\n%s", output)
+	}
+}
+
+// TestUATScopeSuiteSkippedSummaryCount pins the new summary counter so a
+// future refactor can't quietly drop "N skipped" from the SUMMARY line.
+func TestUATScopeSuiteSkippedSummaryCount(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "web_e2e", "skip: workspace-only change")
+		it.SetNested("testing_evidence", "api_integration", "skip: infra-only change")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := UATOpts{
+		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("hello\n"), 0, nil },
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	UAT(s, cfg, "T-003", opts)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "2 skipped") {
+		t.Errorf("expected '2 skipped' in summary, got:\n%s", output)
+	}
+	if !strings.Contains(output, "0 auto-fail") {
+		t.Errorf("expected '0 auto-fail' in summary, got:\n%s", output)
+	}
+}
