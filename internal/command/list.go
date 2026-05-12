@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -43,6 +44,12 @@ func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
 		return 0
 	}
 
+	// I-444: render each row through the shared FormatItemRow helper so
+	// st list aligns byte-for-byte with st status / st run status. The
+	// (stage) and [assigned] suffixes stay list-specific and append after
+	// the shared base, matching the indented-continuation pattern that
+	// printQueuedTasks uses for ▶ blocks / ⊘ blocked by lines.
+	g := deps.Build(s.All(), cfg)
 	for _, item := range items {
 		stage := ""
 		if st, ok := item.Delivery["stage"]; ok {
@@ -55,7 +62,11 @@ func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
 			assigned = fmt.Sprintf(" [%s]", label)
 		}
 
-		fmt.Printf("%-8s %-10s %s", item.ID, item.Status, item.Title)
+		fmt.Print(FormatItemRow(item, ItemRowOpts{
+			TitleWidth:   45,
+			Blocked:      g.IsBlocked(item.ID),
+			PlanApproved: item.PlanApproved,
+		}))
 		if stage != "" {
 			fmt.Printf("  (%s)", stage)
 		}

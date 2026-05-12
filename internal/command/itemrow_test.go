@@ -182,3 +182,33 @@ func TestFormatItemRow_BothSurfacesEmitIdenticalBase(t *testing.T) {
 			statusBase, runBase)
 	}
 }
+
+// TestFormatItemRow_ListSurfaceMatchesBase closes the parity loop over
+// the third surface (I-444). `st list` now goes through FormatItemRow,
+// so the base prefix (ID block, priority tag, status tag) must remain
+// byte-identical to st status's call with the same item. Width of the
+// title column is allowed to diverge; everything before the title is
+// the shared contract.
+func TestFormatItemRow_ListSurfaceMatchesBase(t *testing.T) {
+	item := &model.Item{
+		ID:          "I-444",
+		Type:        "issue",
+		Status:      "queued",
+		Title:       "list surface row formatter",
+		Priority:    ptrInt(3),
+		LastTouched: fixedTouched,
+	}
+
+	listRow := FormatItemRow(item, ItemRowOpts{TitleWidth: 45})
+	statusRow := FormatItemRow(item, ItemRowOpts{TitleWidth: 45})
+
+	listTitle := strings.Index(listRow, item.Title)
+	statusTitle := strings.Index(statusRow, item.Title)
+	if listTitle < 0 || statusTitle < 0 {
+		t.Fatalf("title %q not found in list=%q status=%q", item.Title, listRow, statusRow)
+	}
+	if listRow[:listTitle] != statusRow[:statusTitle] {
+		t.Errorf("base prefix differs between list and status surfaces.\n  list:   %q\n  status: %q",
+			listRow[:listTitle], statusRow[:statusTitle])
+	}
+}
