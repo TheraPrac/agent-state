@@ -103,6 +103,39 @@ func TestInferStage_DeployedDevNoRegressFromPushed(t *testing.T) {
 	}
 }
 
+// PR-104 review finding #5: deployed_dev / uat_approved boundary regression
+// guard. I-447 amend history shows these stages were collapsed at the same
+// stageIndex briefly, causing silent no-op advances. Explicit test pins the
+// boundary: a deployed_dev item with a MERGED PR signal must stay at
+// deployed_dev (not regress to merged, which is earlier in the order).
+func TestInferStage_DeployedDevNoRegressFromMerged(t *testing.T) {
+	got := runInfer(t, "deployed_dev", true, "MERGED")
+	if got != "deployed_dev" {
+		t.Errorf("deployed_dev + MERGED → %q, want deployed_dev (no regress past merged)", got)
+	}
+}
+
+// PR-104 review finding #2: CLOSED PR state must not advance stage.
+// Closed-without-merge is reported to stderr by InferStage (symmetric with
+// reconcile.go warning) but never touches delivery.stage.
+func TestInferStage_ClosedPRDoesNotAdvance(t *testing.T) {
+	got := runInfer(t, "pushed", false, "CLOSED")
+	if got != "pushed" {
+		t.Errorf("pushed + CLOSED → %q, want pushed (no advance on close)", got)
+	}
+}
+
+// PR-104 review finding #2 follow-on: even if branch is on remote
+// (branchExists=true → target=pushed) AND PR is CLOSED, target stays at
+// pushed (the CLOSED case in the switch does not overwrite target — it
+// only emits the warning). Pins that contract.
+func TestInferStage_ClosedPRWithBranchKeepsPushedTarget(t *testing.T) {
+	got := runInfer(t, "coding", true, "CLOSED")
+	if got != "pushed" {
+		t.Errorf("coding + branch + CLOSED → %q, want pushed (branch wins, CLOSED is informational)", got)
+	}
+}
+
 func TestInferStage_BranchAbsentNoAdvance(t *testing.T) {
 	got := runInfer(t, "coding", false, "")
 	if got != "coding" {
@@ -110,10 +143,37 @@ func TestInferStage_BranchAbsentNoAdvance(t *testing.T) {
 	}
 }
 
-func TestInferStage_PROpenNoBranchPreservesStage(t *testing.T) {
+// Renamed from TestInferStage_PROpenNoBranchPreservesStage — that name
+// implied a no-regress assertion but the test actually exercises the
+// no-signal early-exit (target=="" → return 0 before any forward-only
+// logic runs). The honest no-regress assertions are the two below.
+func TestInferStage_NoSignalEarlyExit(t *testing.T) {
 	got := runInfer(t, "pr_open", false, "")
 	if got != "pr_open" {
-		t.Errorf("pr_open + no signals → %q, want pr_open (no regress)", got)
+		t.Errorf("pr_open + no signals → %q, want pr_open (early exit, no mutation)", got)
+	}
+}
+
+// PR-104 review finding #3: actual no-regress test against a PR signal.
+// Branch is gone (branchExists=false), but PR is still OPEN. The PR
+// signal would compute target="pr_open" which equals the current stage —
+// advanceDeliveryStage no-ops on equal-stage targets, so stage stays at
+// pr_open. Without the forward-only guard this would still pass; combine
+// with the next test for genuine regression coverage.
+func TestInferStage_PROpenSignalEqualsStage(t *testing.T) {
+	got := runInfer(t, "pr_open", false, "OPEN")
+	if got != "pr_open" {
+		t.Errorf("pr_open + OPEN signal → %q, want pr_open (target equals current)", got)
+	}
+}
+
+// PR-104 review finding #3: forward-only guard exercised. Item is at
+// `merged`; PR signal of OPEN would compute target="pr_open" which is
+// EARLIER in the stage order. advanceDeliveryStage must NOT regress.
+func TestInferStage_MergedDoesNotRegressToPROpen(t *testing.T) {
+	got := runInfer(t, "merged", false, "OPEN")
+	if got != "merged" {
+		t.Errorf("merged + OPEN signal → %q, want merged (forward-only guard)", got)
 	}
 }
 
