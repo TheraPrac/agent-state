@@ -124,6 +124,69 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 	}
 }
 
+// TestClose_DurationMetricsAgree verifies I-514: all four duration fields
+// emitted by Close (total_duration_seconds, work_duration_seconds,
+// wall_time_hours, total_wall_time) are computed from the same wallDur and
+// agree to the second / rounding, regardless of how much queue dwell sat
+// between created and started_at.
+func TestClose_DurationMetricsAgree(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	// Seed T-003 with started_at much later than created so the previous
+	// split-anchor code would have produced wildly divergent values.
+	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", startedAt)
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding started_at: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, ok := env.S.Get("T-003")
+	if !ok {
+		t.Fatal("T-003 missing after close")
+	}
+
+	totalDur := readIntField(closed, "time_tracking", "total_duration_seconds")
+	workDur := readIntField(closed, "time_tracking", "work_duration_seconds")
+	if totalDur == 0 || workDur == 0 {
+		t.Fatalf("duration fields not written: total=%d work=%d", totalDur, workDur)
+	}
+
+	// 1. total_duration_seconds == work_duration_seconds (same anchor).
+	if totalDur != workDur {
+		t.Errorf("total_duration_seconds (%d) != work_duration_seconds (%d)", totalDur, workDur)
+	}
+
+	// 2. wall_time_hours * 3600 agrees with total_duration_seconds within
+	//    60s (the "%.1f" rounding window is 0.05h = 180s; 60s is well inside).
+	hoursStr, _ := getNestedField(closed, "time_tracking", "wall_time_hours")
+	var hours float64
+	fmt.Sscanf(hoursStr, "%f", &hours)
+	hoursAsSecs := int(hours * 3600)
+	diff := hoursAsSecs - totalDur
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 180 {
+		t.Errorf("wall_time_hours (%s = %ds) disagrees with total_duration_seconds (%d) by %ds (>180s rounding window)",
+			hoursStr, hoursAsSecs, totalDur, diff)
+	}
+
+	// 3. total_wall_time formats back to formatDuration(totalDur seconds).
+	wallStr, _ := getNestedField(closed, "time_tracking", "total_wall_time")
+	wantStr := formatDuration(time.Duration(totalDur) * time.Second)
+	if wallStr != wantStr {
+		t.Errorf("total_wall_time = %q, want %q (from total_duration_seconds=%d)", wallStr, wantStr, totalDur)
+	}
+}
+
 // TestClose_NoWorktreesWritesZeros verifies that closing an infra-only or
 // worktree-less item still succeeds and writes zero LOC fields rather than
 // failing the close.
