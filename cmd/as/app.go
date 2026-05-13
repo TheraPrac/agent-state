@@ -53,6 +53,12 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			if !appCfg.Discovered {
 				return fmt.Errorf("no st project found (looked up from %s)\n\n  Run `st init` to create one, add a .st-root file, or set $ST_ROOT", dir)
 			}
+			// I-624: surface in-session drift between the running st
+			// binary and the local as/ HEAD. The session-start hook only
+			// auto-rebuilds on startup/resume, so a long-running session
+			// can run a stale binary for days; this catches it on every
+			// invocation (silent + cheap when there is no drift).
+			command.MaybeWarnSingleAgentDrift(appCfg, os.Stderr)
 			// Auto-pull latest changes before scanning items.
 			// I-380: status owns its own RefreshWorkspace call so it can show
 			// a banner reflecting the outcome — skip the silent pre-run pull
