@@ -273,19 +273,57 @@ func TestSingleAgentDriftReWarnsWhenPairChanges(t *testing.T) {
 	}
 }
 
-func TestSingleAgentDriftNilCfg(t *testing.T) {
-	// Defensive: a nil cfg from an upstream error shouldn't panic.
-	var buf bytes.Buffer
-	MaybeWarnSingleAgentDrift(nil, &buf)
-	if buf.Len() != 0 {
-		t.Errorf("expected silent on nil cfg, got: %s", buf.String())
+func TestSingleAgentDriftMissingAsCloneHEAD(t *testing.T) {
+	if _, _, ok := readAsCloneHEAD("/path/that/does/not/exist"); ok {
+		t.Errorf("expected ok=false for missing as clone")
 	}
 }
 
-func TestSingleAgentDriftIsPidLiveUnused(t *testing.T) {
-	// Smoke: confirm helper readers behave on absent paths so callers
-	// don't need to special-case the "no clone yet" first-build path.
-	if _, _, ok := readAsCloneHEAD("/path/that/does/not/exist"); ok {
-		t.Errorf("expected ok=false for missing as clone")
+// Packed refs case: `git gc` moves loose refs into .git/packed-refs.
+// readAsCloneHEAD must fall back to that file when the loose ref is
+// absent, otherwise the drift warning silently no-ops on any clone
+// that's been auto-gc'd — which is most active clones.
+func TestSingleAgentDriftWarnsWhenRefIsPacked(t *testing.T) {
+	binSHA := "aaaa1111" + strings.Repeat("0", 32)
+	localSHA := "bbbb2222" + strings.Repeat("0", 32)
+	withStampedBinary(t, binSHA)
+	cfg, _, asClone := newDriftLayout(t, "main", localSHA)
+
+	// Simulate `git gc`: remove the loose ref and write packed-refs.
+	if err := os.Remove(filepath.Join(asClone, ".git", "refs", "heads", "main")); err != nil {
+		t.Fatalf("removing loose ref: %v", err)
+	}
+	packed := "# pack-refs with: peeled fully-peeled sorted\n" +
+		localSHA + " refs/heads/main\n" +
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef refs/tags/v0.1\n" +
+		"^cafebabecafebabecafebabecafebabecafebabe\n"
+	if err := os.WriteFile(filepath.Join(asClone, ".git", "packed-refs"),
+		[]byte(packed), 0o644); err != nil {
+		t.Fatalf("writing packed-refs: %v", err)
+	}
+
+	var buf bytes.Buffer
+	MaybeWarnSingleAgentDrift(cfg, &buf)
+	if !strings.Contains(buf.String(), "as clone at bbbb2222") {
+		t.Errorf("expected warning resolved from packed-refs, got: %s", buf.String())
+	}
+}
+
+func TestSingleAgentDriftPackedRefsParsingSkipsCommentsAndPeels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "packed-refs")
+	contents := "# pack-refs with: peeled\n" +
+		"^aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+		"\n" +
+		"1111111111111111111111111111111111111111 refs/tags/v0\n" +
+		"2222222222222222222222222222222222222222 refs/heads/main\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookupPackedRef(path, "refs/heads/main"); got != "2222222222222222222222222222222222222222" {
+		t.Errorf("lookupPackedRef = %q, want the main sha", got)
+	}
+	if got := lookupPackedRef(path, "refs/heads/missing"); got != "" {
+		t.Errorf("lookupPackedRef for missing ref = %q, want empty", got)
 	}
 }

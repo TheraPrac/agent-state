@@ -47,9 +47,6 @@ const driftWarnMarkerName = "drift-warned"
 // All filesystem reads are direct (no `git` subprocess) so the cost is
 // two open(2) calls per invocation on the hot path.
 func MaybeWarnSingleAgentDrift(cfg *config.Config, w io.Writer) {
-	if cfg == nil {
-		return
-	}
 	binCommit := buildinfo.Commit
 	if binCommit == "" || binCommit == "unknown" {
 		return
@@ -84,15 +81,11 @@ func MaybeWarnSingleAgentDrift(cfg *config.Config, w io.Writer) {
 	_ = writeDriftMarker(marker, binCommit, localSHA)
 }
 
-// readAsCloneHEAD reads `<asClone>/.git/HEAD` without forking git. Two
-// forms are valid:
-//
-//   - "ref: refs/heads/<branch>\n" — follow to <asClone>/.git/<ref>
-//     and read the SHA from there
-//   - "<sha>\n" — detached HEAD; branch is "" so callers know to skip
-//     the main/master check
-//
-// Returns ok=false when the clone or HEAD file is missing.
+// readAsCloneHEAD reads `<asClone>/.git/HEAD` without forking git.
+// Falls back to `.git/packed-refs` when the loose ref file is absent —
+// `git gc` (and the periodic auto-gc most agent clones hit) moves refs
+// into the packed file, so reading loose-only would miss any agent
+// clone that has been GC'd at least once.
 func readAsCloneHEAD(asClone string) (sha, branch string, ok bool) {
 	headPath := filepath.Join(asClone, ".git", "HEAD")
 	data, err := os.ReadFile(headPath)
@@ -100,17 +93,43 @@ func readAsCloneHEAD(asClone string) (sha, branch string, ok bool) {
 		return "", "", false
 	}
 	head := strings.TrimSpace(string(data))
-	if strings.HasPrefix(head, "ref: ") {
-		ref := strings.TrimPrefix(head, "ref: ")
-		refPath := filepath.Join(asClone, ".git", ref)
-		refData, err := os.ReadFile(refPath)
-		if err != nil {
-			return "", "", false
-		}
-		branch = strings.TrimPrefix(ref, "refs/heads/")
+	if !strings.HasPrefix(head, "ref: ") {
+		// Detached HEAD — HEAD file already holds the SHA.
+		return head, "", true
+	}
+	ref := strings.TrimPrefix(head, "ref: ")
+	branch = strings.TrimPrefix(ref, "refs/heads/")
+
+	refPath := filepath.Join(asClone, ".git", ref)
+	if refData, err := os.ReadFile(refPath); err == nil {
 		return strings.TrimSpace(string(refData)), branch, true
 	}
-	return head, "", true
+	if sha := lookupPackedRef(filepath.Join(asClone, ".git", "packed-refs"), ref); sha != "" {
+		return sha, branch, true
+	}
+	return "", "", false
+}
+
+// lookupPackedRef scans `.git/packed-refs` for the first non-peeled
+// line matching ref. The file format is one entry per line: "<sha>
+// <full-ref>", with optional comment lines starting with `#` and
+// optional peeled-tag lines starting with `^`. Returns "" when the
+// file is missing or the ref is not present.
+func lookupPackedRef(packedPath, ref string) string {
+	data, err := os.ReadFile(packedPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || line[0] == '#' || line[0] == '^' {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == ref {
+			return fields[0]
+		}
+	}
+	return ""
 }
 
 // isFreshDriftMarker reports whether the marker file at path records
