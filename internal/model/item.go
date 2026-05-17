@@ -174,6 +174,42 @@ func NewParsedDocument() *ParsedDocument {
 	return &ParsedDocument{}
 }
 
+// KnownTopLevelKeys is the authoritative set of legitimate top-level
+// item-schema field names. It is the union of every key the parser
+// recognizes in internal/parse storeScalar (scalars), storeList (lists)
+// and storeMultiline / the nested-parent handling (blocks + nested
+// maps), plus the canonical extras. It exists so structural repair
+// (SetSBARBlock boundary detection, cmd/sbar-heal) can tell a genuine
+// following field from corruption: I-487 dedented col-0 prose and
+// I-593 orphan continuation lines sit at column 0, and garbage lines
+// containing a stray colon are mis-parsed with a spurious Key — so
+// "next Indent==0 line with a Key" is NOT a safe boundary, but "next
+// Indent==0 line whose Key is in this set" is. Keep in sync with the
+// parser's recognized keys; an omission here would let repair swallow
+// a real field (data loss), so this is deliberately generous.
+var KnownTopLevelKeys = map[string]bool{
+	// storeScalar
+	"id": true, "type": true, "status": true, "title": true,
+	"created": true, "last_touched": true, "completed": true,
+	"priority": true, "severity": true, "category": true, "repo": true,
+	"assigned_to": true, "last_touched_by": true, "epic": true,
+	"sprint": true, "claimed_by": true, "claimed_at": true,
+	"plan_approved": true, "plan_approved_at": true,
+	"plan_approved_by": true, "parallel_group": true,
+	// storeList
+	"tags": true, "depends_on": true, "blocks": true,
+	"related_issues": true, "acceptance_criteria": true,
+	"next_actions": true, "resolution": true, "invariants": true,
+	"doc_changes": true, "sessions": true, "linked_plans": true,
+	// storeMultiline / nested parents / canonical extras
+	"summary": true, "description": true, "context": true,
+	"sbar": true, "work_tracking": true, "delivery": true,
+	"testing_evidence": true, "time_tracking": true, "manifest": true,
+	"scope": true, "scope_in": true, "scope_out": true,
+	"scope_repos": true, "source": true, "approach_decision": true,
+	"canonical_anchors": true,
+}
+
 // SetField updates or inserts a scalar field value in the document.
 // For multi-line values, the field is rendered as a YAML block scalar
 // (`key: |-`) and previously-attached block continuation lines are
@@ -230,6 +266,40 @@ func buildScalarOrBlock(key, value, comment string) []Line {
 	return []Line{{Raw: raw, Key: key, Value: value, Comment: comment}}
 }
 
+// buildNestedScalarOrBlock produces the line(s) for a nested (indented)
+// field at the given indent. Nested analogue of buildScalarOrBlock: a
+// value containing a newline is emitted as a nested block scalar
+// (`<indent>key: |-` followed by body indented two spaces further),
+// otherwise a single `<indent>key: value` line. Inline comments are
+// preserved on the key line. Used by SetNestedField so a multi-line
+// value no longer collapses onto one line and so the old block body is
+// rebuilt rather than stranded (I-593).
+func buildNestedScalarOrBlock(key, value string, indent int, comment string) []Line {
+	pad := strings.Repeat(" ", indent)
+	if strings.Contains(value, "\n") {
+		header := Line{Raw: pad + key + ": |-", Key: key, Indent: indent}
+		if comment != "" {
+			header.Raw += "  # " + comment
+			header.Comment = comment
+		}
+		out := []Line{header}
+		for _, ln := range strings.Split(value, "\n") {
+			out = append(out, Line{
+				Raw:      pad + "  " + ln,
+				IsBlock:  true,
+				BlockKey: key,
+				Indent:   indent + 2,
+			})
+		}
+		return out
+	}
+	raw := pad + key + ": " + value
+	if comment != "" {
+		raw += "  # " + comment
+	}
+	return []Line{{Raw: raw, Key: key, Value: value, Indent: indent, Comment: comment}}
+}
+
 // SetSBARBlock replaces the entire `sbar:` block — header line plus
 // all indented continuation lines — with a freshly-rendered version of
 // `s`. Each of the four sub-fields renders as a YAML block scalar
@@ -264,13 +334,27 @@ func (d *ParsedDocument) SetSBARBlock(s SBAR) {
 		return
 	}
 
-	// Find the end of the sbar block: first line at Indent==0 that
-	// isn't an empty line. Empty lines inside the block (rare but
-	// allowed) are absorbed.
+	// Find the end of the sbar block. The legitimate block is the
+	// `sbar:` header plus its four indented sub-fields and their block
+	// bodies. Corruption can sit between the real sub-fields and the
+	// next genuine field: I-487 wrote dedented col-0 prose into
+	// sbar.background, I-593's SetNestedField bug stranded orphan
+	// continuation lines, and both leave duplicate orphaned
+	// situation:/background:/assessment:/recommendation: headers
+	// further down. A "first Indent==0 non-empty line" boundary is
+	// defeated because the col-0 garbage is itself at Indent==0 — and
+	// a garbage line containing a stray colon is mis-parsed with a
+	// spurious Key. So the boundary is the body separator or the next
+	// *recognized* top-level schema key (KnownTopLevelKeys); every
+	// line before it — clean sub-fields, orphans, and col-0 garbage
+	// alike — is inside [startIdx,endIdx) and replaced wholesale.
 	endIdx := startIdx + 1
 	for endIdx < len(d.Lines) {
 		l := d.Lines[endIdx]
-		if l.Indent == 0 && !l.IsEmpty {
+		if strings.TrimSpace(l.Raw) == "---" {
+			break
+		}
+		if l.Indent == 0 && l.Key != "" && KnownTopLevelKeys[l.Key] {
 			break
 		}
 		endIdx++
@@ -429,12 +513,32 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 			break // left the parent block
 		}
 		if line.Key == child && line.Indent > 0 {
-			newRaw := strings.Repeat(" ", line.Indent) + child + ": " + value
-			if line.Comment != "" {
-				newRaw += "  # " + line.Comment
+			childIndent := line.Indent
+			// Drop the child's existing block-scalar continuation
+			// lines before replacing. This mirrors SetField's
+			// continuation handling — its absence here is the I-593
+			// bug: a single-line overwrite of a `key: |-` block left
+			// every old body line stranded beneath the new value
+			// (invalid YAML; compounds on each edit). A continuation
+			// is a following line the parser flagged IsBlock for this
+			// child, or — when the header was already collapsed to a
+			// scalar so the parser never set IsBlock — any non-empty
+			// line indented deeper than the child key. Stop at the
+			// first sibling/shallower line or blank separator so we
+			// never consume a following nested field.
+			end := i + 1
+			for end < len(d.Lines) {
+				l := d.Lines[end]
+				if (l.IsBlock && l.BlockKey == child) ||
+					(!l.IsEmpty && l.Indent > childIndent) {
+					end++
+					continue
+				}
+				break
 			}
-			d.Lines[i].Raw = newRaw
-			d.Lines[i].Value = value
+			newLines := buildNestedScalarOrBlock(child, value, childIndent, line.Comment)
+			tail := append([]Line{}, d.Lines[end:]...)
+			d.Lines = append(d.Lines[:i], append(newLines, tail...)...)
 			return true
 		}
 	}
