@@ -768,3 +768,131 @@ func TestFilenameForLongTitle(t *testing.T) {
 		t.Errorf("filename too long: %q (len=%d)", name, len(name))
 	}
 }
+
+// --- I-684: st sync must fail loudly on a rejected push ---
+
+// gitBareRemote inits a bare remote, renames the local branch to main,
+// seeds the remote's main from the current local HEAD, and wires
+// origin. Returns the bare-remote path so a test can install a rejecting
+// pre-receive hook AFTER the seed (so the seed itself isn't blocked).
+func gitBareRemote(t *testing.T, root string) string {
+	t.Helper()
+	bare := t.TempDir()
+	run := func(dir string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(bare, "init", "--bare")
+	run(root, "branch", "-M", "main")
+	run(root, "remote", "add", "origin", bare)
+	run(root, "push", "origin", "refs/heads/main:refs/heads/main") // seed
+	return bare
+}
+
+// installRejectingPreReceive makes every future push to the bare remote
+// fail with a GH001-like message on stderr — the exact pre-receive-decline
+// shape that stranded a whole session's agent-state in the I-684 incident.
+func installRejectingPreReceive(t *testing.T, bare string) {
+	t.Helper()
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	body := "#!/bin/sh\n" +
+		"echo 'error: GH001: Large files detected. notes.yaml is 142.00 MB; exceeds 100.00 MB' 1>&2\n" +
+		"echo 'error: pre-receive hook declined' 1>&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hook, []byte(body), 0755); err != nil {
+		t.Fatalf("write pre-receive hook: %v", err)
+	}
+}
+
+func gitSyncStore(t *testing.T, root string) *Store {
+	t.Helper()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	cfg, _ := config.Load(root)
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, _ := New(cfg)
+	return s
+}
+
+func dirtyItem(t *testing.T, s *Store) {
+	t.Helper()
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+}
+
+// TestGitSync_RejectedPushIsLoud is the core I-684 guard: when the remote
+// rejects the push (pre-receive / GH001), GitSync MUST return a non-nil
+// error (so `st sync` exits 1 and never prints "Synced.") and the error
+// MUST carry the remote's actionable text, not a bare "exit status 1".
+func TestGitSync_RejectedPushIsLoud(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	bare := gitBareRemote(t, root)
+	installRejectingPreReceive(t, bare)
+
+	s := gitSyncStore(t, root)
+	dirtyItem(t, s)
+
+	err := s.GitSync("agent-c: update T-001")
+	if err == nil {
+		t.Fatal("GitSync returned nil on a REJECTED push — st sync would print 'Synced.' while agent-state is stranded local-only (the I-684 demo-killer)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "GH001") && !strings.Contains(msg, "pre-receive") &&
+		!strings.Contains(msg, "stranded") && !strings.Contains(msg, "did not advance") &&
+		!strings.Contains(strings.ToLower(msg), "rejected") {
+		t.Errorf("error must surface WHY the push failed (remote text / refs-not-advanced), got: %q", msg)
+	}
+}
+
+// TestGitSync_HappyPushVerifies: a healthy push to a normal bare remote
+// lands and the post-push ground-truth verification passes — GitSync
+// returns nil and origin/main truly contains the local commit.
+func TestGitSync_HappyPushVerifies(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	gitBareRemote(t, root)
+
+	s := gitSyncStore(t, root)
+	dirtyItem(t, s)
+
+	if err := s.GitSync("agent-c: update T-001"); err != nil {
+		t.Fatalf("healthy push must succeed and verify, got: %v", err)
+	}
+	// Ground truth: origin/main must now contain the local main HEAD.
+	localHead, _ := gitOutput(root, "rev-parse", "refs/heads/main")
+	if err := gitCmdQuiet(root, "merge-base", "--is-ancestor",
+		strings.TrimSpace(localHead), "refs/remotes/origin/main"); err != nil {
+		t.Errorf("post-push: origin/main does not contain local HEAD — verification was not effective")
+	}
+}
+
+// TestGitSync_NoAutoPushSkipsVerify: AutoPush=false is commit-only; the
+// post-push verification must NOT run (no remote) and GitSync returns nil.
+func TestGitSync_NoAutoPushSkipsVerify(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+
+	cfg, _ := config.Load(root)
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	s, _ := New(cfg)
+	dirtyItem(t, s)
+
+	if err := s.GitSync("commit-only"); err != nil {
+		t.Errorf("AutoPush=false must commit-only without verification error, got: %v", err)
+	}
+}
