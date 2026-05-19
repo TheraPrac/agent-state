@@ -126,16 +126,16 @@ func emptyText(label string) string { return "(no " + label + ")" }
 // --- facet adapters: thin reads over existing accessors only ---
 
 type itemCore struct {
-	ID        string   `json:"id"`
-	Type      string   `json:"type"`
-	Status    string   `json:"status"`
-	Title     string   `json:"title"`
-	Priority  *int     `json:"priority,omitempty"`
-	Epic      string   `json:"epic,omitempty"`
-	Sprint    string   `json:"sprint,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
-	DependsOn []string `json:"depends_on,omitempty"`
-	AssignedTo string  `json:"assigned_to,omitempty"`
+	ID         string   `json:"id"`
+	Type       string   `json:"type"`
+	Status     string   `json:"status"`
+	Title      string   `json:"title"`
+	Priority   *int     `json:"priority,omitempty"`
+	Epic       string   `json:"epic,omitempty"`
+	Sprint     string   `json:"sprint,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
+	AssignedTo string   `json:"assigned_to,omitempty"`
 }
 
 func facetItem(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
@@ -234,11 +234,24 @@ func facetCommits(_ *store.Store, _ *config.Config, it *model.Item) facetResult 
 	if !ok || c == nil {
 		return facetResult{Text: emptyText("recorded commits"), JSON: []any{}}
 	}
-	return facetResult{Text: fmt.Sprintf("%v", c), JSON: c}
+	// Glance text: one entry per line when it's a list (the common
+	// shape); structured form is --format json (consistent with kvText).
+	txt := fmt.Sprintf("%v", c)
+	if list, isList := c.([]interface{}); isList {
+		var b strings.Builder
+		for _, e := range list {
+			fmt.Fprintf(&b, "%v\n", e)
+		}
+		txt = strings.TrimRight(b.String(), "\n")
+	}
+	return facetResult{Text: txt, JSON: c}
 }
 
 func facetDeps(s *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	tree := deps.Build(s.All(), cfg).Tree(it.ID, 10)
+	// For any real item Tree emits at least the root line (an isolated
+	// item legitimately shows just its own node — that IS the dep view).
+	// The empty branch only guards an unknown id (Tree returns "").
 	if strings.TrimSpace(tree) == "" {
 		return facetResult{Text: emptyText("dependencies"), JSON: map[string]any{"tree": ""}}
 	}
