@@ -3,6 +3,8 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"time"
 
@@ -48,7 +50,16 @@ type factorJSON struct {
 }
 
 // Recommend ranks workable items with an inspectable per-item "why".
+// Public API preserved (cobra + existing tests stay green); the body
+// delegates to recommendTo so T-372 can compose the same renderer into a
+// TUI panel without duplicating logic (the §7 maintainability invariant).
 func Recommend(s *store.Store, cfg *config.Config, opts RecommendOpts) int {
+	return recommendTo(os.Stdout, s, cfg, opts)
+}
+
+// recommendTo is the io.Writer-parameterised implementation. The cobra
+// path uses os.Stdout via Recommend; the TUI passes a bytes.Buffer.
+func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts RecommendOpts) int {
 	top := opts.Top
 	if top <= 0 {
 		top = 10
@@ -82,20 +93,20 @@ func Recommend(s *store.Store, cfg *config.Config, opts RecommendOpts) int {
 		}
 		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
-			fmt.Println("[]")
+			fmt.Fprintln(w, "[]")
 			return 1
 		}
-		fmt.Println(string(b))
+		fmt.Fprintln(w, string(b))
 		return 0
 	}
 
 	if len(recs) == 0 {
-		fmt.Println("No recommendable items (none workable in scope).")
+		fmt.Fprintln(w, "No recommendable items (none workable in scope).")
 		return 0
 	}
 	for _, r := range recs {
-		fmt.Printf("%-8s p%d  %s\n", r.Item.ID, r.Priority, r.Item.Title)
-		fmt.Printf("      why: %s\n", r.Rationale())
+		fmt.Fprintf(w, "%-8s p%d  %s\n", r.Item.ID, r.Priority, r.Item.Title)
+		fmt.Fprintf(w, "      why: %s\n", r.Rationale())
 	}
 	return 0
 }

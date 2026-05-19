@@ -31,7 +31,7 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	}
 
 	if opts.Full {
-		return showFull(s, cfg, item, opts.FullAll)
+		return showFull(os.Stdout, s, cfg, item, opts.FullAll)
 	}
 
 	if opts.Raw {
