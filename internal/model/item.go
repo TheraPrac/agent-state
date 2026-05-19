@@ -454,6 +454,35 @@ func buildSBARLines(s SBAR) []Line {
 	return out
 }
 
+// SBARIsScalarCorrupted reports whether the document's `sbar` field has
+// been flattened from its canonical 4-section mapping into a YAML string
+// scalar. This is the I-670 corruption signature: a pre-fix
+// `st update <id> sbar [--stdin|<value>]` routed through SetField, which
+// renders multi-line input as `sbar: |-` (block scalar) and single-line
+// input as `sbar: <value>` (inline scalar). A structurally valid sbar —
+// whether freshly scaffolded by `st create` or written by SetSBARBlock —
+// always has a bare `sbar:` mapping header with the four sub-keys nested
+// beneath it. Detection keys off the header form alone, so prose body
+// lines that happen to contain a `key:` pattern cannot cause a false
+// negative. Returns false when there is no `sbar:` line at all (an
+// absent block is created fresh by the composite writer, not "corrupt").
+func (d *ParsedDocument) SBARIsScalarCorrupted() bool {
+	for _, l := range d.Lines {
+		if l.Key == "sbar" && l.Indent == 0 {
+			// Canonical mapping header is exactly `sbar:` (optionally
+			// followed by a comment). Anything else after the colon —
+			// a block-scalar indicator (`|-`, `|`, `>`, `>-`) or an
+			// inline value — means the mapping was flattened to a string.
+			rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l.Raw), "sbar:"))
+			if rest == "" || strings.HasPrefix(rest, "#") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // ReplaceList replaces an entire list field (key + all continuation lines)
 // with the new lines. Each line in values should be "- item text".
 func (d *ParsedDocument) ReplaceList(key string, values []string) {

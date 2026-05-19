@@ -272,3 +272,53 @@ func TestSetSBARBlock_CleanCaseRegressionAndIdempotent(t *testing.T) {
 		t.Errorf("SetSBARBlock not idempotent.\n first:\n%s\nsecond:\n%s", first, second)
 	}
 }
+
+// I-670: SBARIsScalarCorrupted distinguishes a canonical 4-section
+// mapping (bare `sbar:` header) from the post-bug flattened forms
+// (`sbar: |-` block scalar / `sbar: <inline>`), keying off the header
+// line alone so prose body lines containing a `key:` cannot fool it.
+func TestSBARIsScalarCorrupted(t *testing.T) {
+	cleanMapping := []Line{
+		{Raw: "sbar:", Key: "sbar"},
+		{Raw: "  situation: |-", Key: "situation", Indent: 2, BlockKey: "sbar"},
+		{Raw: "    real situation", IsBlock: true, BlockKey: "situation", Indent: 4},
+		{Raw: "  background: |-", Key: "background", Indent: 2, BlockKey: "sbar"},
+		{Raw: "  assessment: |-", Key: "assessment", Indent: 2, BlockKey: "sbar"},
+		{Raw: "  recommendation: |-", Key: "recommendation", Indent: 2, BlockKey: "sbar"},
+	}
+	blockScalar := []Line{
+		{Raw: "sbar: |-", Key: "sbar"},
+		{Raw: "  situation: |-", Indent: 2, BlockKey: "sbar"},
+		{Raw: "  this is all one flattened string now", Indent: 2, BlockKey: "sbar"},
+	}
+	inlineScalar := []Line{
+		{Raw: "sbar: a one-line flattened value", Key: "sbar", Value: "a one-line flattened value"},
+	}
+	commentedHeader := []Line{
+		{Raw: "sbar:  # legacy note", Key: "sbar", Comment: "legacy note"},
+		{Raw: "  situation: |-", Key: "situation", Indent: 2, BlockKey: "sbar"},
+	}
+	noSBAR := []Line{
+		{Raw: "title: no sbar here", Key: "title", Value: "no sbar here"},
+	}
+
+	cases := []struct {
+		name  string
+		lines []Line
+		want  bool
+	}{
+		{"clean mapping", cleanMapping, false},
+		{"block scalar |-", blockScalar, true},
+		{"inline scalar", inlineScalar, true},
+		{"bare header with comment", commentedHeader, false},
+		{"no sbar line", noSBAR, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := &ParsedDocument{Lines: c.lines}
+			if got := d.SBARIsScalarCorrupted(); got != c.want {
+				t.Errorf("SBARIsScalarCorrupted() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
