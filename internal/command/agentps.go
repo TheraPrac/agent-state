@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
@@ -18,6 +20,7 @@ import (
 type AgentPSOpts struct {
 	Workspace string // substring filter on workspace path; "" = all
 	JSON      bool   // emit the joined []Row as JSON (pre-render)
+	Invoked   string // how the user invoked it ("agent ps" / "agents") for messages; defaults to "agent ps"
 }
 
 // AgentPS prints the global agent process-table (T-354). Read-only.
@@ -25,18 +28,22 @@ type AgentPSOpts struct {
 // (absence surfaced, never a silent blank table — operator
 // silent-failure principle).
 func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
+	cmdName := opts.Invoked
+	if cmdName == "" {
+		cmdName = "agent ps"
+	}
 	dir := agentps.AgentWorkspacesDir(cfg)
 	if dir == "" {
-		fmt.Fprintln(os.Stderr, "agent ps: no agent roster found (set $ST_AGENT_WORKSPACES_DIR or run from inside an agent workspace tree)")
+		fmt.Fprintf(os.Stderr, "%s: no agent roster found (set $ST_AGENT_WORKSPACES_DIR or run from inside an agent workspace tree)\n", cmdName)
 		return 1
 	}
 	roster, err := agentps.LoadRoster(dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent ps: cannot read agent roster at %s: %v\n", dir, err)
+		fmt.Fprintf(os.Stderr, "%s: cannot read agent roster at %s: %v\n", cmdName, dir, err)
 		return 1
 	}
 	if len(roster) == 0 {
-		fmt.Fprintf(os.Stderr, "agent ps: no agent roster entries in %s\n", dir)
+		fmt.Fprintf(os.Stderr, "%s: no agent roster entries in %s\n", cmdName, dir)
 		return 1
 	}
 
@@ -44,7 +51,7 @@ func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
 	regs := map[string]agentps.Reg{}
 	if list, err := agent.ListRegistrations(cfg); err != nil {
 		// Degrade (the roster still renders) but never swallow.
-		fmt.Fprintf(os.Stderr, "agent ps: warning: cannot list registrations: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: warning: cannot list registrations: %v\n", cmdName, err)
 	} else {
 		for _, r := range list {
 			if r == nil || r.AgentID == "" {
@@ -60,12 +67,14 @@ func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
 		}
 	}
 
-	// Current active item per agent (lowest item id wins, for a stable
-	// deterministic pick when an agent has several active items).
+	// Current active item per agent (lowest item id wins for a stable
+	// deterministic pick when an agent has several active items —
+	// NUMERIC by the id's numeric suffix so T-9 < T-10, not the
+	// lexicographic T-10 < T-9).
 	active := map[string]agentps.ItemRef{}
 	if s != nil {
 		items := s.List(store.StatusFilter("active"))
-		sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+		sort.Slice(items, func(i, j int) bool { return lessItemID(items[i].ID, items[j].ID) })
 		for _, it := range items {
 			if it.AssignedTo == "" {
 				continue
@@ -74,8 +83,13 @@ func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
 				continue
 			}
 			stage := ""
+			// Match internal/command/list.go's contract: stage is only
+			// surfaced when it is genuinely a string (a corrupt
+			// non-string must not render as "<nil>"/"true").
 			if v, ok := it.Delivery["stage"]; ok {
-				stage = fmt.Sprintf("%v", v)
+				if sv, ok := v.(string); ok {
+					stage = sv
+				}
 			}
 			active[it.AssignedTo] = agentps.ItemRef{ID: it.ID, Stage: stage}
 		}
@@ -100,20 +114,51 @@ func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
 		}
 	}
 
-	rows := agentps.Join(roster, regs, active, mtime)
+	// Filter ONCE here so --workspace is honoured by BOTH --json and the
+	// table (a render-only filter would silently no-op under --json).
+	rows := agentps.FilterByWorkspace(agentps.Join(roster, regs, active, mtime), opts.Workspace)
 
 	if opts.JSON {
 		b, err := json.MarshalIndent(rows, "", "  ")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agent ps: json encode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: json encode: %v\n", cmdName, err)
 			return 1
 		}
 		fmt.Println(string(b))
 		return 0
 	}
 
-	for _, line := range agentps.Render(rows, time.Now(), agentps.Opts{Workspace: opts.Workspace}) {
+	for _, line := range agentps.Render(rows, time.Now()) {
 		fmt.Println(line)
 	}
 	return 0
+}
+
+// lessItemID orders agent-state ids (e.g. "T-9", "I-203") by prefix
+// then NUMERIC suffix, so T-9 sorts before T-10 (a plain string
+// compare would invert them and pick the wrong "current" item for an
+// agent with several active items). Falls back to a string compare for
+// ids that don't match the "<prefix>-<digits>" shape.
+func lessItemID(a, b string) bool {
+	pa, na, oka := splitItemID(a)
+	pb, nb, okb := splitItemID(b)
+	if oka && okb && pa == pb {
+		return na < nb
+	}
+	if oka && okb && pa != pb {
+		return pa < pb
+	}
+	return a < b
+}
+
+func splitItemID(id string) (prefix string, num int, ok bool) {
+	i := strings.LastIndexByte(id, '-')
+	if i < 0 || i == len(id)-1 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(id[i+1:])
+	if err != nil {
+		return "", 0, false
+	}
+	return id[:i], n, true
 }

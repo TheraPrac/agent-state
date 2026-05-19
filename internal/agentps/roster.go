@@ -28,8 +28,8 @@ type RosterAgent struct {
 //
 // Resolution order, robust to layout and test-injectable:
 //  1. $ST_AGENT_WORKSPACES_DIR (explicit override; tests use this);
-//  2. the nearest ancestor of cfg.Root() (then of $PWD) that contains
-//     a `.as/agent-workspaces` directory.
+//  2. cfg.Root() itself or its nearest ancestor (then $PWD or its
+//     ancestors) that contains a `.as/agent-workspaces` directory.
 //
 // Returns "" if none found — the caller surfaces that explicitly
 // rather than rendering a misleading empty table.
@@ -71,24 +71,27 @@ func searchUp(start string) string {
 }
 
 // LoadRoster reads every agent-*.yaml in dir into RosterAgents, sorted
-// by AgentID (deterministic). A read error on dir is returned (the
-// caller reports the absence — never a silent empty table); an
-// individual unparseable file is skipped (best-effort, one bad file
-// must not blank the whole fleet view).
+// by AgentID (deterministic). It uses os.ReadDir so a missing OR
+// unreadable directory surfaces as an error (the caller reports the
+// absence — never a silent empty table; filepath.Glob would have hidden
+// a permissions failure as zero matches). An individual unparseable
+// file is skipped (best-effort, one bad file must not blank the whole
+// fleet view).
 func LoadRoster(dir string) ([]RosterAgent, error) {
 	if dir == "" {
 		return nil, os.ErrNotExist
 	}
-	matches, err := filepath.Glob(filepath.Join(dir, "agent-*.yaml"))
+	entries, err := os.ReadDir(dir) // errors on missing/unreadable dir
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(dir); err != nil {
-		return nil, err
-	}
 	var out []RosterAgent
-	for _, m := range matches {
-		body, err := os.ReadFile(m)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
@@ -96,7 +99,7 @@ func LoadRoster(dir string) ([]RosterAgent, error) {
 		if ra.AgentID == "" {
 			// Fall back to the filename stem so the agent is still
 			// listed even with a malformed body (visible, not dropped).
-			ra.AgentID = strings.TrimSuffix(filepath.Base(m), ".yaml")
+			ra.AgentID = strings.TrimSuffix(name, ".yaml")
 		}
 		out = append(out, ra)
 	}

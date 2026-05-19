@@ -61,21 +61,34 @@ func Join(roster []RosterAgent, regs map[string]Reg, active map[string]ItemRef, 
 }
 
 // Opts are render options.
-type Opts struct {
-	Workspace string // filter to one workspace basename/path substring; "" = all
+// FilterByWorkspace narrows rows to those whose Workspace path contains
+// sub (sub=="" ⇒ unchanged). Applied by the caller BEFORE the
+// render/JSON split so `--workspace` is honoured in BOTH outputs (the
+// filter is an explicit operator narrowing; the "every roster agent is
+// listed" guarantee is about the DEFAULT unfiltered view — a
+// non-matching or workspace-less agent is correctly excluded here).
+func FilterByWorkspace(rows []Row, sub string) []Row {
+	if sub == "" {
+		return rows
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		if strings.Contains(r.Workspace, sub) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Render produces the aligned process-table, one string per output
 // line (header first). Deterministic given (rows, now). reltime turns
 // timestamps into "3m ago" / "—"; a registration whose PID is dead
-// shows "stale" (visible, not dropped).
-func Render(rows []Row, now time.Time, opts Opts) []string {
+// shows "stale" (visible, not dropped). Filtering is the caller's job
+// (FilterByWorkspace) so JSON and table outputs stay consistent.
+func Render(rows []Row, now time.Time) []string {
 	type cell struct{ agent, ws, live, cur, up, last, sess string }
 	cells := make([]cell, 0, len(rows))
 	for _, r := range rows {
-		if opts.Workspace != "" && !strings.Contains(r.Workspace, opts.Workspace) {
-			continue
-		}
 		c := cell{agent: r.AgentID, ws: dirBase(r.Workspace), live: "—", cur: "—", up: "—", last: reltime(now, r.LastMod), sess: "—"}
 		if r.Reg != nil {
 			if r.Reg.Alive {

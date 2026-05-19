@@ -48,6 +48,15 @@ func TestRosterLoadAndResolve(t *testing.T) {
 	if _, err := LoadRoster(""); err == nil {
 		t.Error("LoadRoster(\"\") should error")
 	}
+	// Existing-but-empty dir → ([], nil); the caller turns len==0 into
+	// a reported non-zero exit (distinct from a read error).
+	emptyDir := filepath.Join(root, "empty")
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := LoadRoster(emptyDir); err != nil || len(r) != 0 {
+		t.Errorf("LoadRoster(empty dir) = (%v,%v), want ([],nil)", r, err)
+	}
 
 	// Resolution: env override wins.
 	t.Setenv("ST_AGENT_WORKSPACES_DIR", wsDir)

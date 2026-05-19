@@ -90,6 +90,54 @@ func TestAgentPS_RendersFleetWithLiveAndActiveItem(t *testing.T) {
 	}
 }
 
+func TestLessItemID(t *testing.T) {
+	// Numeric suffix, not lexicographic: T-9 < T-10.
+	if !lessItemID("T-9", "T-10") {
+		t.Error("T-9 should sort before T-10 (numeric)")
+	}
+	if lessItemID("T-10", "T-9") {
+		t.Error("T-10 must NOT sort before T-9")
+	}
+	if !lessItemID("I-5", "T-5") { // different prefix → prefix order
+		t.Error("I-5 should sort before T-5")
+	}
+	// Non-conforming ids fall back to string compare (no panic).
+	if lessItemID("weird", "T-1") == lessItemID("T-1", "weird") {
+		t.Error("fallback compare should be a strict order")
+	}
+}
+
+func TestAgentPS_WorkspaceFilterHonouredInJSON(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	wsDir := filepath.Join(t.TempDir(), ".as", "agent-workspaces")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{"agent-a", "agent-b"} {
+		if err := os.WriteFile(filepath.Join(wsDir, a+".yaml"),
+			[]byte("agent_id: "+a+"\npath: /tmp/ws/theraprac-"+a+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ST_AGENT_WORKSPACES_DIR", wsDir)
+
+	// --json + --workspace must filter (the bug: filter only applied in
+	// the render path, silently no-op under --json).
+	out := captureStdout(t, func() {
+		if code := AgentPS(s, cfg, AgentPSOpts{Workspace: "agent-b", JSON: true}); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	})
+	var rows []agentps.Row
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("bad json: %v\n%s", err, out)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "agent-b" {
+		t.Errorf("--json did not honour --workspace: %+v", rows)
+	}
+}
+
 func TestAgentPS_MissingRosterIsReported(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// Point at a non-existent roster dir explicitly → reported, non-zero

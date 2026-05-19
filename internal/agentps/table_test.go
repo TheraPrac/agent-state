@@ -69,7 +69,7 @@ func TestAgentPSRender(t *testing.T) {
 		{AgentID: "agent-c", Workspace: "/x/theraprac-agent-c",
 			Reg: &Reg{PID: 2, Started: now.Add(-26 * time.Hour), SessionID: "s", Alive: false}}, // stale pid
 	}
-	out := Render(rows, now, Opts{})
+	out := Render(rows, now)
 	if len(out) != 4 {
 		t.Fatalf("want header + 3 rows = 4 lines, got %d:\n%s", len(out), strings.Join(out, "\n"))
 	}
@@ -100,12 +100,21 @@ func TestAgentPSRender(t *testing.T) {
 		}
 	}
 
-	// Workspace filter.
-	f := Render(rows, now, Opts{Workspace: "agent-b"})
+	// Workspace filter is a separate pure step (applied by the caller
+	// before render/JSON so both honour it).
+	fr := FilterByWorkspace(rows, "agent-b")
+	if len(fr) != 1 || fr[0].AgentID != "agent-b" {
+		t.Fatalf("FilterByWorkspace = %+v, want only agent-b", fr)
+	}
+	f := Render(fr, now)
 	if len(f) != 2 { // header + only agent-b
-		t.Fatalf("workspace filter: want header+1, got %d:\n%s", len(f), strings.Join(f, "\n"))
+		t.Fatalf("filtered render: want header+1, got %d:\n%s", len(f), strings.Join(f, "\n"))
 	}
 	if !strings.Contains(f[1], "agent-b") || strings.Contains(strings.Join(f, "\n"), "agent-a") {
 		t.Errorf("workspace filter leaked/dropped rows:\n%s", strings.Join(f, "\n"))
+	}
+	// sub=="" ⇒ unchanged (every roster agent kept).
+	if got := FilterByWorkspace(rows, ""); len(got) != len(rows) {
+		t.Errorf("FilterByWorkspace(\"\") dropped rows: %d vs %d", len(got), len(rows))
 	}
 }
