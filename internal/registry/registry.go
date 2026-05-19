@@ -22,6 +22,17 @@ import (
 // only guards new writes.
 const MaxNoteBytes = 256 * 1024
 
+// MaxRegistryBytes is the FILE-level ceiling for the serialized registry
+// (epics + sprints + notes share one `.as/notes.yaml`). MaxNoteBytes
+// bounds a single note; nothing bounded the AGGREGATE — many sub-cap
+// records (or, pre-I-673, oversized bodies re-serialized every Save) grew
+// the shared file to 62 MB on origin and pre-receive-blocked EVERY agent's
+// push (I-686 / the I-684 incident). 1 MiB is generous for what is short
+// operational state (~228 KB at 38 notes) yet ~100× below GitHub's 100 MB
+// hard limit, so Save fails long before a push can ever be stranded — the
+// guard is itself the early signal; no separate warn tier is needed.
+const MaxRegistryBytes = 1 << 20
+
 // ValidateNoteMessage enforces the note-message write contract at the
 // entry points (NoteAdd / NoteEdit), not in the dumb store mutators:
 //
@@ -302,7 +313,30 @@ func (r *Registry) Save(path string) error {
 		}
 	}
 
-	return os.WriteFile(path, []byte(b.String()), 0644)
+	out := b.String()
+
+	// I-686 file-level guard. Refuse to write a registry that exceeds
+	// MaxRegistryBytes — an unbounded `.as/notes.yaml` silently strands
+	// every agent's push once it crosses GitHub's 100 MB limit (operator
+	// silent-failure / demo-killer class). NON-BRICKING: only refuse when
+	// the write would NOT shrink the file relative to what is already on
+	// disk, so a drain / `st note rm` on an already-oversized registry —
+	// the exact recovery this error points to — always succeeds. A
+	// missing file is size 0, so a fresh over-ceiling write is correctly
+	// refused.
+	if len(out) > MaxRegistryBytes {
+		existing := int64(-1)
+		if fi, statErr := os.Stat(path); statErr == nil {
+			existing = fi.Size()
+		}
+		if existing < 0 || int64(len(out)) >= existing {
+			return fmt.Errorf(
+				"refusing to write %s: serialized registry is %d bytes, over the %d-byte (%d KB) ceiling — an unbounded registry strands every agent's push at GitHub's 100 MB limit. Trim it with `st note rm <id>` (or remove stale epics/sprints) until it is under the ceiling; a write that shrinks an already-oversized file is always allowed",
+				path, len(out), MaxRegistryBytes, MaxRegistryBytes/1024)
+		}
+	}
+
+	return os.WriteFile(path, []byte(out), 0644)
 }
 
 // AddEpic creates a new epic with a generated adjective-verb-noun ID.

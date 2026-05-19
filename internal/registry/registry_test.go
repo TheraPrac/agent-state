@@ -735,3 +735,90 @@ func indexOfEpic(r *Registry, id string) int {
 	}
 	return -1
 }
+
+// --- I-686: file-level registry size guard ---
+
+// bigRegistry builds a registry whose serialized form exceeds
+// MaxRegistryBytes (AddNote is the dumb mutator — no per-message cap — so
+// this models the aggregate-bloat path the guard exists for).
+func bigRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r := &Registry{}
+	chunk := strings.Repeat("x", 200*1024) // 200 KB per note
+	for i := 0; i < 7; i++ {                // ~1.4 MB > 1 MiB ceiling
+		r.AddNote("agent-a", "sess", chunk)
+	}
+	return r
+}
+
+// TestSave_RefusesFreshOverCeiling: with no existing file (size 0 base),
+// a serialized registry over MaxRegistryBytes must be refused loudly and
+// the file must NOT be created — never strand pushes by writing a registry
+// creeping toward GitHub's 100 MB limit.
+func TestSave_RefusesFreshOverCeiling(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+	err := bigRegistry(t).Save(path)
+	if err == nil {
+		t.Fatal("Save must refuse a fresh over-ceiling registry")
+	}
+	if !strings.Contains(err.Error(), "ceiling") || !strings.Contains(err.Error(), "st note rm") {
+		t.Errorf("error must name the ceiling + the remediation, got: %q", err)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("an over-ceiling registry file must NOT be written")
+	}
+}
+
+// TestSave_DrainOfOversizedFileAllowed is the NON-BRICKING invariant: when
+// an oversized file already exists on disk, a Save that SHRINKS it must be
+// allowed — otherwise the guard locks the operator out of the very
+// `st note rm` recovery it points them to.
+func TestSave_DrainOfOversizedFileAllowed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+	// Pre-existing oversized file on disk (~2 MB of legacy bloat).
+	if err := os.WriteFile(path, []byte(strings.Repeat("y", 2*1024*1024)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A drain that is still over the ceiling but SMALLER than what's on
+	// disk: allowed (progress toward recovery must never be blocked).
+	stillBig := &Registry{}
+	chunk := strings.Repeat("z", 200*1024)
+	for i := 0; i < 6; i++ { // ~1.2 MB < 2 MB on disk, > 1 MiB ceiling
+		stillBig.AddNote("a", "s", chunk)
+	}
+	if err := stillBig.Save(path); err != nil {
+		t.Fatalf("a shrinking write on an oversized file must be allowed, got: %v", err)
+	}
+	fi, _ := os.Stat(path)
+	if fi.Size() >= 2*1024*1024 {
+		t.Errorf("drain did not shrink the file (size=%d)", fi.Size())
+	}
+
+	// A further drain that brings it fully under the ceiling: allowed.
+	small := &Registry{}
+	small.AddNote("a", "s", "back to a normal short breadcrumb")
+	if err := small.Save(path); err != nil {
+		t.Fatalf("under-ceiling drain must succeed, got: %v", err)
+	}
+}
+
+// TestSave_NormalRegistryUnaffected: the guard must be invisible to
+// ordinary operational state — a real-world-sized registry round-trips.
+func TestSave_NormalRegistryUnaffected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+	r := &Registry{}
+	e := r.AddEpic("Epic A")
+	if _, err := r.AddSprint(e.ID, "Sprint 1"); err != nil {
+		t.Fatalf("AddSprint: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		r.AddNote("agent-c", "sess", "a normal short session breadcrumb linking to an item")
+	}
+	if err := r.Save(path); err != nil {
+		t.Fatalf("a normal-size registry must Save clean, got: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("round-trip Load: %v", err)
+	}
+}
