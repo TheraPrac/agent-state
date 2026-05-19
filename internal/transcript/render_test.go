@@ -172,6 +172,35 @@ func TestRender_Summarizers(t *testing.T) {
 	}
 }
 
+func TestCompressByAgent(t *testing.T) {
+	bash := tu("Bash", map[string]any{"command": "make test"})
+	bash.ID = "b1"
+	rows := []TaggedRow{
+		{"a-2", Row{Kind: KindText, Text: "old a-2 line"}},
+		{"A", Row{Kind: KindText, Text: "A doing setup"}},
+		{"a-2", Row{Kind: KindToolUse, ToolUse: bash}},                                  // newer for a-2
+		{"a-2", Row{Kind: KindToolResult, ToolResult: &ToolResult{ToolUseID: "b1"}}},   // folds into the tool_use line
+		{"A", Row{Kind: KindText, Text: "A now compiling"}},                            // newer for A
+	}
+	got := CompressByAgent(rows, RenderOpts{})
+	want := []string{
+		"[A] A now compiling",          // freshest A row
+		"[a-2] Bash: make test → ok",   // freshest a-2 (tool_use + folded result)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("CompressByAgent = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// One line per agent, sorted by tag, never the firehose.
+	if len(CompressByAgent(rows, RenderOpts{})) != 2 {
+		t.Error("expected exactly one compressed line per distinct tag")
+	}
+}
+
 func TestRender_TruncationIsVisible(t *testing.T) {
 	long := strings.Repeat("x", 200)
 	got := Render([]TaggedRow{{"A", Row{Kind: KindRaw, Text: long}}}, RenderOpts{MaxLen: 50})
