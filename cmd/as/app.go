@@ -142,6 +142,24 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	transcriptCmd.Flags().Bool("json", false, "emit raw rows as JSON (pre-render, for machines)")
 	root.AddCommand(transcriptCmd)
 
+	watchCmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Live unified stream — one compressed line per live agent",
+		Long: "Enumerate live agents (process-tree liveness), tail each one's " +
+			"session JSONL, and print a compressed per-agent strip (what each " +
+			"is doing now) — not a raw firehose. Backs off when idle; Ctrl-C " +
+			"prints a final snapshot and exits.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			intv, _ := cmd.Flags().GetDuration("interval")
+			once, _ := cmd.Flags().GetBool("once")
+			exitCode = command.Watch(appCfg, command.WatchOpts{Interval: intv, Once: once})
+		},
+	}
+	watchCmd.Flags().Duration("interval", time.Second, "base poll interval (backs off geometrically when idle)")
+	watchCmd.Flags().Bool("once", false, "single snapshot pass then exit (no follow)")
+	root.AddCommand(watchCmd)
+
 	listCmd := &cobra.Command{
 		Use:     "list",
 		Short:   "List items with optional filters",

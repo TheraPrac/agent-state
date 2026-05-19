@@ -152,6 +152,52 @@ func Render(rows []TaggedRow, opts RenderOpts) []string {
 	return out
 }
 
+// CompressByAgent is the §8.3 "always-on agent strip" in CLI form: one
+// `[tag] …` line per tag (sorted) showing what that agent is doing NOW.
+// This is `st watch`'s default — N readable lines, never the raw
+// firehose. Pure and deterministic, like Render.
+//
+// Each tag's rows are rendered together (so a freshest tool_use+result
+// still collapses correctly — rendering only the single last row would
+// turn a bare trailing tool_result into a misleading "orphan"), then
+// the LAST rendered line is taken as the agent's current activity.
+func CompressByAgent(rows []TaggedRow, opts RenderOpts) []string {
+	byTag := map[string][]TaggedRow{}
+	var order []string
+	for _, tr := range rows {
+		if _, seen := byTag[tr.Tag]; !seen {
+			order = append(order, tr.Tag)
+		}
+		byTag[tr.Tag] = append(byTag[tr.Tag], tr)
+	}
+	sort.Strings(order)
+	width := opts.MaxLen
+	if width <= 0 {
+		width = defaultMaxLen
+	}
+	// Strip lines stay scannable (§8.3 "N readable lines"): a freshest
+	// PROSE row can be huge, so clamp it. Render already bounds tool/raw
+	// BODIES to width; the rendered line is "[tag] <body>" (+ optional
+	// "HH:MM:SS "), so the full-line budget is width plus that prefix.
+	// Using `width` directly here would re-clip an already-in-spec line
+	// and stamp a spurious truncation marker on it (false signal). A
+	// generous prefix allowance keeps the marker honest — it appears
+	// only when content was really clipped.
+	// Covers "[<tag>] HH:MM:SS " for a generous tag length (≈36 chars)
+	// — long enough that a realistic agent id never trips a spurious
+	// truncation marker on an in-spec body.
+	const stripPrefixAllowance = 48
+	var out []string
+	for _, tag := range order {
+		lines := Render(byTag[tag], opts)
+		if len(lines) == 0 {
+			continue
+		}
+		out = append(out, truncate(lines[len(lines)-1], width+stripPrefixAllowance))
+	}
+	return out
+}
+
 // splitProse trims one trailing newline then splits, so a normal
 // single-line message is one line and internal blank lines survive.
 func splitProse(s string) []string {
