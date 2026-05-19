@@ -15,11 +15,14 @@ import (
 	"github.com/jfinlinson/agent-state/internal/transcript"
 )
 
-// Phase 4 of T-353: `st watch` (no arg) — the live unified stream
-// (contract §8.1/§8.3). Enumerates LIVE agents (process-tree liveness,
-// §13 finding 3 — never the redirect log), tails each one's session
-// JSONL, and prints a compressed per-agent strip (CompressByAgent): N
-// readable lines, what each agent is doing NOW — never the raw
+// Phase 4 of T-353 (+ T-356 roster fallback): `st watch` (no arg) —
+// the live unified stream (contract §8.1/§8.3). Enumerates live agents
+// two ways: a live registration with a process-tree-alive PID (§13
+// finding 3 — never the redirect log), AND, for roster agents without
+// one, a workspace session JSONL fresh within FreshWindow (T-356
+// substrate fallback). Tails each one's session JSONL, and prints a
+// compressed per-agent strip (CompressByAgent): N readable lines, what
+// each agent is doing NOW — never the raw
 // firehose. Full per-agent drill is the later Layout-A TUI item.
 
 // WatchOpts configures `st watch`.

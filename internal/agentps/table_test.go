@@ -119,7 +119,16 @@ func TestAgentPSRender(t *testing.T) {
 		}
 	}
 	mustContain(out[1], "agent-a", "theraprac-agent-a", "live", "T-203 (coding)", "2h ago", "3m ago", "abcdefgh")
-	mustContain(out[2], "agent-b", "theraprac-agent-b", "—") // idle: dashes, still listed
+	// agent-b: no reg, no workspace JSONL → never-observed. Still
+	// LISTED (idle agents never omitted) with LIVE = "—". Assert it is
+	// specifically NOT live/idle/stale (a bare "—"-contains check would
+	// be vacuous — every column of a zero-state row is "—").
+	mustContain(out[2], "agent-b", "theraprac-agent-b")
+	for _, banned := range []string{"live", "idle", "stale"} {
+		if strings.Contains(out[2], banned) {
+			t.Errorf("agent-b LIVE should be \"—\" (never observed), row=%q", out[2])
+		}
+	}
 	mustContain(out[3], "agent-c", "stale", "1d ago")        // dead pid, 26h→1d uptime
 
 	// Columns are aligned: the WORKSPACE column begins at the same rune
