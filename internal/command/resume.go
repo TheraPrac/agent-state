@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,14 +57,26 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 
 	sessionID := lastSessionID(item)
 
-	planBody := ""
-	if p, _ := plan.Load(cfg.PlansDir(), id); p != nil {
-		planBody = strings.TrimSpace(p.RawText)
+	// Plan fold-in. A missing/unreadable/empty plan must be LOUD, never a
+	// silent omit (operator silent-failure principle, I-690): the plan body
+	// is one of the two artifacts a cold session most needs, so its absence
+	// has to be impossible to miss rather than a quietly empty section.
+	plansDir := cfg.PlansDir()
+	planBody, planNote := "", ""
+	switch p, err := plan.Load(plansDir, id); {
+	case err != nil:
+		planNote = "load error: " + err.Error()
+	case p == nil:
+		planNote = "NOT FOUND — expected " + filepath.Join(plansDir, id+".md")
+	default:
+		if planBody = strings.TrimSpace(p.RawText); planBody == "" {
+			planNote = "file present but EMPTY at " + filepath.Join(plansDir, id+".md")
+		}
 	}
 
 	audit := auditExecTape(cfg, item, entries, sessionID)
 
-	fmt.Print(renderResume(item, entries, sessionID, planBody, audit))
+	fmt.Print(renderResume(item, entries, sessionID, planBody, planNote, audit))
 	return 0
 }
 
@@ -99,7 +112,12 @@ func lastSessionID(item *model.Item) string {
 
 // renderResume is the pure, table-tested core: (item, typed changelog,
 // session, plan, audit) → the paste-able prompt. No I/O.
-func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBody string, audit tapeAudit) string {
+//
+// planNote is the loud fallback for the plan section: "" means planBody is
+// authoritative; non-empty means the plan could not be loaded (missing /
+// unreadable / empty) and the section renders a ⚠️ block instead of silently
+// vanishing (I-690 — operator silent-failure principle).
+func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBody, planNote string, audit tapeAudit) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# RESUME %s — %s\n\n", item.ID, item.Title)
@@ -137,6 +155,24 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 		fmt.Fprintf(&b, "  last session: %s\n", sessionID)
 	}
 	b.WriteString("\n")
+
+	// (2b) Next — the single highest-value "what to do" line for a cold
+	// resume (I-690). Placed immediately after State, ahead of the
+	// historical record, because a resuming session needs the forward
+	// directive before the backward narrative.
+	var nexts []string
+	for _, n := range item.NextActions {
+		if s := strings.TrimSpace(n); s != "" {
+			nexts = append(nexts, s)
+		}
+	}
+	if len(nexts) > 0 {
+		b.WriteString("## Next\n")
+		for _, n := range nexts {
+			fmt.Fprintf(&b, "  → %s\n", n)
+		}
+		b.WriteString("\n")
+	}
 
 	scoped := filterSession(entries, sessionID)
 
@@ -202,10 +238,16 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 		b.WriteString("\n")
 	}
 
-	// (6) Plan — folded in live, never a stored snapshot.
-	if planBody != "" {
+	// (6) Plan — folded in live, never a stored snapshot. ALWAYS emitted:
+	// a missing/unreadable/empty plan renders a loud ⚠️ block rather than
+	// silently vanishing, so a cold session can never mistake "no plan
+	// shown" for "no plan needed" (I-690, operator silent-failure principle).
+	if planNote == "" {
 		b.WriteString("## Plan (.plans/" + item.ID + ".md)\n")
 		b.WriteString(indent(planBody, "  ") + "\n\n")
+	} else {
+		b.WriteString("## ⚠️  PLAN " + planNote + "\n")
+		b.WriteString("  Resume cannot fold in the plan body — author/repair .plans/" + item.ID + ".md, then re-run `st resume " + item.ID + "`.\n\n")
 	}
 
 	b.WriteString("---\n")

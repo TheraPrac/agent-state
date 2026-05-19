@@ -90,7 +90,7 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 	}
 	gap := tapeAudit{gap: true, message: "branch has 3 commits but 1 on tape — 2 uncaptured."}
 
-	out := renderResume(item, entries, "sess-1", "# Plan\nDo the thing.", gap)
+	out := renderResume(item, entries, "sess-1", "# Plan\nDo the thing.", "", gap)
 
 	// Gap banner must precede the State/Decisions sections — a record that
 	// looks complete but is not must be impossible to miss.
@@ -124,7 +124,7 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 
 func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
 	item := &model.Item{ID: "T-1", Title: "x", Type: "task", Status: "active"}
-	out := renderResume(item, nil, "", "", tapeAudit{
+	out := renderResume(item, nil, "", "", "NOT FOUND — expected .plans/T-1.md", tapeAudit{
 		verified: false, message: "no resolvable git worktree — exec tape is UNVERIFIED.",
 	})
 	if !strings.Contains(out, "UNVERIFIED") {
@@ -137,7 +137,7 @@ func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
 
 func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
 	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active"}
-	out := renderResume(item, nil, "", "", tapeAudit{
+	out := renderResume(item, nil, "", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{
 		verified: true, message: `branch "b": 3 commit(s), 3 on the recorded exec tape — consistent.`,
 	})
 	if !strings.Contains(out, "✓ Execution tape verified against ground truth") {
@@ -152,6 +152,62 @@ func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
 	}
 	if strings.Contains(out, "UNVERIFIED") || strings.Contains(out, "EXECUTION-TAPE GAP") {
 		t.Errorf("verified path must not emit gap/unverified text:\n%s", out)
+	}
+}
+
+// I-690: the two artifacts a cold session most needs — the plan body and
+// next_actions — must both render, and Next must sit between State and the
+// historical record (forward directive before backward narrative).
+func TestRenderResume_PlanAndNextRendered(t *testing.T) {
+	item := &model.Item{
+		ID: "I-679", Title: "xsession record", Type: "issue", Status: "active",
+		NextActions: []string{
+			"Phase B remaining increment: PostToolUse hook + SessionStart compact",
+			"", // empty entries must be filtered, not rendered as a blank arrow
+			"Then Phase C (PreCompact/Stop backstop)",
+		},
+	}
+	out := renderResume(item, nil, "", "# I-690 Plan\nDo the renderer fix.", "",
+		tapeAudit{verified: true, message: "consistent."})
+
+	si := strings.Index(out, "## State")
+	ni := strings.Index(out, "## Next")
+	pi := strings.Index(out, "## Plan (.plans/I-679.md)")
+	if si < 0 || ni < 0 || pi < 0 {
+		t.Fatalf("missing State/Next/Plan section:\n%s", out)
+	}
+	if !(si < ni && ni < pi) {
+		t.Errorf("ordering must be State < Next < Plan: state=%d next=%d plan=%d", si, ni, pi)
+	}
+	if !strings.Contains(out, "→ Phase B remaining increment: PostToolUse hook + SessionStart compact") ||
+		!strings.Contains(out, "→ Then Phase C (PreCompact/Stop backstop)") {
+		t.Errorf("next_actions not rendered:\n%s", out)
+	}
+	if strings.Contains(out, "→ \n") || strings.Contains(out, "→ \n\n") {
+		t.Errorf("empty next_actions entry must be filtered, not rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "Do the renderer fix.") {
+		t.Errorf("plan body not folded in:\n%s", out)
+	}
+}
+
+// I-690: a missing/unreadable/empty plan must be LOUD, never a silent omit
+// (operator silent-failure principle). The normal Plan header must NOT appear
+// — a cold session must not mistake "no plan shown" for "no plan needed".
+func TestRenderResume_MissingPlanIsLoudNotSilent(t *testing.T) {
+	item := &model.Item{ID: "I-690", Title: "x", Type: "issue", Status: "active"}
+	out := renderResume(item, nil, "", "",
+		"NOT FOUND — expected /ws/.plans/I-690.md",
+		tapeAudit{verified: true, message: "consistent."})
+
+	if !strings.Contains(out, "## ⚠️  PLAN NOT FOUND — expected /ws/.plans/I-690.md") {
+		t.Errorf("missing plan must render a loud ⚠️ block:\n%s", out)
+	}
+	if !strings.Contains(out, "re-run `st resume I-690`") {
+		t.Errorf("loud plan block must tell the operator how to repair it:\n%s", out)
+	}
+	if strings.Contains(out, "## Plan (.plans/I-690.md)") {
+		t.Errorf("the normal Plan header must NOT appear when the plan is missing:\n%s", out)
 	}
 }
 

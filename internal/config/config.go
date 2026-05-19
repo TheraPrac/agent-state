@@ -392,7 +392,23 @@ func (c *Config) ManifestDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".manifest")
 }
 
-// PlansDir returns the path to the plans sidecar directory.
+// PlansDir returns the path to the plans sidecar directory: the item-store
+// root's `.plans/` (e.g. `<root>/agent-state/.plans`). This is the canonical
+// location the `st` tooling authoritatively reads and writes — `st prep`,
+// `st plan approve`, `st plan show`, `st run`, `st split`, `st classify` —
+// and the directory `internal/store` git-auto-stages (I-575). Keep it
+// consistent with the sibling accessors (ItemDir/ManifestDir/…), which all
+// nest under `c.Paths.Root`.
+//
+// NOTE (I-690 / I-693): the human-facing PROSE drifts from this path —
+// CLAUDE.md instructs agents to author `.plans/<id>.md` (read as
+// workspace-root relative) and plan-before-code-guard.sh's rejection
+// message likewise references `.plans/<id>.md`. The hook's GATE is fine
+// (it shells `st plan check`, which uses THIS accessor); the drift is
+// purely in the prose, so hand-authored plans land at the workspace root
+// and the tooling never sees them. Tracked in I-693. Do NOT "fix" it by
+// relocating this accessor — that silently orphans every plan the tooling
+// already wrote here (incl. peer agents' active in-sprint work).
 func (c *Config) PlansDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".plans")
 }
