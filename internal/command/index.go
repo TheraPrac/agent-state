@@ -13,10 +13,26 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// loadRegistryOrWarn loads a registry, but instead of silently
+// discarding a load error (the I-673 defect: `reg, _ := registry.Load`),
+// it prints a clear WARNING to stderr and returns an empty registry so
+// index regeneration stays resilient — never hard-fails, never silently
+// omits a whole section without a signal.
+func loadRegistryOrWarn(path, label string) *registry.Registry {
+	reg, err := registry.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"WARNING: %s registry failed to load (%v); the index will be regenerated WITHOUT it. Fix the registry, then re-run `st index`.\n",
+			label, err)
+		return &registry.Registry{}
+	}
+	return reg
+}
+
 func Index(s *store.Store, cfg *config.Config) int {
 	g := deps.Build(s.All(), cfg)
-	reg, _ := registry.Load(cfg.EpicsPath())
-	noteReg, _ := registry.Load(cfg.NotesPath())
+	reg := loadRegistryOrWarn(cfg.EpicsPath(), "epics/sprints")
+	noteReg := loadRegistryOrWarn(cfg.NotesPath(), "notes")
 
 	var b strings.Builder
 	b.WriteString("# Agent State Index\n")

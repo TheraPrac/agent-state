@@ -2,8 +2,8 @@
 package registry
 
 import (
-	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -12,6 +12,27 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/namegen"
 )
+
+// MaxNoteBytes caps a single note message. A note is a short session
+// breadcrumb; anything larger is almost certainly an accidental giant
+// paste, which (pre-I-673) could bloat the shared registry file. The cap
+// is deliberately generous so it never bites a real note — it is a
+// backstop, not a content policy. The loader itself is unbounded
+// (I-673), so an over-cap line that already exists still loads; this
+// only guards new writes.
+const MaxNoteBytes = 256 * 1024
+
+// ValidateNoteMessage rejects a note message above MaxNoteBytes with an
+// actionable error. Enforced at the write entry points (NoteAdd /
+// NoteEdit), not in the dumb store mutators.
+func ValidateNoteMessage(message string) error {
+	if len(message) > MaxNoteBytes {
+		return fmt.Errorf(
+			"note message is %d bytes; max is %d (%d KB) — keep notes short and link to an item/doc for detail",
+			len(message), MaxNoteBytes, MaxNoteBytes/1024)
+	}
+	return nil
+}
 
 // Epic represents a long-lived work stream.
 type Epic struct {
@@ -69,8 +90,20 @@ func Load(path string) (*Registry, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 512*1024)
+	// I-673: read with an unbounded reader. The previous bufio.Scanner
+	// had a fixed 512 KB max-token cap, so a single oversized line
+	// (e.g. an accidental giant note paste) made the WHOLE shared
+	// registry — notes, epics, and sprints — permanently unreadable
+	// with no degrade path. These registry files are small operational
+	// state (the pathology is one big line, not a big file), so reading
+	// the whole file and splitting on newlines is correct, simple, and
+	// has no size ceiling. Trailing '\r' is stripped per line to match
+	// the prior bufio.ScanLines CRLF behavior exactly.
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
 
 	var section string // "epics", "sprints", "notes"
 	var current map[string]string
@@ -124,8 +157,8 @@ func Load(path string) (*Registry, error) {
 		currentLists = nil
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for _, raw := range lines {
+		line := strings.TrimSuffix(raw, "\r")
 		trimmed := strings.TrimSpace(line)
 
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -178,10 +211,6 @@ func Load(path string) (*Registry, error) {
 		}
 	}
 	flush()
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
 	return r, nil
 }
 

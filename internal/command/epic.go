@@ -249,8 +249,26 @@ func EpicDelete(cfg *config.Config, epicID string) int {
 	return 0
 }
 
+// truncateNoteForDisplay keeps `st note list` readable if a legacy
+// oversized message exists (written before the I-673 MaxNoteBytes cap).
+// Storage is untouched — this only bounds terminal output. Truncation
+// is rune-safe; the byte total is reported so the real size is visible.
+func truncateNoteForDisplay(msg string) string {
+	const maxRunes = 280
+	rs := []rune(msg)
+	if len(rs) <= maxRunes {
+		return msg
+	}
+	return fmt.Sprintf("%s… (%d bytes total, truncated for display)", string(rs[:maxRunes]), len(msg))
+}
+
 // NoteAdd creates a new note.
 func NoteAdd(cfg *config.Config, message string) int {
+	if err := registry.ValidateNoteMessage(message); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+
 	r, err := registry.Load(cfg.NotesPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading notes: %v\n", err)
@@ -286,13 +304,18 @@ func NoteList(cfg *config.Config, limit int) int {
 
 	for _, n := range notes {
 		ts := n.Timestamp.Format("2006-01-02 15:04")
-		fmt.Printf("%s  %s  [%s]  %s\n", n.ID, ts, n.Author, n.Message)
+		fmt.Printf("%s  %s  [%s]  %s\n", n.ID, ts, n.Author, truncateNoteForDisplay(n.Message))
 	}
 	return 0
 }
 
 // NoteEdit updates a note's message.
 func NoteEdit(cfg *config.Config, id, message string) int {
+	if err := registry.ValidateNoteMessage(message); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 2
+	}
+
 	r, err := registry.Load(cfg.NotesPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading notes: %v\n", err)
