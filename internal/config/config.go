@@ -137,6 +137,7 @@ type ScopeSuiteConfig struct {
 	Triggers      []string // file glob patterns that activate this suite
 	Artifacts     []string // glob patterns for artifacts to upload after execution
 	PostDeployCmd string   // command to run post-deploy verification (e.g., E2E against dev)
+	PostMergeCmd  string   // command to run post-merge verification against merged main (I-696, e.g., full local E2E)
 }
 
 type PipelineConfig struct {
@@ -939,7 +940,7 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			}
 			// val == "" means this is a section header (suite name), levels tracks it
 		case "scope_suites":
-			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" {
+			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" && key != "post_merge" {
 				// Simple format
 				cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
 			} else if val != "" {
@@ -951,6 +952,8 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 					sc.Command = val
 				case "post_deploy":
 					sc.PostDeployCmd = val
+				case "post_merge":
+					sc.PostMergeCmd = val
 				}
 				cfg.Testing.ScopeSuites[suiteName] = sc
 			}

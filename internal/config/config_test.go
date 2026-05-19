@@ -608,6 +608,44 @@ testing:
 	}
 }
 
+// I-696: post_merge parses into ScopeSuiteConfig.PostMergeCmd, distinct
+// from post_deploy, and the simple-format short-circuit must not swallow it.
+func TestScopeSuitePostMergeParse(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(`paths:
+  root: .
+
+testing:
+  enabled: true
+  scope_suites:
+    web_e2e:
+      command: scripts/e2e-local.sh run
+      post_deploy: scripts/e2e-local.sh run --target dev
+      post_merge: cd ../theraprac-web && git checkout -q main && scripts/e2e-local.sh run
+`), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sc, ok := cfg.Testing.ScopeSuites["web_e2e"]
+	if !ok {
+		t.Fatal("web_e2e scope suite not found")
+	}
+	if sc.PostMergeCmd != "cd ../theraprac-web && git checkout -q main && scripts/e2e-local.sh run" {
+		t.Errorf("PostMergeCmd = %q", sc.PostMergeCmd)
+	}
+	if sc.PostDeployCmd != "scripts/e2e-local.sh run --target dev" {
+		t.Errorf("PostDeployCmd = %q (post_merge must not clobber it)", sc.PostDeployCmd)
+	}
+	if sc.Command != "scripts/e2e-local.sh run" {
+		t.Errorf("Command = %q", sc.Command)
+	}
+}
+
 // I-407: WorktreeBase places <id> dirs under the agent root (one level
 // up from the workspace), not inside the workspace itself. Workspace is
 // symlinked across agents (I-418); placing worktrees in the workspace

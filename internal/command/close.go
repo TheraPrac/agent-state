@@ -25,6 +25,25 @@ type CloseOpts struct {
 	FilesOpts FilesOpts
 }
 
+// webE2EScopeSkipped reports whether the web_e2e scope suite was
+// intentionally skipped (`st test <id> web_e2e --skip`). Evidence is
+// stored flat at TestingEvidence["web_e2e"] (testrecord.go SetNested
+// 2-level); the canonical readers (gates.go, uat.go) use this flat map,
+// NOT a dotted Doc path — a 3-level GetNestedField path silently never
+// matches (I-696 review fix). When skipped, the post-merge e2e gate is
+// not applicable and must not block close.
+func webE2EScopeSkipped(item *model.Item) bool {
+	if item == nil || item.TestingEvidence == nil {
+		return false
+	}
+	v, ok := item.TestingEvidence["web_e2e"]
+	if !ok {
+		return false
+	}
+	s, _ := v.(string)
+	return strings.HasPrefix(strings.TrimSpace(s), "skip")
+}
+
 func Close(s *store.Store, cfg *config.Config, id, resolution string, opts CloseOpts) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -95,6 +114,28 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		}
 	}
 
+	// I-696: post-merge local-main full-e2e gate. There is no GHA e2e
+	// (I-637), so this is the only verification that the *merged* code is
+	// releasable before the item closes / main becomes the deploy artifact.
+	// Runs OUTSIDE the Mutate lock (slow, like the LOC snapshot below).
+	// Self-gates on applicability (PR touched an e2e spec + PostMergeCmd
+	// configured); honors an explicit web_e2e scope skip.
+	recordPostMerge := false
+	if !opts.Force && resolution != "abandoned" && resolution != "declined" {
+		if !webE2EScopeSkipped(item) {
+			ran, msg := postMergeE2E(cfg, id)
+			if msg != "" {
+				fmt.Fprintln(os.Stderr, msg)
+				fmt.Fprintln(os.Stderr, "post-merge e2e gate failed (full suite vs merged local main); fix and re-close, or use --force to bypass")
+				return 1
+			}
+			// Record audit evidence only when the gate actually ran
+			// (ran==true); not-applicable items must not get a spurious
+			// "pass" marker.
+			recordPostMerge = ran
+		}
+	}
+
 	// Transition
 	oldStatus := item.Status
 	now := time.Now()
@@ -120,6 +161,12 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// Always set (not advance) so abandon paths surface as "closed"
 		// in render too.
 		item.SetNested("delivery", "stage", "closed")
+
+		// I-696: persist the post-merge e2e pass as scope-suite evidence so
+		// the gate is auditable in st show / st uat after close.
+		if recordPostMerge {
+			item.SetNested("testing_evidence", "web_e2e_postmerge", "pass "+nowStr)
+		}
 
 		// Record completion time tracking
 		item.SetNested("time_tracking", "completed_at", nowStr)

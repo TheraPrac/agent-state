@@ -2461,6 +2461,74 @@ func postDeployE2E(cfg *config.Config, itemID string) string {
 	return "Post-deploy E2E results:\n" + strings.Join(results, "\n")
 }
 
+// postMergeE2E (I-696) runs the configured scope-suite PostMergeCmd as a
+// gate AFTER a PR has merged: the FULL local e2e suite against the
+// agent-root main checkout (the merged, integrated code) — NOT the
+// worktree, NOT dev. There is no GitHub Actions e2e (I-637), so this is
+// the only thing that verifies main is releasable before the item closes.
+//
+// Applicability: only fires when the item has recorded PR(s) whose changed
+// files map to an e2e spec (same e2eSpecFor mapping post-deploy uses), so
+// doc-only / api-only / non-web items are correctly skipped.
+//
+// Returns (ran, failMsg): ran is true ONLY when the command actually
+// executed (so the caller records audit evidence only for a real run, not
+// for not-applicable items). failMsg is non-empty iff the command ran and
+// failed. (false,"")=not applicable; (true,"")=ran+passed; (true,msg)=ran+failed.
+func postMergeE2E(cfg *config.Config, itemID string) (bool, string) {
+	m, err := manifest.Load(cfg.ManifestDir(), itemID)
+	if err != nil || len(m.PRs) == 0 {
+		return false, ""
+	}
+
+	// Applicability: did any merged PR touch a file that maps to an e2e spec?
+	touchesE2E := false
+	for _, pr := range m.PRs {
+		for _, f := range pr.Files {
+			if f.Action == "D" {
+				continue
+			}
+			if e2eSpecFor(f.Path) != "" {
+				touchesE2E = true
+				break
+			}
+		}
+		if touchesE2E {
+			break
+		}
+	}
+	if !touchesE2E {
+		return false, ""
+	}
+
+	if cfg.Testing == nil {
+		return false, ""
+	}
+	// Deterministic: the post-merge gate IS the web_e2e gate — key off the
+	// same suite name the close-gate skip check and applicability use,
+	// rather than a non-deterministic map range.
+	mergeCmd := cfg.Testing.ScopeSuites["web_e2e"].PostMergeCmd
+	if mergeCmd == "" {
+		return false, ""
+	}
+
+	// Run the FULL suite from the agent-root (cfg.Root()) — deliberately NOT
+	// worktree-rewritten: we are verifying merged main, and the command's
+	// own `git checkout main && git pull` (in config) pins it to the merge
+	// result.
+	runDir := cfg.Root()
+	fmt.Printf("[%s] Running post-merge E2E against local main (full suite)...\n", itemID)
+	output, exitCode, err := runCmdInDir(runDir, mergeCmd)
+	if err == nil && exitCode == 0 {
+		return true, ""
+	}
+	tail := string(output)
+	if len(tail) > 1500 {
+		tail = tail[len(tail)-1500:]
+	}
+	return true, fmt.Sprintf("Post-merge E2E FAILED against local main (exit %d):\n%s", exitCode, tail)
+}
+
 // executeUATReview runs UAT, then enters a conversational loop where the user
 // can approve, reject, or give plain-text feedback that gets routed to claude.
 // Claude acts on the feedback (writes tests, fixes code, etc.), then UAT re-runs

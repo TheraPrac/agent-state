@@ -649,6 +649,36 @@ func TestCloseGateFailure(t *testing.T) {
 	_ = code
 }
 
+// I-696 review-fix regression guard: webE2EScopeSkipped must read the FLAT
+// TestingEvidence["web_e2e"] (how testrecord/--skip writes it), so an
+// explicit skip is honored and the post-merge e2e gate is bypassed. A
+// 3-level dotted Doc path (the original bug) silently never matched and
+// the gate fired on skipped items.
+func TestWebE2EScopeSkipped(t *testing.T) {
+	cases := []struct {
+		name string
+		te   map[string]interface{}
+		want bool
+	}{
+		{"explicit skip honored", map[string]interface{}{"web_e2e": "skip: no UI change"}, true},
+		{"skip with leading space", map[string]interface{}{"web_e2e": "  skip: x"}, true},
+		{"pass is not skip", map[string]interface{}{"web_e2e": "pass abc123 2026-05-19T00:00:00Z"}, false},
+		{"absent suite is not skip", map[string]interface{}{"api_unit": "pass"}, false},
+		{"nil evidence is not skip", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := webE2EScopeSkipped(&model.Item{TestingEvidence: tc.te})
+			if got != tc.want {
+				t.Errorf("webE2EScopeSkipped(%v) = %v, want %v", tc.te, got, tc.want)
+			}
+		})
+	}
+	if webE2EScopeSkipped(nil) {
+		t.Error("nil item must not be treated as skipped")
+	}
+}
+
 func TestSprintCreateHappy(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	EpicCreate(cfg, "Sprint Test Epic")
