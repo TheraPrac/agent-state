@@ -167,6 +167,14 @@ type SpawnOpts struct {
 	// or starting the item. Side-effect-free — the unit-test + operator
 	// inspection surface.
 	DryRun bool
+	// ExtraContext, when non-empty, is appended to the worker prompt under
+	// a clearly delimited section. It is the substrate for the coordinator's
+	// respawn-with-context lever (T-363 / contract §6): a respawned worker
+	// is told what its prior attempt's failure signature was and what was
+	// tried, so a retry is informed rather than blind. Empty (the default,
+	// every direct `st spawn` invocation) ⇒ the prompt is byte-for-byte
+	// identical to before — a strict, regression-tested additive change.
+	ExtraContext string
 }
 
 // Spawn launches a budget-capped, JSONL-observable reasoning worker
@@ -312,7 +320,7 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 	// inline version; this is deduplication, not a bug fix.
 	workerSID := generateSessionID()
 
-	prompt := buildWorkerPrompt(item)
+	prompt := buildWorkerPrompt(item, opts.ExtraContext)
 	capStr := strconv.FormatFloat(budget, 'f', -1, 64)
 	args := []string{
 		"-p", prompt,
@@ -549,7 +557,14 @@ func deriveSlug(item *model.Item) string {
 // boundary governs, escalate per §7 rather than exceed it) followed by
 // the item's own SBAR + acceptance criteria so the worker has the full
 // task context without a round trip.
-func buildWorkerPrompt(item *model.Item) string {
+//
+// extraContext is the coordinator's respawn-with-context payload
+// (T-363 / contract §6): when non-empty it is appended as a clearly
+// delimited section so an informed retry can avoid the prior failure.
+// When empty — every direct `st spawn` invocation — the rendered prompt
+// is byte-for-byte what it was before this parameter existed (regression
+// test: TestBuildWorkerPrompt_EmptyExtraContextIdentical).
+func buildWorkerPrompt(item *model.Item, extraContext string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are a spawned reasoning worker for %s: %s.\n\n", item.ID, item.Title)
 	b.WriteString(
@@ -593,6 +608,14 @@ func buildWorkerPrompt(item *model.Item) string {
 				fmt.Fprintf(&b, "- %s\n", ac)
 			}
 		}
+	}
+
+	// Respawn-with-context (T-363 §6). Strictly additive and last so the
+	// base prompt above is unchanged when extraContext is empty.
+	if ec := strings.TrimSpace(extraContext); ec != "" {
+		b.WriteString("\n--- COORDINATOR CONTEXT (prior attempt) ---\n")
+		b.WriteString(ec)
+		b.WriteString("\n")
 	}
 	return b.String()
 }

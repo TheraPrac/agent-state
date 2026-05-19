@@ -861,6 +861,61 @@ in-flight, run 'st release' against the active items first.
 	spawnCmd.AddCommand(spawnChildCmd)
 	root.AddCommand(spawnCmd)
 
+	// --- Coordinate ---
+	// `st coordinate` (T-363): the Shape-3 coordinator loop. Picks the
+	// next approved/unblocked queue item, spawns ONE budget-capped worker
+	// (reusing `st spawn`), supervises it on substrate ground truth,
+	// applies the B1/C2/D2 stall heuristics against the .as/coordinator.yaml
+	// autonomy boundary, and on any contract-§7 predicate emits a deduped,
+	// substrate-durable escalation and STOPS rather than exceed the
+	// boundary. Single in-flight worker; parallelism_cap is a hard ceiling
+	// (concurrent fan-out is T-364).
+	coordinateCmd := &cobra.Command{
+		Use:   "coordinate",
+		Short: "Run the Shape-3 coordinator loop (T-363)",
+		Long: "Pick the next approved/unblocked queue item, spawn ONE\n" +
+			"budget-capped reasoning worker (via `st spawn`), supervise it\n" +
+			"through the observability substrate (registry PID / session\n" +
+			"JSONL / changelog — never worker self-report), apply the\n" +
+			"B1/C2/D2 stall heuristics against theraprac-workspace/.as/\n" +
+			"coordinator.yaml, and on any contract-§7 predicate file a\n" +
+			"deduped, dependency-linked blocker + durable record and STOP\n" +
+			"rather than exceed the autonomy boundary.\n\n" +
+			"--dry-run resolves the boundary + the next pick and prints the\n" +
+			"would-be plan, launching/escalating nothing (contract §11 read-only).",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			once, _ := cmd.Flags().GetBool("once")
+			maxItems, _ := cmd.Flags().GetInt("max-items")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			budget, _ := cmd.Flags().GetFloat64("budget")
+			interval, _ := cmd.Flags().GetDuration("interval")
+			maxIdle, _ := cmd.Flags().GetDuration("max-idle")
+			exitCode = command.Coordinate(appStore, appCfg, command.CoordinateOpts{
+				Once:           once,
+				MaxItems:       maxItems,
+				DryRun:         dryRun,
+				BudgetOverride: budget,
+				PollInterval:   interval,
+				PollMaxIdle:    maxIdle,
+			})
+		},
+	}
+	coordinateCmd.Flags().Bool("once", false,
+		"process exactly one item (pick→spawn→supervise→escalate|advance) then exit")
+	coordinateCmd.Flags().Int("max-items", 1,
+		"max items to process before exiting; 0 = unbounded (long-running coordinator)")
+	coordinateCmd.Flags().Bool("dry-run", false,
+		"resolve the boundary + next pick and print the plan; launch/escalate nothing")
+	coordinateCmd.Flags().Float64("budget", 0,
+		"LOWER the per-item USD cap for the spawned worker (forwarded to `st spawn`; "+
+			"a value above the coordinator.yaml cap is rejected)")
+	coordinateCmd.Flags().Duration("interval", 20*time.Second,
+		"base supervision poll cadence (backs off geometrically when idle)")
+	coordinateCmd.Flags().Duration("max-idle", 5*time.Minute,
+		"backoff cap for the idle supervision cadence")
+	root.AddCommand(coordinateCmd)
+
 	// --- Workflow commands ---
 
 	startCmd := &cobra.Command{
@@ -1139,7 +1194,7 @@ verdict drifts toward what the operator actually accepts.`,
 				Sprints: sprints, SprintsID: sprintsID,
 				SprintsAll: sprintsAll, SprintsClosed: sprintsClosed,
 				SprintsRunning: sprintsRunning,
-				Filters: filters, Sort: sortStr, Since: since, JSON: jsonOut,
+				Filters:        filters, Sort: sortStr, Since: since, JSON: jsonOut,
 				AgentAll: globalView || all,
 			})
 		},
