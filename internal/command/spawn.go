@@ -1,7 +1,6 @@
 package command
 
 import (
-	"crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -156,9 +155,12 @@ func SpawnChild(s *store.Store, cfg *config.Config, opts SpawnChildOpts) int {
 type SpawnOpts struct {
 	// Item is the agent-state item the worker will drive end-to-end.
 	Item string
-	// BudgetOverride, when > 0, replaces the coordinator.yaml per-item
-	// cap. Used by the live-verify path to spend a deliberately tiny
-	// amount on a throwaway item; never raises an uncapped worker.
+	// BudgetOverride, when > 0, LOWERS the effective cap below the
+	// coordinator.yaml per-item value (the live-verify "spend $1 on a
+	// throwaway item" path). It can only ever reduce the cap: a value
+	// above the coordinator cap is rejected, never silently honored —
+	// the autonomy boundary is retuned in coordinator.yaml, not
+	// per-invocation (contract §11).
 	BudgetOverride float64
 	// DryRun prints the fully-resolved launch plan (binary, cwd, args,
 	// budget, log path, prompt) and exits WITHOUT launching, registering,
@@ -206,18 +208,57 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 		return 1
 	}
 
-	// Budget cap — mandatory. An explicit override (used by live-verify
-	// on a throwaway item) wins, but only ever DOWNWARD past the
-	// coordinator cap is sensible; we still hard-require a positive cap
-	// so no path can produce an uncapped worker.
-	budget := opts.BudgetOverride
-	if budget <= 0 {
-		var err error
-		budget, err = spawn.ParsePerItemBudget(spawn.CoordinatorYAMLPath(cfg.Root()))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "spawn: %v\n", err)
+	// Depth/recursion guard (mirrors SpawnChild's T-326/T-312 cap): a
+	// worker must not spawn workers. A spawned worker inherits the
+	// spawning agent's AS_AGENT_ID, so without this a runaway worker
+	// could fan out budget-capped workers recursively. The caller is
+	// "already a spawned agent" when ParentID is set (env heritage) or
+	// its id matches the `<base>-<N>` suffix (path/local-config
+	// heritage that doesn't populate ParentID). Dispatch fan-out is the
+	// coordinator's job (parallelism_cap K4), never a worker's.
+	if ident.ParentID != "" || childSuffixRE.MatchString(ident.ID) {
+		fmt.Fprintf(os.Stderr,
+			"spawn: %s is itself a spawned agent — workers must not spawn "+
+				"workers (budget/blast-radius). Spawn from a root agent.\n",
+			ident.ID)
+		return 1
+	}
+
+	// A real launch claims the item via Start(); an empty session id
+	// makes that claim a no-op (ClaimedBy=="" gives zero mutual
+	// exclusion — concurrent spawns would all proceed on the same
+	// item). Mirror SpawnChild's guard. Dry-run claims nothing, so it
+	// is exempt (keeps the inspection path usable with no session).
+	if !opts.DryRun && cfg.SessionID() == "" {
+		fmt.Fprintln(os.Stderr,
+			"spawn: no AS_SESSION_ID set. A session id is required so the "+
+				"worker's item claim is unambiguous.")
+		return 1
+	}
+
+	// Budget cap — mandatory and bounded by the autonomy boundary. The
+	// coordinator.yaml per-item cap is ALWAYS read (a worker is never
+	// spawned if the boundary is unreadable — contract §11). An
+	// explicit --budget override may only lower the cap (the
+	// live-verify "spend $1 on a throwaway" path); raising it above the
+	// boundary is rejected — the boundary is retuned by a deliberate
+	// edit to coordinator.yaml + commit, never per-invocation (§11).
+	coordCap, err := spawn.ParsePerItemBudget(spawn.CoordinatorYAMLPath(cfg.Root()))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spawn: %v\n", err)
+		return 1
+	}
+	budget := coordCap
+	if opts.BudgetOverride > 0 {
+		if opts.BudgetOverride > coordCap {
+			fmt.Fprintf(os.Stderr,
+				"spawn: --budget %g exceeds the coordinator.yaml per-item cap "+
+					"$%g (the autonomy boundary). Lower --budget, or raise the "+
+					"cap in coordinator.yaml + commit (contract §11).\n",
+				opts.BudgetOverride, coordCap)
 			return 1
 		}
+		budget = opts.BudgetOverride
 	}
 
 	// Resolve the reasoning binary BEFORE any side effect so a missing
@@ -264,11 +305,11 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 		}
 	}
 
-	workerSID, err := newSessionUUID()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "spawn: cannot mint a session id: %v\n", err)
-		return 1
-	}
+	// Reuse the canonical session-id generator (same package, run.go):
+	// it emits a zero-padded RFC-4122 v4 string. A hand-rolled
+	// non-padded "%x" formatter drops leading-zero nibbles and can
+	// yield a short/invalid UUID that `claude --session-id` rejects.
+	workerSID := generateSessionID()
 
 	prompt := buildWorkerPrompt(item)
 	capStr := strconv.FormatFloat(budget, 'f', -1, 64)
@@ -325,13 +366,24 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 	c.Stdout = logFile
 	c.Stderr = logFile
 	c.Stdin = nil
-	// Anchor the child's ST_ROOT to the workspace `st spawn` itself
-	// resolved. Without this the worker inherits whatever ST_ROOT leaked
-	// into this shell — which, because every agent's theraprac-workspace
-	// is a symlink to one canonical clone, can name a DIFFERENT agent's
-	// path and (via filepath.Dir) point st's per-agent worktree base at
-	// the wrong agent. cwd and ST_ROOT must agree.
-	c.Env = withEnv(os.Environ(), "ST_ROOT", cfg.Root())
+	// Build the worker env:
+	//  - Anchor ST_ROOT to the workspace `st spawn` itself resolved.
+	//    Without this the worker inherits whatever ST_ROOT leaked into
+	//    this shell — which, because every agent's theraprac-workspace
+	//    is a symlink to one canonical clone, can name a DIFFERENT
+	//    agent's path and (via filepath.Dir) point st's per-agent
+	//    worktree base at the wrong agent. cwd and ST_ROOT must agree.
+	//  - Strip AWS_PROFILE / AWS_DEFAULT_PROFILE (I-586 precedent,
+	//    internal/evidence/exec.go): the operator's SSO profiles expire
+	//    within hours and the AWS SDK reads AWS_PROFILE then falls back
+	//    to AWS_DEFAULT_PROFILE. A long-running autonomous worker that
+	//    inherited a stale profile would have every AWS call (st test
+	//    evidence upload, deploy-check, …) silently fail on expired
+	//    creds — exactly the silent-failure demo-killer. The worker
+	//    mints its own agent IAM session via agent-aws-auth.sh.
+	env := withEnv(os.Environ(), "ST_ROOT", cfg.Root())
+	env = withoutEnv(env, "AWS_PROFILE", "AWS_DEFAULT_PROFILE")
+	c.Env = env
 	// Detach into a brand-new session so the worker outlives this
 	// short-lived `st spawn` invocation and has no controlling tty.
 	// Setsid alone is correct and sufficient: it makes the child a new
@@ -351,6 +403,13 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 	// wait, no zombie). The process keeps running independently.
 	_ = c.Process.Release()
 
+	// The cleanup func is intentionally discarded (`_`): unlike
+	// start.go/run.go where the registration's lifetime matches the
+	// long-running st process, the worker registration must OUTLIVE
+	// this short-lived `st spawn` invocation (it tracks the detached
+	// claude PID, not st's). agent.Sweep reclaims it when that PID
+	// dies — expected turnover, not a leak. (Same rationale as
+	// SpawnChild's documented non-defer.)
 	reg, _, regErr := agent.Register(cfg,
 		workerRegisterOptions(ident, workerSID, cfg.SessionID(), opts.Item, pid))
 	if regErr != nil {
@@ -369,13 +428,14 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 	// A spawned `claude -p` worker never writes this item's
 	// time_tracking.by_session itself — its own hooks attribute time to
 	// the SPAWNING agent's active item, not the item it runs ON. So
-	// seed the (sid, project_dir) line here, via the substrate's own
-	// upsert (keyed by sid), so `st transcript <item>` resolves the
-	// worker forever AND the worker's later token/turn deltas land on
-	// the same line rather than duplicating it.
+	// seed the (sid, project_dir) line here via seedBySession (a pure
+	// seed — NO turn/token credit, unlike upsertBySession), so
+	// `st transcript <item>` resolves the worker forever AND the
+	// worker's own later upsertBySession deltas accumulate onto the
+	// same sid-keyed line rather than duplicating it.
 	now := time.Now().Format(time.RFC3339)
 	if err := s.Mutate(opts.Item, func(it *model.Item) error {
-		upsertBySession(it, workerSID, worktree, now, realTokens{})
+		seedBySession(it, workerSID, worktree, now)
 		return nil
 	}); err != nil {
 		fmt.Fprintf(os.Stderr,
@@ -434,6 +494,24 @@ func withEnv(environ []string, key, val string) []string {
 	}
 	if !replaced {
 		out = append(out, prefix+val)
+	}
+	return out
+}
+
+// withoutEnv returns environ with every `key=...` entry for any of keys
+// removed. Used to strip the operator's expiring AWS SSO profile vars
+// from an autonomous worker's environment (I-586 precedent).
+func withoutEnv(environ []string, keys ...string) []string {
+	drop := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(environ))
+	for _, e := range environ {
+		if i := strings.IndexByte(e, '='); i >= 0 && drop[e[:i]] {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -532,15 +610,3 @@ func redactedArgs(args []string) string {
 	return strings.Join(out, " ")
 }
 
-// newSessionUUID mints a RFC-4122 v4 UUID for --session-id so the
-// worker's JSONL is resolvable at spawn time (deterministic
-// observability per §13 f3) — no dependency, crypto/rand only.
-func newSessionUUID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
-}

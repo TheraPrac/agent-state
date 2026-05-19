@@ -47,7 +47,16 @@ func ResolveClaudeBinary() (string, error) {
 		if err := checkExecutable(override); err != nil {
 			return "", fmt.Errorf("%s=%q is not usable: %w", ClaudeBinEnv, override, err)
 		}
-		return override, nil
+		// The contract is an ABSOLUTE path: the caller exec's this with
+		// cwd set to the item worktree, so a relative override would
+		// resolve against the worktree (wrong binary) or ENOENT. Anchor
+		// it to an absolute path against the current cwd now, before the
+		// cwd changes.
+		abs, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("%s=%q cannot be made absolute: %w", ClaudeBinEnv, override, err)
+		}
+		return abs, nil
 	}
 
 	dir := strings.TrimSpace(os.Getenv(versionsDirEnv))

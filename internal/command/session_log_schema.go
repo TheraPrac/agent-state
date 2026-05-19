@@ -351,6 +351,38 @@ func upsertBySession(item *model.Item, sid, projectDir, now string, t realTokens
 	}
 }
 
+// seedBySession creates the by_session line for `sid` if absent, setting
+// only the identity fields (sid, project_dir, started_at) — it does NOT
+// credit a turn or any tokens. Used by `st spawn` (T-360) to register
+// the worker→item link the instant the worker launches, so
+// `st transcript <item>` resolves it without waiting for the worker's
+// first session-log flush. Unlike upsertBySession (a "record a
+// completed turn" call that unconditionally Turns++), this is a pure
+// seed: the worker's own later upsertBySession calls then accumulate
+// the real turn/token deltas onto the same sid-keyed line. Idempotent —
+// re-seeding an existing line only fills missing identity fields and
+// never touches counters.
+func seedBySession(item *model.Item, sid, projectDir, now string) {
+	if sid == "" {
+		return
+	}
+	existing := readBySession(item, sid)
+	if existing.SID == "" {
+		existing.SID = sid
+		existing.StartedAt = now
+	}
+	if projectDir != "" {
+		existing.ProjectDir = projectDir
+	}
+
+	line := formatBySessionLine(existing)
+	if !updateListLine(item, "time_tracking", "by_session",
+		func(raw string) bool { return bySessionLineMatches(raw, sid) },
+		line) {
+		item.Doc.AppendToNestedList("time_tracking", "by_session", line)
+	}
+}
+
 // readListAggregate is a generic helper for the by_step / by_session walk:
 // scans time_tracking.<key> list entries, finds the one whose payload matches,
 // and runs the supplied parser on it. Returns the zero value if no match.

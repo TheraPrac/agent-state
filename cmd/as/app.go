@@ -839,8 +839,9 @@ in-flight, run 'st release' against the active items first.
 		},
 	}
 	spawnCmd.Flags().Float64("budget", 0,
-		"override the coordinator.yaml per-item USD cap (must be > 0; "+
-			"used to spend a tiny amount live-verifying on a throwaway item)")
+		"LOWER the per-item USD cap below the coordinator.yaml value "+
+			"(e.g. spend $1 live-verifying on a throwaway item); a value "+
+			"above the coordinator cap is rejected, not honored")
 	spawnCmd.Flags().Bool("dry-run", false,
 		"print the resolved launch plan and exit without launching")
 	spawnChildCmd := &cobra.Command{
