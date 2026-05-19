@@ -114,21 +114,59 @@ func SampleProgress(cfg *config.Config, item *model.Item) ProgressSnapshot {
 	return snap
 }
 
-// findWorkerReg returns the live worker registration for itemID, or nil.
-// Match is Role=worker AND Scope=item:<id> — exactly what command.Spawn
-// (workerRegisterOptions) writes.
+// findWorkerReg returns the CURRENT-attempt worker registration for
+// itemID, or nil. Match is Role=worker AND Scope=item:<id> — what
+// command.Spawn (workerRegisterOptions) writes.
+//
+// Respawn-with-context creates a NEW nextSuffix registration each attempt
+// (agent-b-1, agent-b-2, …) and the prior one is not always swept yet, so
+// MULTIPLE matches can coexist. ListRegistrations sorts ascending by
+// AgentID, so a naive first-match returns the OLDEST (dead prior attempt)
+// while the live current worker is misread as terminated → respawn thrash
+// + an orphaned running worker. Resolution must therefore pick the
+// CURRENT attempt: (1) any live-PID match wins; (2) otherwise the most
+// recently Started match (a just-spawned-not-yet-alive or just-died
+// current attempt beats an ancient one). Defensive against the stale-reg
+// class even though killWorker also deregisters dead attempts now.
 func findWorkerReg(cfg *config.Config, itemID string) *agent.Registration {
 	regs, err := agent.ListRegistrations(cfg)
 	if err != nil {
 		return nil
 	}
 	want := "item:" + itemID
+	var best *agent.Registration
+	var bestStarted time.Time
 	for _, r := range regs {
-		if r != nil && r.Role == "worker" && r.Scope == want {
-			return r
+		if r == nil || r.Role != "worker" || r.Scope != want {
+			continue
+		}
+		if agent.IsPIDLive(r.PID) {
+			// A live match is unambiguously the current worker; among
+			// (pathological) multiple-live, the newest Started wins.
+			if best == nil || !agent.IsPIDLive(best.PID) || startedAfter(r, best) {
+				best, bestStarted = r, parseStarted(r.Started)
+			}
+			continue
+		}
+		// No live match yet: track the most-recently-Started dead one so
+		// a just-spawned/just-died CURRENT attempt beats an ancient one.
+		if best == nil || (!agent.IsPIDLive(best.PID) && parseStarted(r.Started).After(bestStarted)) {
+			best, bestStarted = r, parseStarted(r.Started)
 		}
 	}
-	return nil
+	return best
+}
+
+func parseStarted(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func startedAfter(a, b *agent.Registration) bool {
+	return parseStarted(a.Started).After(parseStarted(b.Started))
 }
 
 // FailSignature reduces an errored tool_result body to a stable short
@@ -216,20 +254,24 @@ func DetectStuck(spawnedAt, now time.Time, baseline time.Duration, mult float64)
 // (PID gone) without completing the item. It decides — purely — whether
 // the loop may respawn-with-context, or must escalate.
 //
-//   - made progress this attempt        → reset streak, respawn (if under limit)
-//   - no progress, NEW failure signature → respawn (a different failure is
-//     not yet a loop; give the informed retry a chance), if under limit
-//   - no progress, SAME signature, and respawn budget exhausted
-//     (RespawnCount ≥ RespawnLimit) → B1: looping on an unsatisfiable gate
-//   - respawn budget exhausted on ANY no-progress terminal             → C2:
-//     unrecoverable (the "respawned-with-context limit× still failing" arm)
+// respawn_limit is a HARD CAP and is checked FIRST — it bounds TOTAL
+// respawn cycles regardless of progress. (A worker that makes a trivial
+// bit of progress then exits every attempt must NOT respawn unboundedly:
+// that would burn unbounded cumulative budget with no operator
+// escalation, violating the bounded-autonomy invariant — contract §9/§11.
+// D2 cannot backstop it because D2 only fires while the PID is alive.)
+//
+//   - RespawnCount ≥ RespawnLimit, SAME signature, no progress → B1:
+//     looping on an unsatisfiable gate.
+//   - RespawnCount ≥ RespawnLimit, anything else (incl. progressing-but-
+//     never-completing, or different-signature churn) → C2: exhausted the
+//     respawn budget, unrecoverable.
+//   - Under the limit: made progress → respawn permitted; no progress →
+//     respawn-with-context permitted (an informed retry, the lever).
 func ClassifyRespawn(st *WorkerState, terminalSig string, madeProgress bool, b *Boundary) StallVerdict {
-	if madeProgress {
-		return StallVerdict{Predicate: PredicateNone, Reason: "made item progress this attempt — respawn permitted"}
-	}
 	sameSig := terminalSig != "" && terminalSig == st.LastFailSig
 	if st.RespawnCount >= b.RespawnLimit {
-		if sameSig {
+		if sameSig && !madeProgress {
 			return StallVerdict{
 				Predicate: PredicateB1,
 				Reason: "worker burned " + itoa(st.RespawnCount) + " respawn cycle(s) (limit " +
@@ -240,8 +282,12 @@ func ClassifyRespawn(st *WorkerState, terminalSig string, madeProgress bool, b *
 		return StallVerdict{
 			Predicate: PredicateC2,
 			Reason: "worker respawned-with-context " + itoa(st.RespawnCount) + "× (limit " +
-				itoa(b.RespawnLimit) + ") and is still failing without progress — unrecoverable (contract §7-C2)",
+				itoa(b.RespawnLimit) + ") and still has not completed the item — respawn budget " +
+				"exhausted, unrecoverable (contract §7-C2)",
 		}
+	}
+	if madeProgress {
+		return StallVerdict{Predicate: PredicateNone, Reason: "made item progress this attempt and respawn budget remains — respawn permitted"}
 	}
 	return StallVerdict{Predicate: PredicateNone, Reason: "no progress but respawn budget remains — respawn-with-context permitted"}
 }

@@ -175,7 +175,6 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 			fmt.Fprintf(os.Stderr, "coordinate: %s vanished from the store before spawn\n", itemID)
 			return 1
 		}
-		startSnap := coordinator.SampleProgress(cfg, baseItem)
 		if rc := Spawn(s, cfg, SpawnOpts{
 			Item:           itemID,
 			BudgetOverride: opts.BudgetOverride,
@@ -184,7 +183,18 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 			fmt.Fprintf(os.Stderr, "coordinate: spawn %s failed (rc=%d) — nothing supervised\n", itemID, rc)
 			return rc
 		}
-		st.BeginAttempt(time.Now(), startSnap.ChangelogLen)
+		// Per-attempt progress baseline is captured AFTER Spawn returns:
+		// command.Spawn runs `st start` on the first attempt, which writes
+		// start/claim changelog entries. Sampling before Spawn would fold
+		// st-start's own bookkeeping into attempt-1 "progress" and weaken
+		// B1's "no monotonic progress" precision. Post-spawn the worker
+		// has only just launched, so this reflects WORKER activity only
+		// (code-review finding 3).
+		postItem := freshItem(cfg, itemID)
+		if postItem == nil {
+			postItem = baseItem // store momentarily unreadable; degrade, don't crash
+		}
+		st.BeginAttempt(time.Now(), coordinator.SampleProgress(cfg, postItem).ChangelogLen)
 		fmt.Printf("coordinate: spawned worker on %s (attempt %d, size-class %s, observe: st watch | st transcript %s)\n",
 			itemID, st.RespawnCount+1, st.SizeClass, itemID)
 
@@ -320,9 +330,14 @@ func reapDeadChildren() {
 	}
 }
 
-// killWorker terminates the live worker for itemID (the kill lever, §6 —
-// PID-based, the same liveness model the registry uses). Best-effort: a
-// dead/absent worker is the desired post-state either way.
+// killWorker terminates AND deregisters every worker registration for
+// itemID (the kill lever, §6 — PID-based liveness). Deregistration is the
+// load-bearing half: command.Spawn writes a new nextSuffix registration
+// per attempt and never removes the prior one, so without this each
+// respawn leaves a stale dead registration behind and findWorkerReg can
+// resolve the wrong (old) one. Clearing them here means the NEXT attempt's
+// registration is the only one for this scope. Best-effort: a
+// dead/absent/already-deregistered worker is the desired post-state.
 func killWorker(cfg *config.Config, itemID string) {
 	regs, err := agent.ListRegistrations(cfg)
 	if err != nil {
@@ -334,11 +349,13 @@ func killWorker(cfg *config.Config, itemID string) {
 			continue
 		}
 		if agent.IsPIDLive(r.PID) {
-			proc, err := os.FindProcess(r.PID)
-			if err == nil {
+			if proc, err := os.FindProcess(r.PID); err == nil {
 				_ = proc.Signal(syscall.SIGTERM)
 			}
 		}
+		// Remove the registration file so it cannot shadow the next
+		// attempt's worker in findWorkerReg (the stale-reg bug).
+		_ = agent.DeregisterSelf(cfg, r.AgentID)
 	}
 }
 

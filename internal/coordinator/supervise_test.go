@@ -111,6 +111,29 @@ func TestClassifyRespawn(t *testing.T) {
 	if v := ClassifyRespawn(st, "sigY", false, b); v.Predicate != PredicateC2 {
 		t.Errorf("diff-sig at limit must be C2, got %s", v.Predicate)
 	}
+
+	// HARD-CAP regression (code-review finding 2): respawn_limit bounds
+	// TOTAL respawns even when the attempt MADE PROGRESS. A
+	// progressing-but-never-completing worker at the limit must escalate
+	// C2, NOT respawn unboundedly (the old madeProgress short-circuit bug).
+	if v := ClassifyRespawn(&WorkerState{RespawnCount: 3, LastFailSig: "x"}, "x", true, b); v.Predicate != PredicateC2 {
+		t.Errorf("progress must NOT bypass the respawn_limit hard cap — want C2, got %s (%s)", v.Predicate, v.Reason)
+	}
+	// Under the limit, progress → respawn permitted (none).
+	if v := ClassifyRespawn(&WorkerState{RespawnCount: 1}, "x", true, b); v.Predicate != PredicateNone {
+		t.Errorf("progress under the limit must permit respawn, got %s", v.Predicate)
+	}
+}
+
+func TestFindWorkerRegTiebreakHelpers(t *testing.T) {
+	older := "2026-05-19T12:00:00-06:00"
+	newer := "2026-05-19T12:05:00-06:00"
+	if !parseStarted(newer).After(parseStarted(older)) {
+		t.Error("parseStarted must order RFC3339 timestamps")
+	}
+	if !parseStarted("garbage").IsZero() {
+		t.Error("unparseable Started must be zero time (loses the tiebreak, never panics)")
+	}
 }
 
 func TestSizeClassBaseline(t *testing.T) {
