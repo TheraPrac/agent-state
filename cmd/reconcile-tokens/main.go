@@ -42,6 +42,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/jfinlinson/agent-state/internal/transcript"
 )
 
 func main() {
@@ -138,30 +139,11 @@ func loadStore(rootDir string) (*store.Store, *config.Config, error) {
 	return s, cfg, nil
 }
 
-// projectSlug derives the ~/.claude/projects/<slug> directory name from a
-// project_dir. Mirrors the bash hooks' transformation:
-//
-//	echo "$PROJECT_DIR" | sed 's|^/|-|; s|/|-|g'
-func projectSlug(projectDir string) string {
-	if projectDir == "" {
-		return ""
-	}
-	s := projectDir
-	if strings.HasPrefix(s, "/") {
-		s = "-" + s[1:]
-	}
-	return strings.ReplaceAll(s, "/", "-")
-}
-
-// claudeProjectsDir returns ~/.claude/projects (overridable via env for
-// tests).
-func claudeProjectsDir() string {
-	if d := os.Getenv("CLAUDE_PROJECTS_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "projects")
-}
+// Session-path resolution (projectSlug / claudeProjectsDir) was promoted
+// to internal/transcript in T-353 Phase 1 so every JSONL consumer
+// resolves paths identically. This binary now delegates; behavior is
+// unchanged (transcript.ProjectSlug / transcript.ClaudeProjectsDir are
+// the same logic, covered by internal/transcript tests).
 
 // jsonlUsage walks one transcript file and sums Anthropic `usage` blocks
 // whose top-level timestamp falls within [start, end]. Sidechain assistants
@@ -235,11 +217,11 @@ func reconcileItem(item interface{ TimeTrackingLines() []string }, recorded real
 	if len(sessions) == 0 {
 		return realTokens{}, 0, 0, nil
 	}
-	projectsRoot := claudeProjectsDir()
+	projectsRoot := transcript.ClaudeProjectsDir()
 	var truth realTokens
 	jsonlsRead := 0
 	for _, s := range sessions {
-		slug := projectSlug(s.ProjectDir)
+		slug := transcript.ProjectSlug(s.ProjectDir)
 		if slug == "" {
 			continue
 		}

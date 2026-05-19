@@ -28,20 +28,9 @@ func TestRealTokens_FieldSetMatchesInternalSchema(t *testing.T) {
 	}
 }
 
-func TestProjectSlug(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"/Users/jfinlinson/Dev/foo", "-Users-jfinlinson-Dev-foo"},
-		{"/a", "-a"},
-		{"", ""},
-		{"relative/path", "relative-path"},
-	}
-	for _, c := range cases {
-		got := projectSlug(c.in)
-		if got != c.want {
-			t.Errorf("projectSlug(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
+// TestProjectSlug moved to internal/transcript (resolve_test.go) in
+// T-353 Phase 1 — the slug logic was promoted out of this binary, so its
+// canonical test lives with it.
 
 func TestParseBySessionLines(t *testing.T) {
 	lines := []string{
