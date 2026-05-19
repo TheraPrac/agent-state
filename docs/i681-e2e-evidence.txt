@@ -1,0 +1,25 @@
+ids: parent=T-001 A=T-002 B=T-003 C=T-004
+epic=briefly-choice-katydid sprint=informally-cunning-shrew
+
+=== 1. PUSH auto-inherit (T-002 should join informally-cunning-shrew) ===
+Pushed T-002 onto stack (depth 1)
+  ↳ inherited sprint informally-cunning-shrew (blocks T-001 in that active sprint)
+
+=== 2. START gate refuses off-sprint blocker (T-003) ===
+T-003 blocks T-001 in active sprint informally-cunning-shrew but is not in that sprint.
+  fix: st sprint add informally-cunning-shrew T-003   (or: st start T-003 --add-to-sprint)
+  exit=1
+
+=== 3. START --add-to-sprint resolves (T-003) ===
+Added 1 item(s) to sprint informally-cunning-shrew (queued 1 as pending)
+added T-003 to active sprint informally-cunning-shrew (blocks T-001)
+Started T-003 — Child blocker B
+  exit=0
+
+=== 4. CHECK surfaces drift for sprintless blocker (T-004) ===
+  [33m⚠[0m T-004: sprint — blocks T-001 in active sprint informally-cunning-shrew but is not in that sprint — run `st sprint add informally-cunning-shrew T-004`
+
+=== 5. RECONCILE informational drift phase ===
+Phase 8: Sprint-inheritance drift (informational)
+  warning: T-004: sprint — blocks T-001 in active sprint informally-cunning-shrew but is not in that sprint — run `st sprint add informally-cunning-shrew T-004`
+Phase 9: Regenerate index

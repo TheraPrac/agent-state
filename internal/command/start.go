@@ -97,8 +97,14 @@ type StartOpts struct {
 	// to the item's changelog (best-effort — a logging miss does not
 	// fail the start). The audit is written post-Mutate so a force
 	// that fails a later guard (assignment, claim race) doesn't leave
-	// a misleading bypass record.
+	// a misleading bypass record. Force also bypasses the I-681
+	// sprint-inheritance gate (audited as `start_force_sprint`).
 	Force bool
+	// AddToSprint resolves the I-681 sprint-inheritance gate in one
+	// step: when the item blocks an active-sprint member and has no
+	// sprint of its own, add it to that sprint (via SprintAdd) and
+	// continue, instead of refusing the start.
+	AddToSprint bool
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
@@ -137,6 +143,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// a later guard (assignment, claim race) doesn't leave a misleading
 	// bypass record.
 	forceBypassedPending := false
+	forceBypassedSprint := false
 	autoApprovedByClassifier := false
 	if IsQueuePending(cfg, id) {
 		switch {
@@ -174,6 +181,51 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	if g.IsBlocked(id) {
 		unresolved := g.UnresolvedDeps(id)
 		fmt.Fprintf(os.Stderr, "%s is blocked by: %v\n", id, unresolved)
+		return 1
+	}
+
+	// I-681: mid-sprint follow-up gate. If this item blocks a member of
+	// an active sprint but has no sprint of its own, we'd be working a
+	// sprint's blocker off the sprint — refuse. --add-to-sprint resolves
+	// it in one step; --force bypasses (audited like the I-490 bypass).
+	// Ambiguous links (>1 active sprint) always reject — never auto-pick.
+	//
+	// Deliberately placed AFTER the read-only dependency gate: a blocked
+	// item should surface its actionable "blocked by" message first, and
+	// the only state-mutating branch here (--add-to-sprint → SprintAdd)
+	// must not run for an item that can't start anyway. All earlier gates
+	// (status, I-490, assignment, deps) are read-only, so by this point
+	// the start is prerequisite-clean; if --add-to-sprint adds the item
+	// and a later claim race loses, the sprint membership is still
+	// correct (it belongs there regardless of who works it — that is
+	// precisely the I-681 invariant), so the write is not misleading.
+	if t, ambiguous := resolveSprintInheritance(s, cfg, id); t != nil {
+		switch {
+		case opts.AddToSprint:
+			if rc := SprintAdd(s, cfg, t.SprintID, []string{id}); rc != 0 {
+				return rc
+			}
+			fmt.Printf("added %s to active sprint %s (blocks %s)\n", id, t.SprintID, t.Via)
+			if it2, ok := s.Get(id); ok {
+				item = it2 // refresh: SprintAdd mutated sprint/epic
+			}
+		case opts.Force:
+			forceBypassedSprint = true
+			fmt.Fprintf(os.Stderr,
+				"warning: --force bypassed I-681 sprint-inheritance gate for %s (blocks %s in active sprint %s)\n",
+				id, t.Via, t.SprintID)
+		default:
+			fmt.Fprintf(os.Stderr,
+				"%s blocks %s in active sprint %s but is not in that sprint.\n"+
+					"  fix: st sprint add %s %s   (or: st start %s --add-to-sprint)\n",
+				id, t.Via, t.SprintID, t.SprintID, id, id)
+			return 1
+		}
+	} else if len(ambiguous) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"%s blocks members of multiple active sprints %v but is in none.\n"+
+				"  fix: st sprint add <sprint> %s   (pick the correct sprint)\n",
+			id, ambiguous, id)
 		return 1
 	}
 
@@ -364,6 +416,15 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 			Reason: "classifier verdict=green; ST_BINARY_AUTONOMY=1 bypassed I-490 queue approval gate",
 		})
 	}
+	// I-681: record a --force bypass of the sprint-inheritance gate, only
+	// after the start succeeded. Distinct op so operators can tell a
+	// deliberate off-sprint start from an I-490 queue-approval bypass.
+	if forceBypassedSprint {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "start_force_sprint",
+			Reason: "bypassed I-681 mid-sprint follow-up sprint-inheritance gate via --force",
+		})
+	}
 
 	fmt.Printf("Started %s — %s\n", id, item.Title)
 	if agentID != "" {
@@ -386,8 +447,13 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 		if !alreadyOnStack {
 			// Auto-push from `st start` is internal; the I-490 gate already
-			// fired earlier in Start, so it's safe to bypass here.
-			if rc := StackPush(s, cfg, id, StackPushOpts{FromPending: true}); rc != 0 {
+			// fired earlier in Start, so it's safe to bypass here. When the
+			// I-681 sprint gate was --force-bypassed, suppress the push-side
+			// auto-inherit too so the bypass isn't silently undone.
+			if rc := StackPush(s, cfg, id, StackPushOpts{
+				FromPending:       true,
+				SkipSprintInherit: forceBypassedSprint,
+			}); rc != 0 {
 				fmt.Fprintf(os.Stderr, "warning: auto-push failed (rc=%d); run `st push %s` to attribute metrics\n", rc, id)
 			}
 		}

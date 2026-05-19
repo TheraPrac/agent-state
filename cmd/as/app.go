@@ -718,8 +718,10 @@ in-flight, run 'st release' against the active items first.
 			repos, _ := cmd.Flags().GetStringSlice("repos")
 			noPush, _ := cmd.Flags().GetBool("no-push")
 			force, _ := cmd.Flags().GetBool("force")
+			addToSprint, _ := cmd.Flags().GetBool("add-to-sprint")
 			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{
 				Slug: slug, Repos: repos, NoPush: noPush, Force: force,
+				AddToSprint: addToSprint,
 			})
 		},
 	}
@@ -727,6 +729,7 @@ in-flight, run 'st release' against the active items first.
 	startCmd.Flags().StringSlice("repos", nil, "repos to create worktrees for")
 	startCmd.Flags().Bool("no-push", false, "skip auto-push onto the work stack")
 	startCmd.Flags().Bool("force", false, "bypass the I-490 queue-approval gate (logs to changelog)")
+	startCmd.Flags().Bool("add-to-sprint", false, "resolve the I-681 sprint-inheritance gate by adding this item to the active sprint of an in-progress item it blocks")
 	root.AddCommand(startCmd)
 
 	closeCmd := &cobra.Command{

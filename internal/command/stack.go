@@ -38,6 +38,12 @@ type StackPushOpts struct {
 	// the queue yet. Default behavior (FromPending=false) is to refuse
 	// pending items per the I-490 gate.
 	FromPending bool
+	// SkipSprintInherit suppresses the I-681 auto-inherit. Set by
+	// `st start`'s internal tail-push when the sprint-inheritance gate
+	// was deliberately --force-bypassed, so the operator's explicit
+	// "start this off-sprint" decision is honored end-to-end instead of
+	// being silently undone by the auto-push.
+	SkipSprintInherit bool
 }
 
 func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts) int {
@@ -102,7 +108,44 @@ func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts
 	if opts.Reason != "" {
 		fmt.Printf("  reason: %s\n", opts.Reason)
 	}
-	autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth))
+
+	// I-681: a blocker pushed while working a sprint item must join that
+	// in-progress sprint. The push/--reason "blocks <parent>" pattern is
+	// the common path, so auto-inherit here with zero extra agent steps.
+	// Reuse SprintAdd so registry Sprint.Items and the item's
+	// sprint/epic fields stay single-sourced. Ambiguous links (>1 active
+	// sprint) are never auto-picked — surface the choice instead.
+	// SkipSprintInherit: `st start` force-bypassed the I-681 gate; honor
+	// that explicit off-sprint decision instead of silently re-adding via
+	// the internal tail-push.
+	inherited := false
+	if !opts.SkipSprintInherit {
+		if t, ambiguous := resolveSprintInheritance(s, cfg, id); t != nil {
+			if rc := SprintAdd(s, cfg, t.SprintID, []string{id}); rc == 0 {
+				inherited = true
+				fmt.Printf("  ↳ inherited sprint %s (blocks %s in that active sprint)\n", t.SprintID, t.Via)
+			} else {
+				// Best-effort, but never silent: the stack write below
+				// still commits; surface the failed inherit so the drift
+				// is visible now rather than only at the next `st check`.
+				fmt.Fprintf(os.Stderr,
+					"  warning: sprint auto-inherit failed (rc=%d) — run `st sprint add %s %s`\n",
+					rc, t.SprintID, id)
+			}
+		} else if len(ambiguous) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"  warning: %s blocks members of multiple active sprints %v — not auto-added; run `st sprint add <sprint> %s`\n",
+				id, ambiguous, id)
+		}
+	}
+
+	// SprintAdd already ran a tree-wide autoSync that picked up the
+	// already-saved stack file, so a second push-labeled commit would be
+	// redundant. Only sync here when inherit did not (no inherit, skipped,
+	// ambiguous, or SprintAdd failed).
+	if !inherited {
+		autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth))
+	}
 	return 0
 }
 

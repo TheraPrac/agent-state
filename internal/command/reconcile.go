@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/jfinlinson/agent-state/internal/sprintinherit"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -119,8 +122,16 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	n = reconcileStaleActive(s, cfg, opts)
 	updates += n
 
-	// Phase 8: Regenerate index
-	fmt.Println("Phase 8: Regenerate index")
+	// Phase 8: Sprint-inheritance drift (I-681) — informational only, no
+	// mutation. Surfaces follow-ups worked off their in-progress sprint
+	// (the I-676 → T-203 case) so whoever owns the item can `st sprint
+	// add` it. Reconcile must not auto-move items here: membership change
+	// edits the item, which may belong to a peer agent.
+	fmt.Println("Phase 8: Sprint-inheritance drift (informational)")
+	reconcileSprintDrift(s, cfg, opts)
+
+	// Phase 9: Regenerate index
+	fmt.Println("Phase 9: Regenerate index")
 	if !opts.DryRun {
 		Index(s, cfg)
 	}
@@ -133,6 +144,27 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	}
 
 	return 0
+}
+
+// reconcileSprintDrift prints (does not fix) every I-681 sprint-inheritance
+// drift: a non-terminal item that blocks an active-sprint member but has no
+// sprint of its own. Read-only by design — fixing it edits the item, which
+// may be owned by another agent; the owner resolves it via `st sprint add`
+// (or `st start --add-to-sprint`).
+// opts is accepted for signature parity with every other reconcile phase
+// helper (so a future mutating variant needs no signature change); this
+// phase is read-only so DryRun has no effect — drift output is identical
+// in dry-run and live, which is correct for a purely informational phase.
+func reconcileSprintDrift(s *store.Store, cfg *config.Config, opts ReconcileOpts) {
+	_ = opts
+	reg, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		return
+	}
+	g := deps.Build(s.All(), cfg)
+	for _, e := range sprintinherit.Drift(s.All(), g, reg, cfg) {
+		fmt.Printf("  warning: %s\n", e)
+	}
 }
 
 // reconcileBranchPush checks if items at coding/committed stage have branches

@@ -10,6 +10,8 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
+	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/jfinlinson/agent-state/internal/sprintinherit"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
@@ -103,6 +105,28 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		issues++
 		if !quiet {
 			fmt.Printf("  \033[31m✗\033[0m dependency cycle: %v\n", cycle)
+		}
+	}
+
+	// I-681: sprint-inheritance drift. A non-terminal item that blocks an
+	// active-sprint member but carries no sprint is being worked off the
+	// in-progress sprint it belongs to. This is surfaced as a non-fatal
+	// WARNING (not an `issues++` failure): the offending item is often
+	// owned by another agent (the I-676 → T-203 case), and a hard fail
+	// here would block every agent's session-start `st check` on a peer's
+	// drift the current agent must not touch. The real enforcement is the
+	// per-owner gate in `st start` plus auto-inherit in `st push`.
+	//
+	// Skipped entirely in quiet mode: that is the CI/session-hook
+	// read-only fast-path, the warning has no output there, and the
+	// registry.Load + Drift walk is non-essential I/O on that path.
+	if !quiet {
+		if reg, rerr := registry.Load(cfg.EpicsPath()); rerr == nil {
+			for _, e := range sprintinherit.Drift(s.All(), g, reg, cfg) {
+				fmt.Printf("  \033[33m⚠\033[0m %s\n", e)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "  warning: sprint-drift check skipped — registry unreadable: %v\n", rerr)
 		}
 	}
 
