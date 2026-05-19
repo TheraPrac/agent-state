@@ -40,8 +40,12 @@ var facetOrder = []string{
 }
 
 type facetResult struct {
-	Text string // human one-screen rendering
-	JSON any    // stable machine shape (the T-371/TUI contract)
+	Text    string // human one-screen rendering
+	JSON    any    // stable machine shape (the T-371/TUI contract)
+	Summary string // self-documenting one-liner for the composite header
+	//                (T-371 §5: the header IS the at-a-glance). Computed
+	//                in the SAME pass as Text/JSON — no duplicate accessor
+	//                calls, no re-derivation in the renderer (§7).
 }
 
 // facetFunc gathers ONE facet. It never returns an error / never panics:
@@ -155,13 +159,17 @@ func facetItem(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
 	txt := fmt.Sprintf("%s\nstatus: %s  priority: %s  sprint: %s\ntags: %s  depends_on: %s",
 		head, it.Status, p, orDash(it.Sprint),
 		joinOrDash(it.Tags), joinOrDash(it.DependsOn))
-	return facetResult{Text: txt, JSON: c}
+	return facetResult{Text: txt, JSON: c, Summary: fmt.Sprintf("%s · %s", it.Status, p)}
 }
 
 func facetPlan(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	p, _ := plan.Load(cfg.PlansDir(), it.ID)
 	if p == nil {
-		return facetResult{Text: emptyText("plan"), JSON: nil}
+		return facetResult{Text: emptyText("plan"), JSON: nil, Summary: "none"}
+	}
+	approved := "unapproved"
+	if p.Approved {
+		approved = "approved"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "approved: %t  scope: %s\n", p.Approved, joinOrDash(p.ScopeRepos))
@@ -177,30 +185,44 @@ func facetPlan(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 			fmt.Fprintf(&b, "  - %s\n", a)
 		}
 	}
-	return facetResult{Text: strings.TrimRight(b.String(), "\n"), JSON: p}
+	return facetResult{
+		Text: strings.TrimRight(b.String(), "\n"), JSON: p,
+		Summary: fmt.Sprintf("%s · %s", approved, plural(len(p.Steps), "step", "steps")),
+	}
 }
 
 func facetAC(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
 	if len(it.AcceptanceCriteria) == 0 {
-		return facetResult{Text: emptyText("acceptance criteria"), JSON: []string{}}
+		return facetResult{Text: emptyText("acceptance criteria"), JSON: []string{}, Summary: "none"}
 	}
 	var b strings.Builder
 	for i, a := range it.AcceptanceCriteria {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, a)
 	}
-	return facetResult{Text: strings.TrimRight(b.String(), "\n"), JSON: it.AcceptanceCriteria}
+	return facetResult{
+		Text: strings.TrimRight(b.String(), "\n"), JSON: it.AcceptanceCriteria,
+		Summary: plural(len(it.AcceptanceCriteria), "criterion", "criteria"),
+	}
 }
 
 func facetHistory(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	entries, _ := changelog.Read(cfg, it.ID)
 	if len(entries) == 0 {
-		return facetResult{Text: emptyText("changelog history"), JSON: []changelog.Entry{}}
+		return facetResult{Text: emptyText("changelog history"), JSON: []changelog.Entry{}, Summary: "none"}
 	}
 	var b strings.Builder
 	for _, e := range entries {
 		fmt.Fprintln(&b, e.Format())
 	}
-	return facetResult{Text: strings.TrimRight(b.String(), "\n"), JSON: entries}
+	last := entries[len(entries)-1]
+	lastTS := last.Timestamp
+	if len(lastTS) > 19 {
+		lastTS = lastTS[:19]
+	}
+	return facetResult{
+		Text: strings.TrimRight(b.String(), "\n"), JSON: entries,
+		Summary: fmt.Sprintf("%s · last: %s %s", plural(len(entries), "entry", "entries"), last.Op, lastTS),
+	}
 }
 
 func facetTesting(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
@@ -216,35 +238,44 @@ func facetPR(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
 		out["pr"] = pr
 	}
 	if len(out) == 0 {
-		return facetResult{Text: emptyText("PR manifest"), JSON: map[string]any{}}
+		return facetResult{Text: emptyText("PR manifest"), JSON: map[string]any{}, Summary: "none"}
 	}
-	return facetResult{Text: kvText(out), JSON: out}
+	prSum := "manifest"
+	if pr, ok := out["pr"]; ok {
+		prSum = nonEmptyOr(pr, "manifest") // empty/blank pr ⇒ keep "manifest"
+	}
+	return facetResult{Text: kvText(out), JSON: out, Summary: prSum}
 }
 
 func facetUAT(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	rep, _ := plan.LoadReport(cfg.PlansDir(), it.ID)
 	if strings.TrimSpace(rep) == "" {
-		return facetResult{Text: emptyText("stored UAT / plan-review report"), JSON: map[string]any{}}
+		return facetResult{Text: emptyText("stored UAT / plan-review report"), JSON: map[string]any{}, Summary: "none"}
 	}
-	return facetResult{Text: rep, JSON: map[string]any{"report": rep}}
+	return facetResult{
+		Text: rep, JSON: map[string]any{"report": rep},
+		Summary: plural(strings.Count(rep, "\n")+1, "line", "lines"),
+	}
 }
 
 func facetCommits(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
 	c, ok := it.WorkTracking["commits"]
 	if !ok || c == nil {
-		return facetResult{Text: emptyText("recorded commits"), JSON: []any{}}
+		return facetResult{Text: emptyText("recorded commits"), JSON: []any{}, Summary: "none"}
 	}
 	// Glance text: one entry per line when it's a list (the common
 	// shape); structured form is --format json (consistent with kvText).
 	txt := fmt.Sprintf("%v", c)
+	sum := "recorded"
 	if list, isList := c.([]interface{}); isList {
 		var b strings.Builder
 		for _, e := range list {
 			fmt.Fprintf(&b, "%v\n", e)
 		}
 		txt = strings.TrimRight(b.String(), "\n")
+		sum = plural(len(list), "commit", "commits")
 	}
-	return facetResult{Text: txt, JSON: c}
+	return facetResult{Text: txt, JSON: c, Summary: sum}
 }
 
 func facetDeps(s *store.Store, cfg *config.Config, it *model.Item) facetResult {
@@ -253,9 +284,15 @@ func facetDeps(s *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	// item legitimately shows just its own node — that IS the dep view).
 	// The empty branch only guards an unknown id (Tree returns "").
 	if strings.TrimSpace(tree) == "" {
-		return facetResult{Text: emptyText("dependencies"), JSON: map[string]any{"tree": ""}}
+		return facetResult{Text: emptyText("dependencies"), JSON: map[string]any{"tree": ""}, Summary: "none"}
 	}
-	return facetResult{Text: strings.TrimRight(tree, "\n"), JSON: map[string]any{"tree": tree}}
+	trimmed := strings.TrimRight(tree, "\n")
+	// Root line is the item itself; remaining lines are the dep edges.
+	edges := strings.Count(trimmed, "\n")
+	return facetResult{
+		Text: trimmed, JSON: map[string]any{"tree": tree},
+		Summary: plural(edges, "edge", "edges"),
+	}
 }
 
 // facetBus: v1 surfaces the CURRENT agent's mailbox messages that
@@ -266,8 +303,9 @@ func facetBus(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 	rcpt := cfg.Identity().ID
 	if rcpt == "" {
 		return facetResult{
-			Text: "(no agent identity resolved; cross-agent bus is the conversation-channel downstream)",
-			JSON: []mail.Message{},
+			Text:    "(no agent identity resolved; cross-agent bus is the conversation-channel downstream)",
+			JSON:    []mail.Message{},
+			Summary: "no identity",
 		}
 	}
 	all, _ := mail.List(cfg, rcpt)
@@ -278,13 +316,16 @@ func facetBus(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 		}
 	}
 	if len(mine) == 0 {
-		return facetResult{Text: emptyText("bus messages for this item (this mailbox)"), JSON: []mail.Message{}}
+		return facetResult{Text: emptyText("bus messages for this item (this mailbox)"), JSON: []mail.Message{}, Summary: "none"}
 	}
 	var b strings.Builder
 	for _, m := range mine {
 		fmt.Fprintf(&b, "%s  %s→%s [%s] %s\n", m.At, m.From, m.To, m.Kind, firstLine(m.Body))
 	}
-	return facetResult{Text: strings.TrimRight(b.String(), "\n"), JSON: mine}
+	return facetResult{
+		Text: strings.TrimRight(b.String(), "\n"), JSON: mine,
+		Summary: plural(len(mine), "message", "messages"),
+	}
 }
 
 // facetWorktree: the RECORDED substrate truth (work_tracking.branch +
@@ -299,9 +340,13 @@ func facetWorktree(_ *store.Store, _ *config.Config, it *model.Item) facetResult
 		}
 	}
 	if len(wt) == 0 {
-		return facetResult{Text: emptyText("recorded worktree state"), JSON: map[string]any{}}
+		return facetResult{Text: emptyText("recorded worktree state"), JSON: map[string]any{}, Summary: "none"}
 	}
-	return facetResult{Text: kvText(wt), JSON: wt}
+	wtSum := plural(len(wt), "field", "fields")
+	if br, ok := wt["branch"]; ok {
+		wtSum = nonEmptyOr(br, wtSum) // blank branch ⇒ keep the field count
+	}
+	return facetResult{Text: kvText(wt), JSON: wt, Summary: wtSum}
 }
 
 // facetAccounting: v1 = the structured time_tracking map as-is. Deep
@@ -316,9 +361,31 @@ func facetAccounting(_ *store.Store, _ *config.Config, it *model.Item) facetResu
 
 func mapFacet(m map[string]interface{}, label string) facetResult {
 	if len(m) == 0 {
-		return facetResult{Text: emptyText(label), JSON: map[string]any{}}
+		return facetResult{Text: emptyText(label), JSON: map[string]any{}, Summary: "none"}
 	}
-	return facetResult{Text: kvText(m), JSON: m}
+	return facetResult{Text: kvText(m), JSON: m, Summary: plural(len(m), "key", "keys")}
+}
+
+// nonEmptyOr renders v via %v and trims it; if that is blank (a parsed
+// field can be an empty scalar — e.g. work_tracking.pr flattened to ""),
+// it falls back so a facet NEVER emits an empty self-documenting summary
+// (found in T-371 live-verify: an empty value produced a meaningless
+// "(—)" header).
+func nonEmptyOr(v any, fallback string) string {
+	s := strings.TrimSpace(fmt.Sprintf("%v", v))
+	if s != "" && s != "<nil>" { // a nil scalar must not become a "(<nil>)" header
+		return s
+	}
+	return fallback
+}
+
+// plural renders "1 <sing>" / "N <plur>" — explicit forms so irregular
+// nouns (entry/entries, criterion/criteria) read correctly.
+func plural(n int, sing, plur string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", sing)
+	}
+	return fmt.Sprintf("%d %s", n, plur)
 }
 
 // kvText is the human GLANCE for a map facet: nested values render

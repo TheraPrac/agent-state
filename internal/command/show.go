@@ -15,6 +15,12 @@ type ShowOpts struct {
 	Brief bool
 	Field string
 	Raw   bool
+	// Full renders the composite item view (T-371, TUI build-order
+	// layer 2): every T-370 facet as a section with a self-documenting
+	// header. FullAll expands the machine sections too (operator
+	// override of the default human-expanded/machine-collapsed policy).
+	Full    bool
+	FullAll bool
 }
 
 func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
@@ -22,6 +28,10 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
 		return 1
+	}
+
+	if opts.Full {
+		return showFull(s, cfg, item, opts.FullAll)
 	}
 
 	if opts.Raw {

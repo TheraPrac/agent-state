@@ -106,6 +106,28 @@ func TestArtifact_JSONFacetValid(t *testing.T) {
 	}
 }
 
+// Regression (T-371 live-verify): a parsed field can be an empty scalar
+// (work_tracking.pr flattened to ""); the summary helper must never yield
+// blank, or the composite header reads a meaningless "(—)".
+func TestNonEmptyOr(t *testing.T) {
+	cases := []struct {
+		v    any
+		fb   string
+		want string
+	}{
+		{"as#130", "manifest", "as#130"},
+		{"", "manifest", "manifest"},
+		{"  ", "manifest", "manifest"},
+		{nil, "fallback", "fallback"}, // %v of nil = "<nil>" → treated blank → fallback
+		{[]any{"as#1", "as#1"}, "manifest", "[as#1 as#1]"},
+	}
+	for _, c := range cases {
+		if got := nonEmptyOr(c.v, c.fb); got != c.want {
+			t.Errorf("nonEmptyOr(%#v,%q) = %q, want %q", c.v, c.fb, got, c.want)
+		}
+	}
+}
+
 func TestArtifact_ErrorPaths(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	if rc := Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "nonsense"}); rc != 2 {
