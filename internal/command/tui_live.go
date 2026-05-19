@@ -87,6 +87,7 @@ func debounceLoop(w *fsnotify.Watcher, out chan<- refreshMsg, done <-chan struct
 	if !timer.Stop() {
 		<-timer.C
 	}
+	defer timer.Stop() // deterministic cleanup on every exit path (F1)
 	armed := false
 	for {
 		select {
