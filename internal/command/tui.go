@@ -90,7 +90,11 @@ func (m tuiModel) renderAgentStrip() string {
 	regs := append([]*agent.Registration(nil), m.agents...)
 	sort.Slice(regs, func(i, j int) bool { return regs[i].AgentID < regs[j].AgentID })
 
-	// Build a session→claimed-item index once.
+	// Build a session→claimed-item index. O(N items): fine at static v1
+	// (View runs once per `st tui` invocation), but T-373's fsnotify loop
+	// will call View on every change — at that point this should move
+	// into the tuiModel as a cached index invalidated on store events,
+	// not recomputed per render.
 	claimed := map[string]*model.Item{}
 	for _, it := range m.s.All() {
 		if it.ClaimedBy != "" {
