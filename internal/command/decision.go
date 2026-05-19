@@ -7,6 +7,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // recordStructuredDecision appends a native-structured decision entry
@@ -47,6 +48,66 @@ func approachGist(approach string) string {
 		return ln
 	}
 	return ""
+}
+
+// CaptureDecisionOpts controls `st capture-decision` (I-679 Phase B). It is
+// the thin, hook-invoked entry point for native-structured decision capture
+// from a PostToolUse hook (AskUserQuestion / ExitPlanMode). It deliberately
+// holds no write logic of its own — it resolves the target item and delegates
+// to recordStructuredDecision so the changelog write stays in the single
+// tested place (one Source=structured / Kind=decision codepath, one
+// never-silent failure report).
+type CaptureDecisionOpts struct {
+	ID      string // explicit item; empty ⇒ stack top, then this agent's first active item
+	Trigger string // originating channel: ask_user_question | exit_plan_mode
+	Reason  string // verbatim decision text; empty ⇒ nothing to capture
+}
+
+// CaptureDecision records a native-structured decision triggered from a
+// PostToolUse hook. Item resolution mirrors `st resume`'s precedence exactly
+// (resolveResumeTarget: stack top, then the CURRENT AGENT's first active
+// item — agent-scoped, never a peer's) so the captured decision lands on
+// whatever item the session is actually working — the same item `st resume`
+// will replay it from next session. Returns a process exit
+// code: 0 = captured or deliberately nothing to capture; 1 = could not be
+// captured (no target item / unknown item). The *hook* always exits 0
+// regardless — a PostToolUse failure must never break the tool call that
+// already ran — but it inspects this code to decide whether to emit its loud
+// "decision NOT captured" stderr line. Silence on this path is the failure
+// mode the whole feature exists to prevent (operator silent-failure
+// principle), so a non-capture is always reported here too.
+func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpts) int {
+	reason := strings.TrimSpace(opts.Reason)
+	if reason == "" {
+		// Not an error: an AskUserQuestion whose answer could not be
+		// parsed, or an empty plan, is genuinely nothing to record. A
+		// decision with no rationale is not a non-re-derivable fact
+		// (matches recordStructuredDecision's own guard). Exit clean so
+		// the hook stays quiet rather than crying wolf on every no-op.
+		return 0
+	}
+	trigger := strings.TrimSpace(opts.Trigger)
+	if trigger == "" {
+		trigger = "hook_decision"
+	}
+
+	id := strings.TrimSpace(opts.ID)
+	if id == "" {
+		id = resolveResumeTarget(s, cfg)
+	}
+	if id == "" {
+		fmt.Fprintln(os.Stderr,
+			"st capture-decision: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.")
+		return 1
+	}
+	if _, ok := s.Get(id); !ok {
+		fmt.Fprintf(os.Stderr,
+			"st capture-decision: unknown item %q — decision NOT recorded.\n", id)
+		return 1
+	}
+
+	recordStructuredDecision(cfg, id, trigger, reason)
+	return 0
 }
 
 func recordStructuredDecision(cfg *config.Config, id, trigger, reason string) {
