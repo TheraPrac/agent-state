@@ -127,8 +127,7 @@ func TestLiveRenderThisSession(t *testing.T) {
 	}
 
 	var tagged []TaggedRow
-	useIDs := map[string]bool{}
-	resultIDs := map[string]bool{}
+	useIDs := map[string]bool{} // tool_use ids present (for fold accounting)
 	for i, p := range ResolveSessionJSONL(projectDir, newest) {
 		rows, err := ReadFile(p)
 		if err != nil {
@@ -139,24 +138,42 @@ func TestLiveRenderThisSession(t *testing.T) {
 			tag = "a-" + strconv.Itoa(i+1)
 		}
 		for _, r := range rows {
-			switch {
-			case r.Kind == KindToolUse && r.ToolUse != nil && r.ToolUse.ID != "":
+			if r.Kind == KindToolUse && r.ToolUse != nil && r.ToolUse.ID != "" {
 				useIDs[r.ToolUse.ID] = true
-			case r.Kind == KindToolResult && r.ToolResult != nil:
-				resultIDs[r.ToolResult.ToolUseID] = true
 			}
 			tagged = append(tagged, TaggedRow{Tag: tag, Row: r})
 		}
 	}
 	out := Render(tagged, RenderOpts{})
 
-	// Precise no-drop floor: exactly one tool_result is folded per id
-	// that has BOTH a tool_use and ≥1 result. Orphan/dup results are
-	// rendered, so they must NOT be subtracted.
-	folded := 0
-	for id := range useIDs {
-		if resultIDs[id] {
-			folded++
+	// EXACT no-drop oracle (independently derived from the Phase 1 rows
+	// + the documented contract, not from Render's output — so a
+	// dropped prose row is caught, not hidden by multi-line expansion).
+	// Per-row line count: text/thinking → splitProse segments (default
+	// opts show thinking); tool_use/raw → 1; the FIRST result per
+	// matched id → 0 (folded), every other result (orphan/dup) → 1.
+	foldedSeen := map[string]bool{}
+	expected, folded := 0, 0
+	for _, tr := range tagged {
+		r := tr.Row
+		switch r.Kind {
+		case KindText, KindThinking:
+			expected += len(splitProse(r.Text))
+		case KindToolUse:
+			expected++
+		case KindToolResult:
+			id := ""
+			if r.ToolResult != nil {
+				id = r.ToolResult.ToolUseID
+			}
+			if useIDs[id] && !foldedSeen[id] {
+				foldedSeen[id] = true
+				folded++ // folded → 0 lines
+			} else {
+				expected++ // orphan or dup → rendered
+			}
+		default: // KindRaw
+			expected++
 		}
 	}
 
@@ -172,15 +189,15 @@ func TestLiveRenderThisSession(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("live render: %d input rows → %d output lines (%d folded)",
-		len(tagged), len(out), folded)
+	t.Logf("live render: %d input rows → %d output lines (%d folded, expected %d)",
+		len(tagged), len(out), folded, expected)
 	if !bashLine {
 		t.Error("expected ≥1 collapsed `Bash: … → …` line from real session")
 	}
 	if !prose {
 		t.Error("expected ≥1 prose line from real session")
 	}
-	if floor := len(tagged) - folded; len(out) < floor {
-		t.Errorf("rendered %d lines < %d (rows minus folded results) — rows were dropped", len(out), floor)
+	if len(out) != expected {
+		t.Errorf("rendered %d lines, expected exactly %d (independent per-row oracle) — a row was dropped or double-counted", len(out), expected)
 	}
 }
