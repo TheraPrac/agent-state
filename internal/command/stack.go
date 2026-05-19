@@ -107,6 +107,12 @@ func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts
 	fmt.Printf("Pushed %s onto stack (depth %d)\n", id, depth)
 	if opts.Reason != "" {
 		fmt.Printf("  reason: %s\n", opts.Reason)
+		// I-679 Phase B: the push --reason states *why* other work was
+		// interrupted for this — the canonical non-re-derivable rationale.
+		// Capture it as a native-structured decision on the pushed item so
+		// `st resume <id>` answers "why am I doing this" without the
+		// operator hand-writing a breadcrumb.
+		recordStructuredDecision(cfg, id, "stack_push", opts.Reason)
 	}
 
 	// I-681: a blocker pushed while working a sprint item must join that
