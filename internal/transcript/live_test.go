@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -90,4 +91,95 @@ func TestLiveThisSession(t *testing.T) {
 	if toolUse < 1 {
 		t.Errorf("expected ≥1 tool_use row from real session, got %d", toolUse)
 	}
+}
+
+// TestLiveRenderThisSession is the Phase-2 ground-truth check: pipe a
+// real on-disk session through Render and confirm it produces the
+// readable shape (collapsed tool lines + prose) and drops nothing.
+// Same env gate / CI-skip discipline as TestLiveThisSession.
+func TestLiveRenderThisSession(t *testing.T) {
+	if os.Getenv("TRANSCRIPT_LIVE") == "" {
+		t.Skip("set TRANSCRIPT_LIVE=1 to run the live render check")
+	}
+	projectDir := os.Getenv("TRANSCRIPT_LIVE_PROJECT_DIR")
+	if projectDir == "" {
+		t.Fatal("TRANSCRIPT_LIVE_PROJECT_DIR must be set")
+	}
+	base := filepath.Join(ClaudeProjectsDir(), ProjectSlug(projectDir))
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("no project transcripts at %s: %v", base, err)
+	}
+	var newest string
+	var newestMod int64
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || filepath.Ext(n) != ".jsonl" {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && fi.ModTime().UnixNano() > newestMod {
+			newestMod, newest = fi.ModTime().UnixNano(), n[:len(n)-len(".jsonl")]
+		}
+	}
+	if newest == "" {
+		t.Fatalf("no *.jsonl under %s", base)
+	}
+
+	var tagged []TaggedRow
+	var toolResults int
+	for i, p := range ResolveSessionJSONL(projectDir, newest) {
+		rows, err := ReadFile(p)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", p, err)
+		}
+		tag := "A"
+		if i > 0 {
+			tag = "a-" + itoa(i+1)
+		}
+		for _, r := range rows {
+			if r.Kind == KindToolResult {
+				toolResults++
+			}
+			tagged = append(tagged, TaggedRow{Tag: tag, Row: r})
+		}
+	}
+	out := Render(tagged, RenderOpts{})
+
+	var bashLine, prose bool
+	for _, l := range out {
+		if strings.Contains(l, "Bash: ") && strings.Contains(l, " → ") {
+			bashLine = true
+		}
+		// a prose line: tagged, and not a tool/orphan/raw-marker line
+		if !prose && !strings.Contains(l, " → ") && !strings.Contains(l, "⟵ tool_result") && !strings.Contains(l, " ⏎ ") {
+			if idx := strings.Index(l, "] "); idx > 0 && strings.TrimSpace(l[idx+2:]) != "" {
+				prose = true
+			}
+		}
+	}
+	t.Logf("live render: %d input rows → %d output lines (%d tool_results folded)",
+		len(tagged), len(out), toolResults)
+	if !bashLine {
+		t.Error("expected ≥1 collapsed `Bash: … → …` line from real session")
+	}
+	if !prose {
+		t.Error("expected ≥1 prose line from real session")
+	}
+	// No silent drop: only matched tool_results are folded away, and
+	// they are all KindToolResult — so output must cover every other row.
+	if min := len(tagged) - toolResults; len(out) < min {
+		t.Errorf("rendered %d lines < %d (non-tool_result rows) — rows were dropped", len(out), min)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
 }
