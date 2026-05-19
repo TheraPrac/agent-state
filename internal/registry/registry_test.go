@@ -822,3 +822,77 @@ func TestSave_NormalRegistryUnaffected(t *testing.T) {
 		t.Fatalf("round-trip Load: %v", err)
 	}
 }
+
+// TestSave_EqualSizeRewriteOnOversizedAllowed (I-686 review #3): a write
+// that does NOT grow an already-oversized file must proceed — the `>` (not
+// `>=`) boundary lets an equal-size rewrite through so the guard does not
+// collaterally block legitimate non-shrinking work on an oversized
+// registry; it only forbids making it worse. Staged by first allowing the
+// big registry onto disk (pre-seed a huge file so that write "shrinks"),
+// then re-Saving the SAME registry — now on-disk size == serialized size.
+func TestSave_EqualSizeRewriteOnOversizedAllowed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+	if err := os.WriteFile(path, []byte(strings.Repeat("Y", 4*1024*1024)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	r := bigRegistry(t)
+	if err := r.Save(path); err != nil { // ~1.4MB < 4MB on disk ⇒ shrink ⇒ allowed
+		t.Fatalf("seed shrink-write must be allowed, got: %v", err)
+	}
+	// Now on-disk size == this registry's serialized size. Re-Save the
+	// identical registry: equal size, still over ceiling. With `>` this
+	// is ALLOWED; the old `>=` would (wrongly) refuse it.
+	if err := r.Save(path); err != nil {
+		t.Fatalf("an equal-size rewrite of an already-oversized file must be ALLOWED, got: %v", err)
+	}
+}
+
+// TestSave_GrowingOversizedFileRefused: the core "never make it worse" —
+// a write that GROWS an already-oversized file is refused.
+func TestSave_GrowingOversizedFileRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+	// Pre-existing oversized file ~1.1 MB.
+	if err := os.WriteFile(path, []byte(strings.Repeat("q", 1100*1024)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := bigRegistry(t).Save(path); err == nil { // ~1.4 MB > 1.1 MB
+		t.Fatal("a write that GROWS an already-oversized file must be refused")
+	}
+}
+
+// TestSave_EpicsPathRemediationIsFileAware (I-686 review #2): an oversized
+// epics.yaml must NOT advise `st note rm` (wrong file) — the remediation is
+// keyed off which registry file the guard fired on.
+func TestSave_EpicsPathRemediationIsFileAware(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "epics.yaml")
+	err := bigRegistry(t).Save(path)
+	if err == nil {
+		t.Fatal("fresh over-ceiling epics.yaml must be refused")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "st note rm") {
+		t.Errorf("epics.yaml remediation must NOT say `st note rm` (wrong file): %q", msg)
+	}
+	if !strings.Contains(msg, "st sprint delete") && !strings.Contains(msg, "st epic delete") {
+		t.Errorf("epics.yaml remediation must point at sprint/epic deletion: %q", msg)
+	}
+}
+
+// TestSave_StatErrorIsLoudNotMisDecided (I-686 review #3): a non-not-exist
+// stat failure must surface loudly, not silently mis-decide the guard.
+func TestSave_StatErrorIsLoudNotMisDecided(t *testing.T) {
+	// Parent is a regular FILE, so os.Stat(parent/notes.yaml) → ENOTDIR
+	// (not os.IsNotExist).
+	base := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(base, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(base, "notes.yaml")
+	err := bigRegistry(t).Save(path)
+	if err == nil {
+		t.Fatal("over-ceiling write with an un-stat'able path must error")
+	}
+	if !strings.Contains(err.Error(), "could not be stat'd") {
+		t.Errorf("a non-not-exist stat failure must be surfaced distinctly, got: %q", err)
+	}
+}

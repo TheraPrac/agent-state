@@ -22,15 +22,19 @@ import (
 // only guards new writes.
 const MaxNoteBytes = 256 * 1024
 
-// MaxRegistryBytes is the FILE-level ceiling for the serialized registry
-// (epics + sprints + notes share one `.as/notes.yaml`). MaxNoteBytes
-// bounds a single note; nothing bounded the AGGREGATE — many sub-cap
-// records (or, pre-I-673, oversized bodies re-serialized every Save) grew
-// the shared file to 62 MB on origin and pre-receive-blocked EVERY agent's
-// push (I-686 / the I-684 incident). 1 MiB is generous for what is short
-// operational state (~228 KB at 38 notes) yet ~100× below GitHub's 100 MB
-// hard limit, so Save fails long before a push can ever be stranded — the
-// guard is itself the early signal; no separate warn tier is needed.
+// MaxRegistryBytes is the FILE-level ceiling enforced by Registry.Save.
+// Save is the single serialize+write site for BOTH registry files —
+// `.as/notes.yaml` (notes, via Config.NotesPath) and `.as/epics.yaml`
+// (epics+sprints, via Config.EpicsPath); they are SEPARATE files, and the
+// guard applies independently to whichever one is being written.
+// MaxNoteBytes bounds a single note; nothing bounded the AGGREGATE — many
+// sub-cap records (or, pre-I-673, oversized note bodies re-serialized every
+// Save) grew `.as/notes.yaml` to 62 MB on origin and pre-receive-blocked
+// EVERY agent's push (the I-686 / I-684 incident, notes.yaml specifically).
+// 1 MiB is generous for what is short operational state (~228 KB at 38
+// notes) yet ~100× below GitHub's 100 MB hard limit, so Save fails long
+// before a push can ever be stranded — the guard is itself the early
+// signal; no separate warn tier is needed.
 const MaxRegistryBytes = 1 << 20
 
 // ValidateNoteMessage enforces the note-message write contract at the
@@ -249,6 +253,22 @@ func Load(path string) (*Registry, error) {
 	return r, nil
 }
 
+// registryTrimHint returns a remediation string appropriate to WHICH
+// registry file the size guard fired on — Save is shared by notes.yaml and
+// epics.yaml, so a fixed "st note rm" hint is wrong for an oversized
+// epics/sprints file (and vice-versa). Matched on the filename suffix (the
+// only two producers are Config.NotesPath / Config.EpicsPath).
+func registryTrimHint(path string) string {
+	switch {
+	case strings.HasSuffix(path, "notes.yaml"):
+		return "Trim it with `st note rm <id>`"
+	case strings.HasSuffix(path, "epics.yaml"):
+		return "Remove stale sprints/epics with `st sprint delete <slug>` / `st epic delete <slug>`"
+	default:
+		return "Remove stale records (`st note rm <id>` for notes; `st sprint delete` / `st epic delete` for epics/sprints)"
+	}
+}
+
 // Save writes the registry to a YAML file.
 func (r *Registry) Save(path string) error {
 	var b strings.Builder
@@ -316,23 +336,37 @@ func (r *Registry) Save(path string) error {
 	out := b.String()
 
 	// I-686 file-level guard. Refuse to write a registry that exceeds
-	// MaxRegistryBytes — an unbounded `.as/notes.yaml` silently strands
-	// every agent's push once it crosses GitHub's 100 MB limit (operator
-	// silent-failure / demo-killer class). NON-BRICKING: only refuse when
-	// the write would NOT shrink the file relative to what is already on
-	// disk, so a drain / `st note rm` on an already-oversized registry —
-	// the exact recovery this error points to — always succeeds. A
-	// missing file is size 0, so a fresh over-ceiling write is correctly
-	// refused.
+	// MaxRegistryBytes — an unbounded registry silently strands every
+	// agent's push once it crosses GitHub's 100 MB limit (operator
+	// silent-failure / demo-killer class).
+	//
+	// NON-BRICKING: refuse ONLY a write that would GROW an already-
+	// oversized file, or a fresh over-ceiling file. A write that is
+	// equal-or-smaller than what is on disk always proceeds — so the
+	// `st note rm` / `st sprint delete` drain the error points to keeps
+	// working, AND an unrelated legitimate edit on an oversized file
+	// (e.g. an equal-length `st note edit`, or an epic/sprint op on an
+	// oversized epics.yaml) is not collaterally blocked. It still cannot
+	// make the file worse.
 	if len(out) > MaxRegistryBytes {
-		existing := int64(-1)
+		// existing = current on-disk size; 0 for a missing file (a fresh
+		// over-ceiling write is then correctly refused since len(out)>0).
+		// A stat error OTHER than not-exist means we cannot safely apply
+		// the guard — surface it loudly rather than silently mis-decide
+		// (could block a legitimate drain, or wave a bloating write
+		// through, on a transient stat failure under concurrent git).
+		var existing int64
 		if fi, statErr := os.Stat(path); statErr == nil {
 			existing = fi.Size()
-		}
-		if existing < 0 || int64(len(out)) >= existing {
+		} else if !os.IsNotExist(statErr) {
 			return fmt.Errorf(
-				"refusing to write %s: serialized registry is %d bytes, over the %d-byte (%d KB) ceiling — an unbounded registry strands every agent's push at GitHub's 100 MB limit. Trim it with `st note rm <id>` (or remove stale epics/sprints) until it is under the ceiling; a write that shrinks an already-oversized file is always allowed",
-				path, len(out), MaxRegistryBytes, MaxRegistryBytes/1024)
+				"refusing to write %s: serialized registry is %d bytes (over the %d KB ceiling) and the existing file could not be stat'd to apply the non-bricking size guard: %w",
+				path, len(out), MaxRegistryBytes/1024, statErr)
+		}
+		if int64(len(out)) > existing {
+			return fmt.Errorf(
+				"refusing to write %s: serialized registry is %d bytes, over the %d-byte (%d KB) ceiling — an unbounded registry strands every agent's push at GitHub's 100 MB limit. %s until it is under the ceiling; a write that does not grow an already-oversized file is always allowed",
+				path, len(out), MaxRegistryBytes, MaxRegistryBytes/1024, registryTrimHint(path))
 		}
 	}
 
