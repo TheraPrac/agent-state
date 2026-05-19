@@ -166,6 +166,51 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 		value = new
 	}
 
+	// I-670: `sbar` is a 4-section composite, not a scalar. The editor
+	// path is handled above (updateSBARViaEditor). The stdin and
+	// positional-value paths previously fell through to the default
+	// SetField branch below, which writes the whole input as a `sbar: |-`
+	// block scalar — silently flattening the mapping to a string and
+	// leaving no autonomous recovery (the dotted-path workaround cannot
+	// un-stringify a scalar). Parse the input as the 4-section buffer and
+	// write via SetSBARBlock instead. Because SetSBARBlock is heal-capable
+	// (rebuilds over col-0 garbage / duplicate headers), routing through
+	// it ALSO repairs an already-corrupted scalar sbar — so this same
+	// command is the agent-runnable recovery path.
+	if field == "sbar" {
+		newSBAR, missing := parseSBARBuffer(value)
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"update: sbar input is missing required section(s): %s\n"+
+					"  sbar is a 4-section composite — pipe all four, each a\n"+
+					"  block-scalar header followed by an indented body:\n\n"+
+					"    situation: |-\n      ...\n    background: |-\n      ...\n"+
+					"    assessment: |-\n      ...\n    recommendation: |-\n      ...\n\n"+
+					"  (this same command also repairs a scalar-corrupted sbar.)\n",
+				strings.Join(missing, ", "))
+			return 2
+		}
+		return commitSBAR(s, cfg, id, item, newSBAR)
+	}
+
+	// I-670: a dotted `sbar.<section>` write only works when sbar is a
+	// proper 4-key mapping. If sbar was scalar-corrupted (e.g. by a
+	// pre-fix `st update <id> sbar --stdin`), SetNestedField finds the
+	// `sbar:` parent but no child keys and inserts the new line *inside*
+	// the block scalar, where it silently vanishes. Refuse loudly and
+	// point at the autonomous recovery command rather than no-op.
+	if strings.HasPrefix(field, "sbar.") && item.Doc.SBARIsScalarCorrupted() {
+		fmt.Fprintf(os.Stderr,
+			"update: %s sbar is a corrupted scalar (not a 4-section mapping); a\n"+
+				"  dotted `%s` write would silently vanish inside the block scalar.\n"+
+				"  Recover autonomously by rewriting the whole block:\n"+
+				"    st update %s sbar --stdin < <four-section-buffer>\n"+
+				"  (situation/background/assessment/recommendation, each `key: |-`\n"+
+				"   followed by an indented body).\n",
+			id, field, id)
+		return 2
+	}
+
 	var oldValue string
 	mutateErr := s.Mutate(id, func(item *model.Item) error {
 		switch {
@@ -500,6 +545,16 @@ func updateSBARViaEditor(s *store.Store, cfg *config.Config, id string, item *mo
 			strings.Join(missing, ", "))
 		return 2
 	}
+	return commitSBAR(s, cfg, id, item, newSBAR)
+}
+
+// commitSBAR writes a fully-parsed 4-section SBAR over the item's `sbar`
+// block via the heal-capable SetSBARBlock, appends the changelog entry,
+// and syncs. Shared by the editor path (updateSBARViaEditor) and the
+// stdin / positional-value path added in I-670 so all three resolve to
+// identical write semantics. `item` is the pre-Mutate snapshot used only
+// to render the old value for the changelog.
+func commitSBAR(s *store.Store, cfg *config.Config, id string, item *model.Item, newSBAR model.SBAR) int {
 	oldRendered := sbarSeedBuffer(item.SBAR)
 	mutateErr := s.Mutate(id, func(it *model.Item) error {
 		it.SBAR = newSBAR
@@ -661,8 +716,9 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		if p.Field == "sbar" {
 			fmt.Fprintf(os.Stderr,
 				"update: sbar is a composite block — batch mode cannot set it as a scalar.\n"+
-					"  Use: st update %s sbar  (opens the 4-section editor)\n",
-				id)
+					"  Use: st update %s sbar               (opens the 4-section editor)\n"+
+					"   or: st update %s sbar --stdin < buf  (4-section buffer; also repairs a corrupted sbar)\n",
+				id, id)
 			return 2
 		}
 		// I-504 (review fix): list fields silently corrupt schema
@@ -683,6 +739,18 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 				summaryShimSeen = true
 			}
 			p.Field = "sbar.background"
+		}
+		// I-670: a dotted sbar.<section> batch write (including a
+		// summary= pair just routed to sbar.background) would silently
+		// vanish inside a scalar-corrupted sbar. Refuse loudly with the
+		// recovery pointer, mirroring the single-field path.
+		if strings.HasPrefix(p.Field, "sbar.") && item.Doc.SBARIsScalarCorrupted() {
+			fmt.Fprintf(os.Stderr,
+				"update: %s sbar is a corrupted scalar (not a 4-section mapping); a\n"+
+					"  dotted `%s` write would silently vanish inside the block scalar.\n"+
+					"  Recover: st update %s sbar --stdin < <four-section-buffer>\n",
+				id, p.Field, id)
+			return 2
 		}
 		if p.Field == "priority" {
 			n, err := strconv.Atoi(strings.TrimSpace(p.Value))
