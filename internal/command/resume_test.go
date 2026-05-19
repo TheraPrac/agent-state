@@ -103,12 +103,25 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 	if !(gi < si && si < di) {
 		t.Errorf("ordering wrong: gap=%d state=%d decisions=%d", gi, si, di)
 	}
-	// Structured decision verbatim, extracted decision flagged for confirm.
+	// Structured decision renders inline as a fact (verbatim).
 	if !strings.Contains(out, "[structured] parallel over sequence") {
 		t.Errorf("structured decision not rendered verbatim:\n%s", out)
 	}
-	if !strings.Contains(out, "CONFIRM if acting on this") || !strings.Contains(out, "confidence 0.40") {
-		t.Errorf("extracted low-confidence decision not flagged:\n%s", out)
+	// I-679 Phase C: a low-confidence EXTRACTED fork must NOT be asserted
+	// inline as settled truth — it is consolidated into exactly one
+	// "Confirm before acting" boundary block, with its confidence + reason.
+	ci := strings.Index(out, "## Confirm before acting")
+	if ci < 0 {
+		t.Fatalf("low-confidence extracted decision must surface in a boundary-confirm block:\n%s", out)
+	}
+	if ci < di {
+		t.Errorf("confirm block must come after Decisions (boundary, not inline): confirm=%d decisions=%d", ci, di)
+	}
+	if !strings.Contains(out, "confidence 0.40") || !strings.Contains(out, "rejected: rebuild storage subsystem") {
+		t.Errorf("confirm block missing the low-confidence record's confidence/reason:\n%s", out)
+	}
+	if strings.Contains(out, "[extracted, confidence 0.40]") {
+		t.Errorf("low-confidence extracted must NOT be rendered inline as a fact:\n%s", out)
 	}
 	// Exec tape present; plan folded in; live-regeneration footer present.
 	if !strings.Contains(out, "## Execution tape") || !strings.Contains(out, "abc1234") {
@@ -218,5 +231,94 @@ func TestFlattenLine(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	if got := flattenLine(long); len(got) != 200 || !strings.HasSuffix(got, "...") {
 		t.Errorf("flattenLine should cap at 200 with ellipsis, got len %d", len(got))
+	}
+}
+
+// TestPriorSessionUnfinalized: the kill/interrupt detector EXCLUDES the
+// current/live session (2nd arg) and scans PRIOR ones. Killed prior session
+// (activity, no marker, not current) ⇒ true. Marker present ⇒ false.
+// The lone-current-session case (mid-session resume) ⇒ false (the critical
+// false-positive guard). Read-only prior session (no real activity) ⇒ false.
+func TestPriorSessionUnfinalized(t *testing.T) {
+	priorDec := changelog.Entry{SessionID: "s1", Op: "decision", Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "x"}
+	priorFin := changelog.Entry{SessionID: "s1", Op: sessionFinalizedOp, Kind: changelog.KindTransition}
+	curWork := changelog.Entry{SessionID: "s2", Op: "commit", Kind: changelog.KindExec, NewValue: "abc"}
+
+	// s1 killed (activity, no marker); s2 is the current/live session.
+	if !priorSessionUnfinalized([]changelog.Entry{priorDec, curWork}, "s2") {
+		t.Errorf("a prior session with activity + no marker ⇒ must report killed")
+	}
+	// s1 cleanly finalized.
+	if priorSessionUnfinalized([]changelog.Entry{priorDec, priorFin, curWork}, "s2") {
+		t.Errorf("prior session with finalize marker ⇒ must NOT report killed")
+	}
+	// CRITICAL false-positive guard: only one session, and it IS the
+	// current/live one (mid-session resume) — even with activity + no
+	// marker, must NOT fire (Stop has not run; session is alive).
+	if priorSessionUnfinalized([]changelog.Entry{{SessionID: "s2", Op: "decision", Kind: changelog.KindDecision}}, "s2") {
+		t.Errorf("the live/current session must never trip the killed banner")
+	}
+	// Prior read-only/meta session: no decision/exec activity ⇒ no banner.
+	ro := changelog.Entry{SessionID: "s1", Op: "update", Kind: changelog.KindTransition}
+	if priorSessionUnfinalized([]changelog.Entry{ro, curWork}, "s2") {
+		t.Errorf("a prior read-only session (no real activity) must NOT false-positive")
+	}
+}
+
+// TestRenderResume_KilledSessionBannerIsLoudAndEarly: a killed PRIOR session
+// (distinct from the current one) must be announced in the impossible-to-miss
+// top zone (before State); a healthy mid-session resume must NOT show it.
+func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
+	// s1 was killed (activity, no marker); the live session being resumed
+	// is s2 (the freshly-started one after the kill).
+	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1", "s2"}}
+	entries := []changelog.Entry{
+		{Timestamp: "2026-05-19T10:00:00-06:00", Op: "commit", SessionID: "s1", NewValue: "abc", Kind: changelog.KindExec},
+		{Timestamp: "2026-05-19T10:05:00-06:00", Op: "decision", SessionID: "s1",
+			Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "a real fork"},
+		{Timestamp: "2026-05-19T10:10:00-06:00", Op: "start", SessionID: "s2", Kind: changelog.KindTransition},
+	}
+	out := renderResume(item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"})
+	bi := strings.Index(out, "PREVIOUS SESSION DID NOT FINALIZE")
+	si := strings.Index(out, "## State")
+	if bi < 0 {
+		t.Fatalf("killed prior session must be announced:\n%s", out)
+	}
+	if si >= 0 && bi > si {
+		t.Errorf("killed-session banner must precede ## State (top zone): banner=%d state=%d", bi, si)
+	}
+	// s1 finalized cleanly ⇒ banner must vanish.
+	fin := changelog.Entry{Timestamp: "2026-05-19T10:06:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition}
+	if strings.Contains(renderResume(item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}), "PREVIOUS SESSION DID NOT FINALIZE") {
+		t.Errorf("a finalized prior session must NOT show the killed banner")
+	}
+	// Mid-session resume (only the live session s9, activity, no marker):
+	// must NOT show the alarmist banner.
+	mid := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s9"}}
+	midOut := renderResume(mid, []changelog.Entry{
+		{Timestamp: "2026-05-19T11:00:00-06:00", Op: "commit", SessionID: "s9", NewValue: "d", Kind: changelog.KindExec},
+	}, "s9", "", "x", tapeAudit{verified: true, message: "ok"})
+	if strings.Contains(midOut, "PREVIOUS SESSION DID NOT FINALIZE") {
+		t.Errorf("healthy mid-session resume must NOT fire the killed banner:\n%s", midOut)
+	}
+}
+
+// TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed: an extracted
+// fork AT/above the threshold is a (provisional) fact rendered inline — only
+// BELOW-threshold extracted goes to the single boundary-confirm block.
+func TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed(t *testing.T) {
+	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1"}}
+	entries := []changelog.Entry{
+		{Timestamp: "2026-05-19T10:00:00-06:00", Op: "decision", SessionID: "s1",
+			Kind: changelog.KindDecision, Source: changelog.SourceExtracted, Confidence: 0.85,
+			Reason: "agent-scoped resolution"},
+		{Timestamp: "2026-05-19T10:01:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition},
+	}
+	out := renderResume(item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"})
+	if !strings.Contains(out, "[extracted, confidence 0.85] agent-scoped resolution") {
+		t.Errorf("high-confidence extracted must render inline as a fact:\n%s", out)
+	}
+	if strings.Contains(out, "## Confirm before acting") {
+		t.Errorf("no below-threshold entries ⇒ no confirm block should appear:\n%s", out)
 	}
 }

@@ -16,10 +16,10 @@ import (
 // approval, or a stack push whose --reason states why other work was
 // interrupted. source=structured marks it authoritative.
 //
-// Phase C design intent (NOT yet enforced — Phase C is unbuilt): the
-// extraction backstop will reconcile against SourceStructured entries and
-// must never clobber one. Until it lands, that no-clobber guarantee is a
-// design contract, not running code.
+// No-clobber is ENFORCED (Phase C shipped): the extraction backstop
+// (command.ExtractDecisions) reconciles against existing decision entries —
+// structured AND prior extracted — and only appends uncovered forks, so a
+// verbatim structured record can never be overwritten or duplicated.
 //
 // This is the trust model the whole feature rests on: the decision is
 // captured because the command ran, NOT because the agent remembered to
@@ -66,6 +66,46 @@ type CaptureDecisionOpts struct {
 	Reason  string // verbatim decision text; empty ⇒ nothing to capture
 }
 
+// resolveCaptureTarget is the shared item resolver + cross-agent write guard
+// for BOTH decision writers (CaptureDecision / ExtractDecisions). Keeping it
+// in one place is deliberate: the "never write a peer's changelog"
+// coordination rule must not drift between the structured and extracted
+// paths. Returns (id, 0) on success, or ("", 1) with a loud stderr line
+// already emitted (every non-resolution is reported so the calling hook can
+// key its loud path off the exit code — operator silent-failure principle).
+// `who` prefixes the stderr lines so the operator sees which command failed.
+func resolveCaptureTarget(s *store.Store, cfg *config.Config, explicitID, who string) (string, int) {
+	id := strings.TrimSpace(explicitID)
+	if id == "" {
+		// Agent-scoped: stack top, then THIS agent's first active item.
+		// Never a peer's (see resolveResumeTarget).
+		id = resolveResumeTarget(s, cfg)
+	}
+	if id == "" {
+		fmt.Fprintf(os.Stderr,
+			"%s: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.\n", who)
+		return "", 1
+	}
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "%s: unknown item %q — decision NOT recorded.\n", who, id)
+		return "", 1
+	}
+	// Explicit-ID peer guard. resolveResumeTarget already scopes the
+	// fallback; an explicit id bypasses it, so enforce the same
+	// coordination rule here. Only refuse when an agent identity resolves
+	// AND the item is assigned to a *different* agent — an unassigned item
+	// is nobody's claimed work (no peer to violate), and a no-identity
+	// context has no peers, both consistent with the fallback resolver.
+	if me := cfg.AgentID(); me != "" && item.AssignedTo != "" && item.AssignedTo != me {
+		fmt.Fprintf(os.Stderr,
+			"%s: %s is assigned to peer %q (you are %q) — decision NOT recorded; never write a peer's changelog.\n",
+			who, id, item.AssignedTo, me)
+		return "", 1
+	}
+	return id, 0
+}
+
 // CaptureDecision records a native-structured decision triggered from a
 // PostToolUse hook.
 //
@@ -90,8 +130,10 @@ type CaptureDecisionOpts struct {
 // unknown item / refused peer item / the changelog write itself failed). A
 // failed write is a non-capture exactly like the others, so it returns 1
 // too — the asymmetry of "unknown item is loud but a lost write is silent"
-// is the precise operator-silent-failure trap this contract avoids; the
-// decision tape has no self-attestation backstop until Phase C. The *hook*
+// is the precise operator-silent-failure trap this contract avoids; unlike
+// the exec tape, the decision tape has no git-style self-attestation audit
+// (Phase C adds an EXTRACTION backstop, not write-failure attestation), so
+// a dropped write must be loud at the moment it happens. The *hook*
 // always exits 0 regardless (a PostToolUse failure must never break the tool
 // call that already ran) but keys its loud "decision NOT captured" line off
 // this code, so every non-capture must be reported through it.
@@ -110,32 +152,9 @@ func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpt
 		trigger = "hook_decision"
 	}
 
-	id := strings.TrimSpace(opts.ID)
-	if id == "" {
-		id = resolveResumeTarget(s, cfg)
-	}
-	if id == "" {
-		fmt.Fprintln(os.Stderr,
-			"st capture-decision: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.")
-		return 1
-	}
-	item, ok := s.Get(id)
-	if !ok {
-		fmt.Fprintf(os.Stderr,
-			"st capture-decision: unknown item %q — decision NOT recorded.\n", id)
-		return 1
-	}
-	// Explicit-ID peer guard. resolveResumeTarget already scopes the
-	// fallback; an explicit --item bypasses it, so enforce the same
-	// coordination rule here. Only refuse when an agent identity resolves
-	// AND the item is assigned to a *different* agent — an unassigned item
-	// is nobody's claimed work (no peer to violate), and a no-identity
-	// context has no peers, both consistent with the fallback resolver.
-	if me := cfg.AgentID(); me != "" && item.AssignedTo != "" && item.AssignedTo != me {
-		fmt.Fprintf(os.Stderr,
-			"st capture-decision: %s is assigned to peer %q (you are %q) — decision NOT recorded; never write a peer's changelog.\n",
-			id, item.AssignedTo, me)
-		return 1
+	id, rc := resolveCaptureTarget(s, cfg, opts.ID, "st capture-decision")
+	if rc != 0 {
+		return rc
 	}
 
 	if err := recordStructuredDecision(cfg, id, trigger, reason); err != nil {
@@ -153,8 +172,9 @@ func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpt
 // feature (plan-approve, stack-push, and the PostToolUse hook). It is
 // genuinely never silent: a failed write must not break the command that
 // triggered it, but it must NOT vanish — the Phase A self-attestation audit
-// checks only the exec/commit tape vs git, NOT decision entries, so a
-// dropped decision has no backstop until Phase C. The stderr warning here is
+// checks only the exec/commit tape vs git, NOT decision entries, and Phase C
+// adds an extraction backstop, not write-failure attestation, so a dropped
+// decision write has no other backstop at all. The stderr warning here is
 // that backstop for the in-`st` callers (plan/stack); CaptureDecision
 // additionally turns the returned error into a loud non-capture exit code so
 // the hook path is covered too.
