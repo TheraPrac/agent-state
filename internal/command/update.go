@@ -23,6 +23,22 @@ var listFields = map[string]bool{
 	"invariants": true, "doc_changes": true, "linked_plans": true,
 }
 
+// listItemRaw formats v as a canonical YAML list-item line ("- v", or
+// "- \"v\"" when v needs quoting). The quoting predicate mirrors the
+// migrate builder's needsQuoting (`:` `+"`"+` #{}[]` or a leading quote) so a
+// single-line `st update` write and any later builder re-render of the same
+// item are byte-identical — preventing spurious migrate/round-trip churn.
+// I-691.
+func listItemRaw(v string) string {
+	if strings.ContainsAny(v, ":`#{}[]") || strings.HasPrefix(v, "'") || strings.HasPrefix(v, "\"") {
+		// Wrap exactly as migrate.emitList does (raw `"%s"`, no Go
+		// escaping) so the two writers produce identical bytes; the
+		// parser's unquote only strips balanced wrapping quotes.
+		return fmt.Sprintf(`- "%s"`, v)
+	}
+	return "- " + v
+}
+
 // StdinIsPiped reports whether stdin is piped (non-interactive). Exposed
 // so the cobra layer can pick stdin mode automatically when the user
 // hasn't passed --stdin but redirected input.
@@ -226,6 +242,17 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 				}
 			}
 			item.Doc.ReplaceList(field, lines)
+		case listFields[field]:
+			// I-691: a SINGLE-LINE value for a list field is one list
+			// item, NOT a scalar. The scalar form (`key: value`) is
+			// silently dropped on reload — the parser's storeScalar has
+			// no case for any list key — so every single-line
+			// `st update <id> <listfield> "..."` previously lost the
+			// value with no error. Emit the canonical list-item line,
+			// quoted exactly as the migrate builder's emitList would, so
+			// update.go and a later re-render agree byte-for-byte.
+			oldValue, _ = item.Doc.GetField(field)
+			item.Doc.ReplaceList(field, []string{listItemRaw(value)})
 		case strings.Contains(field, "."):
 			oldValue, _ = item.Doc.GetNestedField(field)
 			item.Doc.SetNestedField(field, value)

@@ -264,8 +264,22 @@ func File(path string) (*model.Item, error) {
 					continue
 				}
 
-				// Store scalar value
-				storeScalar(item, key, val)
+				// I-691: a non-empty scalar under a known LIST key is a
+				// corrupted single-line write (`next_actions: text` instead
+				// of `next_actions:` + `- text`). storeScalar has no case
+				// for list keys and would silently drop it. Coerce to a
+				// one-element list so already-on-disk data self-heals in
+				// memory on load. Only the corrupt form reaches here: a
+				// proper `key:` + `- a` list leaves val == "", so the
+				// normal accumulate/flush path is untouched.
+				if isListKey(key) && !isEmptyListScalar(val) {
+					storeList(item, key, nestKey, []string{unquote(val)})
+				} else {
+					// Store scalar value (a no-op for list keys; the
+					// real items arrive on following `- ` lines and
+					// flush via storeList).
+					storeScalar(item, key, val)
+				}
 			} else {
 				// Nested key:value
 				if nestKey == "" {
@@ -515,6 +529,33 @@ func setSBARField(item *model.Item, key, value string) {
 	case "recommendation":
 		item.SBAR.Recommendation = value
 	}
+}
+
+// isEmptyListScalar reports whether an inline scalar value for a list key
+// is an empty/sentinel marker (`[]`, `[[]]`, null, ~, or empty/whitespace)
+// rather than a real single value. Coercing one of these to a list would
+// resurrect the empty-list sentinel as a literal element (the regression
+// TestParseEmptyListVariants/bare-brackets caught). I-691.
+func isEmptyListScalar(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "", "[]", "[[]]", "null", "~":
+		return true
+	}
+	return false
+}
+
+// isListKey reports whether key is stored as a list. It MUST stay in sync
+// with storeList's switch below — any key storeList recognizes is one whose
+// scalar form must be coerced (I-691) rather than dropped by storeScalar.
+func isListKey(key string) bool {
+	switch key {
+	case "tags", "depends_on", "blocks", "related_issues",
+		"acceptance_criteria", "next_actions", "resolution",
+		"invariants", "doc_changes", "sessions", "linked_plans",
+		"tests_written":
+		return true
+	}
+	return false
 }
 
 func storeList(item *model.Item, key, nestKey string, list []string) {
