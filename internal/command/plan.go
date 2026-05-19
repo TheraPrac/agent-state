@@ -156,6 +156,14 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		Reason:   "I-178 plan-before-code gate: plan approved",
 	})
 
+	// I-679 Phase B: a plan approval is a settled fork ("we will build it
+	// this way") — capture it as a native-structured decision so a later
+	// session's `st resume` surfaces the chosen approach without
+	// re-deriving it. Verbatim + immutable; points at the live plan file
+	// rather than snapshotting it (never store-and-trust).
+	recordStructuredDecision(cfg, id, "plan_approve",
+		fmt.Sprintf("approach approved by %s — see .plans/%s.md (regenerate via `st resume %s`)", approver, id, id))
+
 	fmt.Printf("Approved plan for %s (by %s at %s)\n", id, approver, approvedAt)
 	autoSync(s, fmt.Sprintf("st plan approve: %s", id))
 	return 0
