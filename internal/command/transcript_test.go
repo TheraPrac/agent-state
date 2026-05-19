@@ -125,6 +125,41 @@ func TestTranscript_ReviewFixes(t *testing.T) {
 	}
 }
 
+func TestTranscript_AgentSelector(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	sid := "sess-agent-1"
+	writeFixtureSession(t, "/tmp/tp-fixture", sid)
+
+	if err := os.MkdirAll(cfg.AgentsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Agent whose registration points at the fixture session.
+	regPath := filepath.Join(cfg.AgentsDir(), "agent-tt.yaml")
+	if err := os.WriteFile(regPath,
+		[]byte("agent_id: agent-tt\nroot: agent-tt\npid: 1\nsession_id: "+sid+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code := Transcript(s, cfg, "agent-tt", TranscriptOpts{}); code != 0 {
+			t.Fatalf("agent selector exit %d, want 0", code)
+		}
+	})
+	if !strings.Contains(out, "Bash: go test ./... → ok all passed") {
+		t.Errorf("agent selector did not render its session:\n%s", out)
+	}
+
+	// Agent with NO recorded session id → reported, non-zero (not a
+	// silent empty success).
+	if err := os.WriteFile(filepath.Join(cfg.AgentsDir(), "agent-nosess.yaml"),
+		[]byte("agent_id: agent-nosess\nroot: agent-nosess\npid: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Transcript(s, cfg, "agent-nosess", TranscriptOpts{}); code != 1 {
+		t.Errorf("agent with empty session_id exit %d, want 1", code)
+	}
+}
+
 func TestTranscript_ItemSelectorResolvesBySession(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())

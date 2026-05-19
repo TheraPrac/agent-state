@@ -55,7 +55,10 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 	if opts.Since != "" {
 		if d, err := parseDurationFlexible(opts.Since); err == nil {
 			since = time.Now().Add(-d)
-		} else if t, err := time.Parse(time.RFC3339, opts.Since); err == nil {
+		} else if t := parseRFC3339(opts.Since); !t.IsZero() {
+			// Same RFC3339Nano-then-RFC3339 acceptance as row
+			// timestamps, so a nanosecond --since isn't rejected while
+			// the rows it filters parse fine.
 			since = t
 		} else {
 			fmt.Fprintf(os.Stderr, "transcript: --since %q is neither a duration (7d, 1d12h) nor RFC3339\n", opts.Since)
@@ -63,14 +66,18 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 		}
 	}
 
-	// Resolve the selector ONCE (item → agent → session; disjoint id
-	// shapes). Avoids the double store/registration read the switch
-	// idiom caused and closes its TOCTOU window.
+	// Resolve the selector ONCE into locals, THEN branch — a switch
+	// guard like `case itemOf(...) != nil:` would re-call the helper in
+	// the body, the double read + TOCTOU + nil-deref this avoids.
+	// Disjoint id shapes mean at most one is non-nil; precedence is
+	// item → agent → session.
+	item := itemOf(s, selector)
+	reg := registrationOf(cfg, selector)
+
 	var tagged []transcript.TaggedRow
 	var scope string
 	switch {
-	case itemOf(s, selector) != nil:
-		item := itemOf(s, selector)
+	case item != nil:
 		scope = "item " + selector
 		for i, se := range itemSessions(item) {
 			tag := sessionTag(i)
@@ -88,8 +95,7 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 			}
 		}
 
-	case registrationOf(cfg, selector) != nil:
-		reg := registrationOf(cfg, selector)
+	case reg != nil:
 		scope = "agent " + selector
 		if reg.SessionID == "" {
 			fmt.Fprintf(os.Stderr, "transcript: agent %q has no recorded session id\n", selector)
@@ -244,11 +250,14 @@ func distinctParentDirs(paths []string) []string {
 	return out
 }
 
+// sessionTag labels the i-th resolved session: index 0 (the parent /
+// primary) is "A"; subsequent ones are "a-1", "a-2", … with NO gap, so
+// `--agent a-1` actually matches the first subagent.
 func sessionTag(i int) string {
 	if i == 0 {
 		return "A"
 	}
-	return "a-" + strconv.Itoa(i+1)
+	return "a-" + strconv.Itoa(i)
 }
 
 func readTagged(path, tag string) []transcript.TaggedRow {

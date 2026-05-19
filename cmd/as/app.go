@@ -138,7 +138,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	}
 	transcriptCmd.Flags().String("since", "", "only rows newer than this (duration like 7d/1d12h, or RFC3339)")
 	transcriptCmd.Flags().String("grep", "", "only rendered lines containing this substring")
-	transcriptCmd.Flags().String("agent", "", "restrict to one agent tag (e.g. A, a-2)")
+	transcriptCmd.Flags().String("agent", "", "restrict to one session tag (e.g. A, a-1)")
 	transcriptCmd.Flags().Bool("json", false, "emit raw rows as JSON (pre-render, for machines)")
 	root.AddCommand(transcriptCmd)
 
