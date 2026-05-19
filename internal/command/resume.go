@@ -134,32 +134,58 @@ func lastSessionID(item *model.Item) string {
 // renderResume is the pure, table-tested core: (item, typed changelog,
 // session, plan, audit) → the paste-able prompt. No I/O.
 //
-// priorSessionUnfinalized reports whether the session being resumed FROM
-// ended without its Stop hook recording a session_finalized marker, despite
-// having had real work (a decision or exec entry) in that session. That is
-// the I-679 Phase C kill/interrupt signal: Stop is best-effort, so the
-// marker's absence — not an error code — is the evidence the window was
-// never mined. Requires a known prior session (empty ⇒ item-wide replay,
-// nothing to assert) and real activity (a read-only/meta session legitimately
-// has no marker and must not trip a false "killed" banner).
-func priorSessionUnfinalized(entries []changelog.Entry, priorSessionID string) bool {
-	if strings.TrimSpace(priorSessionID) == "" {
-		return false
-	}
-	hadActivity, finalized := false, false
+// priorSessionUnfinalized reports whether some PRIOR session (any session
+// other than the current/most-recent one) had real work (a decision or exec
+// entry) but no session_finalized marker — the I-679 Phase C kill/interrupt
+// signal: Stop is best-effort, so the marker's absence is the evidence its
+// window was never mined.
+//
+// It deliberately scans ALL prior sessions and EXCLUDES currentSessionID
+// (the most-recent / live session, == lastSessionID at the call site). Two
+// failure modes this avoids:
+//   - FALSE POSITIVE: a mid-session `st resume` (the Phase B source=compact
+//     re-surface) runs while the live session legitimately has activity and
+//     no marker yet (Stop has not run — the session is still alive).
+//     Scoping to that session would fire the alarmist "did not finalize …
+//     reconstruct from git" banner on every healthy post-compaction resume
+//     and train the operator to ignore it. Excluding the current session
+//     eliminates this entirely.
+//   - FALSE NEGATIVE: after a real kill, `st start` appends a NEW session,
+//     so the killed one is no longer "the last session" — scanning only the
+//     last session would never inspect it. Scanning all-but-current catches
+//     it (the killed session is older than the freshly-started one).
+//
+// The residual gap (resuming a killed session with no newer session yet
+// recorded ⇒ killed == current ⇒ excluded ⇒ no banner) is the conservative
+// direction: a missed announcement degrades to the pre-I-679 status quo,
+// whereas a false alarm actively erodes trust in the banner.
+func priorSessionUnfinalized(entries []changelog.Entry, currentSessionID string) bool {
+	type st struct{ activity, finalized bool }
+	per := map[string]*st{}
 	for _, e := range entries {
-		if e.SessionID != priorSessionID {
-			continue
+		sid := e.SessionID
+		if sid == "" || sid == currentSessionID {
+			continue // unsessioned or the live/most-recent session
+		}
+		s := per[sid]
+		if s == nil {
+			s = &st{}
+			per[sid] = s
 		}
 		if e.Op == sessionFinalizedOp {
-			finalized = true
+			s.finalized = true
 		}
 		switch e.EffectiveKind() {
 		case changelog.KindDecision, changelog.KindExec:
-			hadActivity = true
+			s.activity = true
 		}
 	}
-	return hadActivity && !finalized
+	for _, s := range per {
+		if s.activity && !s.finalized {
+			return true
+		}
+	}
+	return false
 }
 
 // planNote is the loud fallback for the plan section: "" means planBody is

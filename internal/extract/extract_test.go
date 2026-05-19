@@ -1,7 +1,9 @@
 package extract
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/jfinlinson/agent-state/internal/transcript"
 )
@@ -126,5 +128,71 @@ func TestExtract_RejectedMarker(t *testing.T) {
 	})
 	if len(got) != 1 || got[0].Confidence < ConfirmThreshold {
 		t.Fatalf("explicit Rejected marker must be a high-confidence candidate, got %+v", got)
+	}
+}
+
+// TestExtract_PrecisionRejectsNarration is the regression guard for the
+// PR #124 review: the prior loose regexes recorded confidently-wrong forks
+// from prose that merely *discusses* decisions. None of these may extract.
+func TestExtract_PrecisionRejectsNarration(t *testing.T) {
+	noFork := []string{
+		"The decision-capture hook fires on PostToolUse for AskUserQuestion.",
+		"I refactored the decision writers and the decided-against list.",
+		"going with caution here, not rushing the migration",
+		"picked up the task, not done yet",
+		"The CI rejected the push because lint failed.",
+		"the server rejected the request with a 403.",
+		"stop by the docs when you can",
+		"don't forget to run the unit tests before pushing",
+		"actually, the weather is nice today",
+		"Run the e2e tests since the auth flow changed.",
+	}
+	for _, s := range noFork {
+		// assistant AND user role — operator-override path must not fire either.
+		for _, role := range []string{"assistant", "user"} {
+			if got := Extract([]transcript.Row{textRow(role, s)}); len(got) != 0 {
+				t.Errorf("[%s] narration must NOT extract a fork: %q ⇒ %+v", role, s, got)
+			}
+		}
+	}
+}
+
+// TestExtract_DecidedToIsHighConfidence: "decided to/on/against X" is a
+// deliberate decision phrasing (no colon) and must score as a fact.
+func TestExtract_DecidedToIsHighConfidence(t *testing.T) {
+	got := Extract([]transcript.Row{textRow("assistant", "We decided to scope the extractor high-precision because a wrong fork misleads.")})
+	if len(got) != 1 || got[0].NeedsConfirm() {
+		t.Fatalf("'decided to …' must be a high-confidence fork, got %+v", got)
+	}
+	if got[0].Rationale == "" {
+		t.Errorf("rationale after because must be captured: %+v", got[0])
+	}
+}
+
+// TestCondense_RuneSafeCap: truncation must not split a multibyte rune and
+// must respect the rune cap (no invalid UTF-8 in the persisted changelog).
+func TestCondense_RuneSafeCap(t *testing.T) {
+	long := strings.Repeat("é—", 400) // multibyte runes straddling the cap
+	got := condense(long)
+	if !utf8.ValidString(got) {
+		t.Errorf("condense produced invalid UTF-8 (mid-rune byte slice)")
+	}
+	if n := utf8.RuneCountInString(got); n > maxField {
+		t.Errorf("condense exceeded rune cap: %d > %d", n, maxField)
+	}
+}
+
+// TestSameFork_LengthWindowRejectsRefinement: a later, narrower/contradicting
+// decision must NOT be merged into an earlier one (the final decision is what
+// a resuming session needs); a mere lead-in strip still dedups.
+func TestSameFork_LengthWindowRejectsRefinement(t *testing.T) {
+	base := Norm("use the agent-scoped resolver")
+	refined := Norm("use the agent-scoped resolver only as a fallback, explicit id always wins")
+	if SameFork(base, refined) {
+		t.Errorf("a clause-level refinement must NOT be merged as the same fork")
+	}
+	leadIn := Norm("Decision: use the agent-scoped resolver")
+	if !SameFork(base, leadIn) {
+		t.Errorf("a marker lead-in strip MUST still dedup as the same fork")
 	}
 }

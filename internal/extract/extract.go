@@ -56,17 +56,33 @@ type Candidate struct {
 // threshold and must be surfaced as a question, not a fact, at resume.
 func (c Candidate) NeedsConfirm() bool { return c.Confidence < ConfirmThreshold }
 
+// The patterns are deliberately STRICT (high-precision / low-recall): a
+// wrong-but-confident fork misleads a resuming session worse than a missed
+// one, and this codebase's own transcripts are saturated with prose that
+// merely *discusses* decisions ("the decision-capture hook", "CI rejected
+// the push", "don't forget to run tests"). So:
+//   - reDecisionMarker requires a COLON ("Decision: …") — not a hyphen
+//     (would fire on "decision-capture") — plus a separate "decided to …".
+//   - reChoseOver requires an explicit choose-verb AND over|instead-of|
+//     rather-than (no bare "not" — "going with caution, not rushing" is not
+//     a fork).
+//   - reRejected requires "rejected alternative" / "ruled out" / "discarded"
+//     / a "rejected:" colon — never the bare word "rejected" ("the server
+//     rejected the request" is not a decision).
+//   - reOperatorOverride requires a redirection imperative FOLLOWED BY an
+//     action verb (don't … do/use/instead, no/actually/instead … let's/
+//     use/go-with) — not bare "stop "/"don't "/"actually,".
+//   - reBecause keeps only unambiguous causal connectives (no bare "since"
+//     / "due to" — temporal "run e2e since auth changed" is not a why).
 var (
-	// Strongest signal: an explicit decision/rejection marker the writer
-	// deliberately used. Anchored to a statement start (line or sentence).
-	reDecisionMarker = regexp.MustCompile(`(?i)\b(decision|decided|conclusion|verdict)\s*[:\-—]\s*(.+)`)
-	reChoseOver      = regexp.MustCompile(`(?i)\b(?:chose|choosing|picked|going with|go with|went with)\b(.+?)\b(?:over|instead of|rather than|not)\b(.+)`)
-	reRejected       = regexp.MustCompile(`(?i)\b(rejected|ruled out|discarded|ruled-out)\b(?:\s+alternative[s]?)?\s*[:\-—]?\s*(.+)`)
-	// Operator-override imperatives in a user turn: a redirection is a
-	// settled fork even without a marker word.
-	reOperatorOverride = regexp.MustCompile(`(?i)^\s*(?:no[,.]?\s+|actually[,.]?\s+|instead[,.]?\s+|don'?t\s+|do not\s+|stop\s+|let'?s\s+(?:go with|use|do)\b|use\s+\w+\s+instead\b)`)
-	// Rationale connectives — the clause after one of these is the "why".
-	reBecause = regexp.MustCompile(`(?i)\b(because|since|so that|due to|in order to|rationale[:\-])\b\s*(.+)`)
+	reDecisionMarker = regexp.MustCompile(`(?i)\b(decision|conclusion|verdict)\s*:\s*(.+)`)
+	reDecidedTo      = regexp.MustCompile(`(?i)\b(?:we|i)?\s*decided\s+(?:to|on|against)\b\s*(.+)`)
+	reChoseOver      = regexp.MustCompile(`(?i)\b(?:chose|choosing|picked|opting for|going with|go with|went with)\b(.+?)\b(?:over|instead of|rather than)\b(.+)`)
+	reRejected       = regexp.MustCompile(`(?i)\b(?:rejected\s+alternative|ruled\s+out|ruled-out|discarded|rejected\s*:)\s*(.+)`)
+	// Operator-override redirection: an imperative + an action verb.
+	reOperatorOverride = regexp.MustCompile(`(?i)^\s*(?:(?:no|actually|instead)[,.]?\s+(?:let'?s\s+|we\s+should\s+|use\b|do\b|go\s+with\b|don'?t\b|do\s+not\b)|don'?t\s+\S.*?\b(?:,|;|—|-)?\s*(?:instead|do\b|use\b|go\s+with\b)|let'?s\s+(?:go\s+with|use)\b)`)
+	// Rationale connectives — only the unambiguous causal ones.
+	reBecause = regexp.MustCompile(`(?i)\b(because|so that|in order to|rationale\s*[:\-])\b\s*(.+)`)
 )
 
 const maxField = 400
@@ -74,8 +90,11 @@ const maxField = 400
 func condense(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	s = strings.Trim(s, " \t.-—:")
-	if len(s) > maxField {
-		s = s[:maxField-1] + "…"
+	// Rune-safe cap: byte-slicing would split a multibyte rune (em-dash,
+	// smart quote, accent — routine in this codebase's prose) into invalid
+	// UTF-8 and could also exceed the cap. Truncate on a rune boundary.
+	if r := []rune(s); len(r) > maxField {
+		s = string(r[:maxField-1]) + "…"
 	}
 	return s
 }
@@ -112,7 +131,7 @@ func extractRationaleAndAlts(stmt string) (rationale, rejected string) {
 	if m := reChoseOver.FindStringSubmatch(stmt); m != nil {
 		rejected = condense(m[2])
 	} else if m := reRejected.FindStringSubmatch(stmt); m != nil {
-		rejected = condense(m[2])
+		rejected = condense(m[1])
 	}
 	return rationale, rejected
 }
@@ -126,6 +145,9 @@ func scoreStatement(stmt, role string) (text string, conf float64, ok bool) {
 	case reDecisionMarker.MatchString(stmt):
 		m := reDecisionMarker.FindStringSubmatch(stmt)
 		return condense(m[2]), 0.85, true
+	case reDecidedTo.MatchString(stmt):
+		m := reDecidedTo.FindStringSubmatch(stmt)
+		return condense(m[1]), 0.82, true
 	case reRejected.MatchString(stmt):
 		return condense(stmt), 0.8, true
 	case reChoseOver.MatchString(stmt):
@@ -144,13 +166,21 @@ func scoreStatement(stmt, role string) (text string, conf float64, ok bool) {
 	return "", 0, false
 }
 
-// minContainmentLen guards substring-based dedup: only collapse two forks
-// when the shorter normalized text is at least this long AND is a contiguous
-// substring of the longer. Short fragments ("use X") would false-merge
-// unrelated decisions; a >= 14-char contiguous shared core is a restatement
-// of the same fork in practice ("I'll go with <core>" then "Decision:
-// <core>"), which real transcripts produce constantly.
-const minContainmentLen = 14
+// Dedup guards for the containment branch of SameFork:
+//   - minContainmentLen: the shorter text must be at least this long.
+//     Short fragments ("use X") would false-merge unrelated decisions.
+//   - maxLeadInDelta: the longer text may exceed the shorter by at most
+//     this many chars. A restatement only strips/adds a lead-in
+//     ("Decision: ", "I'll go with ", "We are going with " ≈ ≤20 chars);
+//     a clause-level REFINEMENT or reversal ("… only as a fallback,
+//     explicit id wins") adds far more. Without this cap, containment
+//     silently merges a later, narrower/contradicting decision into the
+//     earlier one and the FINAL decision — the one a resuming session
+//     needs — is the one dropped.
+const (
+	minContainmentLen = 14
+	maxLeadInDelta    = 28
+)
 
 // Norm normalizes decision text for equivalence comparison (lowercase,
 // whitespace-collapsed). Exported so the upstream reconcile step
@@ -175,7 +205,9 @@ func SameFork(a, b string) bool {
 	if len(short) > len(long) {
 		short, long = long, short
 	}
-	return len(short) >= minContainmentLen && strings.Contains(long, short)
+	return len(short) >= minContainmentLen &&
+		len(long)-len(short) <= maxLeadInDelta &&
+		strings.Contains(long, short)
 }
 
 // Extract scans transcript rows for prose decision forks. Only prose Rows

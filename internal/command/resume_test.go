@@ -234,42 +234,51 @@ func TestFlattenLine(t *testing.T) {
 	}
 }
 
-// TestPriorSessionUnfinalized: the kill/interrupt detector. A prior session
-// with real activity but no session_finalized marker ⇒ killed (true). With
-// the marker ⇒ cleanly stopped (false). No marker but no real activity ⇒
-// a read-only/meta session, must NOT false-positive (false). Empty prior
-// session ⇒ item-wide replay, nothing to assert (false).
+// TestPriorSessionUnfinalized: the kill/interrupt detector EXCLUDES the
+// current/live session (2nd arg) and scans PRIOR ones. Killed prior session
+// (activity, no marker, not current) ⇒ true. Marker present ⇒ false.
+// The lone-current-session case (mid-session resume) ⇒ false (the critical
+// false-positive guard). Read-only prior session (no real activity) ⇒ false.
 func TestPriorSessionUnfinalized(t *testing.T) {
-	dec := changelog.Entry{SessionID: "s1", Op: "decision", Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "x"}
-	fin := changelog.Entry{SessionID: "s1", Op: sessionFinalizedOp, Kind: changelog.KindTransition}
+	priorDec := changelog.Entry{SessionID: "s1", Op: "decision", Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "x"}
+	priorFin := changelog.Entry{SessionID: "s1", Op: sessionFinalizedOp, Kind: changelog.KindTransition}
+	curWork := changelog.Entry{SessionID: "s2", Op: "commit", Kind: changelog.KindExec, NewValue: "abc"}
 
-	if !priorSessionUnfinalized([]changelog.Entry{dec}, "s1") {
-		t.Errorf("activity + no finalize marker ⇒ must report killed")
+	// s1 killed (activity, no marker); s2 is the current/live session.
+	if !priorSessionUnfinalized([]changelog.Entry{priorDec, curWork}, "s2") {
+		t.Errorf("a prior session with activity + no marker ⇒ must report killed")
 	}
-	if priorSessionUnfinalized([]changelog.Entry{dec, fin}, "s1") {
-		t.Errorf("activity + finalize marker ⇒ cleanly stopped, must NOT report killed")
+	// s1 cleanly finalized.
+	if priorSessionUnfinalized([]changelog.Entry{priorDec, priorFin, curWork}, "s2") {
+		t.Errorf("prior session with finalize marker ⇒ must NOT report killed")
 	}
-	// Read-only/meta session: a lone non-decision/non-exec transition, no marker.
-	ro := changelog.Entry{SessionID: "s2", Op: "update", Kind: changelog.KindTransition}
-	if priorSessionUnfinalized([]changelog.Entry{ro}, "s2") {
-		t.Errorf("no real activity ⇒ must NOT false-positive a killed banner")
+	// CRITICAL false-positive guard: only one session, and it IS the
+	// current/live one (mid-session resume) — even with activity + no
+	// marker, must NOT fire (Stop has not run; session is alive).
+	if priorSessionUnfinalized([]changelog.Entry{{SessionID: "s2", Op: "decision", Kind: changelog.KindDecision}}, "s2") {
+		t.Errorf("the live/current session must never trip the killed banner")
 	}
-	if priorSessionUnfinalized([]changelog.Entry{dec}, "") {
-		t.Errorf("empty prior session ⇒ nothing to assert, must be false")
+	// Prior read-only/meta session: no decision/exec activity ⇒ no banner.
+	ro := changelog.Entry{SessionID: "s1", Op: "update", Kind: changelog.KindTransition}
+	if priorSessionUnfinalized([]changelog.Entry{ro, curWork}, "s2") {
+		t.Errorf("a prior read-only session (no real activity) must NOT false-positive")
 	}
 }
 
-// TestRenderResume_KilledSessionBannerIsLoudAndEarly: a killed prior session
-// must be announced in the impossible-to-miss top zone (before State), never
-// a silent void (operator silent-failure principle).
+// TestRenderResume_KilledSessionBannerIsLoudAndEarly: a killed PRIOR session
+// (distinct from the current one) must be announced in the impossible-to-miss
+// top zone (before State); a healthy mid-session resume must NOT show it.
 func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
-	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1"}}
+	// s1 was killed (activity, no marker); the live session being resumed
+	// is s2 (the freshly-started one after the kill).
+	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1", "s2"}}
 	entries := []changelog.Entry{
 		{Timestamp: "2026-05-19T10:00:00-06:00", Op: "commit", SessionID: "s1", NewValue: "abc", Kind: changelog.KindExec},
 		{Timestamp: "2026-05-19T10:05:00-06:00", Op: "decision", SessionID: "s1",
 			Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "a real fork"},
+		{Timestamp: "2026-05-19T10:10:00-06:00", Op: "start", SessionID: "s2", Kind: changelog.KindTransition},
 	}
-	out := renderResume(item, entries, "s1", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"})
+	out := renderResume(item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"})
 	bi := strings.Index(out, "PREVIOUS SESSION DID NOT FINALIZE")
 	si := strings.Index(out, "## State")
 	if bi < 0 {
@@ -278,10 +287,19 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 	if si >= 0 && bi > si {
 		t.Errorf("killed-session banner must precede ## State (top zone): banner=%d state=%d", bi, si)
 	}
-	// With the marker present, the banner must vanish.
-	entries = append(entries, changelog.Entry{Timestamp: "2026-05-19T10:06:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition})
-	if strings.Contains(renderResume(item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"}), "PREVIOUS SESSION DID NOT FINALIZE") {
-		t.Errorf("a finalized session must NOT show the killed banner")
+	// s1 finalized cleanly ⇒ banner must vanish.
+	fin := changelog.Entry{Timestamp: "2026-05-19T10:06:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition}
+	if strings.Contains(renderResume(item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}), "PREVIOUS SESSION DID NOT FINALIZE") {
+		t.Errorf("a finalized prior session must NOT show the killed banner")
+	}
+	// Mid-session resume (only the live session s9, activity, no marker):
+	// must NOT show the alarmist banner.
+	mid := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s9"}}
+	midOut := renderResume(mid, []changelog.Entry{
+		{Timestamp: "2026-05-19T11:00:00-06:00", Op: "commit", SessionID: "s9", NewValue: "d", Kind: changelog.KindExec},
+	}, "s9", "", "x", tapeAudit{verified: true, message: "ok"})
+	if strings.Contains(midOut, "PREVIOUS SESSION DID NOT FINALIZE") {
+		t.Errorf("healthy mid-session resume must NOT fire the killed banner:\n%s", midOut)
 	}
 }
 

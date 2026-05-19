@@ -57,17 +57,18 @@ func composeExtractedReason(c extract.Candidate) string {
 	return strings.TrimSpace(r)
 }
 
-// decisionAlreadyCovered reports whether an extracted candidate is already
-// represented by an existing changelog decision entry — a Phase B
+// decisionAlreadyCovered reports whether a candidate — passed as its FINAL
+// composed reason (exactly the string that would be persisted) — is already
+// represented by an existing changelog decision entry: a Phase B
 // source=structured capture of the same fork, OR a prior source=extracted
 // entry (so re-running PreCompact on the same/overlapping transcript is
-// idempotent and never duplicates). Reconcile-before-write is the property
-// that lets the lossy extractor never clobber and never spam: it only
-// appends forks no decision entry covers yet. Match uses the SAME
-// normalization/containment as intra-extract dedup (extract.SameFork) so
-// "already captured" cannot drift from "duplicate".
-func decisionAlreadyCovered(existing []changelog.Entry, candText string) bool {
-	want := extract.Norm(candText)
+// idempotent and never duplicates). The comparison key is symmetric — the
+// composed reason on BOTH sides — so SameFork's exact-match short-circuit
+// makes even a sub-minContainmentLen short verdict ("ship Friday") reconcile
+// against its own prior write; comparing a raw verdict against a persisted
+// composed reason would silently fail that case and re-append every run.
+func decisionAlreadyCovered(existing []changelog.Entry, composedReason string) bool {
+	want := extract.Norm(composedReason)
 	for _, e := range existing {
 		if e.EffectiveKind() != changelog.KindDecision {
 			continue
@@ -80,15 +81,17 @@ func decisionAlreadyCovered(existing []changelog.Entry, candText string) bool {
 }
 
 // recordExtractedDecision appends one machine-inferred decision as
-// Kind=decision Source=extracted with its Confidence. It is the single
-// extracted-decision write site (sibling of recordStructuredDecision's
-// single structured site) and is genuinely never silent — a failed write of
-// the lossy backstop still must not vanish (the decision tape has no
-// self-attestation audit). Returns the changelog error so the caller turns
-// it into a loud non-capture exit code.
-func recordExtractedDecision(cfg *config.Config, id, trigger string, c extract.Candidate) error {
-	reason := composeExtractedReason(c)
-	if reason == "" {
+// Kind=decision Source=extracted with its Confidence, given the already-
+// composed reason (the caller composes it once and reuses the SAME string
+// for the cover-check, the write, and the in-run reconcile mirror so the
+// keys cannot drift). It is the single extracted-decision write site
+// (sibling of recordStructuredDecision's single structured site) and is
+// genuinely never silent — a failed write of the lossy backstop still must
+// not vanish (the decision tape has no self-attestation audit). An empty
+// reason is a deliberate no-op (nothing to record). Returns the changelog
+// error so the caller turns it into a loud non-capture exit code.
+func recordExtractedDecision(cfg *config.Config, id, trigger, reason string, confidence float64) error {
+	if strings.TrimSpace(reason) == "" {
 		return nil
 	}
 	err := changelog.Append(cfg, id, changelog.Entry{
@@ -96,7 +99,7 @@ func recordExtractedDecision(cfg *config.Config, id, trigger string, c extract.C
 		Field:      trigger,
 		Kind:       changelog.KindDecision,
 		Source:     changelog.SourceExtracted,
-		Confidence: c.Confidence,
+		Confidence: confidence,
 		Reason:     reason,
 	})
 	if err != nil {
@@ -184,18 +187,26 @@ func ExtractDecisions(s *store.Store, cfg *config.Config, opts ExtractDecisionsO
 
 	failed := false
 	for _, c := range cands {
-		if decisionAlreadyCovered(existing, c.Text) {
+		// Compose ONCE; the same string is the cover-check key, the
+		// written Reason, and the in-run reconcile mirror — symmetric
+		// keys, no drift.
+		reason := composeExtractedReason(c)
+		if reason == "" {
+			continue // nothing to record; do not append a blank mirror
+		}
+		if decisionAlreadyCovered(existing, reason) {
 			continue // already structured-captured or previously extracted
 		}
-		if werr := recordExtractedDecision(cfg, id, trigger, c); werr != nil {
+		if werr := recordExtractedDecision(cfg, id, trigger, reason, c.Confidence); werr != nil {
 			failed = true
 			continue
 		}
-		// Reflect the just-written entry so a later candidate that is the
-		// same fork reconciles against it within this same run too.
+		// Reflect the just-written entry (verbatim Reason) so a later
+		// candidate that is the same fork reconciles against it within
+		// this same run too.
 		existing = append(existing, changelog.Entry{
 			Op: "decision", Kind: changelog.KindDecision,
-			Source: changelog.SourceExtracted, Reason: composeExtractedReason(c),
+			Source: changelog.SourceExtracted, Reason: reason,
 		})
 	}
 
@@ -212,10 +223,16 @@ func ExtractDecisions(s *store.Store, cfg *config.Config, opts ExtractDecisionsO
 			}
 		}
 		if !already {
+			// Set SessionID EXPLICITLY rather than relying on the
+			// changelog.ActiveSessionID global side-channel: the dedup
+			// guard above and resume's priorSessionUnfinalized both key
+			// the entire kill-detection feature off this field, so it
+			// must be carried by the entry itself, not an ambient global.
 			if werr := changelog.Append(cfg, id, changelog.Entry{
-				Op:     sessionFinalizedOp,
-				Kind:   changelog.KindTransition,
-				Reason: "session Stop hook finalized the decision record",
+				Op:        sessionFinalizedOp,
+				Kind:      changelog.KindTransition,
+				SessionID: opts.Session,
+				Reason:    "session Stop hook finalized the decision record",
 			}); werr != nil {
 				fmt.Fprintf(os.Stderr,
 					"warning: failed to write session-finalized marker for %s (%v) — next resume may falsely report this session as killed.\n",

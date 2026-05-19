@@ -16,10 +16,10 @@ import (
 // approval, or a stack push whose --reason states why other work was
 // interrupted. source=structured marks it authoritative.
 //
-// Phase C design intent (NOT yet enforced — Phase C is unbuilt): the
-// extraction backstop will reconcile against SourceStructured entries and
-// must never clobber one. Until it lands, that no-clobber guarantee is a
-// design contract, not running code.
+// No-clobber is ENFORCED (Phase C shipped): the extraction backstop
+// (command.ExtractDecisions) reconciles against existing decision entries —
+// structured AND prior extracted — and only appends uncovered forks, so a
+// verbatim structured record can never be overwritten or duplicated.
 //
 // This is the trust model the whole feature rests on: the decision is
 // captured because the command ran, NOT because the agent remembered to
@@ -130,8 +130,10 @@ func resolveCaptureTarget(s *store.Store, cfg *config.Config, explicitID, who st
 // unknown item / refused peer item / the changelog write itself failed). A
 // failed write is a non-capture exactly like the others, so it returns 1
 // too — the asymmetry of "unknown item is loud but a lost write is silent"
-// is the precise operator-silent-failure trap this contract avoids; the
-// decision tape has no self-attestation backstop until Phase C. The *hook*
+// is the precise operator-silent-failure trap this contract avoids; unlike
+// the exec tape, the decision tape has no git-style self-attestation audit
+// (Phase C adds an EXTRACTION backstop, not write-failure attestation), so
+// a dropped write must be loud at the moment it happens. The *hook*
 // always exits 0 regardless (a PostToolUse failure must never break the tool
 // call that already ran) but keys its loud "decision NOT captured" line off
 // this code, so every non-capture must be reported through it.
@@ -170,8 +172,9 @@ func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpt
 // feature (plan-approve, stack-push, and the PostToolUse hook). It is
 // genuinely never silent: a failed write must not break the command that
 // triggered it, but it must NOT vanish — the Phase A self-attestation audit
-// checks only the exec/commit tape vs git, NOT decision entries, so a
-// dropped decision has no backstop until Phase C. The stderr warning here is
+// checks only the exec/commit tape vs git, NOT decision entries, and Phase C
+// adds an extraction backstop, not write-failure attestation, so a dropped
+// decision write has no other backstop at all. The stderr warning here is
 // that backstop for the in-`st` callers (plan/stack); CaptureDecision
 // additionally turns the returned error into a loud non-capture exit code so
 // the hook path is covered too.

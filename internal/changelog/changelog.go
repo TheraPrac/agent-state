@@ -47,11 +47,14 @@ const (
 	// --reason). Authoritative and immutable once written.
 	SourceStructured Source = "structured"
 	// SourceExtracted is machine-inferred from a to-be-summarized window by
-	// the extraction backstop. May be lossy; always carries Confidence.
-	// Phase C design intent (NOT yet enforced in Phase A): the extractor
-	// reconciles against existing SourceStructured entries for the window
-	// so it can never clobber a verbatim record. Until that lands, treat
-	// extracted entries as advisory.
+	// the Phase C extraction backstop (command.ExtractDecisions, via the
+	// PreCompact/Stop hooks). May be lossy; always carries Confidence.
+	// ENFORCED (Phase C, shipped): the extractor reconciles against existing
+	// decision entries — structured AND prior extracted — and only appends
+	// forks no entry covers yet, so it can never clobber a verbatim record
+	// and re-runs are idempotent. Below-threshold extracted entries are
+	// still advisory: `st resume` consolidates them into a single
+	// boundary-confirm block rather than asserting them as fact.
 	SourceExtracted Source = "extracted"
 )
 
