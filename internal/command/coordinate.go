@@ -96,12 +96,14 @@ func Coordinate(s *store.Store, cfg *config.Config, opts CoordinateOpts) int {
 			fmt.Printf("  respawn_limit=%d per_item=$%g per_objective=$%g stuck_x=%g parallelism=%d dedupe=%dm\n",
 				b.RespawnLimit, b.PerItemUSD, b.PerObjectiveUSD, b.StuckMultiplier, b.ParallelismCap, b.DedupeWindowMin)
 			fmt.Printf("picked:      %s — %s\n", item.ID, item.Title)
+			fmt.Printf("why:         %s\n", why)
 			fmt.Printf("size-class:  %s (D2 baseline; stuck at ≥ %g×)\n",
 				coordinator.SizeClassBaseline(item), b.StuckMultiplier)
 			fmt.Println("next:        st spawn " + item.ID + spawnBudgetSuffix(opts.BudgetOverride))
 			return 0
 		}
 
+		fmt.Printf("coordinate: dispatch rationale — %s\n", why)
 		st := &coordinator.WorkerState{
 			Item:      item.ID,
 			SizeClass: coordinator.SizeClassBaseline(item),
@@ -138,9 +140,51 @@ func selectNext(s *store.Store, cfg *config.Config) (*model.Item, string) {
 			skipped++
 			continue
 		}
-		return it, ""
+		// HIT: queue order still decides the pick (operator authority is
+		// load-bearing) — but the choice is no longer opaque. Return the
+		// inspectable scoring rationale for THIS item (contract §4.2).
+		return it, dispatchRationale(s, cfg, g, it)
 	}
 	return nil, fmt.Sprintf("%d queue entr(y/ies) examined, none approved+unblocked+unclaimed", skipped)
+}
+
+// dispatchRationale renders the inspectable "why this pick" for the
+// coordinator's dispatch decision (contract §4.2 — never an opaque
+// choice). It scores the SAME eligible-queue candidate set the
+// `st recommend --queue` view uses, so the operator and the coordinator
+// read an identical rationale. Operator queue order still wins: this
+// only EXPLAINS selectNext's queue-order pick; if the score would rank a
+// different eligible item first, that divergence is surfaced as a
+// visible note, never silently acted on.
+func dispatchRationale(s *store.Store, cfg *config.Config, g *deps.Graph, picked *model.Item) string {
+	p := 2
+	if picked.Priority != nil {
+		p = *picked.Priority
+	}
+	fallback := fmt.Sprintf("priority p%d", p)
+
+	cands := recommendCandidates(s, cfg, g, RecommendOpts{Queue: true})
+	if len(cands) == 0 {
+		return fallback // unreachable in practice (picked is eligible) — degrade safely
+	}
+	lev, names := unblockLeverage(g, cands)
+	sprints := loadSprintInfo(cfg, g)
+	recs := coordinator.Recommend(cands, lev, sprints, time.Now())
+	enrichUnblockDetail(recs, names)
+
+	rat := fallback
+	for _, r := range recs {
+		if r.Item.ID == picked.ID {
+			rat = r.Rationale()
+			break
+		}
+	}
+	if recs[0].Item.ID != picked.ID {
+		rat += fmt.Sprintf(
+			" | st recommend ranks %s higher — operator queue order honoured",
+			recs[0].Item.ID)
+	}
+	return rat
 }
 
 func spawnBudgetSuffix(b float64) string {

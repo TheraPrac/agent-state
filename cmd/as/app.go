@@ -1037,6 +1037,39 @@ verdict drifts toward what the operator actually accepts.`,
 	readyCmd.Flags().IntP("limit", "n", 0, "max items to show")
 	root.AddCommand(readyCmd)
 
+	recommendCmd := &cobra.Command{
+		Use:   "recommend",
+		Short: "Rank workable items with an inspectable \"why this next\" rationale (T-369)",
+		Long: "Score the workable items and print them ranked, each with a\n" +
+			"decomposed rationale (priority · unblock leverage · sprint\n" +
+			"completion · age). Priority dominates by construction; the\n" +
+			"other factors only order within a priority band.\n\n" +
+			"Default candidate set is the PLANNING view (ready + unblocked\n" +
+			"+ unassigned). --queue switches to the DISPATCH view (queue +\n" +
+			"EligibleForDispatch) — exactly what `st coordinate` selects,\n" +
+			"so operator and coordinator read the identical rationale. This\n" +
+			"is the CLI brain the coordinator's dispatch surfaces as text\n" +
+			"(operating-contract §4.2 — never an opaque choice).",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			top, _ := cmd.Flags().GetInt("top")
+			scope, _ := cmd.Flags().GetString("scope")
+			queue, _ := cmd.Flags().GetBool("queue")
+			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{
+				JSON: jsonOut, Top: top, Scope: scope, Queue: queue,
+			})
+		},
+	}
+	recommendCmd.Flags().Bool("json", false,
+		"machine output (the stable contract the T-348 TUI planning panel consumes)")
+	recommendCmd.Flags().IntP("top", "n", 10, "max ranked rows to print")
+	recommendCmd.Flags().String("scope", "all",
+		"candidate scope: all | sprint (members of an active sprint only)")
+	recommendCmd.Flags().Bool("queue", false,
+		"score the DISPATCH view (queue + EligibleForDispatch) — what `st coordinate` sees")
+	root.AddCommand(recommendCmd)
+
 	finishCmd := &cobra.Command{
 		Use:   "finish [id]",
 		Short: "Clean up worktrees after merge",

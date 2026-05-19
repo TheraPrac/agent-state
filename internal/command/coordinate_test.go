@@ -47,6 +47,11 @@ func TestSelectNext(t *testing.T) {
 	if it == nil || it.ID != "T-001" {
 		t.Fatalf("selectNext = %v (%s), want T-001", it, why)
 	}
+	// Contract §4.2: the hit is no longer an opaque pick — it carries an
+	// inspectable scoring rationale, not the old empty string.
+	if !strings.Contains(why, "priority p") {
+		t.Errorf("hit must carry a decomposed rationale, got %q", why)
+	}
 
 	// Claim it → no longer eligible (single in-flight invariant).
 	if err := s.Mutate("T-001", func(m *model.Item) error {
@@ -85,7 +90,7 @@ func TestCoordinateDryRun(t *testing.T) {
 	}
 	for _, want := range []string{
 		"DRY RUN", "respawn_limit=3", "per_item=$40", "parallelism=4",
-		"picked:      T-001", "size-class:", "st spawn T-001",
+		"picked:      T-001", "why:", "size-class:", "st spawn T-001",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry-run output missing %q\n--- output ---\n%s", want, out)
