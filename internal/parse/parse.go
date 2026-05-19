@@ -267,13 +267,20 @@ func File(path string) (*model.Item, error) {
 				// I-691: a non-empty scalar under a known LIST key is a
 				// corrupted single-line write (`next_actions: text` instead
 				// of `next_actions:` + `- text`). storeScalar has no case
-				// for list keys and would silently drop it. Coerce to a
-				// one-element list so already-on-disk data self-heals in
-				// memory on load. Only the corrupt form reaches here: a
-				// proper `key:` + `- a` list leaves val == "", so the
-				// normal accumulate/flush path is untouched.
+				// for list keys and would silently drop it. SEED it as the
+				// first element of currentList rather than storeList-ing it
+				// immediately: the unified list flush (next indent-0 key or
+				// EOF) then owns it. The realistic corrupt form is
+				// `key: text` + the `- []` template marker (which the
+				// empty-marker branch skips, leaving the seed intact → heals
+				// to [text]); a pathological `key: text` + real `- a`/`- b`
+				// lines now MERGES (text as element 0) instead of the flush
+				// silently overwriting the coerced value — never a silent
+				// drop (operator silent-failure principle). A proper
+				// `key:` + `- a` list has val == "" → falls to storeScalar
+				// (inert for list keys) and the normal accumulate path runs.
 				if isListKey(key) && !isEmptyListScalar(val) {
-					storeList(item, key, nestKey, []string{unquote(val)})
+					currentList = []string{unquote(val)}
 				} else {
 					// Scalar store. For a well-formed list key the val
 					// here is an empty/sentinel (`key:` then `- a` on

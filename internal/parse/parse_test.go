@@ -959,3 +959,23 @@ func TestParseInlineEmptyListSentinelsNotCoerced(t *testing.T) {
 		}
 	}
 }
+
+// I-691 review fix (round 3): if a list key somehow has BOTH an inline
+// scalar AND real `- item` lines (hand-edit / write-fault), the coerced
+// scalar must NOT be silently overwritten by the list flush — it merges
+// as element 0. Pins the no-silent-drop guarantee (operator silent-
+// failure principle) for the pathological combined form.
+func TestParseScalarPlusRealItemsMergesNoSilentDrop(t *testing.T) {
+	content := "id: T-004\ntype: task\nstatus: queued\n" +
+		"created: 2026-05-18T10:00:00-06:00\nlast_touched: 2026-05-18T10:00:00-06:00\n" +
+		"title: t\n\nnext_actions: stray scalar value\n- real item A\n- real item B\n"
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	want := []string{"stray scalar value", "real item A", "real item B"}
+	if len(item.NextActions) != 3 ||
+		item.NextActions[0] != want[0] || item.NextActions[1] != want[1] || item.NextActions[2] != want[2] {
+		t.Errorf("NextActions = %#v, want %#v (scalar must merge as element 0, never be dropped)", item.NextActions, want)
+	}
+}
