@@ -254,6 +254,77 @@ func nextSuffix(dir, prefix string) (string, error) {
 
 func noop() {}
 
+// SelfOptions are the inputs for RegisterSelf — the single,
+// base-id-keyed registration for a workspace's primary Claude session
+// (T-357 producer), as opposed to Register's nextSuffix spawn-worker
+// model.
+type SelfOptions struct {
+	AgentID   string // base id, e.g. "agent-b" (from cfg.Identity().ID)
+	PID       int    // <=0 → the parent process (os.Getppid); see RegisterSelf
+	SessionID string
+	Role      string
+}
+
+// RegisterSelf writes (idempotently overwrites) the registration file
+// for THIS workspace agent at <AgentsDir>/<AgentID>.yaml — keyed by the
+// base id (no nextSuffix) so the T-354/T-356 roster⋈registration join
+// matches by AgentID. Distinct from Register, the suffixed spawn-worker
+// path, which is intentionally left untouched.
+//
+// PID defaults to os.Getppid() (the invoker — the SessionStart hook's
+// parent is the long-lived Claude process), NOT os.Getpid(): the `st`
+// process exits immediately, so its own pid would be dead-on-arrival.
+// The hook passes the real Claude PID explicitly.
+//
+// Started is PRESERVED when an existing registration for the same
+// AgentID has the same SessionID (a resume/compact of the same session
+// re-fires SessionStart — UPTIME should be continuous, not reset every
+// turn). A different SessionID is a genuinely new run → fresh Started.
+func RegisterSelf(cfg *config.Config, opts SelfOptions) (*Registration, error) {
+	if opts.AgentID == "" {
+		return nil, fmt.Errorf("agent.RegisterSelf: AgentID required")
+	}
+	if opts.PID <= 0 {
+		opts.PID = os.Getppid()
+	}
+	dir := cfg.AgentsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("agent.RegisterSelf: mkdir %s: %w", dir, err)
+	}
+	started := time.Now().Format(time.RFC3339)
+	if prev, err := LoadRegistration(cfg, opts.AgentID); err == nil && prev != nil &&
+		prev.SessionID != "" && prev.SessionID == opts.SessionID && prev.Started != "" {
+		started = prev.Started // same session resumed → continuous uptime
+	}
+	reg := &Registration{
+		AgentID:   opts.AgentID,
+		Root:      opts.AgentID,
+		PID:       opts.PID,
+		Started:   started,
+		SessionID: opts.SessionID,
+		Role:      opts.Role,
+		Commit:    buildinfo.Commit,
+	}
+	path := filepath.Join(dir, opts.AgentID+".yaml")
+	if err := writeRegistration(path, reg); err != nil {
+		return nil, fmt.Errorf("agent.RegisterSelf: write %s: %w", path, err)
+	}
+	return reg, nil
+}
+
+// DeregisterSelf removes this workspace agent's base-id registration.
+// No-op (nil) when the file is already absent — idempotent.
+func DeregisterSelf(cfg *config.Config, agentID string) error {
+	if agentID == "" {
+		return fmt.Errorf("agent.DeregisterSelf: agentID required")
+	}
+	path := filepath.Join(cfg.AgentsDir(), agentID+".yaml")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // --- minimal YAML serialization ---
 //
 // Keep the format hand-rolled and stable so external tooling (and the

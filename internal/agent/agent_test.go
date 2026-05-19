@@ -297,3 +297,97 @@ started: 2026-04-25T08:00:00Z
 		t.Errorf("AgentID parse failed: %q", got.AgentID)
 	}
 }
+
+func TestRegisterSelfAndDeregister(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	// Base-id keyed (no nextSuffix): the file is <id>.yaml exactly.
+	reg, err := RegisterSelf(cfg, SelfOptions{AgentID: "agent-b", PID: 4242, SessionID: "sess-xyz"})
+	if err != nil {
+		t.Fatalf("RegisterSelf: %v", err)
+	}
+	if reg.AgentID != "agent-b" {
+		t.Fatalf("AgentID = %q, want agent-b (no suffix)", reg.AgentID)
+	}
+	path := filepath.Join(cfg.AgentsDir(), "agent-b.yaml")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("registration file not written: %v", err)
+	}
+	got, err := LoadRegistration(cfg, "agent-b")
+	if err != nil || got == nil {
+		t.Fatalf("LoadRegistration: %v / %v", got, err)
+	}
+	if got.PID != 4242 || got.SessionID != "sess-xyz" || got.Started == "" {
+		t.Errorf("loaded reg = %+v, want pid 4242 / sess-xyz / non-empty Started", got)
+	}
+
+	// Idempotent overwrite — same file, refreshed fields, no suffix file.
+	if _, err := RegisterSelf(cfg, SelfOptions{AgentID: "agent-b", PID: 9999, SessionID: "sess-new"}); err != nil {
+		t.Fatalf("re-RegisterSelf: %v", err)
+	}
+	got, _ = LoadRegistration(cfg, "agent-b")
+	if got.PID != 9999 || got.SessionID != "sess-new" {
+		t.Errorf("overwrite not reflected: %+v", got)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(cfg.AgentsDir(), "agent-b*.yaml")); len(matches) != 1 {
+		t.Errorf("expected exactly one agent-b registration file, got %v", matches)
+	}
+
+	// Missing AgentID is an error (caller must resolve identity).
+	if _, err := RegisterSelf(cfg, SelfOptions{}); err == nil {
+		t.Error("RegisterSelf with empty AgentID should error")
+	}
+
+	// Deregister removes it; second call is a no-op (idempotent).
+	if err := DeregisterSelf(cfg, "agent-b"); err != nil {
+		t.Fatalf("DeregisterSelf: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("registration still present after deregister: %v", err)
+	}
+	if err := DeregisterSelf(cfg, "agent-b"); err != nil {
+		t.Errorf("DeregisterSelf (absent) should be a no-op, got %v", err)
+	}
+}
+
+func TestRegisterSelf_StartedReset(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+	dir := cfg.AgentsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a prior registration with a distinctly OLD Started + session
+	// S1 (writeRegistration is package-private — accessible here).
+	old := "2020-01-01T00:00:00Z"
+	if err := writeRegistration(filepath.Join(dir, "agent-b.yaml"), &Registration{
+		AgentID: "agent-b", Root: "agent-b", PID: 1, Started: old, SessionID: "S1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same session → Started preserved (deterministic string equality).
+	if _, err := RegisterSelf(cfg, SelfOptions{AgentID: "agent-b", PID: 2, SessionID: "S1"}); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := LoadRegistration(cfg, "agent-b")
+	if g.Started != old {
+		t.Errorf("same-session resume: Started = %q, want preserved %q", g.Started, old)
+	}
+	if g.PID != 2 {
+		t.Errorf("same-session resume: PID not refreshed (%d)", g.PID)
+	}
+
+	// Different session → genuinely new run → Started recomputed. It is
+	// time.Now() (2026+) which can NEVER equal the 2020 sentinel, so
+	// this is fully deterministic (no same-second collision risk).
+	if _, err := RegisterSelf(cfg, SelfOptions{AgentID: "agent-b", PID: 3, SessionID: "S2"}); err != nil {
+		t.Fatal(err)
+	}
+	g, _ = LoadRegistration(cfg, "agent-b")
+	if g.Started == old {
+		t.Errorf("new session must reset Started, but kept the %q sentinel", old)
+	}
+	if g.SessionID != "S2" {
+		t.Errorf("new session not recorded: %q", g.SessionID)
+	}
+}
