@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -312,9 +314,87 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		if err := s.pushWithRetry(root, 3); err != nil {
 			return fmt.Errorf("git push: %w", err)
 		}
+		// I-684: post-push GROUND-TRUTH verification. pushWithRetry's nil
+		// return is not proof the remote advanced — the plumbing replay
+		// (I-501) can reshape local history and return nil without the
+		// stranded commit(s) reaching origin, and a rejected push must
+		// never read as success. Assert the local main HEAD is actually
+		// contained in origin/main; if not, the durability primitive
+		// failed and agent-state is stranded LOCAL-ONLY — return loudly
+		// so `st sync` exits non-zero instead of printing `Synced.`
+		// (operator silent-failure / demo-killer class).
+		if err := verifyPushLanded(root); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// verifyPushLanded confirms the local `refs/heads/main` HEAD is reachable
+// from `refs/remotes/origin/main` after a push — i.e. the remote genuinely
+// received our commit. It re-fetches origin/main then uses
+// `merge-base --is-ancestor` (exit 0 ⇔ localHEAD is an ancestor of, or
+// equal to, origin/main). Each distinct failure mode gets its OWN
+// actionable diagnostic — the durability primitive must not cry wolf with
+// the wrong remediation (that erodes trust in the exact signal I-684
+// exists to make trustworthy):
+//   - fetch failed                 → the fetch's stderr, surfaced verbatim
+//   - no refs/remotes/origin/main  → "no upstream ref" (NOT "oversized file")
+//   - localHEAD not an ancestor    → genuinely stranded local-only
+//
+// CONCURRENCY CONTRACT: this MUST be called while GitSync's `.st-git.lock`
+// is held (it re-fetches and reads the remote-tracking ref, and relies on
+// the single-writer invariant — see the lock comment ~L211). It is invoked
+// from GitSync before the deferred unlock fires; do NOT hoist it out of
+// GitSync / past unlock() or the I-501 fetch-during-sync race returns.
+func verifyPushLanded(root string) error {
+	localOut, err := gitOutput(root, "rev-parse", "refs/heads/main")
+	if err != nil {
+		return fmt.Errorf("post-push verify: cannot resolve local main: %w", err)
+	}
+	localHead := strings.TrimSpace(localOut)
+
+	// Refresh the remote-tracking ref so the ancestor test reflects the
+	// remote's true state, not a stale snapshot. A fetch failure is itself
+	// a reason we cannot certify the sync — surface its stderr verbatim
+	// (consistent with the gitCapture "surface WHY" principle, not a bare
+	// "exit status 1").
+	if fetchErr, err := gitCapture(root, "fetch", "origin", "main"); err != nil {
+		detail := strings.TrimSpace(fetchErr)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("post-push verify: cannot fetch origin/main to confirm the push landed (agent-state may be stranded local-only): %s", detail)
+	}
+
+	// Distinguish "no remote-tracking ref" (exit 128 / missing upstream —
+	// NOT an oversized-file rejection) from "ref exists but does not
+	// contain our commit" (the genuine stranded case). Conflating them
+	// sends the operator down the wrong path.
+	if err := gitCmdQuiet(root, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"); err != nil {
+		return fmt.Errorf(
+			"post-push verify: no refs/remotes/origin/main after fetch — cannot certify the push for local commit %s landed. Check `git remote -v` / the origin fetch refspec / upstream config; agent-state may be stranded local-only",
+			shortSHA(localHead))
+	}
+
+	if err := gitCmdQuiet(root, "merge-base", "--is-ancestor", localHead, "refs/remotes/origin/main"); err != nil {
+		originOut, _ := gitOutput(root, "rev-parse", "refs/remotes/origin/main")
+		return fmt.Errorf(
+			"git push reported success but origin/main does NOT contain the local commit %s (origin/main=%s) — refs did not advance; agent-state is stranded LOCAL-ONLY. Resolve the rejection (e.g. an oversized file / pre-receive gate) and re-run `st sync`",
+			shortSHA(localHead), shortSHA(strings.TrimSpace(originOut)))
+	}
+	return nil
+}
+
+func shortSHA(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
 }
 
 // ErrPushDiverged is returned by pushWithRetry when the push is rejected
@@ -346,12 +426,18 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 		// Push the local main ref explicitly (not "HEAD") so we work
 		// regardless of which branch the working tree happens to be on.
 		// I-501: decouples agent-state writes from working-tree HEAD.
-		err := gitCmd(root, "push", "origin", "refs/heads/main:refs/heads/main")
+		// I-684: capture stderr so a persistent rejection's error carries
+		// the remote's reason (GH001 / pre-receive declined), not just
+		// "exit status 1".
+		pushErr, err := gitCapture(root, "push", "origin", "refs/heads/main:refs/heads/main")
 		if err == nil {
 			return nil
 		}
 
 		if attempt == maxRetries {
+			if pushErr != "" {
+				return fmt.Errorf("%w\nremote: %s", err, pushErr)
+			}
 			return err
 		}
 
@@ -365,7 +451,12 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 			}
 			if errors.Is(replayErr, ErrPushRejectedButOriginUnchanged) {
 				// Retrying won't help — surface the original push error
-				// alongside the diagnostic so the operator sees both.
+				// AND the remote's actual rejection text (GH001 /
+				// pre-receive declined) so the operator sees WHY, not
+				// just "exit status 1" (I-684).
+				if pushErr != "" {
+					return fmt.Errorf("%w: %v\nremote: %s", ErrPushRejectedButOriginUnchanged, err, pushErr)
+				}
 				return fmt.Errorf("%w: %v", ErrPushRejectedButOriginUnchanged, err)
 			}
 			return fmt.Errorf("plumbing replay during push retry: %w", replayErr)
@@ -678,6 +769,21 @@ func gitCmdQuiet(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	return cmd.Run()
+}
+
+// gitCapture runs a git command, still streaming stdout/stderr to the
+// operator (so a rejected push's `remote: error: GH001 …` is visible live),
+// AND capturing stderr so the caller can fold the remote's actionable
+// rejection text into the returned error instead of a bare "exit status 1"
+// (I-684 — the durability primitive must surface WHY it failed).
+func gitCapture(dir string, args ...string) (stderr string, err error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	var buf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err = cmd.Run()
+	return strings.TrimSpace(buf.String()), err
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
