@@ -111,7 +111,7 @@ func TestSpawnPromptBuild(t *testing.T) {
 		},
 		AcceptanceCriteria: []string{"go build green", "live-verify on throwaway item"},
 	}
-	p := buildWorkerPrompt(full)
+	p := buildWorkerPrompt(full, "")
 	for _, want := range []string{
 		"spawned reasoning worker for T-360: st spawn launcher",
 		"CLAUDE.md's delivery loop",
@@ -131,7 +131,7 @@ func TestSpawnPromptBuild(t *testing.T) {
 	}
 
 	bare := &model.Item{ID: "T-7", Type: "task", Title: "tiny"}
-	pb := buildWorkerPrompt(bare)
+	pb := buildWorkerPrompt(bare, "")
 	if strings.Contains(pb, "SBAR") {
 		t.Errorf("empty SBAR must not emit an SBAR block:\n%s", pb)
 	}
@@ -140,6 +140,44 @@ func TestSpawnPromptBuild(t *testing.T) {
 	}
 	if !strings.Contains(pb, "spawned reasoning worker for T-7: tiny") {
 		t.Errorf("frame missing for bare item:\n%s", pb)
+	}
+}
+
+// TestBuildWorkerPrompt_EmptyExtraContextIdentical pins the strict
+// additive contract (T-363): an empty extraContext must yield a prompt
+// byte-for-byte identical to the one a whitespace-only context yields, and
+// must NOT contain the coordinator-context delimiter — every direct
+// `st spawn` is unaffected by the new parameter.
+func TestBuildWorkerPrompt_EmptyExtraContextIdentical(t *testing.T) {
+	it := &model.Item{
+		ID: "T-9", Type: "task", Title: "additive check",
+		SBAR:               model.SBAR{Situation: "s", Background: "b", Assessment: "a", Recommendation: "r"},
+		AcceptanceCriteria: []string{"x"},
+	}
+	base := buildWorkerPrompt(it, "")
+	if base != buildWorkerPrompt(it, "   \n\t ") {
+		t.Error("whitespace-only extraContext must be treated as empty (identical prompt)")
+	}
+	if strings.Contains(base, "COORDINATOR CONTEXT") {
+		t.Errorf("empty extraContext must not emit the context delimiter:\n%s", base)
+	}
+}
+
+// TestBuildWorkerPrompt_ExtraContextAppended verifies the respawn-with-
+// context payload is appended verbatim under the delimiter, AFTER the base
+// prompt (the base content is preserved, the context is additive + last).
+func TestBuildWorkerPrompt_ExtraContextAppended(t *testing.T) {
+	it := &model.Item{ID: "T-9", Type: "task", Title: "ctx check"}
+	base := buildWorkerPrompt(it, "")
+	withCtx := buildWorkerPrompt(it, "prior attempt failed gate api_unit: TestFoo panic")
+	if !strings.HasPrefix(withCtx, base) {
+		t.Errorf("base prompt must be a prefix of the with-context prompt (additive, last)")
+	}
+	if !strings.Contains(withCtx, "--- COORDINATOR CONTEXT (prior attempt) ---") {
+		t.Errorf("missing context delimiter:\n%s", withCtx)
+	}
+	if !strings.Contains(withCtx, "prior attempt failed gate api_unit: TestFoo panic") {
+		t.Errorf("context payload not present verbatim:\n%s", withCtx)
 	}
 }
 
