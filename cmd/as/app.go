@@ -1098,6 +1098,13 @@ verdict drifts toward what the operator actually accepts.`,
 		Use:   "prime",
 		Short: "Export context for LLM consumption",
 		Run: func(cmd *cobra.Command, args []string) {
+			if resume, _ := cmd.Flags().GetBool("resume"); resume {
+				// I-679: --resume regenerates the cross-session resume
+				// prompt for the active/stack-top item from the live
+				// changelog (never a stored breadcrumb).
+				exitCode = command.Resume(appStore, appCfg, command.ResumeOpts{})
+				return
+			}
 			format, _ := cmd.Flags().GetString("format")
 			compact, _ := cmd.Flags().GetBool("compact")
 			globalView, _ := cmd.Flags().GetBool("global")
@@ -1109,7 +1116,29 @@ verdict drifts toward what the operator actually accepts.`,
 	primeCmd.Flags().String("format", "markdown", "output format (markdown, json)")
 	primeCmd.Flags().Bool("compact", false, "minimal output for hook injection")
 	primeCmd.Flags().Bool("global", false, "show items from every agent (default inside an agent workspace is to scope to that agent)")
+	primeCmd.Flags().Bool("resume", false, "regenerate the cross-session resume prompt for the active/stack-top item (I-679)")
 	root.AddCommand(primeCmd)
+
+	// st resume [<id>] — I-679 cross-session execution & decision replay.
+	resumeCmd := &cobra.Command{
+		Use:   "resume [id]",
+		Short: "Regenerate the paste-able session-resume prompt live from the changelog (I-679)",
+		Long: "Rebuilds a fresh session's starting context for a long-running item\n" +
+			"from the LIVE changelog — typed decision/exec/transition replay, the\n" +
+			"plan, declarative state, and a self-attestation banner that loudly\n" +
+			"flags any gap between the recorded exec tape and git ground truth.\n" +
+			"Never stores or trusts a snapshot. No argument ⇒ stack top, then\n" +
+			"first active item.",
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			opts := command.ResumeOpts{}
+			if len(args) == 1 {
+				opts.ID = args[0]
+			}
+			exitCode = command.Resume(appStore, appCfg, opts)
+		},
+	}
+	root.AddCommand(resumeCmd)
 
 	redCmd := &cobra.Command{
 		Use:   "red",

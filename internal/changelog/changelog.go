@@ -14,6 +14,44 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 )
 
+// Kind classifies a changelog entry by its role in cross-session continuity
+// (I-679). It is orthogonal to Op: Op says *what* mutated; Kind says *which
+// tape* a later session reads the entry from when it reconstructs context.
+type Kind string
+
+const (
+	// KindTransition is a deliberate declarative lifecycle mutation
+	// (create/update/start/close/tag/dep/plan/...). Low frequency, agent-
+	// written via st workflow commands. The default for any entry whose
+	// Kind cannot be derived as exec — including all pre-I-679 history.
+	KindTransition Kind = "transition"
+	// KindExec is an execution-tape event: the runtime record of work
+	// actually happening (commit, test result, pr/deploy, pipeline step
+	// completion). Captured as a side-effect of the command, never
+	// something the agent must remember to write.
+	KindExec Kind = "exec"
+	// KindDecision is a forced inflection point + rationale + rejected
+	// alternatives. NEVER derived from Op — only written explicitly by the
+	// I-679 decision writers (Phase B native-structured / Phase C
+	// extraction backstop). So an unknown Op can safely default away from it.
+	KindDecision Kind = "decision"
+)
+
+// Source records provenance for KindDecision entries so a resuming session
+// knows which lines it can stand on (I-679). Empty for transition/exec.
+type Source string
+
+const (
+	// SourceStructured is captured verbatim from a structured channel
+	// (AskUserQuestion answer, ExitPlanMode, st plan approve, push/pop
+	// --reason). Authoritative and immutable once written.
+	SourceStructured Source = "structured"
+	// SourceExtracted is machine-inferred from a to-be-summarized window by
+	// the extraction backstop. May be lossy; always carries Confidence and
+	// is reconciled so it can never clobber a SourceStructured record.
+	SourceExtracted Source = "extracted"
+)
+
 // Entry represents a single mutation in the changelog.
 type Entry struct {
 	Timestamp string `json:"timestamp"`
@@ -24,6 +62,49 @@ type Entry struct {
 	OldValue  string `json:"old,omitempty"`      // previous value
 	NewValue  string `json:"new,omitempty"`      // new value
 	Reason    string `json:"reason,omitempty"`   // human/agent explanation
+
+	// I-679 cross-session continuity fields. All omitempty + backward
+	// compatible: a pre-I-679 entry has empty Kind/Source/Confidence and is
+	// given a stable Kind on read via EffectiveKind (derived from Op),
+	// never crashing or silently dropping (operator silent-failure
+	// principle). Append stamps Kind at write time for every new entry.
+	Kind       Kind    `json:"kind,omitempty"`
+	Source     Source  `json:"source,omitempty"`     // provenance; decision entries only
+	Confidence float64 `json:"confidence,omitempty"` // 0<c≤1 for SourceExtracted; omitted ⇒ not applicable / fully trusted
+}
+
+// classifyKind derives the Kind for an entry from its Op. The exec set is
+// small and explicit; everything else is a declarative transition. A
+// decision is never derived — it is only ever written explicitly by the
+// I-679 decision writers — so an unknown or brand-new Op safely defaults to
+// transition. Consequence: adding a new declarative Op needs no change
+// here; only a genuinely new execution-event Op does.
+func classifyKind(op string) Kind {
+	switch op {
+	case "commit", "deploy_checked", "pr_recorded":
+		return KindExec
+	}
+	switch {
+	case strings.HasPrefix(op, "test_"): // test_executed/_failed/_recorded/_skipped
+		return KindExec
+	case strings.HasSuffix(op, "_completed"): // pipeline step completions (merge/deploy/smoke)
+		return KindExec
+	}
+	return KindTransition
+}
+
+// EffectiveKind returns the entry's Kind for filtering/replay. An explicit
+// Kind (stamped by Append under I-679, or written by a decision writer) is
+// authoritative and returned as-is. An empty Kind (pre-I-679 history, or
+// any path that did not set it) is derived from Op via classifyKind so the
+// typed view is consistent across the pre/post-I-679 boundary — a
+// historical commit reads back as exec, a historical create as transition.
+// Callers must filter on EffectiveKind(), never on a raw Kind == "".
+func (e Entry) EffectiveKind() Kind {
+	if e.Kind != "" {
+		return e.Kind
+	}
+	return classifyKind(e.Op)
 }
 
 // ActiveSessionID is set by st run subprocess steps to group changelog entries.
@@ -40,6 +121,12 @@ func Append(cfg *config.Config, id string, entry Entry) error {
 	}
 	if entry.SessionID == "" && ActiveSessionID != "" {
 		entry.SessionID = ActiveSessionID
+	}
+	// I-679: stamp Kind as a side-effect of the write so the typed tape is
+	// captured without any caller having to opt in. An explicit Kind (e.g.
+	// a decision writer) is preserved; only an unset Kind is derived.
+	if entry.Kind == "" {
+		entry.Kind = classifyKind(entry.Op)
 	}
 
 	dir := cfg.ChangelogDir()
@@ -122,6 +209,9 @@ func readFile(path string) ([]Entry, error) {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			return nil, fmt.Errorf("parsing line %q: %w", line, err)
 		}
+		// I-679: give every read entry a stable, non-empty Kind so
+		// filters/replay never have to special-case pre-I-679 history.
+		e.Kind = e.EffectiveKind()
 		entries = append(entries, e)
 	}
 
