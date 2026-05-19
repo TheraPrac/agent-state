@@ -510,6 +510,37 @@ destroy with --force to clean up the dangling session caches.`,
 	}
 	agentCmd.AddCommand(agentListCmd)
 
+	// use = cobra Use string; invoked = how the user types it (for
+	// help Example + error-message prefix, so `st agents` never prints
+	// "agent ps:").
+	newAgentPSCmd := func(use, invoked string) *cobra.Command {
+		c := &cobra.Command{
+			Use:   use,
+			Short: "Global process-table of the agent fleet (live, uptime, last-update, current item)",
+			Long: `A read-only snapshot of every agent in the workspace roster:
+which are live (process-tree liveness), how long each has been running,
+when each last updated (session-JSONL freshness), and the agent-state
+item each is currently on.
+
+The static-snapshot sibling of 'st watch' (live stream) and
+'st transcript' (history). Idle/unregistered roster agents are still
+listed (shown as '—'); a registration whose PID is dead shows 'stale'.`,
+			Example: "  st " + invoked + "\n  st " + invoked + " --workspace agent-b\n  st " + invoked + " --json",
+			Args:    cobra.NoArgs,
+			Run: func(cmd *cobra.Command, args []string) {
+				ws, _ := cmd.Flags().GetString("workspace")
+				asJSON, _ := cmd.Flags().GetBool("json")
+				exitCode = command.AgentPS(appStore, appCfg, command.AgentPSOpts{Workspace: ws, JSON: asJSON, Invoked: invoked})
+			},
+		}
+		c.Flags().String("workspace", "", "only agents whose workspace path contains this substring")
+		c.Flags().Bool("json", false, "emit the joined rows as JSON (pre-render, for machines)")
+		return c
+	}
+	agentCmd.AddCommand(newAgentPSCmd("ps", "agent ps"))
+	// Top-level `st agents` alias for the "global view" muscle-memory.
+	root.AddCommand(newAgentPSCmd("agents", "agents"))
+
 	agentIdentityCmd := &cobra.Command{
 		Use:   "identity",
 		Short: "Inspect resolved agent identity",
