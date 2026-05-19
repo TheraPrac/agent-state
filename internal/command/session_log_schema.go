@@ -359,9 +359,11 @@ func upsertBySession(item *model.Item, sid, projectDir, now string, t realTokens
 // first session-log flush. Unlike upsertBySession (a "record a
 // completed turn" call that unconditionally Turns++), this is a pure
 // seed: the worker's own later upsertBySession calls then accumulate
-// the real turn/token deltas onto the same sid-keyed line. Idempotent —
-// re-seeding an existing line only fills missing identity fields and
-// never touches counters.
+// the real turn/token deltas onto the same sid-keyed line. Idempotent
+// for its caller: sid/started_at are written only when absent and
+// counters (turns/tokens/ended_at) are never touched, so re-seeding
+// with the same project_dir is a no-op (project_dir is refreshed when
+// non-empty — the call site always passes the same worktree).
 func seedBySession(item *model.Item, sid, projectDir, now string) {
 	if sid == "" {
 		return

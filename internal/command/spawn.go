@@ -305,10 +305,11 @@ func Spawn(s *store.Store, cfg *config.Config, opts SpawnOpts) int {
 		}
 	}
 
-	// Reuse the canonical session-id generator (same package, run.go):
-	// it emits a zero-padded RFC-4122 v4 string. A hand-rolled
-	// non-padded "%x" formatter drops leading-zero nibbles and can
-	// yield a short/invalid UUID that `claude --session-id` rejects.
+	// Reuse the canonical RFC-4122 v4 generator (same package, run.go)
+	// rather than carrying a second hand-rolled UUID implementation —
+	// one format definition, one place to fix (CLAUDE.md
+	// reuse-don't-reinvent). Behaviourally equivalent to the prior
+	// inline version; this is deduplication, not a bug fix.
 	workerSID := generateSessionID()
 
 	prompt := buildWorkerPrompt(item)
