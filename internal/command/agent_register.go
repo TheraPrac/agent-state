@@ -10,7 +10,7 @@ import (
 
 // AgentRegisterOpts are the `st agent register` flags.
 type AgentRegisterOpts struct {
-	PID       int    // 0 → this process; the hook passes the Claude PID
+	PID       int    // <=0 → parent process (os.Getppid); the hook passes the Claude PID explicitly
 	SessionID string // the Claude session id (hook stdin .session_id)
 }
 

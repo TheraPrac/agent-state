@@ -564,7 +564,7 @@ across a same-session resume/compact.`,
 			exitCode = command.AgentRegister(appCfg, command.AgentRegisterOpts{PID: pid, SessionID: sess})
 		},
 	}
-	agentRegisterCmd.Flags().Int("pid", 0, "process to track for liveness (0 = this process; the hook passes the Claude PID)")
+	agentRegisterCmd.Flags().Int("pid", 0, "process to track for liveness (0 = parent process; the SessionStart hook passes the Claude PID)")
 	agentRegisterCmd.Flags().String("session", "", "Claude session id")
 	agentCmd.AddCommand(agentRegisterCmd)
 
@@ -575,10 +575,12 @@ across a same-session resume/compact.`,
 
 Idempotent (a no-op if already absent). Deliberately NOT wired to any
 hook: Claude Code has no SessionEnd event and the Stop hook fires every
-turn, so automatic deregistration would flap mid-session. Teardown is
-instead handled by the next 'st agent register' sweeping dead PIDs and
-by 'st agent ps' rendering a dead registration as 'stale'. Provided for
-explicit/scripted cleanup and future 'st spawn' workers.`,
+turn, so automatic deregistration would flap mid-session. A stale
+registration is instead rendered 'stale' by 'st agent ps' (T-356
+liveness) until a command that runs agent.Sweep (e.g. 'st start')
+removes it; 'st agent register' overwrites only this agent's own
+record, never peers'. Provided for explicit/scripted cleanup and
+future 'st spawn' workers.`,
 		Example: `  st agent deregister`,
 		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
