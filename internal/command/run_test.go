@@ -1395,8 +1395,9 @@ func TestPostDeployE2ENoPostDeployConfig(t *testing.T) {
 
 func TestPostMergeE2ENoManifest(t *testing.T) {
 	_, cfg := setupRunTestEnv(t)
-	if got := postMergeE2E(cfg, "T-999"); got != "" {
-		t.Errorf("no manifest: want \"\", got %q", got)
+	ran, msg := postMergeE2E(cfg, "T-999")
+	if ran || msg != "" {
+		t.Errorf("no manifest: want (false,\"\"), got (%v,%q)", ran, msg)
 	}
 }
 
@@ -1412,8 +1413,9 @@ func TestPostMergeE2ENonE2EFilesSkipped(t *testing.T) {
 	}}}
 	data, _ := json.Marshal(m)
 	os.WriteFile(filepath.Join(cfg.ManifestDir(), "T-001.json"), data, 0644)
-	if got := postMergeE2E(cfg, "T-001"); got != "" {
-		t.Errorf("api-only change must skip post-merge e2e: got %q", got)
+	ran, msg := postMergeE2E(cfg, "T-001")
+	if ran || msg != "" {
+		t.Errorf("api-only change must skip post-merge e2e: got (%v,%q)", ran, msg)
 	}
 }
 
@@ -1429,8 +1431,9 @@ func TestPostMergeE2ENoPostMergeConfig(t *testing.T) {
 	}}}
 	data, _ := json.Marshal(m)
 	os.WriteFile(filepath.Join(cfg.ManifestDir(), "T-001.json"), data, 0644)
-	if got := postMergeE2E(cfg, "T-001"); got != "" {
-		t.Errorf("no PostMergeCmd configured: want \"\", got %q", got)
+	ran, msg := postMergeE2E(cfg, "T-001")
+	if ran || msg != "" {
+		t.Errorf("no PostMergeCmd configured: want (false,\"\"), got (%v,%q)", ran, msg)
 	}
 }
 
@@ -1446,8 +1449,9 @@ func TestPostMergeE2EPassesWhenCmdSucceeds(t *testing.T) {
 	}}}
 	data, _ := json.Marshal(m)
 	os.WriteFile(filepath.Join(cfg.ManifestDir(), "T-001.json"), data, 0644)
-	if got := postMergeE2E(cfg, "T-001"); got != "" {
-		t.Errorf("passing post-merge cmd: want \"\", got %q", got)
+	ran, msg := postMergeE2E(cfg, "T-001")
+	if !ran || msg != "" {
+		t.Errorf("passing post-merge cmd: want (true,\"\"), got (%v,%q)", ran, msg)
 	}
 }
 
@@ -1463,9 +1467,9 @@ func TestPostMergeE2EFailsWhenCmdFails(t *testing.T) {
 	}}}
 	data, _ := json.Marshal(m)
 	os.WriteFile(filepath.Join(cfg.ManifestDir(), "T-001.json"), data, 0644)
-	got := postMergeE2E(cfg, "T-001")
-	if got == "" || !strings.Contains(got, "Post-merge E2E FAILED") {
-		t.Errorf("failing post-merge cmd must return failure summary, got %q", got)
+	ran, msg := postMergeE2E(cfg, "T-001")
+	if !ran || msg == "" || !strings.Contains(msg, "Post-merge E2E FAILED") {
+		t.Errorf("failing post-merge cmd must return (true, failure summary), got (%v,%q)", ran, msg)
 	}
 }
 

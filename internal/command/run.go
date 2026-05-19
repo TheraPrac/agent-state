@@ -2469,12 +2469,16 @@ func postDeployE2E(cfg *config.Config, itemID string) string {
 //
 // Applicability: only fires when the item has recorded PR(s) whose changed
 // files map to an e2e spec (same e2eSpecFor mapping post-deploy uses), so
-// doc-only / api-only / non-web items are correctly skipped. Returns "" on
-// pass or not-applicable, a non-empty failure summary on red.
-func postMergeE2E(cfg *config.Config, itemID string) string {
+// doc-only / api-only / non-web items are correctly skipped.
+//
+// Returns (ran, failMsg): ran is true ONLY when the command actually
+// executed (so the caller records audit evidence only for a real run, not
+// for not-applicable items). failMsg is non-empty iff the command ran and
+// failed. (false,"")=not applicable; (true,"")=ran+passed; (true,msg)=ran+failed.
+func postMergeE2E(cfg *config.Config, itemID string) (bool, string) {
 	m, err := manifest.Load(cfg.ManifestDir(), itemID)
 	if err != nil || len(m.PRs) == 0 {
-		return ""
+		return false, ""
 	}
 
 	// Applicability: did any merged PR touch a file that maps to an e2e spec?
@@ -2494,21 +2498,18 @@ func postMergeE2E(cfg *config.Config, itemID string) string {
 		}
 	}
 	if !touchesE2E {
-		return ""
+		return false, ""
 	}
 
 	if cfg.Testing == nil {
-		return ""
+		return false, ""
 	}
-	var mergeCmd string
-	for _, suite := range cfg.Testing.ScopeSuites {
-		if suite.PostMergeCmd != "" {
-			mergeCmd = suite.PostMergeCmd
-			break
-		}
-	}
+	// Deterministic: the post-merge gate IS the web_e2e gate — key off the
+	// same suite name the close-gate skip check and applicability use,
+	// rather than a non-deterministic map range.
+	mergeCmd := cfg.Testing.ScopeSuites["web_e2e"].PostMergeCmd
 	if mergeCmd == "" {
-		return ""
+		return false, ""
 	}
 
 	// Run the FULL suite from the agent-root (cfg.Root()) — deliberately NOT
@@ -2519,13 +2520,13 @@ func postMergeE2E(cfg *config.Config, itemID string) string {
 	fmt.Printf("[%s] Running post-merge E2E against local main (full suite)...\n", itemID)
 	output, exitCode, err := runCmdInDir(runDir, mergeCmd)
 	if err == nil && exitCode == 0 {
-		return ""
+		return true, ""
 	}
 	tail := string(output)
 	if len(tail) > 1500 {
 		tail = tail[len(tail)-1500:]
 	}
-	return fmt.Sprintf("Post-merge E2E FAILED against local main (exit %d):\n%s", exitCode, tail)
+	return true, fmt.Sprintf("Post-merge E2E FAILED against local main (exit %d):\n%s", exitCode, tail)
 }
 
 // executeUATReview runs UAT, then enters a conversational loop where the user
