@@ -108,7 +108,7 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// interactive prepItem accept branch does — otherwise the I-512
 	// invariant (linked_plans points at the active plan content) is
 	// permanently broken for write-only items.
-	var sidecarRel, scopeRepos string
+	var sidecarRel, scopeRepos, planApproach string
 	var draftACs []string
 	if p, _ := plan.Load(cfg.PlansDir(), id); p != nil {
 		sidecarRel = relativePlanPath(cfg.PlansDir(), cfg.Root(), id)
@@ -116,6 +116,10 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 			scopeRepos = strings.Join(p.ScopeRepos, ", ")
 		}
 		draftACs = append(draftACs, p.ACs...)
+		// I-679 Phase B: the chosen approach is the real signal of the
+		// decision (the "verdict"); capture a one-line gist so the
+		// resume Decisions section carries content, not a bare pointer.
+		planApproach = approachGist(p.Approach)
 	}
 
 	if err := s.Mutate(id, func(it *model.Item) error {
@@ -159,10 +163,15 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// I-679 Phase B: a plan approval is a settled fork ("we will build it
 	// this way") — capture it as a native-structured decision so a later
 	// session's `st resume` surfaces the chosen approach without
-	// re-deriving it. Verbatim + immutable; points at the live plan file
-	// rather than snapshotting it (never store-and-trust).
-	recordStructuredDecision(cfg, id, "plan_approve",
-		fmt.Sprintf("approach approved by %s — see .plans/%s.md (regenerate via `st resume %s`)", approver, id, id))
+	// re-deriving it. Carries the approach gist (the verdict — real
+	// signal, not a bare pointer) and points at the live plan file for
+	// full detail rather than snapshotting it (never store-and-trust).
+	planDecision := fmt.Sprintf("plan approved by %s — full plan .plans/%s.md (live via `st resume %s`)", approver, id, id)
+	if planApproach != "" {
+		planDecision = fmt.Sprintf("approach approved by %s: %s — full plan .plans/%s.md (live via `st resume %s`)",
+			approver, planApproach, id, id)
+	}
+	recordStructuredDecision(cfg, id, "plan_approve", planDecision)
 
 	fmt.Printf("Approved plan for %s (by %s at %s)\n", id, approver, approvedAt)
 	autoSync(s, fmt.Sprintf("st plan approve: %s", id))
