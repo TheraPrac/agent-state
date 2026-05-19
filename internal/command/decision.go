@@ -66,6 +66,46 @@ type CaptureDecisionOpts struct {
 	Reason  string // verbatim decision text; empty ⇒ nothing to capture
 }
 
+// resolveCaptureTarget is the shared item resolver + cross-agent write guard
+// for BOTH decision writers (CaptureDecision / ExtractDecisions). Keeping it
+// in one place is deliberate: the "never write a peer's changelog"
+// coordination rule must not drift between the structured and extracted
+// paths. Returns (id, 0) on success, or ("", 1) with a loud stderr line
+// already emitted (every non-resolution is reported so the calling hook can
+// key its loud path off the exit code — operator silent-failure principle).
+// `who` prefixes the stderr lines so the operator sees which command failed.
+func resolveCaptureTarget(s *store.Store, cfg *config.Config, explicitID, who string) (string, int) {
+	id := strings.TrimSpace(explicitID)
+	if id == "" {
+		// Agent-scoped: stack top, then THIS agent's first active item.
+		// Never a peer's (see resolveResumeTarget).
+		id = resolveResumeTarget(s, cfg)
+	}
+	if id == "" {
+		fmt.Fprintf(os.Stderr,
+			"%s: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.\n", who)
+		return "", 1
+	}
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "%s: unknown item %q — decision NOT recorded.\n", who, id)
+		return "", 1
+	}
+	// Explicit-ID peer guard. resolveResumeTarget already scopes the
+	// fallback; an explicit id bypasses it, so enforce the same
+	// coordination rule here. Only refuse when an agent identity resolves
+	// AND the item is assigned to a *different* agent — an unassigned item
+	// is nobody's claimed work (no peer to violate), and a no-identity
+	// context has no peers, both consistent with the fallback resolver.
+	if me := cfg.AgentID(); me != "" && item.AssignedTo != "" && item.AssignedTo != me {
+		fmt.Fprintf(os.Stderr,
+			"%s: %s is assigned to peer %q (you are %q) — decision NOT recorded; never write a peer's changelog.\n",
+			who, id, item.AssignedTo, me)
+		return "", 1
+	}
+	return id, 0
+}
+
 // CaptureDecision records a native-structured decision triggered from a
 // PostToolUse hook.
 //
@@ -110,32 +150,9 @@ func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpt
 		trigger = "hook_decision"
 	}
 
-	id := strings.TrimSpace(opts.ID)
-	if id == "" {
-		id = resolveResumeTarget(s, cfg)
-	}
-	if id == "" {
-		fmt.Fprintln(os.Stderr,
-			"st capture-decision: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.")
-		return 1
-	}
-	item, ok := s.Get(id)
-	if !ok {
-		fmt.Fprintf(os.Stderr,
-			"st capture-decision: unknown item %q — decision NOT recorded.\n", id)
-		return 1
-	}
-	// Explicit-ID peer guard. resolveResumeTarget already scopes the
-	// fallback; an explicit --item bypasses it, so enforce the same
-	// coordination rule here. Only refuse when an agent identity resolves
-	// AND the item is assigned to a *different* agent — an unassigned item
-	// is nobody's claimed work (no peer to violate), and a no-identity
-	// context has no peers, both consistent with the fallback resolver.
-	if me := cfg.AgentID(); me != "" && item.AssignedTo != "" && item.AssignedTo != me {
-		fmt.Fprintf(os.Stderr,
-			"st capture-decision: %s is assigned to peer %q (you are %q) — decision NOT recorded; never write a peer's changelog.\n",
-			id, item.AssignedTo, me)
-		return 1
+	id, rc := resolveCaptureTarget(s, cfg, opts.ID, "st capture-decision")
+	if rc != 0 {
+		return rc
 	}
 
 	if err := recordStructuredDecision(cfg, id, trigger, reason); err != nil {

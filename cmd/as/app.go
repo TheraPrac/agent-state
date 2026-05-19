@@ -1323,6 +1323,35 @@ verdict drifts toward what the operator actually accepts.`,
 	captureDecisionCmd.Flags().String("reason", "", "verbatim decision text; empty ⇒ nothing to capture")
 	root.AddCommand(captureDecisionCmd)
 
+	// st extract-decisions — I-679 Phase C lossy backstop. Hidden:
+	// hook-invoked machine glue (precompact.sh / stop-extract.sh), not a
+	// human verb. Mines the about-to-be-summarized transcript for prose
+	// forks and appends the uncovered ones as source=extracted, after
+	// reconciling against existing structured/extracted entries.
+	extractDecisionsCmd := &cobra.Command{
+		Use:    "extract-decisions",
+		Short:  "Recover prose decision forks from a transcript window (I-679 Phase C)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			tp, _ := cmd.Flags().GetString("transcript")
+			id, _ := cmd.Flags().GetString("item")
+			trigger, _ := cmd.Flags().GetString("trigger")
+			session, _ := cmd.Flags().GetString("session")
+			exitCode = command.ExtractDecisions(appStore, appCfg, command.ExtractDecisionsOpts{
+				TranscriptPath: tp,
+				ID:             id,
+				Trigger:        trigger,
+				Session:        session,
+			})
+		},
+	}
+	extractDecisionsCmd.Flags().String("transcript", "", "path to the session JSONL (from the PreCompact/Stop hook)")
+	extractDecisionsCmd.Flags().String("item", "", "explicit item id; empty ⇒ stack top, then this agent's first active item")
+	extractDecisionsCmd.Flags().String("trigger", "", "originating hook (precompact | precompact_<t> | stop)")
+	extractDecisionsCmd.Flags().String("session", "", "session_id from the hook stdin (tags entries + the stop finalize marker)")
+	root.AddCommand(extractDecisionsCmd)
+
 	redCmd := &cobra.Command{
 		Use:   "red",
 		Short: "List items awaiting an operator decision (binary autonomy loop)",

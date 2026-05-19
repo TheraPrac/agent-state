@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/extract"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -133,6 +134,34 @@ func lastSessionID(item *model.Item) string {
 // renderResume is the pure, table-tested core: (item, typed changelog,
 // session, plan, audit) → the paste-able prompt. No I/O.
 //
+// priorSessionUnfinalized reports whether the session being resumed FROM
+// ended without its Stop hook recording a session_finalized marker, despite
+// having had real work (a decision or exec entry) in that session. That is
+// the I-679 Phase C kill/interrupt signal: Stop is best-effort, so the
+// marker's absence — not an error code — is the evidence the window was
+// never mined. Requires a known prior session (empty ⇒ item-wide replay,
+// nothing to assert) and real activity (a read-only/meta session legitimately
+// has no marker and must not trip a false "killed" banner).
+func priorSessionUnfinalized(entries []changelog.Entry, priorSessionID string) bool {
+	if strings.TrimSpace(priorSessionID) == "" {
+		return false
+	}
+	hadActivity, finalized := false, false
+	for _, e := range entries {
+		if e.SessionID != priorSessionID {
+			continue
+		}
+		if e.Op == sessionFinalizedOp {
+			finalized = true
+		}
+		switch e.EffectiveKind() {
+		case changelog.KindDecision, changelog.KindExec:
+			hadActivity = true
+		}
+	}
+	return hadActivity && !finalized
+}
+
 // planNote is the loud fallback for the plan section: "" means planBody is
 // authoritative; non-empty means the plan could not be loaded (missing /
 // unreadable / empty) and the section renders a ⚠️ block instead of silently
@@ -155,6 +184,20 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 	default:
 		b.WriteString("## ✓ Execution tape verified against ground truth\n")
 		b.WriteString("  " + audit.message + "\n\n")
+	}
+
+	// (1b) Killed/interrupted prior session (I-679 Phase C). Stop is
+	// best-effort — a SIGKILL / Ctrl-C / crash skips it, so its window was
+	// never mined and its decision record may be incomplete. The signal is
+	// the ABSENCE of a session_finalized marker for a prior session that
+	// had real activity. Announced LOUDLY at the next resume (never a
+	// silent void) and kept in the impossible-to-miss top zone.
+	if priorSessionUnfinalized(entries, sessionID) {
+		b.WriteString("## ⚠️  PREVIOUS SESSION DID NOT FINALIZE ITS DECISION RECORD\n")
+		b.WriteString("  The prior session ended without its Stop hook running (kill / interrupt / crash),\n")
+		b.WriteString("  so its window was never mined for prose forks. Decisions made late in that\n")
+		b.WriteString("  session may be MISSING below — treat the record as incomplete and reconstruct\n")
+		b.WriteString("  from the plan / git / your own recollection rather than assuming it is whole.\n\n")
 	}
 
 	// (2) Declarative state — formal lifecycle, trusted (deliberate transitions).
@@ -204,18 +247,40 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 			decisions = append(decisions, e)
 		}
 	}
-	if len(decisions) > 0 {
+	// Boundary-confirm consolidation (I-679 Phase C, design decision #4):
+	// a low-confidence machine-EXTRACTED fork must be surfaced as a single
+	// question at the resume handshake — never asserted inline as settled
+	// truth, never a mid-conversation interruption. So split: structured +
+	// high-confidence extracted render inline as facts; below-threshold
+	// extracted entries collect into exactly ONE trailing confirm block.
+	var firm, lowConf []changelog.Entry
+	for _, e := range decisions {
+		if e.Source == changelog.SourceExtracted && e.Confidence < extract.ConfirmThreshold {
+			lowConf = append(lowConf, e)
+			continue
+		}
+		firm = append(firm, e)
+	}
+	if len(firm) > 0 {
 		b.WriteString("## Decisions (do NOT re-litigate — verbatim)\n")
-		for _, e := range decisions {
+		for _, e := range firm {
 			prov := string(e.Source)
 			if prov == "" {
 				prov = "structured"
 			}
 			tag := prov
 			if e.Source == changelog.SourceExtracted {
-				tag = fmt.Sprintf("extracted, confidence %.2f — CONFIRM if acting on this", e.Confidence)
+				tag = fmt.Sprintf("extracted, confidence %.2f", e.Confidence)
 			}
 			fmt.Fprintf(&b, "  • [%s] %s\n", tag, flattenLine(e.Reason))
+		}
+		b.WriteString("\n")
+	}
+	if len(lowConf) > 0 {
+		fmt.Fprintf(&b, "## Confirm before acting — %d low-confidence machine-extracted record(s)\n", len(lowConf))
+		b.WriteString("These were inferred from a compacted/ended window, NOT captured structured. Confirm or correct each ONCE here, then proceed — do not silently trust or silently discard:\n")
+		for _, e := range lowConf {
+			fmt.Fprintf(&b, "  ? [confidence %.2f] %s\n", e.Confidence, flattenLine(e.Reason))
 		}
 		b.WriteString("\n")
 	}
