@@ -153,3 +153,217 @@ func TestRecordStructuredDecision_EmptyReasonRecordsNothing(t *testing.T) {
 		t.Fatalf("got %d entries, want 0 (no rationale ⇒ nothing recorded)", len(entries))
 	}
 }
+
+// TestCaptureDecision_ExplicitItem: the hook-invoked entry point writes the
+// SAME native-structured record as recordStructuredDecision (one tested
+// codepath), attributed to an explicit --item, and defaults a blank trigger.
+func TestCaptureDecision_ExplicitItem(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+		ID:      "T-001",
+		Trigger: "ask_user_question",
+		Reason:  "Q: cache layer? → A: Redis (rejected: in-process LRU — multi-pod)",
+	}); rc != 0 {
+		t.Fatalf("explicit-item capture rc = %d, want 0", rc)
+	}
+	// Blank trigger must not drop the decision — it falls back to a
+	// stable label so the entry stays attributable.
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+		ID:     "T-001",
+		Reason: "second fork captured with no explicit trigger",
+	}); rc != 0 {
+		t.Fatalf("blank-trigger capture rc = %d, want 0", rc)
+	}
+
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	for _, e := range entries {
+		if e.EffectiveKind() != changelog.KindDecision {
+			t.Errorf("Kind = %q, want decision", e.EffectiveKind())
+		}
+		if e.Source != changelog.SourceStructured {
+			t.Errorf("Source = %q, want structured", e.Source)
+		}
+	}
+	if entries[0].Field != "ask_user_question" {
+		t.Errorf("trigger = %q, want ask_user_question", entries[0].Field)
+	}
+	if entries[1].Field != "hook_decision" {
+		t.Errorf("blank trigger should default to hook_decision, got %q", entries[1].Field)
+	}
+}
+
+// TestCaptureDecision_EmptyReasonIsCleanNoOp: an unparseable AskUserQuestion
+// answer / empty plan is genuinely nothing to record. It must exit 0 (so the
+// hook stays quiet) and write nothing — never cry wolf on a no-op.
+func TestCaptureDecision_EmptyReasonIsCleanNoOp(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{ID: "T-001", Trigger: "exit_plan_mode", Reason: "   \n\t "}); rc != 0 {
+		t.Fatalf("empty-reason rc = %d, want 0 (clean no-op)", rc)
+	}
+	entries, _ := changelog.Read(cfg, "T-001")
+	if len(entries) != 0 {
+		t.Fatalf("empty reason recorded %d entries, want 0", len(entries))
+	}
+}
+
+// TestCaptureDecision_UnknownItemIsLoudFailure: an explicit --item that does
+// not exist must NOT silently drop the fork. Returns 1 so the hook emits its
+// loud "decision NOT captured" line (operator silent-failure principle).
+func TestCaptureDecision_UnknownItemIsLoudFailure(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{ID: "Z-999", Trigger: "ask_user_question", Reason: "real fork that must not vanish"}); rc != 1 {
+		t.Fatalf("unknown-item rc = %d, want 1", rc)
+	}
+	if entries, _ := changelog.Read(cfg, "Z-999"); len(entries) != 0 {
+		t.Fatalf("unknown item wrote %d entries, want 0", len(entries))
+	}
+}
+
+// TestCaptureDecision_ResolvesActiveItem covers the NO-AGENT-IDENTITY
+// fallback branch specifically: setupTestEnv's root is a bare t.TempDir()
+// not under theraprac-agent-*, and no AS_AGENT_ID is set, so cfg.AgentID()
+// is "" and resolveResumeTarget relaxes to the global first-active item
+// (the as-CLI-only / plain-checkout path). With no --item the capture lands
+// on the only active fixture, T-003. The agent-SCOPED branch is exercised
+// separately by TestCaptureDecision_NeverResolvesOntoPeerItem.
+func TestCaptureDecision_ResolvesActiveItem(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if cfg.AgentID() != "" {
+		t.Fatalf("precondition: expected no agent identity, got %q", cfg.AgentID())
+	}
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{Trigger: "exit_plan_mode", Reason: "approach: build the thing the documented way"}); rc != 0 {
+		t.Fatalf("active-resolution rc = %d, want 0", rc)
+	}
+	if entries, _ := changelog.Read(cfg, "T-003"); len(entries) != 1 {
+		t.Fatalf("expected the fork on the active item T-003, got %d entries", len(entries))
+	}
+}
+
+// TestCaptureDecision_RefusesExplicitPeerItem: the explicit --item path
+// bypasses resolveResumeTarget's scoping, so the peer guard is enforced in
+// CaptureDecision too — the "never write a peer's changelog" property must
+// hold on EVERY path. setupTestEnv's T-003 is assigned agent-a; as agent-c
+// an explicit --item T-003 must be refused (rc 1, nothing written). An
+// unassigned item (T-001) is nobody's claimed work and remains allowed.
+func TestCaptureDecision_RefusesExplicitPeerItem(t *testing.T) {
+	t.Run("explicit peer item refused", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "agent-c")
+		s, cfg := setupTestEnv(t)
+		if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+			ID: "T-003", Trigger: "ask_user_question",
+			Reason: "explicit --item naming a peer's in-flight item",
+		}); rc != 1 {
+			t.Fatalf("explicit peer-item rc = %d, want 1 (refuse)", rc)
+		}
+		if entries, _ := changelog.Read(cfg, "T-003"); len(entries) != 0 {
+			t.Fatalf("peer item T-003 received %d entries via explicit --item — coordination violation", len(entries))
+		}
+	})
+
+	t.Run("explicit unassigned item allowed", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "agent-c")
+		s, cfg := setupTestEnv(t) // T-001 has no assigned_to
+		if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+			ID: "T-001", Trigger: "ask_user_question",
+			Reason: "unassigned item is nobody's claimed work — allowed",
+		}); rc != 0 {
+			t.Fatalf("explicit unassigned-item rc = %d, want 0", rc)
+		}
+		if entries, _ := changelog.Read(cfg, "T-001"); len(entries) != 1 {
+			t.Fatalf("expected the fork on unassigned T-001, got %d entries", len(entries))
+		}
+	})
+}
+
+// TestCaptureDecision_WriteFailureIsLoudNonCapture: a changelog write that
+// actually fails is a non-capture exactly like an unknown item — it must
+// return 1 so the hook's loud path fires, not rc 0 (the silent-loss trap
+// that the as#116 never-silent finding eliminated for the in-`st` path;
+// the decision tape has no self-attestation backstop until Phase C).
+func TestCaptureDecision_WriteFailureIsLoudNonCapture(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// Force changelog.Append to fail deterministically: put a regular
+	// FILE where the .changelog directory must be created (same technique
+	// as TestRecordStructuredDecision_WriteFailureIsNotSilent).
+	clDir := cfg.ChangelogDir()
+	_ = os.RemoveAll(clDir)
+	if err := os.WriteFile(clDir, []byte("blocker"), 0644); err != nil {
+		t.Fatalf("seed blocker file: %v", err)
+	}
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+		ID: "T-001", Trigger: "ask_user_question",
+		Reason: "a real fork whose write fails — must surface as a loud non-capture",
+	}); rc != 1 {
+		t.Fatalf("write-failure rc = %d, want 1 (loud non-capture, not silent rc 0)", rc)
+	}
+}
+
+// TestCaptureDecision_NeverResolvesOntoPeerItem is the regression test for
+// the defect caught by live verification on 2026-05-19: with no --item and
+// an un-scoped "first active" resolver, the PostToolUse capture appended a
+// decision onto a PEER's changelog (I-542, agent-a) in the shared
+// multi-agent workspace — violating the coordination rule "never edit a
+// peer's item". setupTestEnv's only active item (T-003) is assigned
+// agent-a; running AS agent-c, the capture must refuse (rc 1, loud, nothing
+// written) rather than silently land on the peer's item. As agent-a it
+// resolves normally — the guard scopes, it does not break resolution.
+func TestCaptureDecision_NeverResolvesOntoPeerItem(t *testing.T) {
+	t.Run("foreign agent refuses, writes nothing", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "agent-c") // T-003 is assigned agent-a
+		s, cfg := setupTestEnv(t)
+		if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+			Trigger: "ask_user_question",
+			Reason:  "a fork that must NOT be written onto a peer's item",
+		}); rc != 1 {
+			t.Fatalf("foreign-agent capture rc = %d, want 1 (refuse, never touch peer item)", rc)
+		}
+		if entries, _ := changelog.Read(cfg, "T-003"); len(entries) != 0 {
+			t.Fatalf("peer item T-003 received %d entries — coordination violation", len(entries))
+		}
+	})
+
+	t.Run("owning agent resolves normally", func(t *testing.T) {
+		t.Setenv("AS_AGENT_ID", "agent-a") // matches T-003's assignee
+		s, cfg := setupTestEnv(t)
+		if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{
+			Trigger: "ask_user_question",
+			Reason:  "owning agent's fork lands on its own active item",
+		}); rc != 0 {
+			t.Fatalf("owning-agent capture rc = %d, want 0", rc)
+		}
+		if entries, _ := changelog.Read(cfg, "T-003"); len(entries) != 1 {
+			t.Fatalf("owning agent's fork should land on T-003, got %d entries", len(entries))
+		}
+	})
+}
+
+// TestCaptureDecision_StackTopBeatsActive: a pushed item is the live focus,
+// so an un-attributed capture must prefer the stack top over the first
+// active item — exactly resolveResumeTarget's precedence.
+func TestCaptureDecision_StackTopBeatsActive(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := SaveStack(cfg, []StackEntry{{ID: "T-001"}}); err != nil {
+		t.Fatalf("seed stack: %v", err)
+	}
+
+	if rc := CaptureDecision(s, cfg, CaptureDecisionOpts{Trigger: "ask_user_question", Reason: "fork while interrupted on T-001"}); rc != 0 {
+		t.Fatalf("stack-top-resolution rc = %d, want 0", rc)
+	}
+	if entries, _ := changelog.Read(cfg, "T-001"); len(entries) != 1 {
+		t.Fatalf("expected the fork on stack-top T-001, got %d entries", len(entries))
+	}
+	if entries, _ := changelog.Read(cfg, "T-003"); len(entries) != 0 {
+		t.Fatalf("first-active T-003 must NOT receive the fork when a stack top exists, got %d", len(entries))
+	}
+}

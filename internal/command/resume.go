@@ -82,6 +82,19 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 
 // resolveResumeTarget mirrors prime's "stack beats active" precedence so
 // `st resume` with no argument resumes whatever the session was doing.
+//
+// The active-item fallback is AGENT-SCOPED: in the shared multi-agent
+// workspace several peers' items are "active" simultaneously. s.List() sorts
+// by ID, so an un-scoped "first active" deterministically returns the
+// LOWEST-ID active item — which is frequently a PEER's item, not this
+// agent's. For the PostToolUse capture path (CaptureDecision, no explicit
+// id) that meant a decision being appended to a peer's changelog, violating
+// the coordination rule "never edit a peer's item" (caught live,
+// 2026-05-19, before wiring).
+// The stack is already per-agent (LoadStack is the local agent's), so only
+// the active fallback needs the guard. When no agent identity is resolvable
+// (the `as`-CLI-only repo, a plain checkout), there are no peers to collide
+// with, so the original global "first active" behavior is preserved.
 func resolveResumeTarget(s *store.Store, cfg *config.Config) string {
 	stack := LoadStack(cfg)
 	if len(stack) > 0 {
@@ -90,10 +103,17 @@ func resolveResumeTarget(s *store.Store, cfg *config.Config) string {
 			return top.ID
 		}
 	}
+	me := cfg.AgentID()
 	for _, it := range s.List() {
-		if it.Status == "active" {
-			return it.ID
+		if it.Status != "active" {
+			continue
 		}
+		// Agent-scoped: never resolve onto a peer's item. Only relax to
+		// global-first-active when this process has no agent identity.
+		if me != "" && it.AssignedTo != me {
+			continue
+		}
+		return it.ID
 	}
 	return ""
 }

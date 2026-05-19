@@ -7,6 +7,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // recordStructuredDecision appends a native-structured decision entry
@@ -49,25 +50,129 @@ func approachGist(approach string) string {
 	return ""
 }
 
-func recordStructuredDecision(cfg *config.Config, id, trigger, reason string) {
-	if strings.TrimSpace(reason) == "" {
-		return
+// CaptureDecisionOpts controls `st capture-decision` (I-679 Phase B). It is
+// the thin, hook-invoked entry point for native-structured decision capture
+// from a PostToolUse hook (AskUserQuestion / ExitPlanMode). It deliberately
+// holds no write logic of its own — it resolves the target item and delegates
+// to recordStructuredDecision so the changelog write stays in the single
+// tested place (one Source=structured / Kind=decision codepath, one
+// never-silent failure report).
+type CaptureDecisionOpts struct {
+	// ID is an explicit item. Empty ⇒ stack top, then (when an agent
+	// identity resolves) this agent's first active item; with no agent
+	// identity, the global first-active fallback — see resolveResumeTarget.
+	ID      string
+	Trigger string // originating channel: ask_user_question | exit_plan_mode
+	Reason  string // verbatim decision text; empty ⇒ nothing to capture
+}
+
+// CaptureDecision records a native-structured decision triggered from a
+// PostToolUse hook.
+//
+// Item resolution: an explicit ID is used as given; otherwise it mirrors
+// `st resume`'s "stack beats active" precedence via resolveResumeTarget
+// (stack top, then — when an agent identity resolves — this agent's first
+// active item; the guard is deliberately relaxed to the global first-active
+// item only when no agent identity is resolvable, e.g. the as-CLI-only repo,
+// where there are no peers to collide with). So the capture lands on
+// whatever item the session is actually working — the same item `st resume`
+// will replay next session.
+//
+// Cross-agent safety: this is a WRITE, and writing onto a peer's changelog
+// is the coordination-rule violation ("never edit a peer's item") this whole
+// path exists to prevent. The fallback resolver already skips peer items;
+// the explicit-ID path is guarded here too so the "never a peer's" property
+// holds on EVERY path, not just the fallback (an explicit --item naming a
+// peer's in-flight item is refused, loudly, when an agent identity resolves).
+//
+// Returns a process exit code: 0 = captured, or a deliberate no-op (empty
+// reason — genuinely nothing to record); 1 = NOT captured (no target item /
+// unknown item / refused peer item / the changelog write itself failed). A
+// failed write is a non-capture exactly like the others, so it returns 1
+// too — the asymmetry of "unknown item is loud but a lost write is silent"
+// is the precise operator-silent-failure trap this contract avoids; the
+// decision tape has no self-attestation backstop until Phase C. The *hook*
+// always exits 0 regardless (a PostToolUse failure must never break the tool
+// call that already ran) but keys its loud "decision NOT captured" line off
+// this code, so every non-capture must be reported through it.
+func CaptureDecision(s *store.Store, cfg *config.Config, opts CaptureDecisionOpts) int {
+	reason := strings.TrimSpace(opts.Reason)
+	if reason == "" {
+		// Not an error: an AskUserQuestion whose answer could not be
+		// parsed, or an empty plan, is genuinely nothing to record. A
+		// decision with no rationale is not a non-re-derivable fact
+		// (matches recordStructuredDecision's own guard). Exit clean so
+		// the hook stays quiet rather than crying wolf on every no-op.
+		return 0
 	}
-	// Best-effort but genuinely never silent. A failed write must not
-	// break the command that triggered it, but it must NOT vanish: the
-	// Phase A self-attestation audit only checks the exec/commit tape vs
-	// git — it does NOT cover decision entries, so it cannot surface a
-	// dropped decision. The only thing that makes this non-silent is
-	// reporting the failure here, to stderr, the moment it happens.
-	if err := changelog.Append(cfg, id, changelog.Entry{
+	trigger := strings.TrimSpace(opts.Trigger)
+	if trigger == "" {
+		trigger = "hook_decision"
+	}
+
+	id := strings.TrimSpace(opts.ID)
+	if id == "" {
+		id = resolveResumeTarget(s, cfg)
+	}
+	if id == "" {
+		fmt.Fprintln(os.Stderr,
+			"st capture-decision: no active/stack-top item to attribute this decision to — it was NOT recorded; push or start the relevant item so cross-session resume can capture forks.")
+		return 1
+	}
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr,
+			"st capture-decision: unknown item %q — decision NOT recorded.\n", id)
+		return 1
+	}
+	// Explicit-ID peer guard. resolveResumeTarget already scopes the
+	// fallback; an explicit --item bypasses it, so enforce the same
+	// coordination rule here. Only refuse when an agent identity resolves
+	// AND the item is assigned to a *different* agent — an unassigned item
+	// is nobody's claimed work (no peer to violate), and a no-identity
+	// context has no peers, both consistent with the fallback resolver.
+	if me := cfg.AgentID(); me != "" && item.AssignedTo != "" && item.AssignedTo != me {
+		fmt.Fprintf(os.Stderr,
+			"st capture-decision: %s is assigned to peer %q (you are %q) — decision NOT recorded; never write a peer's changelog.\n",
+			id, item.AssignedTo, me)
+		return 1
+	}
+
+	if err := recordStructuredDecision(cfg, id, trigger, reason); err != nil {
+		// recordStructuredDecision already emitted the never-silent
+		// stderr warning; surface it as a non-capture so the hook's loud
+		// path fires consistently with the other rc-1 cases above.
+		return 1
+	}
+	return 0
+}
+
+// recordStructuredDecision appends the decision and returns the changelog
+// write error (nil on success or on a deliberate empty-reason skip). It is
+// the single Source=structured / Kind=decision write site for the whole
+// feature (plan-approve, stack-push, and the PostToolUse hook). It is
+// genuinely never silent: a failed write must not break the command that
+// triggered it, but it must NOT vanish — the Phase A self-attestation audit
+// checks only the exec/commit tape vs git, NOT decision entries, so a
+// dropped decision has no backstop until Phase C. The stderr warning here is
+// that backstop for the in-`st` callers (plan/stack); CaptureDecision
+// additionally turns the returned error into a loud non-capture exit code so
+// the hook path is covered too.
+func recordStructuredDecision(cfg *config.Config, id, trigger, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return nil
+	}
+	err := changelog.Append(cfg, id, changelog.Entry{
 		Op:     "decision",
 		Field:  trigger,
 		Kind:   changelog.KindDecision,
 		Source: changelog.SourceStructured,
 		Reason: reason,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"warning: failed to capture %s decision for %s (%v) — this rationale will NOT appear in `st resume`; re-state it via `st push --reason` or note it in the plan.\n",
 			trigger, id, err)
 	}
+	return err
 }

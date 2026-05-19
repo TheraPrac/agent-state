@@ -1297,6 +1297,32 @@ verdict drifts toward what the operator actually accepts.`,
 	}
 	root.AddCommand(resumeCmd)
 
+	// st capture-decision — I-679 Phase B native-structured decision
+	// capture. Hidden: this is hook-invoked machine glue (the
+	// capture-decision.sh PostToolUse hook for AskUserQuestion /
+	// ExitPlanMode), not a human verb. It exists so the changelog write
+	// stays in one tested place rather than being reimplemented in bash.
+	captureDecisionCmd := &cobra.Command{
+		Use:    "capture-decision",
+		Short:  "Record a native-structured decision from a PostToolUse hook (I-679)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			id, _ := cmd.Flags().GetString("item")
+			trigger, _ := cmd.Flags().GetString("trigger")
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.CaptureDecision(appStore, appCfg, command.CaptureDecisionOpts{
+				ID:      id,
+				Trigger: trigger,
+				Reason:  reason,
+			})
+		},
+	}
+	captureDecisionCmd.Flags().String("item", "", "explicit item id; empty ⇒ stack top, then this agent's first active item")
+	captureDecisionCmd.Flags().String("trigger", "", "originating channel (ask_user_question | exit_plan_mode)")
+	captureDecisionCmd.Flags().String("reason", "", "verbatim decision text; empty ⇒ nothing to capture")
+	root.AddCommand(captureDecisionCmd)
+
 	redCmd := &cobra.Command{
 		Use:   "red",
 		Short: "List items awaiting an operator decision (binary autonomy loop)",
