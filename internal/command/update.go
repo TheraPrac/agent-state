@@ -15,12 +15,44 @@ import (
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
 
-// listFields are top-level fields stored as YAML lists. Multi-line values
-// for these fields are split into list items rather than block scalars.
+// listFields are the TOP-LEVEL fields stored as YAML lists. A value for
+// one of these is written as list items via ReplaceList, never a scalar —
+// a scalar under a list key is silently dropped by the parser's
+// storeScalar (I-691).
+//
+// Relationship to the parser's list-key set (parse.isListKey /
+// parse.storeList): listFields is exactly that set MINUS `tests_written`.
+// `tests_written` is a LIST on read (the parser routes it into the
+// testing_evidence map) but it is NOT a top-level key — it lives nested
+// under `testing_evidence:` and its writer is the dedicated nested
+// appender (Doc.AppendToNestedList("testing_evidence","tests_written",…)
+// in pr.go). Putting it here would make ReplaceList (which only matches
+// indent-0 keys) append a SECOND, orphaned top-level `tests_written:`
+// block while leaving the nested one stale — structural corruption. So
+// the asymmetry is deliberate: every key here MUST be in parse.isListKey,
+// but parse.isListKey has the one extra nested key. Keep them in sync
+// under that rule.
 var listFields = map[string]bool{
 	"acceptance_criteria": true, "depends_on": true, "blocks": true,
 	"related_issues": true, "next_actions": true, "resolution": true,
 	"invariants": true, "doc_changes": true, "linked_plans": true,
+	"tags": true, "sessions": true,
+}
+
+// listItemRaw formats v as a canonical YAML list-item line ("- v", or
+// "- \"v\"" when v needs quoting). The quoting predicate mirrors the
+// migrate builder's needsQuoting (`:` `+"`"+` #{}[]` or a leading quote) so a
+// single-line `st update` write and any later builder re-render of the same
+// item are byte-identical — preventing spurious migrate/round-trip churn.
+// I-691.
+func listItemRaw(v string) string {
+	if strings.ContainsAny(v, ":`#{}[]") || strings.HasPrefix(v, "'") || strings.HasPrefix(v, "\"") {
+		// Wrap exactly as migrate.emitList does (raw `"%s"`, no Go
+		// escaping) so the two writers produce identical bytes; the
+		// parser's unquote only strips balanced wrapping quotes.
+		return fmt.Sprintf(`- "%s"`, v)
+	}
+	return "- " + v
 }
 
 // StdinIsPiped reports whether stdin is piped (non-interactive). Exposed
@@ -226,6 +258,24 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 				}
 			}
 			item.Doc.ReplaceList(field, lines)
+		case listFields[field]:
+			// I-691: a SINGLE-LINE value for a top-level list field (no
+			// newline, so the multi-line case above did not match) is ONE
+			// list item, not a scalar. Written as a scalar (`key: value`)
+			// it is silently dropped on reload — the parser's storeScalar
+			// has no case for any list key. This branch covers every
+			// top-level list field (listFields; the only parser list key
+			// excluded is the nested `tests_written` — see listFields'
+			// doc); emit the canonical list-item line, quoted exactly as
+			// the migrate builder's emitList would, so update.go and a
+			// later builder re-render agree byte-for-byte.
+			//
+			// oldValue via GetField is "" for a well-formed existing list
+			// (the header line carries no inline value) — same limitation
+			// as the sibling scalar branch; git history is the source of
+			// truth for prior list contents (accepted, PR #107 #5).
+			oldValue, _ = item.Doc.GetField(field)
+			item.Doc.ReplaceList(field, []string{listItemRaw(value)})
 		case strings.Contains(field, "."):
 			oldValue, _ = item.Doc.GetNestedField(field)
 			item.Doc.SetNestedField(field, value)
@@ -753,15 +803,18 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 				id, id)
 			return 2
 		}
-		// I-504 (review fix): list fields silently corrupt schema
-		// when written as a scalar. depends_on/blocks/etc. need the
-		// list-replacement path which only the single-field --stdin
-		// flow exposes today; reject in batch with a clear redirect.
+		// I-504 (review fix): list fields silently corrupt schema when
+		// written as a scalar. depends_on/blocks/etc. need the
+		// list-replacement path, which batch mode does not expose;
+		// reject in batch with a clear redirect to the single-field
+		// forms (I-691 added the one-line positional form alongside
+		// the multi-line --stdin form).
 		if listFields[p.Field] {
 			fmt.Fprintf(os.Stderr,
 				"update: %s is a list field — batch mode cannot set list fields as a scalar.\n"+
-					"  Use: st update %s %s --stdin  (multi-line list replacement)\n",
-				p.Field, id, p.Field)
+					"  Use: st update %s %s \"<single item>\"   (one-line list replacement), or\n"+
+					"       st update %s %s --stdin             (multi-line list replacement)\n",
+				p.Field, id, p.Field, id, p.Field)
 			return 2
 		}
 		if p.Field == "summary" {

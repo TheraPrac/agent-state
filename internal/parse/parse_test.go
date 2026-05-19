@@ -883,3 +883,99 @@ summary: |-
 		t.Errorf("Summary churn: %q", item.Summary)
 	}
 }
+
+// I-691: a non-empty scalar under a known list key is a corrupted
+// single-line write (`next_actions: text`, not `next_actions:` + `- text`).
+// storeScalar has no list-key case and previously dropped it silently. The
+// parser now coerces it to a one-element list so already-on-disk data
+// self-heals on load. The well-formed list form must still parse
+// unchanged (no regression).
+func TestParseScalarListKeyCoercedNotDropped(t *testing.T) {
+	content := `id: I-679
+type: issue
+status: active
+created: 2026-05-18T10:00:00-06:00
+last_touched: 2026-05-18T10:00:00-06:00
+
+title: corrupted single-line list field
+
+next_actions: Phase B increment: PostToolUse hook + SessionStart compact
+- []
+
+resolution: done by reverting
+`
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	wantNA := "Phase B increment: PostToolUse hook + SessionStart compact"
+	if len(item.NextActions) != 1 || item.NextActions[0] != wantNA {
+		t.Errorf("NextActions = %#v, want [%q] (scalar must coerce, not drop)", item.NextActions, wantNA)
+	}
+	if len(item.Resolution) != 1 || item.Resolution[0] != "done by reverting" {
+		t.Errorf("Resolution = %#v, want [\"done by reverting\"]", item.Resolution)
+	}
+}
+
+func TestParseWellFormedListNoRegression(t *testing.T) {
+	content := `id: T-002
+type: task
+status: queued
+created: 2026-05-18T10:00:00-06:00
+last_touched: 2026-05-18T10:00:00-06:00
+
+title: well-formed list
+
+next_actions:
+- first action
+- second action
+`
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if len(item.NextActions) != 2 ||
+		item.NextActions[0] != "first action" ||
+		item.NextActions[1] != "second action" {
+		t.Errorf("NextActions = %#v, want [first action, second action]", item.NextActions)
+	}
+}
+
+// I-691 review fix: the `[[]]` inline sentinel (and `null`/`~`) under a
+// list key must be treated as EMPTY, not coerced into a literal element —
+// isEmptyListScalar guards this. Mirrors the existing `- [[]]` list-marker
+// convention the parser already recognized.
+func TestParseInlineEmptyListSentinelsNotCoerced(t *testing.T) {
+	for _, sentinel := range []string{"[[]]", "null", "~"} {
+		content := "id: T-003\ntype: task\nstatus: queued\n" +
+			"created: 2026-05-18T10:00:00-06:00\nlast_touched: 2026-05-18T10:00:00-06:00\n" +
+			"title: t\n\nnext_actions: " + sentinel + "\n"
+		item, err := File(writeTempFile(t, content))
+		if err != nil {
+			t.Fatalf("File(%q): %v", sentinel, err)
+		}
+		if len(item.NextActions) != 0 {
+			t.Errorf("next_actions: %s → NextActions = %#v, want empty", sentinel, item.NextActions)
+		}
+	}
+}
+
+// I-691 review fix (round 3): if a list key somehow has BOTH an inline
+// scalar AND real `- item` lines (hand-edit / write-fault), the coerced
+// scalar must NOT be silently overwritten by the list flush — it merges
+// as element 0. Pins the no-silent-drop guarantee (operator silent-
+// failure principle) for the pathological combined form.
+func TestParseScalarPlusRealItemsMergesNoSilentDrop(t *testing.T) {
+	content := "id: T-004\ntype: task\nstatus: queued\n" +
+		"created: 2026-05-18T10:00:00-06:00\nlast_touched: 2026-05-18T10:00:00-06:00\n" +
+		"title: t\n\nnext_actions: stray scalar value\n- real item A\n- real item B\n"
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	want := []string{"stray scalar value", "real item A", "real item B"}
+	if len(item.NextActions) != 3 ||
+		item.NextActions[0] != want[0] || item.NextActions[1] != want[1] || item.NextActions[2] != want[2] {
+		t.Errorf("NextActions = %#v, want %#v (scalar must merge as element 0, never be dropped)", item.NextActions, want)
+	}
+}

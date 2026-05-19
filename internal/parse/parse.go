@@ -264,8 +264,33 @@ func File(path string) (*model.Item, error) {
 					continue
 				}
 
-				// Store scalar value
-				storeScalar(item, key, val)
+				// I-691: a non-empty scalar under a known LIST key is a
+				// corrupted single-line write (`next_actions: text` instead
+				// of `next_actions:` + `- text`). storeScalar has no case
+				// for list keys and would silently drop it. SEED it as the
+				// first element of currentList rather than storeList-ing it
+				// immediately: the unified list flush (next indent-0 key or
+				// EOF) then owns it. The realistic corrupt form is
+				// `key: text` + the `- []` template marker (which the
+				// empty-marker branch skips, leaving the seed intact → heals
+				// to [text]); a pathological `key: text` + real `- a`/`- b`
+				// lines now MERGES (text as element 0) instead of the flush
+				// silently overwriting the coerced value — never a silent
+				// drop (operator silent-failure principle). A proper
+				// `key:` + `- a` list has val == "" → falls to storeScalar
+				// (inert for list keys) and the normal accumulate path runs.
+				if isListKey(key) && !isEmptyListScalar(val) {
+					currentList = []string{unquote(val)}
+				} else {
+					// Scalar store. For a well-formed list key the val
+					// here is an empty/sentinel (`key:` then `- a` on
+					// following lines, or `key: []`): storeScalar has no
+					// case for list keys so it is inert for them, and the
+					// real items arrive via the `- ` branch and flush
+					// through storeList. For genuine scalar keys it stores
+					// normally.
+					storeScalar(item, key, val)
+				}
 			} else {
 				// Nested key:value
 				if nestKey == "" {
@@ -515,6 +540,41 @@ func setSBARField(item *model.Item, key, value string) {
 	case "recommendation":
 		item.SBAR.Recommendation = value
 	}
+}
+
+// isEmptyListScalar reports whether an inline scalar value for a list key
+// is an empty/sentinel marker (`[]`, `[[]]`, null, ~, or empty/whitespace)
+// rather than a real single value. Coercing one of these to a list would
+// resurrect the empty-list sentinel as a literal element (the regression
+// TestParseEmptyListVariants/bare-brackets caught). I-691.
+func isEmptyListScalar(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "", "[]", "[[]]", "null", "~":
+		return true
+	}
+	return false
+}
+
+// isListKey reports whether key is stored as a list. It MUST equal
+// storeList's switch below (every key storeList recognizes is one whose
+// scalar form must be coerced — I-691 — rather than dropped by
+// storeScalar). It relates to command.listFields (the WRITE side) by
+// exactly: isListKey == command.listFields ∪ {"tests_written"}. The extra
+// key, `tests_written`, is a list on READ (storeList routes it into the
+// testing_evidence map, so a stray top-level scalar still self-heals here)
+// but is intentionally absent from command.listFields because it is
+// nested under `testing_evidence:` and written by a dedicated nested
+// appender — never via the top-level ReplaceList path. Keep the three in
+// sync under that rule.
+func isListKey(key string) bool {
+	switch key {
+	case "tags", "depends_on", "blocks", "related_issues",
+		"acceptance_criteria", "next_actions", "resolution",
+		"invariants", "doc_changes", "sessions", "linked_plans",
+		"tests_written":
+		return true
+	}
+	return false
 }
 
 func storeList(item *model.Item, key, nestKey string, list []string) {
