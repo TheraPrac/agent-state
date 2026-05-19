@@ -32,8 +32,10 @@ const fourSectionBuf = "situation: |-\n" +
 	"  Rec body.\n"
 
 // pipeStdin swaps os.Stdin for a pipe preloaded with content and returns
-// a restore func — a named wrapper around the inline os.Stdin-swap
-// pattern used ad hoc in patch_test.go.
+// an explicit restore func. It packages the same os.Pipe / os.Stdin
+// swap that patch_test.go does inline (there via a deferred closure, no
+// named helper) into one reusable call whose restore is invoked
+// explicitly — so a test can restore mid-body before re-reading state.
 func pipeStdin(t *testing.T, content string) func() {
 	t.Helper()
 	old := os.Stdin

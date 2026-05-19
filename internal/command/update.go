@@ -610,7 +610,10 @@ func truncateForChangelog(s string) string {
 // The deprecation notice is emitted only AFTER value resolution
 // succeeds — printing it first would mislead the user when stdin is
 // empty or the editor errors, implying the routing happened when it
-// did not.
+// did not. The same reasoning applies to the I-670 scalar-corruption
+// guard below: it refuses (return 2) before the notice, because on a
+// corrupted item the routing does not happen and announcing the
+// deprecation routing would mislead in the opposite direction.
 //
 // `oldValue` is captured INSIDE the Mutate closure (under flock) per
 // the T-304 purity rule, so a concurrent peer-agent write does not
