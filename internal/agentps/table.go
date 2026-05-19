@@ -29,17 +29,59 @@ type ItemRef struct {
 type Row struct {
 	AgentID   string
 	Workspace string
-	Reg       *Reg      // nil ⇒ no live registration (idle)
-	Item      *ItemRef  // nil ⇒ no active item
-	LastMod   time.Time // newest session-JSONL mtime; zero ⇒ unknown
+	Reg       *Reg      // nil ⇒ no live registration self-report
+	Item      *ItemRef  // nil ⇒ no active agent-state item
+	LastMod   time.Time // newest WORKSPACE session-JSONL mtime (ground truth); zero ⇒ none on disk
+	WSSessionID string  // sid of that newest workspace session; "" ⇒ none (distinct from the WSSession join-input type)
+}
+
+// FreshWindow is the default "actively producing output" threshold: a
+// workspace whose newest session JSONL (parent OR a subagent) changed
+// within this window is treated as live regardless of what a
+// registration claims (contract §13 finding 1 — trust the substrate,
+// not the self-report).
+//
+// Known bound: a session executing a single tool call longer than
+// FreshWindow with no subagent output appends nothing to its JSONL and
+// will read as "idle" though genuinely working. This is inherent to a
+// substrate-only signal; subagent-awareness (most long operations spawn
+// or interleave subagents) greatly reduces it, and the T-357 PID-
+// liveness producer is the intended complement that closes it.
+const FreshWindow = 10 * time.Minute
+
+// Liveness reconciles the registration self-report against the
+// session-JSONL ground truth into one of: "live" (substrate shows
+// recent activity — wins over everything), "stale" (a registration
+// exists but its PID is dead — orphaned claim), "idle" (known agent,
+// no recent activity), or "—" (never observed: no registration and no
+// session on disk). Pure/deterministic given (now, fresh).
+func Liveness(reg *Reg, jsonlMod, now time.Time, fresh time.Duration) string {
+	if !jsonlMod.IsZero() && now.Sub(jsonlMod) < fresh {
+		return "live" // substrate is authoritative
+	}
+	if reg != nil && !reg.Alive {
+		return "stale" // registration present but process gone
+	}
+	if reg != nil || !jsonlMod.IsZero() {
+		return "idle" // up-but-quiet, or seen-before-but-cold
+	}
+	return "—" // never observed
+}
+
+// WSSession is the ground-truth newest Claude session for an agent's
+// workspace (resolved independently of any registration).
+type WSSession struct {
+	SID string
+	Mod time.Time
 }
 
 // Join merges the canonical roster with live registrations, active
-// items, and per-agent session-JSONL mtimes. EVERY roster agent yields
-// exactly one Row (idle agents are never omitted — operator
-// silent-failure principle); rows are sorted by AgentID (deterministic,
-// no map-iteration order leaks). Maps are keyed by AgentID.
-func Join(roster []RosterAgent, regs map[string]Reg, active map[string]ItemRef, mtime map[string]time.Time) []Row {
+// items, and per-agent WORKSPACE session ground truth. EVERY roster
+// agent yields exactly one Row (idle agents are never omitted —
+// operator silent-failure principle); rows are sorted by AgentID
+// (deterministic, no map-iteration order leaks). Maps are keyed by
+// AgentID.
+func Join(roster []RosterAgent, regs map[string]Reg, active map[string]ItemRef, sessions map[string]WSSession) []Row {
 	rows := make([]Row, 0, len(roster))
 	for _, ra := range roster {
 		row := Row{AgentID: ra.AgentID, Workspace: ra.Workspace}
@@ -51,8 +93,9 @@ func Join(roster []RosterAgent, regs map[string]Reg, active map[string]ItemRef, 
 			ic := it
 			row.Item = &ic
 		}
-		if t, ok := mtime[ra.AgentID]; ok {
-			row.LastMod = t
+		if ws, ok := sessions[ra.AgentID]; ok {
+			row.LastMod = ws.Mod
+			row.WSSessionID = ws.SID
 		}
 		rows = append(rows, row)
 	}
@@ -88,17 +131,21 @@ func Render(rows []Row, now time.Time) []string {
 	type cell struct{ agent, ws, live, cur, up, last, sess string }
 	cells := make([]cell, 0, len(rows))
 	for _, r := range rows {
-		c := cell{agent: r.AgentID, ws: dirBase(r.Workspace), live: "—", cur: "—", up: "—", last: reltime(now, r.LastMod), sess: "—"}
-		if r.Reg != nil {
-			if r.Reg.Alive {
-				c.live = "✓"
-			} else {
-				c.live = "stale" // registration present but PID dead
-			}
+		c := cell{agent: r.AgentID, ws: dirBase(r.Workspace), cur: "—", up: "—", last: reltime(now, r.LastMod), sess: "—"}
+		c.live = Liveness(r.Reg, r.LastMod, now, FreshWindow)
+		// SESSION: the workspace's actual session is ground truth;
+		// fall back to the registration's declared sid.
+		switch {
+		case r.WSSessionID != "":
+			c.sess = shortID(r.WSSessionID)
+		case r.Reg != nil && r.Reg.SessionID != "":
+			c.sess = shortID(r.Reg.SessionID)
+		}
+		// UPTIME only when a registration supplies a real start time
+		// (honest "—" otherwise — the producer, T-357, fills it; never
+		// fabricate uptime from JSONL).
+		if r.Reg != nil && !r.Reg.Started.IsZero() {
 			c.up = reltime(now, r.Reg.Started)
-			if r.Reg.SessionID != "" {
-				c.sess = shortID(r.Reg.SessionID)
-			}
 		}
 		if r.Item != nil {
 			c.cur = r.Item.ID

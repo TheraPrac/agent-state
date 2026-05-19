@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestProjectSlug is the canonical slug test. It was previously duplicated
@@ -131,5 +132,55 @@ func TestResolveSessionByID(t *testing.T) {
 	}
 	if got[0] != parent || got[1] != sub {
 		t.Errorf("resolved %v, want [%s %s]", got, parent, sub)
+	}
+}
+
+func TestNewestSessionForProjectDir(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", root)
+	projectDir := "/Users/x/Dev/theraprac-agent-q"
+	base := filepath.Join(root, ProjectSlug(projectDir))
+
+	// Empty input / no sessions on disk → zero values, never an error.
+	if p, s, m := NewestSessionForProjectDir(""); p != "" || s != "" || !m.IsZero() {
+		t.Errorf("empty projectDir → %q,%q,%v want zero", p, s, m)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if p, s, m := NewestSessionForProjectDir(projectDir); p != "" || s != "" || !m.IsZero() {
+		t.Errorf("no sessions → %q,%q,%v want zero", p, s, m)
+	}
+
+	// Real layout: parent <sid>.jsonl alongside <sid>/subagents/agent-*.jsonl.
+	older := filepath.Join(base, "sess-old.jsonl")
+	newerParent := filepath.Join(base, "sess-new.jsonl")
+	subOfNew := filepath.Join(base, "sess-new", "subagents", "agent-x.jsonl")
+	if err := os.MkdirAll(filepath.Dir(subOfNew), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{older, newerParent, subOfNew} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	parentRecent := time.Now().Add(-5 * time.Minute)
+	subNewest := time.Now().Add(-30 * time.Second) // a subagent is the freshest activity
+	for f, ts := range map[string]time.Time{older: old, newerParent: parentRecent, subOfNew: subNewest} {
+		if err := os.Chtimes(f, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The subagent is newest → it counts as its PARENT session being
+	// active: sid is the parent (sess-new), mod is the subagent mtime,
+	// path is the actual newest file.
+	p, sid, mod := NewestSessionForProjectDir(projectDir)
+	if sid != "sess-new" || p != subOfNew {
+		t.Errorf("newest = (path=%q,sid=%q), want (path=%q,sid=sess-new) — subagent activity must attribute to its parent", p, sid, subOfNew)
+	}
+	if mod.Sub(subNewest).Abs() > time.Second {
+		t.Errorf("mod = %v, want ≈ %v (the subagent's mtime)", mod, subNewest)
 	}
 }

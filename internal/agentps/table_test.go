@@ -26,6 +26,38 @@ func TestReltime(t *testing.T) {
 	}
 }
 
+func TestLiveness(t *testing.T) {
+	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	fresh := 10 * time.Minute
+	freshMod := now.Add(-2 * time.Minute) // within window
+	coldMod := now.Add(-3 * time.Hour)    // outside window
+	var zero time.Time
+	alive := &Reg{Alive: true}
+	dead := &Reg{Alive: false}
+
+	cases := []struct {
+		name string
+		reg  *Reg
+		mod  time.Time
+		want string
+	}{
+		{"fresh jsonl wins over no reg", nil, freshMod, "live"},
+		{"fresh jsonl wins over dead reg", dead, freshMod, "live"},
+		{"fresh jsonl wins over alive reg", alive, freshMod, "live"},
+		{"reg present pid dead, cold", dead, coldMod, "stale"},
+		{"reg present pid dead, no jsonl", dead, zero, "stale"},
+		{"reg present pid alive, cold", alive, coldMod, "idle"},
+		{"reg present pid alive, no jsonl", alive, zero, "idle"},
+		{"no reg, cold jsonl (seen before)", nil, coldMod, "idle"},
+		{"no reg, no jsonl (never observed)", nil, zero, "—"},
+	}
+	for _, c := range cases {
+		if got := Liveness(c.reg, c.mod, now, fresh); got != c.want {
+			t.Errorf("%s: Liveness = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestAgentPSJoin(t *testing.T) {
 	roster := []RosterAgent{
 		{"agent-b", "/x/theraprac-agent-b"},
@@ -38,9 +70,9 @@ func TestAgentPSJoin(t *testing.T) {
 	active := map[string]ItemRef{
 		"agent-c": {ID: "I-9", Stage: "pr_open"},
 	}
-	mt := map[string]time.Time{"agent-a": time.Unix(1000, 0)}
+	sessions := map[string]WSSession{"agent-a": {SID: "sx", Mod: time.Unix(1000, 0)}}
 
-	rows := Join(roster, regs, active, mt)
+	rows := Join(roster, regs, active, sessions)
 	if len(rows) != 3 {
 		t.Fatalf("Join produced %d rows, want 3 (every roster agent)", len(rows))
 	}
@@ -48,8 +80,8 @@ func TestAgentPSJoin(t *testing.T) {
 	if rows[0].AgentID != "agent-a" || rows[1].AgentID != "agent-b" || rows[2].AgentID != "agent-c" {
 		t.Fatalf("rows not sorted by AgentID: %v", []string{rows[0].AgentID, rows[1].AgentID, rows[2].AgentID})
 	}
-	if rows[0].Reg == nil || rows[0].Reg.SessionID != "s-a" || rows[0].LastMod.IsZero() {
-		t.Errorf("agent-a row missing reg/mtime: %+v", rows[0])
+	if rows[0].Reg == nil || rows[0].Reg.SessionID != "s-a" || rows[0].LastMod.IsZero() || rows[0].WSSessionID != "sx" {
+		t.Errorf("agent-a row missing reg/session ground truth: %+v", rows[0])
 	}
 	if rows[1].Reg != nil || rows[1].Item != nil { // idle agent still present
 		t.Errorf("agent-b should be idle (no reg/item): %+v", rows[1])
@@ -86,8 +118,17 @@ func TestAgentPSRender(t *testing.T) {
 			}
 		}
 	}
-	mustContain(out[1], "agent-a", "theraprac-agent-a", "✓", "T-203 (coding)", "2h ago", "3m ago", "abcdefgh")
-	mustContain(out[2], "agent-b", "theraprac-agent-b", "—") // idle: dashes, still listed
+	mustContain(out[1], "agent-a", "theraprac-agent-a", "live", "T-203 (coding)", "2h ago", "3m ago", "abcdefgh")
+	// agent-b: no reg, no workspace JSONL → never-observed. Still
+	// LISTED (idle agents never omitted) with LIVE = "—". Assert it is
+	// specifically NOT live/idle/stale (a bare "—"-contains check would
+	// be vacuous — every column of a zero-state row is "—").
+	mustContain(out[2], "agent-b", "theraprac-agent-b")
+	for _, banned := range []string{"live", "idle", "stale"} {
+		if strings.Contains(out[2], banned) {
+			t.Errorf("agent-b LIVE should be \"—\" (never observed), row=%q", out[2])
+		}
+	}
 	mustContain(out[3], "agent-c", "stale", "1d ago")        // dead pid, 26h→1d uptime
 
 	// Columns are aligned: the WORKSPACE column begins at the same rune

@@ -9,16 +9,20 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/agentps"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/transcript"
 )
 
-// Phase 4 of T-353: `st watch` (no arg) — the live unified stream
-// (contract §8.1/§8.3). Enumerates LIVE agents (process-tree liveness,
-// §13 finding 3 — never the redirect log), tails each one's session
-// JSONL, and prints a compressed per-agent strip (CompressByAgent): N
-// readable lines, what each agent is doing NOW — never the raw
+// Phase 4 of T-353 (+ T-356 roster fallback): `st watch` (no arg) —
+// the live unified stream (contract §8.1/§8.3). Enumerates live agents
+// two ways: a live registration with a process-tree-alive PID (§13
+// finding 3 — never the redirect log), AND, for roster agents without
+// one, a workspace session JSONL fresh within FreshWindow (T-356
+// substrate fallback). Tails each one's session JSONL, and prints a
+// compressed per-agent strip (CompressByAgent): N readable lines, what
+// each agent is doing NOW — never the raw
 // firehose. Full per-agent drill is the later Layout-A TUI item.
 
 // WatchOpts configures `st watch`.
@@ -54,13 +58,9 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 		tag     string
 		readers []*transcript.TailReader
 	}
-	var tails []agentTail
-	for _, r := range regs {
-		if r == nil || r.SessionID == "" || !agent.IsPIDLive(r.PID) {
-			continue
-		}
+	mkReaders := func(paths []string) []*transcript.TailReader {
 		var rs []*transcript.TailReader
-		for _, p := range transcript.ResolveSessionByID(r.SessionID) {
+		for _, p := range paths {
 			// Once = snapshot → read from the start so there is content
 			// to show; follow = from end → stream from now (history is
 			// `st transcript`'s job, not the live strip's).
@@ -70,12 +70,53 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 				rs = append(rs, transcript.NewTailReader(p))
 			}
 		}
-		if len(rs) > 0 {
+		return rs
+	}
+
+	var tails []agentTail
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if r == nil || r.SessionID == "" || !agent.IsPIDLive(r.PID) {
+			continue
+		}
+		if rs := mkReaders(transcript.ResolveSessionByID(r.SessionID)); len(rs) > 0 {
 			tails = append(tails, agentTail{tag: r.AgentID, readers: rs})
+			seen[r.AgentID] = true
 		}
 	}
+
+	// Roster fallback (T-356): operator-launched Claude sessions don't
+	// register, so without this `st watch` is empty in the current
+	// topology. For every roster agent NOT already tailed via the
+	// registration path whose WORKSPACE session (parent + subagents) is
+	// fresh — substrate ground truth, §13 finding 1 — tail it. Subagents
+	// are included via ResolveSessionByID so this matches the
+	// registration path exactly (no parent-only blind spot).
+	if dir := agentps.AgentWorkspacesDir(cfg); dir != "" {
+		roster, err := agentps.LoadRoster(dir)
+		if err != nil {
+			// Degrade (registration path still works) but never swallow.
+			fmt.Fprintf(os.Stderr, "watch: warning: cannot read agent roster at %s: %v\n", dir, err)
+		} else {
+			now := time.Now()
+			for _, ra := range roster {
+				if seen[ra.AgentID] {
+					continue
+				}
+				_, sid, mod := transcript.NewestSessionForProjectDir(ra.Workspace)
+				if sid == "" || now.Sub(mod) >= agentps.FreshWindow {
+					continue // never observed, or cold → not actively live
+				}
+				if rs := mkReaders(transcript.ResolveSessionByID(sid)); len(rs) > 0 {
+					tails = append(tails, agentTail{tag: ra.AgentID, readers: rs})
+					seen[ra.AgentID] = true
+				}
+			}
+		}
+	}
+
 	if len(tails) == 0 {
-		fmt.Fprintln(os.Stderr, "watch: no live agents with a resolvable session JSONL")
+		fmt.Fprintln(os.Stderr, "watch: no live agents (no registrations and no recently-active workspace sessions)")
 		return 1
 	}
 

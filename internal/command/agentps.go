@@ -95,28 +95,22 @@ func AgentPS(s *store.Store, cfg *config.Config, opts AgentPSOpts) int {
 		}
 	}
 
-	// "Last updated" = newest session-JSONL mtime (T-353 substrate;
-	// §13 finding-3 freshness signal). Only agents with a live
-	// registration have a session id to resolve.
-	mtime := map[string]time.Time{}
-	for id, r := range regs {
-		if r.SessionID == "" {
-			continue
-		}
-		var newest time.Time
-		for _, p := range transcript.ResolveSessionByID(r.SessionID) {
-			if fi, err := os.Stat(p); err == nil && fi.ModTime().After(newest) {
-				newest = fi.ModTime()
-			}
-		}
-		if !newest.IsZero() {
-			mtime[id] = newest
+	// Ground truth (T-353 substrate; §13 finding-1: trust the substrate,
+	// not the registration self-report): for EVERY roster agent resolve
+	// its WORKSPACE's newest Claude session JSONL — works with no
+	// registration at all, so LAST-UPDATE / SESSION / LIVE populate in
+	// the operator-launched-session topology (the T-357 producer later
+	// adds authoritative UPTIME on top).
+	sessions := map[string]agentps.WSSession{}
+	for _, ra := range roster {
+		if _, sid, mod := transcript.NewestSessionForProjectDir(ra.Workspace); !mod.IsZero() {
+			sessions[ra.AgentID] = agentps.WSSession{SID: sid, Mod: mod}
 		}
 	}
 
 	// Filter ONCE here so --workspace is honoured by BOTH --json and the
 	// table (a render-only filter would silently no-op under --json).
-	rows := agentps.FilterByWorkspace(agentps.Join(roster, regs, active, mtime), opts.Workspace)
+	rows := agentps.FilterByWorkspace(agentps.Join(roster, regs, active, sessions), opts.Workspace)
 
 	if opts.JSON {
 		b, err := json.MarshalIndent(rows, "", "  ")

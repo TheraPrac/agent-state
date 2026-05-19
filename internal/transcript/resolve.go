@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ProjectSlug derives the ~/.claude/projects/<slug> directory name from a
@@ -144,4 +145,55 @@ func ResolveSessionByID(sid string) []string {
 		paths = append(paths, subagentJSONL(base, sid)...)
 	}
 	return paths
+}
+
+// NewestSessionForProjectDir resolves a workspace/project directory to
+// its most-recently-active Claude session. It considers BOTH each
+// top-level parent session JSONL and that session's
+// subagents/agent-*.jsonl — an agent orchestrating subagents has a cold
+// parent file while the subagents are hot, so parent-only would falsely
+// report it idle. The returned mtime is the newest across the whole
+// tree; sid is always the PARENT session id (subagents belong to it);
+// path is the actual newest file (may be a subagent). ("", "", zero)
+// when projectDir is empty or the project has no session on disk —
+// never an error; the absence is the caller's to surface (operator
+// silent-failure principle). This is the ground-truth "when did this
+// workspace's agent last do something" signal (contract §13 finding 3:
+// liveness reads the session JSONL, not a self-report) used by
+// `st agent ps` / `st watch` independent of any registration.
+func NewestSessionForProjectDir(projectDir string) (path, sid string, mod time.Time) {
+	if projectDir == "" {
+		return "", "", time.Time{}
+	}
+	slug := ProjectSlug(projectDir)
+	if slug == "" {
+		return "", "", time.Time{}
+	}
+	base := filepath.Join(ClaudeProjectsDir(), slug)
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return "", "", time.Time{}
+	}
+	consider := func(p, parentSID string, m time.Time) {
+		if m.After(mod) {
+			mod, path, sid = m, p, parentSID
+		}
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".jsonl") {
+			continue
+		}
+		s := strings.TrimSuffix(n, ".jsonl")
+		if fi, err := e.Info(); err == nil {
+			consider(filepath.Join(base, n), s, fi.ModTime())
+		}
+		// Subagent activity counts as the parent session being active.
+		for _, sp := range subagentJSONL(base, s) {
+			if fi, err := os.Stat(sp); err == nil {
+				consider(sp, s, fi.ModTime())
+			}
+		}
+	}
+	return path, sid, mod
 }
