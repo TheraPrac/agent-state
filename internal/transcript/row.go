@@ -120,16 +120,25 @@ func ParseLine(line []byte) []Row {
 		return []Row{{Kind: KindText, Role: role, Timestamp: ts, Text: s, Raw: rawCopy(line)}}
 	}
 
-	// content: array of blocks.
-	var blocks []wireContentBlock
-	if err := json.Unmarshal(wr.Message.Content, &blocks); err != nil || len(blocks) == 0 {
+	// content: array of blocks. Decode block-by-block as RawMessage
+	// first so an unknown (or individually malformed) block can be
+	// surfaced verbatim — never the whole enclosing line, never dropped.
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(wr.Message.Content, &rawBlocks); err != nil || len(rawBlocks) == 0 {
 		r := rawRow(line)
 		r.Timestamp, r.Role = ts, role
 		return []Row{r}
 	}
 	rawc := rawCopy(line)
 	var rows []Row
-	for _, b := range blocks {
+	for _, rb := range rawBlocks {
+		var b wireContentBlock
+		if err := json.Unmarshal(rb, &b); err != nil {
+			// A block we can't even shape: surface the block's own
+			// bytes raw rather than dropping the turn's information.
+			rows = append(rows, Row{Kind: KindRaw, Role: role, Timestamp: ts, Text: string(rb), Raw: rawc})
+			continue
+		}
 		switch b.Type {
 		case "text":
 			if b.Text == "" {
@@ -156,9 +165,10 @@ func ParseLine(line []byte) []Row {
 				},
 			})
 		default:
-			// Unknown block type (e.g. image, future kinds): keep it
-			// raw rather than dropping the turn's information.
-			rows = append(rows, Row{Kind: KindRaw, Role: role, Timestamp: ts, Text: string(line), Raw: rawc})
+			// Unknown block type (e.g. image, future kinds): surface
+			// THIS block's bytes raw — not the whole multi-block line —
+			// rather than dropping the turn's information.
+			rows = append(rows, Row{Kind: KindRaw, Role: role, Timestamp: ts, Text: string(rb), Raw: rawc})
 		}
 	}
 	if len(rows) == 0 {
@@ -181,9 +191,14 @@ func ReadFile(path string) ([]Row, error) {
 	return ReadRows(f)
 }
 
-// ReadRows reads JSONL rows from r. Same degradation contract as
-// ParseLine. The scanner buffer matches cmd/reconcile-tokens (some
-// transcript lines — large tool_result payloads — exceed 1MB).
+// ReadRows reads JSONL rows from r. Malformed lines degrade to KindRaw
+// (the same per-line contract as ParseLine); unlike ParseLine it can
+// return an error, but only for a read/scan failure (I/O, or a line
+// longer than the buffer cap) — never for a JSON parse failure. The 64MB
+// max-token cap is deliberately larger than cmd/reconcile-tokens'
+// jsonlUsage (16MB): a giant tool_result line must render, not abort.
+// The two readers are intentionally not coupled — jsonlUsage keeps its
+// 16MB cap for its narrower usage-summing scope.
 func ReadRows(r io.Reader) ([]Row, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
@@ -221,9 +236,11 @@ func trimSpace(b []byte) []byte {
 	return b[i:j]
 }
 
-// parseTS accepts RFC3339 with or without fractional seconds (Claude Code
-// emits millis). Zero time on absent/unparseable — never an error; an
-// undated row still renders, just unordered relative to dated ones.
+// parseTS parses an RFC3339 timestamp. time.RFC3339Nano also accepts the
+// no-fractional-seconds form, so a single parse covers both Claude Code's
+// millisecond timestamps and any second-precision ones. Zero time on
+// absent/unparseable — never an error; an undated row still renders,
+// just unordered relative to dated ones.
 func parseTS(s string) time.Time {
 	if s == "" {
 		return time.Time{}
@@ -231,16 +248,15 @@ func parseTS(s string) time.Time {
 	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return t
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
-	}
 	return time.Time{}
 }
 
 // flattenResultContent normalizes tool_result.content, which Claude Code
 // emits either as a plain string or as an array of {type:"text",text:..}
-// (and occasionally non-text blocks). Anything we can't flatten to text
-// is preserved as its raw JSON so nothing is silently lost.
+// (and occasionally non-text blocks). Non-text blocks in a mixed array
+// are surfaced as a visible "[<type> block]" marker — never silently
+// dropped (silent-failure principle). Content we can't parse as either
+// shape is preserved as its raw JSON so nothing is lost.
 func flattenResultContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -253,11 +269,18 @@ func flattenResultContent(raw json.RawMessage) string {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(raw, &blocks); err == nil {
+	if err := json.Unmarshal(raw, &blocks); err == nil && len(blocks) > 0 {
 		var parts []string
 		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
+			switch {
+			case b.Type == "text" && b.Text != "":
 				parts = append(parts, b.Text)
+			case b.Type == "text":
+				// empty text block — no information to surface
+			default:
+				// non-text block (image, etc.): a visible marker so
+				// it is never silently dropped from a mixed array.
+				parts = append(parts, "["+b.Type+" block]")
 			}
 		}
 		if len(parts) > 0 {

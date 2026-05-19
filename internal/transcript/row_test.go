@@ -147,6 +147,44 @@ func TestParseLine_Degradation(t *testing.T) {
 	}
 }
 
+// Code-review hardening: an unknown content block must surface its OWN
+// bytes raw (not the whole multi-block enclosing line), and a mixed
+// tool_result array must not silently drop its non-text blocks.
+func TestParseLine_UnknownBlockAndMixedResult(t *testing.T) {
+	line := []byte(`{"type":"assistant","timestamp":"2026-05-18T17:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"image","source":{"data":"BIGBLOB"}}]}}`)
+	rows := ParseLine(line)
+	var rawRows, textRows int
+	for _, r := range rows {
+		switch r.Kind {
+		case KindRaw:
+			rawRows++
+			if r.Text == string(line) {
+				t.Error("unknown block raw Text is the whole enclosing line, want just the block")
+			}
+			if got := r.Text; got != `{"type":"image","source":{"data":"BIGBLOB"}}` {
+				t.Errorf("unknown block Text = %q, want the block's own JSON", got)
+			}
+		case KindText:
+			textRows++
+		}
+	}
+	if textRows != 1 || rawRows != 1 {
+		t.Fatalf("want 1 text + 1 raw row, got %d text %d raw", textRows, rawRows)
+	}
+
+	// Mixed tool_result array: text + non-text. The non-text block must
+	// appear as a visible marker, not vanish.
+	tr := []byte(`{"type":"user","timestamp":"2026-05-18T17:00:01Z","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":[{"type":"text","text":"saw"},{"type":"image"}],"is_error":false}]}}`)
+	rows = ParseLine(tr)
+	if len(rows) != 1 || rows[0].ToolResult == nil {
+		t.Fatalf("want 1 tool_result row, got %+v", rows)
+	}
+	got := rows[0].ToolResult.Content
+	if got != "saw\n[image block]" {
+		t.Errorf("mixed-array tool_result Content = %q, want non-text block surfaced as a marker", got)
+	}
+}
+
 func findKind(rows []Row, k Kind) *Row {
 	for i := range rows {
 		if rows[i].Kind == k {

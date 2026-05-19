@@ -35,18 +35,36 @@ func ProjectSlug(projectDir string) string {
 }
 
 // ClaudeProjectsDir returns ~/.claude/projects. CLAUDE_PROJECTS_DIR
-// overrides it (used by tests and by alternate-home agent layouts).
+// overrides it (tests, alternate-home agent layouts). If os.UserHomeDir
+// cannot resolve the home directory, $HOME is tried before giving up.
+// Only if both fail is the result home-relative-empty — in which case
+// ResolveSessionJSONL finds nothing and returns an empty slice, which
+// the caller observes directly: the absence is visible, not a swallowed
+// error producing a wrong absolute path (operator silent-failure
+// principle).
 func ClaudeProjectsDir() string {
 	if d := os.Getenv("CLAUDE_PROJECTS_DIR"); d != "" {
 		return d
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("HOME")
+	}
 	return filepath.Join(home, ".claude", "projects")
 }
 
 // ResolveSessionJSONL returns the on-disk JSONL files for one session:
 // the parent transcript first, then every subagent transcript Claude Code
 // stored under <parent_session>/subagents/agent-*.jsonl, in sorted order.
+//
+// The subagent filter is the precise "agent-*.jsonl" (Claude Code's
+// actual subagent naming), deliberately narrower than
+// cmd/reconcile-tokens' jsonlUsage walk, which accepts any "*.jsonl" in
+// the subagents dir. The two are intentionally divergent: a future
+// consolidation that points reconcile at this resolver must keep that in
+// mind (a stray non-"agent-" .jsonl would no longer be summed). This is
+// the correct precise filter for the renderer; it is documented here so
+// the divergence is a deliberate choice, not a silent trap.
 //
 // Only files that actually exist are returned, so callers can range over
 // the result without per-path existence checks. An empty projectDir or

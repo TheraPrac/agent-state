@@ -17,6 +17,11 @@ func TestProjectSlug(t *testing.T) {
 		{"", ""},
 		{"relative/path", "relative-path"},
 		{"/", "-"},
+		// Spaces in a workspace path must survive verbatim — only "/"
+		// is transformed (carry-over guard for the PR#86 space-in-path
+		// class; the slug fn itself is space-safe, the upstream
+		// by-session tokenizer is the separate tracked issue).
+		{"/Users/john doe/Dev/foo", "-Users-john doe-Dev-foo"},
 	}
 	for _, c := range cases {
 		if got := ProjectSlug(c.in); got != c.want {
