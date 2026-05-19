@@ -36,9 +36,17 @@ type Row struct {
 }
 
 // FreshWindow is the default "actively producing output" threshold: a
-// workspace whose newest session JSONL changed within this window is
-// treated as live regardless of what a registration claims (contract
-// §13 finding 1 — trust the substrate, not the self-report).
+// workspace whose newest session JSONL (parent OR a subagent) changed
+// within this window is treated as live regardless of what a
+// registration claims (contract §13 finding 1 — trust the substrate,
+// not the self-report).
+//
+// Known bound: a session executing a single tool call longer than
+// FreshWindow with no subagent output appends nothing to its JSONL and
+// will read as "idle" though genuinely working. This is inherent to a
+// substrate-only signal; subagent-awareness (most long operations spawn
+// or interleave subagents) greatly reduces it, and the T-357 PID-
+// liveness producer is the intended complement that closes it.
 const FreshWindow = 10 * time.Minute
 
 // Liveness reconciles the registration self-report against the
