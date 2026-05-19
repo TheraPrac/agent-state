@@ -49,6 +49,31 @@ func TestNoteAdd_RejectsMultilineMessage(t *testing.T) {
 	}
 }
 
+func TestNoteEdit_RejectsMultilineMessage(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	if code := NoteAdd(cfg, "original single-line note"); code != 0 {
+		t.Fatalf("seed NoteAdd returned %d", code)
+	}
+	r, _ := registry.Load(cfg.NotesPath())
+	id := r.Notes[0].ID
+
+	var code int
+	stderr := captureStderr(t, func() int {
+		code = NoteEdit(cfg, id, "edited line one\nedited line two")
+		return code
+	})
+	if code != 2 {
+		t.Fatalf("NoteEdit multiline returned %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "single line") {
+		t.Errorf("stderr lacked single-line guidance: %q", stderr)
+	}
+	r2, _ := registry.Load(cfg.NotesPath())
+	if r2.Notes[0].Message != "original single-line note" {
+		t.Errorf("message mutated despite rejected multiline edit: %q", r2.Notes[0].Message)
+	}
+}
+
 func TestNoteEdit_RejectsOversizedMessage(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	if code := NoteAdd(cfg, "original short note"); code != 0 {

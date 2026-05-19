@@ -1818,7 +1818,11 @@ sessions/orphan.log — metrics are never silently dropped.`,
 			var message string
 			if stdinFlag {
 				data, _ := io.ReadAll(os.Stdin)
-				message = strings.TrimRight(string(data), "\n")
+				// Trim a trailing CRLF/LF/CR terminator so a single line
+				// piped in (incl. from CRLF tooling) is not spuriously
+				// rejected by the I-673 single-line guard; an interior
+				// newline still (correctly) trips ValidateNoteMessage.
+				message = strings.TrimRight(string(data), "\r\n")
 			} else if len(args) >= 2 {
 				message = args[1]
 			} else {

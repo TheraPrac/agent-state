@@ -26,15 +26,19 @@ const MaxNoteBytes = 256 * 1024
 // entry points (NoteAdd / NoteEdit), not in the dumb store mutators:
 //
 //   - size: at most MaxNoteBytes (giant-paste backstop).
-//   - single line: no embedded '\n'/'\r'. Save serializes a note as a
-//     single `message: <text>` physical line and yamlQuote does NOT
-//     escape newlines, so a multi-line message would Save as multiple
-//     lines and Load's splitKV would silently drop every line after the
-//     first — silent data loss. The flat registry format has no
-//     multi-line scalar; reject loudly instead (notes are short
-//     breadcrumbs — link to an item/doc for anything that needs
-//     structure). This closes the silent-failure path the I-673 family
-//     is about; it does not change the on-disk format.
+//   - single line: no embedded '\n'/'\r'. Save serializes a note as one
+//     `message: <text>` physical line, and a multi-line message is
+//     corrupted on round-trip either way: if it has no other YAML-special
+//     char, yamlQuote leaves the raw '\n' in, so Save writes multiple
+//     physical lines and Load's splitKV silently drops every line after
+//     the first; if it also contains a special char, yamlQuote uses %q
+//     and the '\n' survives as a literal two-char "\n" sequence that
+//     splitKV never un-escapes — still silent data loss, just a
+//     different shape. The flat registry format has no multi-line
+//     scalar; reject loudly instead (notes are short breadcrumbs — link
+//     to an item/doc for anything that needs structure). Closes the
+//     silent-failure path the I-673 family is about; on-disk format
+//     unchanged.
 func ValidateNoteMessage(message string) error {
 	if len(message) > MaxNoteBytes {
 		return fmt.Errorf(

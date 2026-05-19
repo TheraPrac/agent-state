@@ -84,4 +84,10 @@ func TestValidateNoteMessage(t *testing.T) {
 	if err := ValidateNoteMessage(strings.Repeat("x", MaxNoteBytes+1)); err == nil {
 		t.Error("message over cap was not rejected")
 	}
+	// Single-line invariant: embedded LF, CRLF, and lone CR all reject.
+	for _, bad := range []string{"line one\nline two", "line one\r\nline two", "trailing cr\r"} {
+		if err := ValidateNoteMessage(bad); err == nil {
+			t.Errorf("multi-line message %q was not rejected", bad)
+		}
+	}
 }
