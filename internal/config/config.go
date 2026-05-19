@@ -400,11 +400,15 @@ func (c *Config) ManifestDir() string {
 // consistent with the sibling accessors (ItemDir/ManifestDir/…), which all
 // nest under `c.Paths.Root`.
 //
-// NOTE (I-690): CLAUDE.md and the plan-before-code-guard hook tell agents to
-// author `.plans/<id>.md` *workspace-root relative*, which drifts from this
-// tooling path. That doc-vs-tooling drift is tracked separately; do NOT
-// "fix" it by relocating this accessor — that silently orphans every plan
-// the tooling already wrote here (incl. peer agents' active in-sprint work).
+// NOTE (I-690 / I-693): the human-facing PROSE drifts from this path —
+// CLAUDE.md instructs agents to author `.plans/<id>.md` (read as
+// workspace-root relative) and plan-before-code-guard.sh's rejection
+// message likewise references `.plans/<id>.md`. The hook's GATE is fine
+// (it shells `st plan check`, which uses THIS accessor); the drift is
+// purely in the prose, so hand-authored plans land at the workspace root
+// and the tooling never sees them. Tracked in I-693. Do NOT "fix" it by
+// relocating this accessor — that silently orphans every plan the tooling
+// already wrote here (incl. peer agents' active in-sprint work).
 func (c *Config) PlansDir() string {
 	return filepath.Join(c.root, c.Paths.Root, ".plans")
 }
