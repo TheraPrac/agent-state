@@ -171,7 +171,12 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		planDecision = fmt.Sprintf("approach approved by %s: %s — full plan .plans/%s.md (live via `st resume %s`)",
 			approver, planApproach, id, id)
 	}
-	recordStructuredDecision(cfg, id, "plan_approve", planDecision)
+	// Error intentionally not gated on here: recordStructuredDecision is
+	// itself never-silent (emits the stderr warning), and a failed
+	// decision capture must not abort an otherwise-successful plan
+	// approval. The hook path (CaptureDecision) is what escalates the
+	// error to a loud non-capture exit code.
+	_ = recordStructuredDecision(cfg, id, "plan_approve", planDecision)
 
 	fmt.Printf("Approved plan for %s (by %s at %s)\n", id, approver, approvedAt)
 	autoSync(s, fmt.Sprintf("st plan approve: %s", id))

@@ -84,12 +84,13 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 // `st resume` with no argument resumes whatever the session was doing.
 //
 // The active-item fallback is AGENT-SCOPED: in the shared multi-agent
-// workspace several peers' items are "active" simultaneously, and s.List()
-// order is not agent-partitioned. An un-scoped "first active" wins
-// non-deterministically and can resolve to a PEER's item — which for the
-// PostToolUse capture path (CaptureDecision, no explicit id) meant a
-// decision being appended to a peer's changelog, violating the coordination
-// rule "never edit a peer's item" (caught live, 2026-05-19, before wiring).
+// workspace several peers' items are "active" simultaneously. s.List() sorts
+// by ID, so an un-scoped "first active" deterministically returns the
+// LOWEST-ID active item — which is frequently a PEER's item, not this
+// agent's. For the PostToolUse capture path (CaptureDecision, no explicit
+// id) that meant a decision being appended to a peer's changelog, violating
+// the coordination rule "never edit a peer's item" (caught live,
+// 2026-05-19, before wiring).
 // The stack is already per-agent (LoadStack is the local agent's), so only
 // the active fallback needs the guard. When no agent identity is resolvable
 // (the `as`-CLI-only repo, a plain checkout), there are no peers to collide

@@ -112,7 +112,10 @@ func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts
 		// Capture it as a native-structured decision on the pushed item so
 		// `st resume <id>` answers "why am I doing this" without the
 		// operator hand-writing a breadcrumb.
-		recordStructuredDecision(cfg, id, "stack_push", opts.Reason)
+		// Error not gated here (see plan.go plan_approve): the function
+		// is never-silent on its own, and a failed capture must not abort
+		// the push.
+		_ = recordStructuredDecision(cfg, id, "stack_push", opts.Reason)
 	}
 
 	// I-681: a blocker pushed while working a sprint item must join that
