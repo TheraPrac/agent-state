@@ -89,18 +89,59 @@ func ResolveSessionJSONL(projectDir, sid string) []string {
 		paths = append(paths, parent)
 	}
 
+	paths = append(paths, subagentJSONL(base, sid)...)
+	return paths
+}
+
+// subagentJSONL returns the sorted subagents/agent-*.jsonl files for a
+// session whose parent transcript lives under base/. The "agent-*"
+// filter is the precise Claude Code naming (see ResolveSessionJSONL's
+// note on the deliberate divergence from reconcile's looser walk).
+func subagentJSONL(base, sid string) []string {
 	subDir := filepath.Join(base, sid, "subagents")
-	if entries, err := os.ReadDir(subDir); err == nil {
-		var subs []string
-		for _, ent := range entries {
-			n := ent.Name()
-			if ent.IsDir() || !strings.HasPrefix(n, "agent-") || !strings.HasSuffix(n, ".jsonl") {
-				continue
-			}
-			subs = append(subs, filepath.Join(subDir, n))
+	entries, err := os.ReadDir(subDir)
+	if err != nil {
+		return nil
+	}
+	var subs []string
+	for _, ent := range entries {
+		n := ent.Name()
+		if ent.IsDir() || !strings.HasPrefix(n, "agent-") || !strings.HasSuffix(n, ".jsonl") {
+			continue
 		}
-		sort.Strings(subs) // deterministic ordering across runs
-		paths = append(paths, subs...)
+		subs = append(subs, filepath.Join(subDir, n))
+	}
+	sort.Strings(subs) // deterministic ordering across runs
+	return subs
+}
+
+// ResolveSessionByID resolves a bare session id with NO project-dir
+// context: it scans every ~/.claude/projects/<slug>/ directory for
+// <sid>.jsonl (+ that session's subagents). Used by `st transcript
+// <session-id>` and the agent-id path (a registration carries the
+// session id but not the project dir). Returns nil (never an error)
+// when the id is empty or not found anywhere — the caller surfaces the
+// absence explicitly (operator silent-failure principle).
+func ResolveSessionByID(sid string) []string {
+	if sid == "" {
+		return nil
+	}
+	root := ClaudeProjectsDir()
+	slugs, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, sl := range slugs {
+		if !sl.IsDir() {
+			continue
+		}
+		base := filepath.Join(root, sl.Name())
+		parent := filepath.Join(base, sid+".jsonl")
+		if fi, err := os.Stat(parent); err == nil && !fi.IsDir() {
+			paths = append(paths, parent)
+		}
+		paths = append(paths, subagentJSONL(base, sid)...)
 	}
 	return paths
 }

@@ -118,6 +118,30 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	showCmd.Flags().BoolP("raw", "r", false, "print the raw markdown file")
 	root.AddCommand(showCmd)
 
+	transcriptCmd := &cobra.Command{
+		Use:   "transcript <item|agent|session>",
+		Short: "Render a session's JSONL transcript (human-readable)",
+		Long: "Resolve a selector (item id, agent id, or session id) to its " +
+			"on-disk Claude Code session JSONL, merge the agent-state " +
+			"conversation channel (changelog/mail), and render it readably " +
+			"(tool calls collapsed to one line, reasoning as prose).",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			since, _ := cmd.Flags().GetString("since")
+			grep, _ := cmd.Flags().GetString("grep")
+			ag, _ := cmd.Flags().GetString("agent")
+			asJSON, _ := cmd.Flags().GetBool("json")
+			exitCode = command.Transcript(appStore, appCfg, args[0], command.TranscriptOpts{
+				Since: since, Grep: grep, Agent: ag, JSON: asJSON,
+			})
+		},
+	}
+	transcriptCmd.Flags().String("since", "", "only rows newer than this (duration like 7d/1d12h, or RFC3339)")
+	transcriptCmd.Flags().String("grep", "", "only rendered lines containing this substring")
+	transcriptCmd.Flags().String("agent", "", "restrict to one agent tag (e.g. A, a-2)")
+	transcriptCmd.Flags().Bool("json", false, "emit raw rows as JSON (pre-render, for machines)")
+	root.AddCommand(transcriptCmd)
+
 	listCmd := &cobra.Command{
 		Use:     "list",
 		Short:   "List items with optional filters",

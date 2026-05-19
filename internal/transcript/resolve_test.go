@@ -93,3 +93,43 @@ func TestResolveSessionJSONL(t *testing.T) {
 		t.Errorf("parent-absent resolve = %v, want [%s %s]", got, subA, subB)
 	}
 }
+
+func TestResolveSessionByID(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", root)
+
+	// Empty / not-found → nil, never an error.
+	if got := ResolveSessionByID(""); got != nil {
+		t.Errorf("empty sid → %v, want nil", got)
+	}
+	if got := ResolveSessionByID("ghost"); got != nil {
+		t.Errorf("unknown sid → %v, want nil", got)
+	}
+
+	// Two project slugs; the sid lives under one, with a subagent.
+	sid := "sess-xyz"
+	slugA := filepath.Join(root, "-proj-a")
+	slugB := filepath.Join(root, "-proj-b")
+	if err := os.MkdirAll(filepath.Join(slugB, sid, "subagents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(slugA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(slugB, sid+".jsonl")
+	sub := filepath.Join(slugB, sid, "subagents", "agent-x.jsonl")
+	other := filepath.Join(slugA, "different.jsonl") // must NOT match
+	for _, p := range []string{parent, sub, other} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := ResolveSessionByID(sid)
+	if len(got) != 2 {
+		t.Fatalf("resolved %v, want parent+subagent only", got)
+	}
+	if got[0] != parent || got[1] != sub {
+		t.Errorf("resolved %v, want [%s %s]", got, parent, sub)
+	}
+}
