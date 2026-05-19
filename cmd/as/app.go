@@ -541,6 +541,51 @@ listed (shown as '—'); a registration whose PID is dead shows 'stale'.`,
 	// Top-level `st agents` alias for the "global view" muscle-memory.
 	root.AddCommand(newAgentPSCmd("agents", "agents"))
 
+	agentRegisterCmd := &cobra.Command{
+		Use:   "register",
+		Short: "Record this workspace agent's live session (T-357 producer)",
+		Long: `Record this workspace agent's live Claude session in
+.as/agents/<id>.yaml so the registration-derived columns (UPTIME,
+authoritative SESSION, PID liveness) populate in 'st agent ps' and
+'st watch'.
+
+Invoked automatically by the SessionStart hook with the Claude PID and
+session id; rarely run by hand. Idempotent and hook-safe: it always
+exits 0 (a missing identity or write failure is a stderr warning, never
+a broken session start), and sweeps dead-PID registrations first so
+.as/agents/ self-cleans without a deregister hook.`,
+		Example: `  # done for you by the SessionStart hook
+  st agent register --pid 12345 --session 0f630d0d-...`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			pid, _ := cmd.Flags().GetInt("pid")
+			sess, _ := cmd.Flags().GetString("session")
+			exitCode = command.AgentRegister(appCfg, command.AgentRegisterOpts{PID: pid, SessionID: sess})
+		},
+	}
+	agentRegisterCmd.Flags().Int("pid", 0, "process to track for liveness (0 = this process; the hook passes the Claude PID)")
+	agentRegisterCmd.Flags().String("session", "", "Claude session id")
+	agentCmd.AddCommand(agentRegisterCmd)
+
+	agentDeregisterCmd := &cobra.Command{
+		Use:   "deregister",
+		Short: "Remove this workspace agent's registration (explicit/scripted; not hook-wired)",
+		Long: `Remove this workspace agent's .as/agents/<id>.yaml registration.
+
+Idempotent (a no-op if already absent). Deliberately NOT wired to any
+hook: Claude Code has no SessionEnd event and the Stop hook fires every
+turn, so automatic deregistration would flap mid-session. Teardown is
+instead handled by the next 'st agent register' sweeping dead PIDs and
+by 'st agent ps' rendering a dead registration as 'stale'. Provided for
+explicit/scripted cleanup and future 'st spawn' workers.`,
+		Example: `  st agent deregister`,
+		Args:    cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentDeregister(appCfg)
+		},
+	}
+	agentCmd.AddCommand(agentDeregisterCmd)
+
 	agentIdentityCmd := &cobra.Command{
 		Use:   "identity",
 		Short: "Inspect resolved agent identity",

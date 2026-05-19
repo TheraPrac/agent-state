@@ -254,6 +254,63 @@ func nextSuffix(dir, prefix string) (string, error) {
 
 func noop() {}
 
+// SelfOptions are the inputs for RegisterSelf — the single,
+// base-id-keyed registration for a workspace's primary Claude session
+// (T-357 producer), as opposed to Register's nextSuffix spawn-worker
+// model.
+type SelfOptions struct {
+	AgentID   string // base id, e.g. "agent-b" (from cfg.Identity().ID)
+	PID       int    // 0 → os.Getpid()
+	SessionID string
+	Role      string
+}
+
+// RegisterSelf writes (idempotently overwrites) the registration file
+// for THIS workspace agent at <AgentsDir>/<AgentID>.yaml — keyed by the
+// base id (no nextSuffix) so the T-354/T-356 roster⋈registration join
+// matches by AgentID. Re-invoking (e.g. on session resume) refreshes
+// PID/SessionID/Started in place. Distinct from Register, which is the
+// suffixed spawn-worker path; that is intentionally left untouched.
+func RegisterSelf(cfg *config.Config, opts SelfOptions) (*Registration, error) {
+	if opts.AgentID == "" {
+		return nil, fmt.Errorf("agent.RegisterSelf: AgentID required")
+	}
+	if opts.PID == 0 {
+		opts.PID = os.Getpid()
+	}
+	dir := cfg.AgentsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("agent.RegisterSelf: mkdir %s: %w", dir, err)
+	}
+	reg := &Registration{
+		AgentID:   opts.AgentID,
+		Root:      opts.AgentID,
+		PID:       opts.PID,
+		Started:   time.Now().Format(time.RFC3339),
+		SessionID: opts.SessionID,
+		Role:      opts.Role,
+		Commit:    buildinfo.Commit,
+	}
+	path := filepath.Join(dir, opts.AgentID+".yaml")
+	if err := writeRegistration(path, reg); err != nil {
+		return nil, fmt.Errorf("agent.RegisterSelf: write %s: %w", path, err)
+	}
+	return reg, nil
+}
+
+// DeregisterSelf removes this workspace agent's base-id registration.
+// No-op (nil) when the file is already absent — idempotent.
+func DeregisterSelf(cfg *config.Config, agentID string) error {
+	if agentID == "" {
+		return fmt.Errorf("agent.DeregisterSelf: agentID required")
+	}
+	path := filepath.Join(cfg.AgentsDir(), agentID+".yaml")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // --- minimal YAML serialization ---
 //
 // Keep the format hand-rolled and stable so external tooling (and the
