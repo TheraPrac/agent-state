@@ -175,18 +175,22 @@ func CompressByAgent(rows []TaggedRow, opts RenderOpts) []string {
 	if width <= 0 {
 		width = defaultMaxLen
 	}
+	// Strip lines stay scannable (§8.3 "N readable lines"): a freshest
+	// PROSE row can be huge, so clamp it. Render already bounds tool/raw
+	// BODIES to width; the rendered line is "[tag] <body>" (+ optional
+	// "HH:MM:SS "), so the full-line budget is width plus that prefix.
+	// Using `width` directly here would re-clip an already-in-spec line
+	// and stamp a spurious truncation marker on it (false signal). A
+	// generous prefix allowance keeps the marker honest — it appears
+	// only when content was really clipped.
+	const stripPrefixAllowance = 32 // "[longest-agent-tag] HH:MM:SS "
 	var out []string
 	for _, tag := range order {
 		lines := Render(byTag[tag], opts)
 		if len(lines) == 0 {
 			continue
 		}
-		// The strip must stay scannable (§8.3 "N readable lines"): a
-		// freshest prose row can be huge, so clamp the whole line with
-		// the SAME visible-truncation marker used elsewhere — never a
-		// silent clip. (Tool/raw lines are already maxLen-bounded inside
-		// Render; this catches the long-prose case.)
-		out = append(out, truncate(lines[len(lines)-1], width))
+		out = append(out, truncate(lines[len(lines)-1], width+stripPrefixAllowance))
 	}
 	return out
 }

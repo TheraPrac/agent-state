@@ -37,8 +37,11 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 		base = time.Second
 	}
 	idleCap := opts.MaxIdle
-	if idleCap < base {
+	if idleCap <= 0 {
 		idleCap = 30 * time.Second
+	}
+	if idleCap < base {
+		idleCap = base // never back off to FASTER than the user's --interval
 	}
 
 	regs, err := agent.ListRegistrations(cfg)
@@ -76,28 +79,50 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 		return 1
 	}
 
-	// Freshest row per tag (agents + the changelog channel). Mailbox
-	// tailing beyond the changelog is the §8.2 mailbox-evolution
-	// downstream item (contract §10) — out of scope here.
-	latest := map[string]transcript.TaggedRow{}
+	// Recent rows per tag (agents + the changelog channel). We keep a
+	// bounded TAIL of rows per tag, not just the last one: CompressByAgent
+	// must render a tag's rows together so a freshest tool_use+result
+	// still collapses (one lone trailing tool_result would otherwise
+	// render as a misleading "orphan"). The cap bounds memory on a
+	// long-lived watch while staying far larger than any tool_use→result
+	// gap. Mailbox tailing beyond the changelog is the §8.2
+	// mailbox-evolution downstream item (contract §10) — out of scope.
+	const perTagCap = 256
+	recent := map[string][]transcript.TaggedRow{}
 	var lastChg time.Time
+	chgWarned := false
+
+	addRow := func(tag string, row transcript.Row) {
+		s := append(recent[tag], transcript.TaggedRow{Tag: tag, Row: row})
+		if len(s) > perTagCap {
+			s = s[len(s)-perTagCap:]
+		}
+		recent[tag] = s
+	}
 
 	poll := func() bool {
 		changed := false
 		for _, at := range tails {
 			for _, rd := range at.readers {
 				for _, row := range rd.Read() {
-					latest[at.tag] = transcript.TaggedRow{Tag: at.tag, Row: row}
+					addRow(at.tag, row)
 					changed = true
 				}
 			}
 		}
-		if all, err := changelog.ReadAll(cfg); err == nil {
+		all, err := changelog.ReadAll(cfg)
+		if err != nil {
+			if !chgWarned { // degrade, don't swallow — and don't spam every tick
+				fmt.Fprintf(os.Stderr, "watch: warning: changelog unavailable, omitting it: %v\n", err)
+				chgWarned = true
+			}
+		} else {
+			chgWarned = false
 			for _, entries := range all {
 				for _, e := range entries {
 					if ts := parseRFC3339(e.Timestamp); ts.After(lastChg) {
 						lastChg = ts
-						latest["chg"] = changelogRow(e)
+						addRow("chg", changelogRow(e).Row)
 						changed = true
 					}
 				}
@@ -107,14 +132,14 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 	}
 
 	snapshot := func() {
-		rows := make([]transcript.TaggedRow, 0, len(latest))
-		tagsSorted := make([]string, 0, len(latest))
-		for tag := range latest {
+		tagsSorted := make([]string, 0, len(recent))
+		for tag := range recent {
 			tagsSorted = append(tagsSorted, tag)
 		}
 		sort.Strings(tagsSorted)
+		var rows []transcript.TaggedRow
 		for _, tag := range tagsSorted {
-			rows = append(rows, latest[tag])
+			rows = append(rows, recent[tag]...)
 		}
 		fmt.Printf("── %s · %d live ──\n", time.Now().Format("15:04:05"), len(tails))
 		for _, l := range transcript.CompressByAgent(rows, transcript.RenderOpts{Timestamps: true}) {
@@ -124,7 +149,7 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 
 	if opts.Once {
 		poll()
-		if len(latest) == 0 {
+		if len(recent) == 0 {
 			// Live agents but nothing parsed yet is a real, reportable
 			// state (not an error, not a silent blank).
 			fmt.Fprintf(os.Stderr, "watch: %d live agent(s), no activity in their session JSONL yet\n", len(tails))

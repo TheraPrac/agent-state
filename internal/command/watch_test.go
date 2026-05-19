@@ -39,22 +39,28 @@ func TestWatch_OnceSnapshotCompressesLiveAgent(t *testing.T) {
 			t.Fatalf("watch --once exit %d, want 0", code)
 		}
 	})
-	// Exactly one compressed line for the agent, showing its freshest
-	// activity (the Bash tool collapse from the fixture), not a
-	// firehose of every row.
-	if !strings.Contains(out, "[agent-w] ") {
-		t.Errorf("no compressed line for the live agent:\n%s", out)
-	}
+	// Exactly ONE compressed line for the agent, and it must show the
+	// freshest activity with the tool_use+result COLLAPSED — not a
+	// lone orphan tool_result (the bug a single-last-row design caused)
+	// and not a firehose of every row.
 	if !strings.Contains(out, "live ──") {
 		t.Errorf("missing snapshot header:\n%s", out)
 	}
+	var agentLine string
 	agentLines := 0
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasPrefix(l, "[agent-w] ") {
 			agentLines++
+			agentLine = l
 		}
 	}
 	if agentLines != 1 {
-		t.Errorf("want exactly 1 compressed line for agent-w, got %d:\n%s", agentLines, out)
+		t.Fatalf("want exactly 1 compressed line for agent-w, got %d:\n%s", agentLines, out)
+	}
+	if !strings.Contains(agentLine, "Bash: go test ./... → ok all passed") {
+		t.Errorf("compressed line is not the collapsed Bash activity (W1 regression?):\n%s", agentLine)
+	}
+	if strings.Contains(agentLine, "orphan") {
+		t.Errorf("freshest tool_result rendered as orphan — rows not rendered together:\n%s", agentLine)
 	}
 }
