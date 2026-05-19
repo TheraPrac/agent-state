@@ -11,6 +11,7 @@ import (
 func TestWatch_NoLiveAgentsIsReported(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	t.Setenv("ST_AGENT_WORKSPACES_DIR", t.TempDir()) // empty roster → fallback adds nothing (hermetic)
 	// No registrations at all → reported, non-zero (not a silent
 	// blank success).
 	if code := Watch(cfg, WatchOpts{Once: true}); code != 1 {
@@ -21,6 +22,7 @@ func TestWatch_NoLiveAgentsIsReported(t *testing.T) {
 func TestWatch_OnceSnapshotCompressesLiveAgent(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	t.Setenv("ST_AGENT_WORKSPACES_DIR", t.TempDir()) // empty roster → only the registered agent appears (hermetic)
 	sid := "sess-watch-1"
 	writeFixtureSession(t, "/tmp/tp-fixture", sid)
 

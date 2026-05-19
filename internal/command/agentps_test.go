@@ -22,15 +22,17 @@ func TestAgentPS_RendersFleetWithLiveAndActiveItem(t *testing.T) {
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	const workspace = "/tmp/ws/theraprac-agent-tt"
 	if err := os.WriteFile(filepath.Join(wsDir, "agent-tt.yaml"),
-		[]byte("agent_id: agent-tt\npath: /tmp/ws/theraprac-agent-tt\n"), 0o644); err != nil {
+		[]byte("agent_id: agent-tt\npath: "+workspace+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ST_AGENT_WORKSPACES_DIR", wsDir)
 
-	// Live registration (this process's pid ⇒ IsPIDLive true) + session.
+	// Live registration (this process's pid ⇒ IsPIDLive true) + a fresh
+	// WORKSPACE session JSONL (ground truth → LAST-UPDATE/SESSION/LIVE).
 	sid := "sess-aps-1"
-	writeFixtureSession(t, "/tmp/tp-fixture", sid) // gives the session a JSONL → LAST-UPDATE
+	writeFixtureSession(t, workspace, sid) // resolved via the roster workspace path
 	if err := os.MkdirAll(cfg.AgentsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestAgentPS_RendersFleetWithLiveAndActiveItem(t *testing.T) {
 	if row == "" {
 		t.Fatalf("no agent-tt row:\n%s", out)
 	}
-	for _, want := range []string{"theraprac-agent-tt", "✓", "T-001 (coding)", "sess-aps"} {
+	for _, want := range []string{"theraprac-agent-tt", "live", "T-001 (coding)", "sess-aps"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("agent-tt row missing %q:\n%s", want, row)
 		}

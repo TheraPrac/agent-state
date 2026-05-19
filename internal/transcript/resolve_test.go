@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestProjectSlug is the canonical slug test. It was previously duplicated
@@ -131,5 +132,53 @@ func TestResolveSessionByID(t *testing.T) {
 	}
 	if got[0] != parent || got[1] != sub {
 		t.Errorf("resolved %v, want [%s %s]", got, parent, sub)
+	}
+}
+
+func TestNewestSessionForProjectDir(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", root)
+	projectDir := "/Users/x/Dev/theraprac-agent-q"
+	base := filepath.Join(root, ProjectSlug(projectDir))
+	if err := os.MkdirAll(filepath.Join(base, "subagents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty input / no sessions on disk → zero values, never an error.
+	if p, s, m := NewestSessionForProjectDir(""); p != "" || s != "" || !m.IsZero() {
+		t.Errorf("empty projectDir → %q,%q,%v want zero", p, s, m)
+	}
+	if p, s, m := NewestSessionForProjectDir(projectDir); p != "" || s != "" || !m.IsZero() {
+		t.Errorf("no sessions → %q,%q,%v want zero", p, s, m)
+	}
+
+	older := filepath.Join(base, "sess-old.jsonl")
+	newer := filepath.Join(base, "sess-new.jsonl")
+	decoyDir := filepath.Join(base, "subagents", "agent-z.jsonl") // must be ignored
+	for _, p := range []string{older, newer, decoyDir} {
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	recent := time.Now().Add(-1 * time.Minute)
+	if err := os.Chtimes(older, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	// Make the subagents-dir file the newest of all → must still be
+	// ignored (only top-level parent sessions count).
+	if err := os.Chtimes(decoyDir, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	p, sid, mod := NewestSessionForProjectDir(projectDir)
+	if p != newer || sid != "sess-new" {
+		t.Errorf("newest = (%q,%q), want (%q,sess-new)", p, sid, newer)
+	}
+	if mod.Sub(recent).Abs() > time.Second {
+		t.Errorf("mod = %v, want ≈ %v", mod, recent)
 	}
 }

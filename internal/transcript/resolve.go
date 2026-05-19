@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ProjectSlug derives the ~/.claude/projects/<slug> directory name from a
@@ -144,4 +145,45 @@ func ResolveSessionByID(sid string) []string {
 		paths = append(paths, subagentJSONL(base, sid)...)
 	}
 	return paths
+}
+
+// NewestSessionForProjectDir resolves a workspace/project directory to
+// its most-recently-modified Claude session: it scans
+// ClaudeProjectsDir()/ProjectSlug(projectDir)/*.jsonl (top-level parent
+// sessions only — not the subagents/ subdir) and returns the newest by
+// mtime. ("", "", zero) when projectDir is empty or the project has no
+// session on disk — never an error; the absence is the caller's to
+// surface (operator silent-failure principle). This is the
+// ground-truth "what/when did this workspace's agent last do
+// something" signal (contract §13 finding 3) used by `st agent ps` /
+// `st watch` independent of any registration self-report.
+func NewestSessionForProjectDir(projectDir string) (path, sid string, mod time.Time) {
+	if projectDir == "" {
+		return "", "", time.Time{}
+	}
+	slug := ProjectSlug(projectDir)
+	if slug == "" {
+		return "", "", time.Time{}
+	}
+	base := filepath.Join(ClaudeProjectsDir(), slug)
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return "", "", time.Time{}
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".jsonl") {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if m := fi.ModTime(); m.After(mod) {
+			mod = m
+			path = filepath.Join(base, n)
+			sid = strings.TrimSuffix(n, ".jsonl")
+		}
+	}
+	return path, sid, mod
 }

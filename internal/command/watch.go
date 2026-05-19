@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/agentps"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/transcript"
@@ -54,13 +55,9 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 		tag     string
 		readers []*transcript.TailReader
 	}
-	var tails []agentTail
-	for _, r := range regs {
-		if r == nil || r.SessionID == "" || !agent.IsPIDLive(r.PID) {
-			continue
-		}
+	mkReaders := func(paths []string) []*transcript.TailReader {
 		var rs []*transcript.TailReader
-		for _, p := range transcript.ResolveSessionByID(r.SessionID) {
+		for _, p := range paths {
 			// Once = snapshot → read from the start so there is content
 			// to show; follow = from end → stream from now (history is
 			// `st transcript`'s job, not the live strip's).
@@ -70,12 +67,47 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 				rs = append(rs, transcript.NewTailReader(p))
 			}
 		}
-		if len(rs) > 0 {
+		return rs
+	}
+
+	var tails []agentTail
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if r == nil || r.SessionID == "" || !agent.IsPIDLive(r.PID) {
+			continue
+		}
+		if rs := mkReaders(transcript.ResolveSessionByID(r.SessionID)); len(rs) > 0 {
 			tails = append(tails, agentTail{tag: r.AgentID, readers: rs})
+			seen[r.AgentID] = true
 		}
 	}
+
+	// Roster fallback (T-356): operator-launched Claude sessions don't
+	// register, so without this `st watch` is empty in the current
+	// topology. For every roster agent with no live registration whose
+	// WORKSPACE session JSONL is fresh (substrate ground truth, §13
+	// finding 1), tail that JSONL too.
+	if dir := agentps.AgentWorkspacesDir(cfg); dir != "" {
+		if roster, err := agentps.LoadRoster(dir); err == nil {
+			now := time.Now()
+			for _, ra := range roster {
+				if seen[ra.AgentID] {
+					continue
+				}
+				path, _, mod := transcript.NewestSessionForProjectDir(ra.Workspace)
+				if path == "" || now.Sub(mod) >= agentps.FreshWindow {
+					continue // never observed, or cold → not actively live
+				}
+				if rs := mkReaders([]string{path}); len(rs) > 0 {
+					tails = append(tails, agentTail{tag: ra.AgentID, readers: rs})
+					seen[ra.AgentID] = true
+				}
+			}
+		}
+	}
+
 	if len(tails) == 0 {
-		fmt.Fprintln(os.Stderr, "watch: no live agents with a resolvable session JSONL")
+		fmt.Fprintln(os.Stderr, "watch: no live agents (no registrations and no recently-active workspace sessions)")
 		return 1
 	}
 
