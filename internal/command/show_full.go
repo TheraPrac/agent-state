@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -26,7 +27,12 @@ var expandedByDefault = map[string]bool{
 	"item": true, "plan": true, "ac": true,
 }
 
-func showFull(s *store.Store, cfg *config.Config, item *model.Item, all bool) int {
+// showFull writes the composite view to w. Taking an io.Writer (instead
+// of hard-coding os.Stdout) is the additive refactor T-372 needs to
+// compose this renderer into the TUI panel WITHOUT duplicating the facet
+// rendering logic (the §7 maintainability invariant). The cobra path
+// passes os.Stdout (identical behaviour); the TUI passes a bytes.Buffer.
+func showFull(w io.Writer, s *store.Store, cfg *config.Config, item *model.Item, all bool) int {
 	title := item.Title
 	if title == "" {
 		title = "(untitled)"
@@ -35,8 +41,8 @@ func showFull(s *store.Store, cfg *config.Config, item *model.Item, all bool) in
 	// facet body below — that is intentional: the banner says "what am I
 	// looking at", the `item` facet is the identity entry of the §4
 	// taxonomy. The scout deliberately shows the whole taxonomy.
-	fmt.Printf("%s — %s\n", item.ID, title)
-	fmt.Println(strings.Repeat("─", 60))
+	fmt.Fprintf(w, "%s — %s\n", item.ID, title)
+	fmt.Fprintln(w, strings.Repeat("─", 60))
 
 	for _, kind := range facetOrder { // fixed slice ⇒ deterministic order
 		fr := facets[kind](s, cfg, item)
@@ -50,7 +56,7 @@ func showFull(s *store.Store, cfg *config.Config, item *model.Item, all bool) in
 		if summary == "" {
 			summary = "—"
 		}
-		fmt.Printf("%s %s  (%s)\n", glyph, kind, summary)
+		fmt.Fprintf(w, "%s %s  (%s)\n", glyph, kind, summary)
 
 		if !expanded {
 			continue
@@ -60,7 +66,7 @@ func showFull(s *store.Store, cfg *config.Config, item *model.Item, all bool) in
 			continue
 		}
 		for _, line := range strings.Split(body, "\n") {
-			fmt.Printf("    %s\n", line)
+			fmt.Fprintf(w, "    %s\n", line)
 		}
 	}
 	return 0

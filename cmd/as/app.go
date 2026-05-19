@@ -126,6 +126,29 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	showCmd.Flags().Bool("all", false, "with --full: expand the machine sections too (default: collapsed)")
 	root.AddCommand(showCmd)
 
+	tuiCmd := &cobra.Command{
+		Use:   "tui",
+		Short: "Static Layout-A orchestration TUI (T-372, sub-layer a)",
+		Long: "Render the Layout-A frame once — top agent strip, focused\n" +
+			"composite item pane (st show --full), planning queue\n" +
+			"(st recommend), bottom alerts band. STATIC v1: no live\n" +
+			"refresh (T-373) and no keyboard navigation (T-374); this\n" +
+			"command lays down the Bubble Tea model/View substrate those\n" +
+			"layers plug into. --item focuses a specific item; default =\n" +
+			"the next eligible queue pick.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			item, _ := cmd.Flags().GetString("item")
+			width, _ := cmd.Flags().GetInt("width")
+			exitCode = command.Tui(appStore, appCfg, command.TuiOpts{
+				Item: item, Width: width,
+			})
+		},
+	}
+	tuiCmd.Flags().String("item", "", "focus a specific item id (default: next queue pick)")
+	tuiCmd.Flags().Int("width", 0, "render width override (default: 120; T-373 will read live terminal width)")
+	root.AddCommand(tuiCmd)
+
 	artifactCmd := &cobra.Command{
 		Use:   "artifact <id> <kind>",
 		Short: "Introspect one facet of an item (TUI build-order layer 1, T-370)",
