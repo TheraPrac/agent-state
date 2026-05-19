@@ -32,7 +32,7 @@ type Row struct {
 	Reg       *Reg      // nil ⇒ no live registration self-report
 	Item      *ItemRef  // nil ⇒ no active agent-state item
 	LastMod   time.Time // newest WORKSPACE session-JSONL mtime (ground truth); zero ⇒ none on disk
-	WSSession string    // sid of that newest workspace session; "" ⇒ none
+	WSSessionID string  // sid of that newest workspace session; "" ⇒ none (distinct from the WSSession join-input type)
 }
 
 // FreshWindow is the default "actively producing output" threshold: a
@@ -87,7 +87,7 @@ func Join(roster []RosterAgent, regs map[string]Reg, active map[string]ItemRef, 
 		}
 		if ws, ok := sessions[ra.AgentID]; ok {
 			row.LastMod = ws.Mod
-			row.WSSession = ws.SID
+			row.WSSessionID = ws.SID
 		}
 		rows = append(rows, row)
 	}
@@ -128,8 +128,8 @@ func Render(rows []Row, now time.Time) []string {
 		// SESSION: the workspace's actual session is ground truth;
 		// fall back to the registration's declared sid.
 		switch {
-		case r.WSSession != "":
-			c.sess = shortID(r.WSSession)
+		case r.WSSessionID != "":
+			c.sess = shortID(r.WSSessionID)
 		case r.Reg != nil && r.Reg.SessionID != "":
 			c.sess = shortID(r.Reg.SessionID)
 		}

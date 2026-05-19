@@ -78,7 +78,8 @@ func TestAgentPS_RendersFleetWithLiveAndActiveItem(t *testing.T) {
 		}
 	}
 	// LAST-UPDATE must be populated from the fixture session's JSONL
-	// mtime (transcript.ResolveSessionByID → os.Stat wiring), not "—".
+	// mtime (transcript.NewestSessionForProjectDir on the roster
+	// workspace path), not "—".
 	if !strings.Contains(row, "ago") {
 		t.Errorf("agent-tt LAST-UPDATE not populated from session mtime:\n%s", row)
 	}

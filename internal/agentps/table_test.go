@@ -80,7 +80,7 @@ func TestAgentPSJoin(t *testing.T) {
 	if rows[0].AgentID != "agent-a" || rows[1].AgentID != "agent-b" || rows[2].AgentID != "agent-c" {
 		t.Fatalf("rows not sorted by AgentID: %v", []string{rows[0].AgentID, rows[1].AgentID, rows[2].AgentID})
 	}
-	if rows[0].Reg == nil || rows[0].Reg.SessionID != "s-a" || rows[0].LastMod.IsZero() || rows[0].WSSession != "sx" {
+	if rows[0].Reg == nil || rows[0].Reg.SessionID != "s-a" || rows[0].LastMod.IsZero() || rows[0].WSSessionID != "sx" {
 		t.Errorf("agent-a row missing reg/session ground truth: %+v", rows[0])
 	}
 	if rows[1].Reg != nil || rows[1].Item != nil { // idle agent still present

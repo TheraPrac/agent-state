@@ -84,21 +84,27 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 
 	// Roster fallback (T-356): operator-launched Claude sessions don't
 	// register, so without this `st watch` is empty in the current
-	// topology. For every roster agent with no live registration whose
-	// WORKSPACE session JSONL is fresh (substrate ground truth, §13
-	// finding 1), tail that JSONL too.
+	// topology. For every roster agent NOT already tailed via the
+	// registration path whose WORKSPACE session (parent + subagents) is
+	// fresh — substrate ground truth, §13 finding 1 — tail it. Subagents
+	// are included via ResolveSessionByID so this matches the
+	// registration path exactly (no parent-only blind spot).
 	if dir := agentps.AgentWorkspacesDir(cfg); dir != "" {
-		if roster, err := agentps.LoadRoster(dir); err == nil {
+		roster, err := agentps.LoadRoster(dir)
+		if err != nil {
+			// Degrade (registration path still works) but never swallow.
+			fmt.Fprintf(os.Stderr, "watch: warning: cannot read agent roster at %s: %v\n", dir, err)
+		} else {
 			now := time.Now()
 			for _, ra := range roster {
 				if seen[ra.AgentID] {
 					continue
 				}
-				path, _, mod := transcript.NewestSessionForProjectDir(ra.Workspace)
-				if path == "" || now.Sub(mod) >= agentps.FreshWindow {
+				_, sid, mod := transcript.NewestSessionForProjectDir(ra.Workspace)
+				if sid == "" || now.Sub(mod) >= agentps.FreshWindow {
 					continue // never observed, or cold → not actively live
 				}
-				if rs := mkReaders([]string{path}); len(rs) > 0 {
+				if rs := mkReaders(transcript.ResolveSessionByID(sid)); len(rs) > 0 {
 					tails = append(tails, agentTail{tag: ra.AgentID, readers: rs})
 					seen[ra.AgentID] = true
 				}
