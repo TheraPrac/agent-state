@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -54,9 +55,11 @@ func Recommend(s *store.Store, cfg *config.Config, opts RecommendOpts) int {
 	}
 	g := deps.Build(s.All(), cfg)
 
-	cands := recommendCandidates(s, cfg, g, opts)
-	leverage, names := unblockLeverage(g, cands)
+	// Load sprint info ONCE and thread it through both the --scope filter
+	// and the scorer (a single registry read, not one per concern).
 	sprints := loadSprintInfo(cfg, g)
+	cands := recommendCandidates(s, cfg, g, opts, sprints)
+	leverage, names := unblockLeverage(g, cands)
 
 	recs := coordinator.Recommend(cands, leverage, sprints, time.Now())
 	enrichUnblockDetail(recs, names)
@@ -104,9 +107,10 @@ func Recommend(s *store.Store, cfg *config.Config, opts RecommendOpts) int {
 //   - default ⇒ the PLANNING view: g.Ready() (unblocked + start-status +
 //     unassigned) — the established "what's workable" primitive.
 //
-// --scope sprint further restricts to members of an ACTIVE sprint.
+// --scope sprint further restricts to members of an ACTIVE sprint, using
+// the already-loaded sprints map (no second registry read).
 func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
-	opts RecommendOpts) []*model.Item {
+	opts RecommendOpts, sprints map[string]coordinator.SprintInfo) []*model.Item {
 
 	var cands []*model.Item
 	if opts.Queue {
@@ -126,10 +130,12 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	}
 
 	if opts.Scope == "sprint" {
-		active := activeSprintIDs(cfg)
 		filtered := cands[:0]
 		for _, it := range cands {
-			if it.Sprint != "" && active[it.Sprint] {
+			if it.Sprint == "" {
+				continue
+			}
+			if si, ok := sprints[it.Sprint]; ok && si.Active {
 				filtered = append(filtered, it)
 			}
 		}
@@ -141,7 +147,11 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 // unblockLeverage counts, for each candidate, how many NON-resolved items
 // it unblocks (g.IsResolved ⇒ terminal or merged+), and records their IDs
 // for the rationale. Freeing downstream work is the strongest in-band
-// coordinator signal.
+// coordinator signal. The ID lists are SORTED: g.BlocksItems derives from
+// a map iteration in deps.Build, so without this the rationale (and the
+// --json contract a TUI consumes) would reorder run-to-run — a feature
+// whose whole value is reproducible, inspectable dispatch cannot ship
+// non-deterministic output.
 func unblockLeverage(g *deps.Graph, cands []*model.Item) (map[string]int, map[string][]string) {
 	lev := make(map[string]int, len(cands))
 	names := make(map[string][]string, len(cands))
@@ -152,13 +162,15 @@ func unblockLeverage(g *deps.Graph, cands []*model.Item) (map[string]int, map[st
 				names[it.ID] = append(names[it.ID], downID)
 			}
 		}
+		sort.Strings(names[it.ID])
 	}
 	return lev, names
 }
 
-// enrichUnblockDetail rewrites the "unblock" factor (and the cached
-// rationale) to name the concrete unblocked IDs — kept out of the pure
-// scorer so that core stays map-only (it never needs the ID list).
+// enrichUnblockDetail rewrites the "unblock" factor's Detail to name the
+// concrete unblocked IDs (Rationale() recomputes from Factors on demand —
+// there is no cache to invalidate). Kept out of the pure scorer so the
+// core stays map-only: it never needs the ID list.
 func enrichUnblockDetail(recs []coordinator.Recommendation, names map[string][]string) {
 	for i := range recs {
 		ids := names[recs[i].Item.ID]
@@ -197,22 +209,6 @@ func loadSprintInfo(cfg *config.Config, g *deps.Graph) map[string]coordinator.Sp
 		}
 		out[sp.ID] = coordinator.SprintInfo{
 			Active: sp.Status == "active", CompletionFrac: frac,
-		}
-	}
-	return out
-}
-
-// activeSprintIDs is the --scope sprint membership filter. Resilient like
-// loadSprintInfo: no registry ⇒ empty set ⇒ no items match.
-func activeSprintIDs(cfg *config.Config) map[string]bool {
-	out := map[string]bool{}
-	r, err := registry.Load(cfg.EpicsPath())
-	if err != nil || r == nil {
-		return out
-	}
-	for _, sp := range r.Sprints {
-		if sp.Status == "active" {
-			out[sp.ID] = true
 		}
 	}
 	return out

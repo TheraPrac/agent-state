@@ -163,14 +163,14 @@ func dispatchRationale(s *store.Store, cfg *config.Config, g *deps.Graph, picked
 	}
 	fallback := fmt.Sprintf("priority p%d", p)
 
-	cands := recommendCandidates(s, cfg, g, RecommendOpts{Queue: true})
-	if len(cands) == 0 {
-		return fallback // unreachable in practice (picked is eligible) — degrade safely
-	}
-	lev, names := unblockLeverage(g, cands)
 	sprints := loadSprintInfo(cfg, g)
+	cands := recommendCandidates(s, cfg, g, RecommendOpts{Queue: true}, sprints)
+	lev, names := unblockLeverage(g, cands)
 	recs := coordinator.Recommend(cands, lev, sprints, time.Now())
 	enrichUnblockDetail(recs, names)
+	if len(recs) == 0 {
+		return fallback // unreachable in practice (picked is eligible) — degrade safely
+	}
 
 	rat := fallback
 	for _, r := range recs {
