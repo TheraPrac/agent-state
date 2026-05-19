@@ -97,6 +97,34 @@ func TestTranscript_JSONAndGrep(t *testing.T) {
 	}
 }
 
+func TestTranscript_ReviewFixes(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	sid := "sess-fixes-1"
+	writeFixtureSession(t, "/tmp/tp-fixture", sid)
+
+	// --json + --grep is rejected, not silently no-op'd.
+	if code := Transcript(s, cfg, sid, TranscriptOpts{JSON: true, Grep: "x"}); code != 1 {
+		t.Errorf("--json+--grep exit %d, want 1 (must be rejected, not silently ignored)", code)
+	}
+
+	// A typo'd --agent that filters everything is reported (non-zero),
+	// not a silent exit-0 that looks like "nothing happened".
+	if code := Transcript(s, cfg, sid, TranscriptOpts{Agent: "agnet-typo"}); code != 1 {
+		t.Errorf("--agent typo exit %d, want 1 (post-filter emptiness must be reported)", code)
+	}
+
+	// (No --since assertion here: it compares against time.Now(), which
+	// would make the result wall-clock-dependent / flaky. The --agent
+	// case above already covers the post-filter-empty → exit-1 path
+	// deterministically.)
+
+	// Sanity: unfiltered still works.
+	if code := Transcript(s, cfg, sid, TranscriptOpts{}); code != 0 {
+		t.Errorf("unfiltered exit %d, want 0", code)
+	}
+}
+
 func TestTranscript_ItemSelectorResolvesBySession(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())

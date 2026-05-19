@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,14 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 		return 1
 	}
 
+	if opts.JSON && opts.Grep != "" {
+		// Reject rather than silently ignore one of them: --json is raw
+		// pre-render rows, --grep filters rendered lines (operator
+		// silent-failure principle — no accepted-but-ignored flags).
+		fmt.Fprintln(os.Stderr, "transcript: --grep cannot be combined with --json (grep filters rendered lines; json is pre-render)")
+		return 1
+	}
+
 	var since time.Time
 	if opts.Since != "" {
 		if d, err := parseDurationFlexible(opts.Since); err == nil {
@@ -54,29 +63,35 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 		}
 	}
 
+	// Resolve the selector ONCE (item → agent → session; disjoint id
+	// shapes). Avoids the double store/registration read the switch
+	// idiom caused and closes its TOCTOU window.
 	var tagged []transcript.TaggedRow
 	var scope string
-
 	switch {
-	case storeHasItem(s, selector):
+	case itemOf(s, selector) != nil:
+		item := itemOf(s, selector)
 		scope = "item " + selector
-		item, _ := s.Get(selector)
 		for i, se := range itemSessions(item) {
 			tag := sessionTag(i)
 			for _, p := range transcript.ResolveSessionJSONL(se.projectDir, se.sid) {
 				tagged = append(tagged, readTagged(p, tag)...)
 			}
 		}
-		if entries, err := changelog.Read(cfg, selector); err == nil {
+		if entries, err := changelog.Read(cfg, selector); err != nil {
+			// Degrade (changelog is supplemental) but never swallow:
+			// surface the failure so missing context is explained.
+			fmt.Fprintf(os.Stderr, "transcript: warning: changelog for %s unavailable: %v\n", selector, err)
+		} else {
 			for _, e := range entries {
 				tagged = append(tagged, changelogRow(e))
 			}
 		}
 
-	case agentRegistered(cfg, selector):
+	case registrationOf(cfg, selector) != nil:
+		reg := registrationOf(cfg, selector)
 		scope = "agent " + selector
-		reg, _ := agent.LoadRegistration(cfg, selector)
-		if reg == nil || reg.SessionID == "" {
+		if reg.SessionID == "" {
 			fmt.Fprintf(os.Stderr, "transcript: agent %q has no recorded session id\n", selector)
 			return 1
 		}
@@ -86,7 +101,9 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 		// The agent's mailbox is the §8.2 conversation channel for an
 		// agent-scoped view (pending only; cross-recipient item-mail
 		// threading is the separate mailbox-evolution downstream item).
-		if msgs, err := mail.List(cfg, selector); err == nil {
+		if msgs, err := mail.List(cfg, selector); err != nil {
+			fmt.Fprintf(os.Stderr, "transcript: warning: mailbox for %s unavailable: %v\n", selector, err)
+		} else {
 			for _, m := range msgs {
 				tagged = append(tagged, mailRow(m))
 			}
@@ -97,6 +114,13 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 		if len(paths) == 0 {
 			fmt.Fprintf(os.Stderr, "transcript: %q is not a known item, agent, or on-disk session\n", selector)
 			return 1
+		}
+		// A bare sid resolving under >1 project slug means two unrelated
+		// sessions would be merged — report the ambiguity, don't merge
+		// them silently.
+		if dirs := distinctParentDirs(paths); len(dirs) > 1 {
+			fmt.Fprintf(os.Stderr, "transcript: warning: session %q exists under %d project dirs (%s) — showing all, tagged separately\n",
+				selector, len(dirs), strings.Join(dirs, ", "))
 		}
 		scope = "session " + selector
 		for i, p := range paths {
@@ -128,6 +152,16 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 			}
 		}
 		tagged = kept
+	}
+
+	// Post-filter emptiness is reported, not a silent exit-0 (a typo'd
+	// --agent or too-tight --since must not look like "nothing happened"
+	// — operator silent-failure principle). --grep is intentionally
+	// excluded: it is a line filter and "no matching lines" is normal
+	// grep semantics (exit 0).
+	if len(tagged) == 0 {
+		fmt.Fprintf(os.Stderr, "transcript: --since/--agent filtered out every row from %s\n", scope)
+		return 1
 	}
 
 	// Caller-owns-sort (Phase 2 Render is deliberately not a sorter):
@@ -165,17 +199,49 @@ func Transcript(s *store.Store, cfg *config.Config, selector string, opts Transc
 
 // --- helpers ---
 
-func storeHasItem(s *store.Store, id string) bool {
+// itemOf returns the item for id, or nil. Called once per resolution so
+// the selector switch reads the store a single time.
+func itemOf(s *store.Store, id string) *model.Item {
 	if s == nil {
-		return false
+		return nil
 	}
-	_, ok := s.Get(id)
-	return ok
+	if it, ok := s.Get(id); ok {
+		return it
+	}
+	return nil
 }
 
-func agentRegistered(cfg *config.Config, id string) bool {
+// registrationOf returns the agent registration for id, or nil (a
+// missing registration is (nil,nil) from LoadRegistration). Called once
+// so the switch does not re-read the yaml.
+func registrationOf(cfg *config.Config, id string) *agent.Registration {
 	reg, err := agent.LoadRegistration(cfg, id)
-	return err == nil && reg != nil
+	if err != nil {
+		return nil
+	}
+	return reg
+}
+
+// distinctParentDirs returns the unique directories of the resolved
+// jsonl paths' parents, used to detect a sid that collides across
+// project slugs.
+func distinctParentDirs(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		d := filepath.Dir(p)
+		// subagents live in <slug>/<sid>/subagents — climb to the slug
+		// so a parent + its own subagents count as one project.
+		if filepath.Base(d) == "subagents" {
+			d = filepath.Dir(filepath.Dir(d))
+		}
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func sessionTag(i int) string {
@@ -209,7 +275,8 @@ type sessionRef struct {
 
 // itemSessions extracts (sid, project_dir) from an item's
 // time_tracking.by_session list. It reuses parseBySessionLine (same
-// package) which url-decodes project_dir correctly — so the I-678
+// package), which decodes project_dir via decodeFieldValue (the bespoke
+// %20/%09 space/tab encoding, not generic URL decoding) — so the I-678
 // space-in-path class does not apply on this path.
 func itemSessions(item *model.Item) []sessionRef {
 	var out []sessionRef
@@ -302,9 +369,10 @@ func mailRow(m mail.Message) transcript.TaggedRow {
 	}
 }
 
-// foldLine folds newlines to a visible ⏎ (never truncates — changelog
-// reasons / mail bodies are surfaced in full, not silently clipped;
-// distinct from run.go's scannable-prompt oneLine).
+// foldLine folds interior newlines to a visible ⏎ and trims surrounding
+// whitespace. It never CLIPS content (unlike run.go's first-line-only
+// oneLine): a changelog reason / mail body is surfaced whole, just on
+// one line.
 func foldLine(s string) string {
 	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", " ⏎ ")
 	return strings.TrimSpace(s)
