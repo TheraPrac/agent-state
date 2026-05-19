@@ -1,0 +1,120 @@
+package command
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// Every declared kind dispatches, returns rc 0, and prints non-empty
+// text — a missing facet must degrade to a clear "(no …)" line, never a
+// crash or a silent blank (operator silent-failure principle).
+func TestArtifact_EveryKindTextDispatches(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	for _, k := range facetOrder {
+		var rc int
+		out := captureStdout(t, func() {
+			rc = Artifact(s, cfg, "T-002", ArtifactOpts{Kind: k})
+		})
+		if rc != 0 {
+			t.Errorf("kind %q rc=%d, want 0\n%s", k, rc, out)
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("kind %q produced empty output", k)
+		}
+	}
+}
+
+func TestArtifact_KnownItemFacetContent(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	out := captureStdout(t, func() {
+		Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "item"})
+	})
+	if !strings.Contains(out, "T-002") {
+		t.Fatalf("item facet must name the item\n%s", out)
+	}
+	// T-002 depends_on T-001 — the deps facet must reflect that edge.
+	dout := captureStdout(t, func() {
+		Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "deps"})
+	})
+	if !strings.Contains(dout, "T-001") {
+		t.Errorf("deps facet must show the T-002→T-001 edge\n%s", dout)
+	}
+}
+
+func TestArtifact_MissingFacetDegradesCleanly(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// T-001 fixture has no plan / no AC — must say so, rc 0, no panic.
+	for _, k := range []string{"plan", "ac", "history"} {
+		var rc int
+		out := captureStdout(t, func() {
+			rc = Artifact(s, cfg, "T-001", ArtifactOpts{Kind: k})
+		})
+		if rc != 0 || !strings.Contains(out, "(no ") {
+			t.Errorf("missing %q must degrade to a clear empty (rc=%d): %q", k, rc, out)
+		}
+	}
+}
+
+func TestArtifact_AllJSONStableAndValid(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	run := func() string {
+		return captureStdout(t, func() {
+			if rc := Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "all", Format: "json"}); rc != 0 {
+				t.Fatalf("all/json rc != 0")
+			}
+		})
+	}
+	a, b := run(), run()
+	if a != b {
+		t.Fatalf("all --format json must be deterministic across runs\nA:%s\nB:%s", a, b)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(a), &obj); err != nil {
+		t.Fatalf("all/json is not a valid JSON object: %v\n%s", err, a)
+	}
+	for _, k := range facetOrder {
+		if _, ok := obj[k]; !ok {
+			t.Errorf("all/json missing facet key %q", k)
+		}
+	}
+}
+
+func TestArtifact_AllTextHasEverySection(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	out := captureStdout(t, func() {
+		Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "all"})
+	})
+	for _, k := range facetOrder {
+		if !strings.Contains(out, "━━━ "+k+" ━━━") {
+			t.Errorf("all text missing section header for %q\n%s", k, out)
+		}
+	}
+}
+
+func TestArtifact_JSONFacetValid(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	out := captureStdout(t, func() {
+		Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "item", Format: "json"})
+	})
+	var v map[string]any
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		t.Fatalf("item/json invalid: %v\n%s", err, out)
+	}
+	if v["id"] != "T-002" {
+		t.Errorf("item/json id = %v, want T-002", v["id"])
+	}
+}
+
+func TestArtifact_ErrorPaths(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if rc := Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "nonsense"}); rc != 2 {
+		t.Errorf("unknown kind must rc=2, got %d", rc)
+	}
+	if rc := Artifact(s, cfg, "NOPE-999", ArtifactOpts{Kind: "item"}); rc != 1 {
+		t.Errorf("not-found item must rc=1, got %d", rc)
+	}
+	if rc := Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "item", Format: "xml"}); rc != 2 {
+		t.Errorf("bad --format must rc=2, got %d", rc)
+	}
+}

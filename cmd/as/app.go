@@ -118,6 +118,26 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	showCmd.Flags().BoolP("raw", "r", false, "print the raw markdown file")
 	root.AddCommand(showCmd)
 
+	artifactCmd := &cobra.Command{
+		Use:   "artifact <id> <kind>",
+		Short: "Introspect one facet of an item (TUI build-order layer 1, T-370)",
+		Long: "Expose each of an item's ~12 artifact facets through one\n" +
+			"uniform, stdout-able command (TUI-design §4). <kind> is one\n" +
+			"of: item, plan, ac, history, testing, pr, uat, commits, deps,\n" +
+			"bus, worktree, accounting — or 'all' for every facet. Each\n" +
+			"facet reads its existing source (no new storage); --format\n" +
+			"json is the stable contract `st show --full` and the TUI\n" +
+			"consume. Composition only — no facet logic is duplicated here.",
+		Args: cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			format, _ := cmd.Flags().GetString("format")
+			exitCode = command.Artifact(appStore, appCfg, args[0],
+				command.ArtifactOpts{Kind: args[1], Format: format})
+		},
+	}
+	artifactCmd.Flags().String("format", "text", "output format: text | json")
+	root.AddCommand(artifactCmd)
+
 	transcriptCmd := &cobra.Command{
 		Use:   "transcript <item|agent|session>",
 		Short: "Render a session's JSONL transcript (human-readable)",
