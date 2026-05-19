@@ -805,12 +805,44 @@ in-flight, run 'st release' against the active items first.
 	agentCmd.AddCommand(agentWorkspaceCmd)
 	root.AddCommand(agentCmd)
 
-	// --- Spawn (T-326): hierarchical agent registration ---
+	// --- Spawn ---
+	// `st spawn <item>` (T-360): launch a budget-capped, JSONL-observable
+	// reasoning worker on an item — the Shape-3 §10/§13 linchpin.
+	// `st spawn child <item>` (T-326): the older registration-only path.
 
 	spawnCmd := &cobra.Command{
-		Use:   "spawn",
-		Short: "Spawn child agents for the T-312 hierarchy",
+		Use:   "spawn <item>",
+		Short: "Launch a budget-capped reasoning worker on an item (T-360)",
+		Long: "Launch a detached, budget-capped, JSONL-observable reasoning\n" +
+			"worker (`claude -p`, resolved binary) that drives <item> through\n" +
+			"the full CLAUDE.md delivery loop. The per-item budget is read from\n" +
+			"theraprac-workspace/.as/coordinator.yaml (never spawned uncapped);\n" +
+			"the autonomy boundary there governs the worker via the existing\n" +
+			"per-worker enforcement hooks. Observe with `st watch` /\n" +
+			"`st transcript <item>`.\n\n" +
+			"--dry-run prints the fully-resolved launch plan and exits without\n" +
+			"launching, registering, or starting anything.",
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if len(args) == 0 {
+				_ = cmd.Help()
+				exitCode = 2
+				return
+			}
+			budget, _ := cmd.Flags().GetFloat64("budget")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			exitCode = command.Spawn(appStore, appCfg, command.SpawnOpts{
+				Item:           args[0],
+				BudgetOverride: budget,
+				DryRun:         dryRun,
+			})
+		},
 	}
+	spawnCmd.Flags().Float64("budget", 0,
+		"override the coordinator.yaml per-item USD cap (must be > 0; "+
+			"used to spend a tiny amount live-verifying on a throwaway item)")
+	spawnCmd.Flags().Bool("dry-run", false,
+		"print the resolved launch plan and exit without launching")
 	spawnChildCmd := &cobra.Command{
 		Use:   "child <item>",
 		Short: "Materialize a child agent registration under the calling identity",
