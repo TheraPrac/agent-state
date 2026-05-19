@@ -63,10 +63,70 @@ func TestRender(t *testing.T) {
 		}
 	}
 
-	// No input row is silently dropped: every row maps to output except
-	// the one matched tool_result (folded into its tool_use line).
-	if len(got) < len(rows)-1 {
-		t.Errorf("rendered %d lines from %d rows — a row was dropped", len(got), len(rows))
+	// No silent drop, precisely: the golden DeepEqual above already
+	// pins exact output. The only folded row is the single matched
+	// tu1 result; the ORPHAN result still renders. Assert that exact
+	// fold count so a future regression that drops an orphan/dup is
+	// caught (the weak `< len-1` form could not).
+	const foldedMatchedResults = 1 // tu1 only
+	nonFolded := len(rows) - foldedMatchedResults
+	wantLines := nonFolded + 1 // last KindText "line1\nline2" → 2 lines
+	if len(got) != wantLines {
+		t.Errorf("rendered %d lines, want exactly %d (rows=%d, folded=%d, +1 multi-line prose)",
+			len(got), wantLines, len(rows), foldedMatchedResults)
+	}
+}
+
+// TestRender_DuplicateResultNotDropped locks the Phase-2 review fix: a
+// second tool_result for an already-folded id must render as a dup
+// line, never be silently swallowed (silent-failure principle).
+func TestRender_DuplicateResultNotDropped(t *testing.T) {
+	use := tu("Bash", map[string]any{"command": "go test"})
+	use.ID = "d1"
+	rows := []TaggedRow{
+		{"A", Row{Kind: KindToolUse, ToolUse: use}},
+		{"A", Row{Kind: KindToolResult, ToolResult: &ToolResult{ToolUseID: "d1", Content: "first"}}},
+		{"A", Row{Kind: KindToolResult, ToolResult: &ToolResult{ToolUseID: "d1", Content: "second", IsError: true}}},
+	}
+	got := Render(rows, RenderOpts{})
+	if len(got) != 2 {
+		t.Fatalf("want 2 lines (tool_use+dup), got %#v", got)
+	}
+	if got[0] != "[A] Bash: go test → first" {
+		t.Errorf("tool_use line = %q", got[0])
+	}
+	if got[1] != "[A] ⟵ tool_result(dup id=d1, error): second" {
+		t.Errorf("dup line not rendered/labelled: %q", got[1])
+	}
+}
+
+func TestRender_MultiEditAndNullArgAndNilToolUse(t *testing.T) {
+	// MultiEdit: schema is {file_path, edits:[{old_string,new_string}]}.
+	me := tu("MultiEdit", map[string]any{
+		"file_path": "/p/q/svc.go",
+		"edits": []map[string]any{
+			{"old_string": "a", "new_string": "x\ny"},
+			{"old_string": "b\nc", "new_string": "z"},
+		},
+	})
+	me.ID = "m1"
+	got := Render([]TaggedRow{{"A", Row{Kind: KindToolUse, ToolUse: me}}}, RenderOpts{})
+	if got[0] != "[A] MultiEdit: svc.go ×2 +3 −3 → …" {
+		t.Errorf("MultiEdit summary wrong: %q", got[0])
+	}
+
+	// null-valued arg is skipped, not surfaced as literal "null".
+	mys := tu("Mystery", map[string]any{"a": nil, "b": "real"})
+	mys.ID = "y1"
+	got = Render([]TaggedRow{{"A", Row{Kind: KindToolUse, ToolUse: mys}}}, RenderOpts{})
+	if got[0] != "[A] Mystery: real → …" {
+		t.Errorf("null arg not skipped: %q", got[0])
+	}
+
+	// KindToolUse with nil ToolUse → visible marker, never a blank line.
+	got = Render([]TaggedRow{{"A", Row{Kind: KindToolUse}}}, RenderOpts{})
+	if got[0] != "[A] <tool_use: missing ToolUse payload>" {
+		t.Errorf("nil ToolUse not surfaced visibly: %q", got[0])
 	}
 }
 

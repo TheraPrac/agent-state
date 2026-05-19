@@ -71,6 +71,12 @@ func Render(rows []TaggedRow, opts RenderOpts) []string {
 		}
 	}
 
+	// consumed tracks the FIRST matched tool_result per id (the one
+	// folded into resultByID and shown on the tool_use line). A second
+	// tool_result for the same id is NOT silently swallowed — it is
+	// rendered as a dup line (silent-failure principle).
+	consumed := make(map[string]bool)
+
 	var out []string
 	emit := func(tag string, tr Row, body string) {
 		if tag == "" {
@@ -99,7 +105,14 @@ func Render(rows []TaggedRow, opts RenderOpts) []string {
 			}
 		case KindToolUse:
 			if r.ToolUse == nil {
-				emit(tag, r, truncate(collapse(r.Text), maxLen))
+				// Phase 1 always sets ToolUse for KindToolUse; nil here
+				// means a hand-built/garbled row — surface it visibly,
+				// never as a blank line (trap for Phase 3/4 callers).
+				body := collapse(r.Text)
+				if body == "" {
+					body = "<tool_use: missing ToolUse payload>"
+				}
+				emit(tag, r, truncate(body, maxLen))
 				continue
 			}
 			summary := summarizeToolUse(r.ToolUse, maxLen)
@@ -109,23 +122,29 @@ func Render(rows []TaggedRow, opts RenderOpts) []string {
 			}
 			emit(tag, r, summary+" → "+summarizeResult(r.ToolUse.Name, res, maxLen))
 		case KindToolResult:
-			if r.ToolResult != nil && toolUseIDs[r.ToolResult.ToolUseID] {
-				continue // already represented in its tool_use's line
+			tr := r.ToolResult
+			if tr != nil && toolUseIDs[tr.ToolUseID] && !consumed[tr.ToolUseID] {
+				consumed[tr.ToolUseID] = true
+				continue // folded into its tool_use's line
 			}
-			// Orphan result (no tool_use anywhere) — never drop it.
-			id := ""
-			content := ""
-			isErr := false
-			if r.ToolResult != nil {
-				id = shortID(r.ToolResult.ToolUseID)
-				content = collapse(r.ToolResult.Content)
-				isErr = r.ToolResult.IsError
+			// Not folded: orphan (no tool_use anywhere) OR a duplicate
+			// result for an already-folded id — render either way, never
+			// drop (silent-failure principle).
+			id, content, isErr := "", "", false
+			label := "orphan"
+			if tr != nil {
+				id = shortID(tr.ToolUseID)
+				content = collapse(tr.Content)
+				isErr = tr.IsError
+				if toolUseIDs[tr.ToolUseID] {
+					label = "dup"
+				}
 			}
 			status := "ok"
 			if isErr {
 				status = "error"
 			}
-			emit(tag, r, truncate(fmt.Sprintf("⟵ tool_result(orphan id=%s, %s): %s", id, status, content), maxLen))
+			emit(tag, r, truncate(fmt.Sprintf("⟵ tool_result(%s id=%s, %s): %s", label, id, status, content), maxLen))
 		default: // KindRaw
 			emit(tag, r, truncate(collapse(r.Text), maxLen))
 		}
@@ -143,8 +162,10 @@ func splitProse(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-// collapse turns a multi-line value into a single line (⏎ marks the
-// folded newlines so the break is visible, not silently lost).
+// collapse turns a multi-line value into a single line: interior line
+// breaks become a visible ⏎ (not silently lost). Trailing newlines are
+// trimmed first — they carry no content and would render as dangling
+// ⏎ noise.
 func collapse(s string) string {
 	s = strings.TrimRight(s, "\n")
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", " ⏎ ")
@@ -189,15 +210,33 @@ func summarizeToolUse(tu *ToolUse, maxLen int) string {
 			c = in.Description
 		}
 		return "Bash: " + truncate(collapse(c), maxLen)
-	case "Edit", "MultiEdit":
+	case "Edit":
 		var in struct {
 			FilePath  string `json:"file_path"`
 			OldString string `json:"old_string"`
 			NewString string `json:"new_string"`
 		}
 		_ = json.Unmarshal(tu.Input, &in)
-		return fmt.Sprintf("%s: %s +%d −%d", name, base(in.FilePath),
+		return fmt.Sprintf("Edit: %s +%d −%d", base(in.FilePath),
 			lineCount(in.NewString), lineCount(in.OldString))
+	case "MultiEdit":
+		// MultiEdit's schema is {file_path, edits:[{old_string,
+		// new_string}]} — NOT top-level old/new. Sum across edits.
+		var in struct {
+			FilePath string `json:"file_path"`
+			Edits    []struct {
+				OldString string `json:"old_string"`
+				NewString string `json:"new_string"`
+			} `json:"edits"`
+		}
+		_ = json.Unmarshal(tu.Input, &in)
+		add, del := 0, 0
+		for _, e := range in.Edits {
+			add += lineCount(e.NewString)
+			del += lineCount(e.OldString)
+		}
+		return fmt.Sprintf("MultiEdit: %s ×%d +%d −%d", base(in.FilePath),
+			len(in.Edits), add, del)
 	case "Write":
 		var in struct {
 			FilePath string `json:"file_path"`
@@ -267,7 +306,8 @@ func firstNonEmptyLine(s string) string {
 }
 
 // firstScalarArg returns the first scalar (string/number/bool) value of
-// a JSON object, by sorted key for determinism. Empty if none/!object.
+// a JSON object, by sorted key for determinism. JSON null is skipped (it
+// is not a value worth surfacing). Empty if none/!object.
 func firstScalarArg(raw json.RawMessage) string {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil || len(m) == 0 {
@@ -286,12 +326,14 @@ func firstScalarArg(raw json.RawMessage) string {
 		switch v[0] {
 		case '{', '[': // not a scalar
 			continue
+		case 'n': // JSON null — not a value worth surfacing
+			continue
 		case '"':
 			var s string
 			if json.Unmarshal(v, &s) == nil {
 				return s
 			}
-		default: // number / bool / null token
+		default: // number / bool token
 			return strings.Trim(string(v), `"`)
 		}
 	}

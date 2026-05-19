@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -126,7 +127,8 @@ func TestLiveRenderThisSession(t *testing.T) {
 	}
 
 	var tagged []TaggedRow
-	var toolResults int
+	useIDs := map[string]bool{}
+	resultIDs := map[string]bool{}
 	for i, p := range ResolveSessionJSONL(projectDir, newest) {
 		rows, err := ReadFile(p)
 		if err != nil {
@@ -134,16 +136,29 @@ func TestLiveRenderThisSession(t *testing.T) {
 		}
 		tag := "A"
 		if i > 0 {
-			tag = "a-" + itoa(i+1)
+			tag = "a-" + strconv.Itoa(i+1)
 		}
 		for _, r := range rows {
-			if r.Kind == KindToolResult {
-				toolResults++
+			switch {
+			case r.Kind == KindToolUse && r.ToolUse != nil && r.ToolUse.ID != "":
+				useIDs[r.ToolUse.ID] = true
+			case r.Kind == KindToolResult && r.ToolResult != nil:
+				resultIDs[r.ToolResult.ToolUseID] = true
 			}
 			tagged = append(tagged, TaggedRow{Tag: tag, Row: r})
 		}
 	}
 	out := Render(tagged, RenderOpts{})
+
+	// Precise no-drop floor: exactly one tool_result is folded per id
+	// that has BOTH a tool_use and ≥1 result. Orphan/dup results are
+	// rendered, so they must NOT be subtracted.
+	folded := 0
+	for id := range useIDs {
+		if resultIDs[id] {
+			folded++
+		}
+	}
 
 	var bashLine, prose bool
 	for _, l := range out {
@@ -157,29 +172,15 @@ func TestLiveRenderThisSession(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("live render: %d input rows → %d output lines (%d tool_results folded)",
-		len(tagged), len(out), toolResults)
+	t.Logf("live render: %d input rows → %d output lines (%d folded)",
+		len(tagged), len(out), folded)
 	if !bashLine {
 		t.Error("expected ≥1 collapsed `Bash: … → …` line from real session")
 	}
 	if !prose {
 		t.Error("expected ≥1 prose line from real session")
 	}
-	// No silent drop: only matched tool_results are folded away, and
-	// they are all KindToolResult — so output must cover every other row.
-	if min := len(tagged) - toolResults; len(out) < min {
-		t.Errorf("rendered %d lines < %d (non-tool_result rows) — rows were dropped", len(out), min)
+	if floor := len(tagged) - folded; len(out) < floor {
+		t.Errorf("rendered %d lines < %d (rows minus folded results) — rows were dropped", len(out), floor)
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
