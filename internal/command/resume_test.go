@@ -135,6 +135,26 @@ func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
 	}
 }
 
+func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
+	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active"}
+	out := renderResume(item, nil, "", "", tapeAudit{
+		verified: true, message: `branch "b": 3 commit(s), 3 on the recorded exec tape — consistent.`,
+	})
+	if !strings.Contains(out, "✓ Execution tape verified against ground truth") {
+		t.Errorf("verified audit must render the clean banner:\n%s", out)
+	}
+	// Clean banner still precedes State — ordering is invariant across all
+	// three switch arms (gap / unverified / verified).
+	ci := strings.Index(out, "verified against ground truth")
+	si := strings.Index(out, "## State")
+	if ci < 0 || si < 0 || ci > si {
+		t.Errorf("verified banner must precede ## State: banner=%d state=%d", ci, si)
+	}
+	if strings.Contains(out, "UNVERIFIED") || strings.Contains(out, "EXECUTION-TAPE GAP") {
+		t.Errorf("verified path must not emit gap/unverified text:\n%s", out)
+	}
+}
+
 func TestFlattenLine(t *testing.T) {
 	if got := flattenLine("a\nb\r\nc   d"); got != "a b c d" {
 		t.Errorf("flattenLine collapse failed: %q", got)

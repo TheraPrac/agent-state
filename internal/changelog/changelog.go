@@ -3,9 +3,9 @@
 package changelog
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +47,11 @@ const (
 	// --reason). Authoritative and immutable once written.
 	SourceStructured Source = "structured"
 	// SourceExtracted is machine-inferred from a to-be-summarized window by
-	// the extraction backstop. May be lossy; always carries Confidence and
-	// is reconciled so it can never clobber a SourceStructured record.
+	// the extraction backstop. May be lossy; always carries Confidence.
+	// Phase C design intent (NOT yet enforced in Phase A): the extractor
+	// reconciles against existing SourceStructured entries for the window
+	// so it can never clobber a verbatim record. Until that lands, treat
+	// extracted entries as advisory.
 	SourceExtracted Source = "extracted"
 )
 
@@ -198,10 +201,19 @@ func readFile(path string) ([]Entry, error) {
 	}
 	defer f.Close()
 
+	// I-679: read with io.ReadAll + split, NOT bufio.Scanner. A changelog
+	// line embeds a full item document via Snapshot()'s NewValue; a single
+	// line can exceed bufio.Scanner's 64 KB token cap, which would make the
+	// whole changelog silently unreadable (scanner.Err() = ErrTooLong) and
+	// strand cross-session replay — the exact silent-drop class I-673
+	// (#108) fixed in internal/registry. The read error is subsumed by
+	// io.ReadAll; per-line JSON parse errors are still surfaced explicitly.
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
 	var entries []Entry
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
+	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -209,13 +221,13 @@ func readFile(path string) ([]Entry, error) {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			return nil, fmt.Errorf("parsing line %q: %w", line, err)
 		}
-		// I-679: give every read entry a stable, non-empty Kind so
-		// filters/replay never have to special-case pre-I-679 history.
+		// Give every read entry a stable, non-empty Kind so filters/replay
+		// never have to special-case pre-I-679 history.
 		e.Kind = e.EffectiveKind()
 		entries = append(entries, e)
 	}
 
-	return entries, scanner.Err()
+	return entries, nil
 }
 
 // Snapshot records the full document state before a subprocess step.

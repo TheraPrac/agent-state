@@ -2,7 +2,6 @@ package command
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -180,8 +179,10 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 		b.WriteString("\n")
 	}
 
-	// (5) Transitions — summarized, not a firehose. Last state-affecting
-	// field changes only (newest first, capped).
+	// (5) Transitions — summarized, not a firehose: the most recent N
+	// declarative entries, rendered oldest→newest (chronological reading
+	// for the resume narrative), each as a one-line summary (no full
+	// old→new value dump — see transitionLine).
 	var trans []changelog.Entry
 	for _, e := range scoped {
 		if e.EffectiveKind() == changelog.KindTransition {
@@ -357,36 +358,58 @@ func countRecordedCommits(entries []changelog.Entry, sessionID string) int {
 	return n
 }
 
-// countBranchCommitsSince counts commits on branch authored since the work
-// window opened. Scoping by --since excludes the branch's inherited main
-// history so the count is the tape's actual responsibility, not noise.
-// Returns ok=false if git could not answer.
+// countBranchCommitsSince counts commits UNIQUE to branch (excluding
+// inherited origin/main history) authored since the work window opened.
+// --since alone is NOT sufficient: a feature branch shares main's history,
+// and a main commit whose committer date is after `since` would be
+// miscounted as item work — firing a loud but spurious gap (noise == no
+// signal). `--not origin/main` bounds the count to branch-unique commits;
+// `--since` bounds it to the work window. If main cannot be excluded on
+// any known name the count would be unreliable, so this returns ok=false
+// ("unverified") rather than risk a false alarm — never confident-but-
+// wrong. Returns ok=false if git could not answer.
 func countBranchCommitsSince(dir, branch, since string) (int, bool) {
 	if branch == "" || since == "" {
 		return 0, false
 	}
-	out, err := runGit(dir, "rev-list", "--count", "--since="+since, branch)
-	if err != nil {
-		// Branch ref may not exist in this clone yet (worktree-only):
-		// fall back to HEAD so a missing ref degrades to a count, not a
-		// crash or a silent clean.
-		out, err = runGit(dir, "rev-list", "--count", "--since="+since, "HEAD")
+	for _, base := range []string{"origin/main", "origin/master"} {
+		out, err := runGit(dir, "rev-list", "--count", "--since="+since, branch, "--not", base)
 		if err != nil {
+			// Branch ref may not exist in this clone yet (worktree-only
+			// HEAD): fall back to HEAD, still excluding inherited main.
+			out, err = runGit(dir, "rev-list", "--count", "--since="+since, "HEAD", "--not", base)
+			if err != nil {
+				continue // try the next base name before giving up
+			}
+		}
+		n := 0
+		if _, scanErr := fmt.Sscanf(strings.TrimSpace(out), "%d", &n); scanErr != nil {
 			return 0, false
 		}
+		return n, true
 	}
-	n := 0
-	if _, scanErr := fmt.Sscanf(strings.TrimSpace(out), "%d", &n); scanErr != nil {
-		return 0, false
-	}
-	return n, true
+	return 0, false // could not exclude main anywhere — honest unverified, never a false gap
 }
 
-// resolveItemRepoDir resolves the as-repo (or scoped repo) worktree for the
-// item via its work_tracking branch / known repo dirs. Best-effort.
+// resolveItemRepoDir resolves the worktree the item is actually worked in:
+// the repo whose checkout carries the item's branch. It is item-scoped
+// (resolveRepoDirForItem keys on the item's own worktree) AND
+// branch-verified, so the audit can never silently run against the wrong
+// repo (e.g. a theraprac-web item audited against `as` — the silent-
+// wrong-answer the tapeAudit design explicitly forbids). Returns "" when
+// the branch is unknown or not found in any known repo; the caller renders
+// that as an explicit "unverified", never a wrong "clean".
 func resolveItemRepoDir(cfg *config.Config, item *model.Item) string {
+	branch := nestedString(item.WorkTracking, "branch")
+	if branch == "" {
+		return "" // cannot attribute the tape to a repo without the item's branch
+	}
 	for _, repo := range []string{"as", "theraprac-api", "theraprac-web", "theraprac-infra"} {
-		if d := resolveRepoDir(cfg, repo); d != "" && isGitDir(d) {
+		d := resolveRepoDirForItem(cfg, item.ID, repo)
+		if d == "" || !isGitDir(d) {
+			continue
+		}
+		if _, err := runGit(d, "rev-parse", "--verify", "--quiet", branch+"^{commit}"); err == nil {
 			return d
 		}
 	}
@@ -430,4 +453,3 @@ func indent(s, pad string) string {
 	return strings.Join(lines, "\n")
 }
 
-var _ = sort.Strings // reserved for deterministic ordering in later phases
