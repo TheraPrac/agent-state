@@ -1894,17 +1894,86 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().Bool("no-coordination", false, "skip the T-314 multi-agent coordination block in claude prompts (tests/minimal prompts)")
 	root.AddCommand(runCmd)
 
+	// T-376: shared dispatch helper used by both `st prep` (deprecated
+	// top-level alias) and `st plan prep` (new subcommand under the
+	// `plan` verb group). Returns the exit code; callers assign to
+	// `exitCode` so cobra's binding surface stays minimal.
+	runPrepDispatch := func(cmd *cobra.Command, args []string) int {
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		item, _ := cmd.Flags().GetString("item")
+		model, _ := cmd.Flags().GetString("model")
+		includeRejected, _ := cmd.Flags().GetBool("include-rejected")
+		writeOnly, _ := cmd.Flags().GetBool("write-only")
+		opts := command.PrepOpts{
+			DryRun:          dryRun,
+			Model:           model,
+			ItemFilter:      item,
+			IncludeRejected: includeRejected,
+			WriteOnly:       writeOnly,
+		}
+		engine := command.DefaultRunEngine()
+		if len(args) > 0 {
+			// I-512: when the positional arg is an item ID rather than a
+			// sprint slug, derive the sprint and prep just that item. This
+			// is the UX from the issue: `st prep I-509` instead of
+			// `st prep <sprint> --item I-509`. Sprint slugs (which are
+			// name-generator strings like "mainly-popular-gorilla") never
+			// match an item ID lookup, so the back-compat path is intact.
+			//
+			// I-571: when the item has no sprint, route to PrepStandalone
+			// instead of erroring — no sprint required.
+			arg := args[0]
+			if it, ok := appStore.Get(arg); ok {
+				if it.Sprint == "" {
+					opts.ItemFilter = ""
+					return command.PrepStandalone(appStore, appCfg, arg, opts, engine)
+				}
+				opts.ItemFilter = arg
+				return command.Prep(appStore, appCfg, it.Sprint, opts, engine)
+			}
+			return command.Prep(appStore, appCfg, arg, opts, engine)
+		} else if item != "" {
+			it, ok := appStore.Get(item)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "item not found: %s\n", item)
+				return 1
+			}
+			if it.Sprint == "" {
+				// I-571: --item form also gets the standalone path.
+				opts.ItemFilter = ""
+				return command.PrepStandalone(appStore, appCfg, item, opts, engine)
+			}
+			return command.Prep(appStore, appCfg, it.Sprint, opts, engine)
+		}
+		return command.PrepInteractive(appStore, appCfg, opts, engine)
+	}
+
+	// prepFlags registers the shared flag surface on both the
+	// top-level prep alias and the plan prep subcommand. Keeping the
+	// flag declarations in one place prevents drift between the two
+	// bindings during the deprecation window. T-376.
+	prepFlags := func(c *cobra.Command) {
+		c.Flags().Bool("dry-run", false, "show which items would be planned")
+		c.Flags().String("item", "", "prep only this item ID")
+		c.Flags().String("model", "", "model to use (overrides config)")
+		c.Flags().Bool("include-rejected", false, "re-process previously rejected plans")
+		c.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
+	}
+
 	prepCmd := &cobra.Command{
 		Use:   "prep [sprint|item]",
-		Short: "Generate implementation plans for unplanned items (sprint or standalone, no sprint required)",
+		Short: "Generate implementation plans for unplanned items — DEPRECATED, use `st plan prep`",
 		Long: `Prep launches Claude Code to explore the codebase and create structured
 implementation plans for each unplanned item.
 
+T-376: this top-level alias is DEPRECATED — use ` + "`" + `st plan prep` + "`" + ` instead.
+The alias will be removed after the next release.
+
 Three forms:
-  st prep <sprint>     — plan every unplanned item in a sprint (batch)
-  st prep <id>         — plan a single item (sprint inferred, or standalone
-                         when the item has no sprint — no sprint required)
-  st prep --item <id>  — same as positional <id>; legacy/long-form
+  st plan prep <sprint>     — plan every unplanned item in a sprint (batch)
+  st plan prep <id>         — plan a single item (sprint inferred, or standalone
+                              when the item has no sprint — no sprint required)
+  st plan prep --item <id>  — same as positional <id>; legacy/long-form
 
 For each item, Claude analyzes the codebase and proposes:
 - Approach and scope (which repos are affected)
@@ -1916,66 +1985,13 @@ Plans are stored as .plans/<id>.md sidecars and injected into the
 implement step during st run.`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			item, _ := cmd.Flags().GetString("item")
-			model, _ := cmd.Flags().GetString("model")
-			includeRejected, _ := cmd.Flags().GetBool("include-rejected")
-			writeOnly, _ := cmd.Flags().GetBool("write-only")
-			opts := command.PrepOpts{
-				DryRun:          dryRun,
-				Model:           model,
-				ItemFilter:      item,
-				IncludeRejected: includeRejected,
-				WriteOnly:       writeOnly,
-			}
-			engine := command.DefaultRunEngine()
-			if len(args) > 0 {
-				// I-512: when the positional arg is an item ID rather than a
-				// sprint slug, derive the sprint and prep just that item. This
-				// is the UX from the issue: `st prep I-509` instead of
-				// `st prep <sprint> --item I-509`. Sprint slugs (which are
-				// name-generator strings like "mainly-popular-gorilla") never
-				// match an item ID lookup, so the back-compat path is intact.
-				//
-				// I-571: when the item has no sprint, route to PrepStandalone
-				// instead of erroring — no sprint required.
-				arg := args[0]
-				if it, ok := appStore.Get(arg); ok {
-					if it.Sprint == "" {
-						opts.ItemFilter = ""
-						exitCode = command.PrepStandalone(appStore, appCfg, arg, opts, engine)
-					} else {
-						opts.ItemFilter = arg
-						exitCode = command.Prep(appStore, appCfg, it.Sprint, opts, engine)
-					}
-				} else {
-					exitCode = command.Prep(appStore, appCfg, arg, opts, engine)
-				}
-			} else if item != "" {
-				// Resolve sprint from item — or route to standalone when none.
-				it, ok := appStore.Get(item)
-				if !ok {
-					fmt.Fprintf(os.Stderr, "item not found: %s\n", item)
-					exitCode = 1
-					return
-				}
-				if it.Sprint == "" {
-					// I-571: --item form also gets the standalone path.
-					opts.ItemFilter = ""
-					exitCode = command.PrepStandalone(appStore, appCfg, item, opts, engine)
-				} else {
-					exitCode = command.Prep(appStore, appCfg, it.Sprint, opts, engine)
-				}
-			} else {
-				exitCode = command.PrepInteractive(appStore, appCfg, opts, engine)
-			}
+			// T-376 deprecation banner. Clearly-identifiable prefix
+			// (`as: deprecation:`) so CI grep can filter it.
+			fmt.Fprintln(os.Stderr, "as: deprecation: `st prep` is deprecated; use `st plan prep`. The top-level alias will be removed after the next release.")
+			exitCode = runPrepDispatch(cmd, args)
 		},
 	}
-	prepCmd.Flags().Bool("dry-run", false, "show which items would be planned")
-	prepCmd.Flags().String("item", "", "prep only this item ID")
-	prepCmd.Flags().String("model", "", "model to use (overrides config)")
-	prepCmd.Flags().Bool("include-rejected", false, "re-process previously rejected plans")
-	prepCmd.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
+	prepFlags(prepCmd)
 	root.AddCommand(prepCmd)
 
 	splitCmd := &cobra.Command{
@@ -2158,6 +2174,13 @@ rates. I-180.`,
 	// code. `st plan approve` and `st plan reset` toggle the gate; the
 	// audit fields PlanApprovedAt + PlanApprovedBy track who/when so a
 	// reviewer can trace the approval back.
+	//
+	// T-376: `st plan prep` was added to the same verb group as the
+	// canonical name for plan drafting (the top-level `st prep` alias
+	// remains for one release window with a deprecation banner). The
+	// hook ecosystem comment above only enumerates the approval gate
+	// surfaces; prep does not affect the gate state but lives under
+	// the same `plan` verb for discoverability.
 	planCmd := &cobra.Command{
 		Use:   "plan",
 		Short: "Manage per-item plan approvals (I-178 plan-before-code gate)",
@@ -2200,7 +2223,38 @@ rates. I-180.`,
 			exitCode = command.PlanShow(appStore, appCfg, args[0])
 		},
 	}
-	planCmd.AddCommand(planApproveCmd, planResetCmd, planCheckCmd, planShowCmd)
+
+	// T-376: `st plan prep` — the canonical subcommand for drafting
+	// implementation plans. Shares `runPrepDispatch` and `prepFlags`
+	// with the deprecated top-level `st prep` alias above.
+	planPrepCmd := &cobra.Command{
+		Use:   "prep [sprint|item]",
+		Short: "Generate implementation plans for unplanned items (sprint or standalone, no sprint required)",
+		Long: `Plan prep launches Claude Code to explore the codebase and create
+structured implementation plans for each unplanned item.
+
+Three forms:
+  st plan prep <sprint>     — plan every unplanned item in a sprint (batch)
+  st plan prep <id>         — plan a single item (sprint inferred, or standalone
+                              when the item has no sprint — no sprint required)
+  st plan prep --item <id>  — same as positional <id>; legacy/long-form
+
+For each item, Claude analyzes the codebase and proposes:
+- Approach and scope (which repos are affected)
+- Implementation steps and files to create/modify
+- Acceptance criteria (executable cmd: checks)
+
+You review each plan with Accept/Reject/Chat before it's saved.
+Plans are stored as .plans/<id>.md sidecars and injected into the
+implement step during st run.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = runPrepDispatch(cmd, args)
+		},
+	}
+	prepFlags(planPrepCmd)
+
+	planCmd.AddCommand(planApproveCmd, planResetCmd, planCheckCmd, planShowCmd, planPrepCmd)
 	root.AddCommand(planCmd)
 
 	filesCmd := &cobra.Command{
