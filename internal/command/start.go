@@ -105,6 +105,13 @@ type StartOpts struct {
 	// sprint of its own, add it to that sprint (via SprintAdd) and
 	// continue, instead of refusing the start.
 	AddToSprint bool
+
+	// I-711: AckDrift carries the operator's acknowledgement that
+	// the freshness gate flagged drift but they want to proceed
+	// anyway. Empty = no ack; activation refuses if the gate
+	// returns Drift. There is no analogous --ack-stale opt-out;
+	// Stale forces re-prep.
+	AckDrift string
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
@@ -261,6 +268,16 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// Ensure git hooks are active on all configured repos
 	ensureHooksPath(cfg)
 	AgentAutoAuth(cfg, agentID)
+
+	// I-711: freshness gate. Runs BEFORE worktree creation so a
+	// Stale verdict doesn't leave orphan filesystem state. Fresh
+	// proceeds silently; Drift refuses unless --ack-drift was
+	// passed; Stale refuses with a re-prep instruction. The cache
+	// at <workspace>/.as/cache/freshness/ makes a same-state
+	// re-start instant.
+	if code := runFreshnessGate(cfg, s, id, opts); code != 0 {
+		return code
+	}
 
 	// Create worktrees if configured. Hoisted out of Mutate — git/fs
 	// side effects don't belong inside the lock holder.
@@ -423,6 +440,18 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		_ = changelog.Append(cfg, id, changelog.Entry{
 			Op:     "start_force_sprint",
 			Reason: "bypassed I-681 mid-sprint follow-up sprint-inheritance gate via --force",
+		})
+	}
+	// I-711: record a --ack-drift acknowledgement post-Mutate. The
+	// freshness gate already printed the findings + ack to stderr;
+	// this is the audit-trail counterpart, parallel to the three
+	// bypass logs above. The note carries the operator-supplied
+	// reason so future readers can correlate the bypass with
+	// whatever context the operator cared about at activation.
+	if opts.AckDrift != "" {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "start_ack_drift",
+			Reason: "bypassed I-711 freshness drift gate via --ack-drift: " + opts.AckDrift,
 		})
 	}
 

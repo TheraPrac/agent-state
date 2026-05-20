@@ -11,6 +11,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/buildinfo"
 	"github.com/jfinlinson/agent-state/internal/command"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/freshness"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/spf13/cobra"
@@ -982,18 +983,46 @@ in-flight, run 'st release' against the active items first.
 			noPush, _ := cmd.Flags().GetBool("no-push")
 			force, _ := cmd.Flags().GetBool("force")
 			addToSprint, _ := cmd.Flags().GetBool("add-to-sprint")
+			ackDrift, _ := cmd.Flags().GetString("ack-drift")
 			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{
 				Slug: slug, Repos: repos, NoPush: noPush, Force: force,
-				AddToSprint: addToSprint,
+				AddToSprint: addToSprint, AckDrift: ackDrift,
 			})
 		},
 	}
 	startCmd.Flags().String("slug", "", "`SLUG` for branch name (single segment). Example: --slug cost-ground-truth → fix/I-579-cost-ground-truth. A leading <type>/<id>- prefix is stripped if present, so fix/I-579-cost-ground-truth is also accepted.")
 	startCmd.Flags().StringSlice("repos", nil, "repos to create worktrees for")
 	startCmd.Flags().Bool("no-push", false, "skip auto-push onto the work stack")
-	startCmd.Flags().Bool("force", false, "bypass the I-490 queue-approval gate (logs to changelog)")
+	startCmd.Flags().Bool("force", false, "bypass the I-490 queue-approval gate and the I-681 sprint-inheritance gate (logs to changelog). NOTE: does NOT bypass the I-711 freshness gate — use --ack-drift for Drift; Stale requires re-prep.")
 	startCmd.Flags().Bool("add-to-sprint", false, "resolve the I-681 sprint-inheritance gate by adding this item to the active sprint of an in-progress item it blocks")
+	startCmd.Flags().String("ack-drift", "", "operator-supplied one-line note acknowledging plan drift surfaced by the I-711 freshness gate; proceeds activation despite drift findings")
 	root.AddCommand(startCmd)
+
+	// I-711: `st cache prune` removes freshness cache entries older
+	// than the configured max age so the on-disk cache stays
+	// bounded. Default max age is 30 days.
+	cacheCmd := &cobra.Command{
+		Use:   "cache",
+		Short: "Manage on-disk cache directories (freshness verdicts, etc.)",
+	}
+	cachePruneCmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Remove freshness cache entries older than --max-age (default 30 days)",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			maxAge, _ := cmd.Flags().GetDuration("max-age")
+			pruned, err := freshness.PruneCache(appCfg.Root(), maxAge, time.Now())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cache prune: %v\n", err)
+				exitCode = 1
+				return
+			}
+			fmt.Printf("pruned %d freshness cache entries (max-age %s)\n", pruned, maxAge)
+		},
+	}
+	cachePruneCmd.Flags().Duration("max-age", 30*24*time.Hour, "remove cache entries older than this duration")
+	cacheCmd.AddCommand(cachePruneCmd)
+	root.AddCommand(cacheCmd)
 
 	closeCmd := &cobra.Command{
 		Use:   "close <id> <resolution>",
