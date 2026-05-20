@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -46,6 +48,14 @@ type facetResult struct {
 	//                (T-371 §5: the header IS the at-a-glance). Computed
 	//                in the SAME pass as Text/JSON — no duplicate accessor
 	//                calls, no re-derivation in the renderer (§7).
+	LastChange time.Time // T-375: when this facet last meaningfully
+	//                 changed; zero ⇒ unknown. Used by the TUI
+	//                 composite's recency-aware reorder (§5 #5); ignored
+	//                 by the static `st show --full` (its audience values
+	//                 predictable order). Populated by facets that know
+	//                 their own recency without extra I/O — `item`,
+	//                 `history`, `plan`, `bus`, `worktree` — and left
+	//                 zero by the rest (they keep their facetOrder slot).
 }
 
 // facetFunc gathers ONE facet. It never returns an error / never panics:
@@ -159,7 +169,11 @@ func facetItem(_ *store.Store, _ *config.Config, it *model.Item) facetResult {
 	txt := fmt.Sprintf("%s\nstatus: %s  priority: %s  sprint: %s\ntags: %s  depends_on: %s",
 		head, it.Status, p, orDash(it.Sprint),
 		joinOrDash(it.Tags), joinOrDash(it.DependsOn))
-	return facetResult{Text: txt, JSON: c, Summary: fmt.Sprintf("%s · %s", it.Status, p)}
+	return facetResult{
+		Text: txt, JSON: c,
+		Summary:    fmt.Sprintf("%s · %s", it.Status, p),
+		LastChange: it.LastTouched,
+	}
 }
 
 func facetPlan(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
@@ -185,9 +199,14 @@ func facetPlan(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 			fmt.Fprintf(&b, "  - %s\n", a)
 		}
 	}
+	var planMTime time.Time
+	if st, err := os.Stat(filepath.Join(cfg.PlansDir(), it.ID+".md")); err == nil {
+		planMTime = st.ModTime()
+	}
 	return facetResult{
 		Text: strings.TrimRight(b.String(), "\n"), JSON: p,
-		Summary: fmt.Sprintf("%s · %s", approved, plural(len(p.Steps), "step", "steps")),
+		Summary:    fmt.Sprintf("%s · %s", approved, plural(len(p.Steps), "step", "steps")),
+		LastChange: planMTime,
 	}
 }
 
@@ -219,9 +238,14 @@ func facetHistory(_ *store.Store, cfg *config.Config, it *model.Item) facetResul
 	if len(lastTS) > 19 {
 		lastTS = lastTS[:19]
 	}
+	// Parse the last entry's timestamp (best-effort RFC3339) for the
+	// recency-reorder; on parse miss leave LastChange zero (treated as
+	// "long ago" by the reorder — won't promote, won't crash).
+	parsedLast, _ := time.Parse(time.RFC3339, last.Timestamp)
 	return facetResult{
 		Text: strings.TrimRight(b.String(), "\n"), JSON: entries,
-		Summary: fmt.Sprintf("%s · last: %s %s", plural(len(entries), "entry", "entries"), last.Op, lastTS),
+		Summary:    fmt.Sprintf("%s · last: %s %s", plural(len(entries), "entry", "entries"), last.Op, lastTS),
+		LastChange: parsedLast,
 	}
 }
 
@@ -319,12 +343,17 @@ func facetBus(_ *store.Store, cfg *config.Config, it *model.Item) facetResult {
 		return facetResult{Text: emptyText("bus messages for this item (this mailbox)"), JSON: []mail.Message{}, Summary: "none"}
 	}
 	var b strings.Builder
+	var latest time.Time
 	for _, m := range mine {
 		fmt.Fprintf(&b, "%s  %s→%s [%s] %s\n", m.At, m.From, m.To, m.Kind, firstLine(m.Body))
+		if t, err := time.Parse(time.RFC3339, m.At); err == nil && t.After(latest) {
+			latest = t
+		}
 	}
 	return facetResult{
 		Text: strings.TrimRight(b.String(), "\n"), JSON: mine,
-		Summary: plural(len(mine), "message", "messages"),
+		Summary:    plural(len(mine), "message", "messages"),
+		LastChange: latest,
 	}
 }
 
@@ -346,7 +375,12 @@ func facetWorktree(_ *store.Store, _ *config.Config, it *model.Item) facetResult
 	if br, ok := wt["branch"]; ok {
 		wtSum = nonEmptyOr(br, wtSum) // blank branch ⇒ keep the field count
 	}
-	return facetResult{Text: kvText(wt), JSON: wt, Summary: wtSum}
+	return facetResult{
+		Text: kvText(wt), JSON: wt, Summary: wtSum,
+		LastChange: it.LastTouched, // substrate proxy — the same signal that
+		//                            powers the item facet (substrate-
+		//                            over-self-report, T-373's philosophy).
+	}
 }
 
 // facetAccounting: v1 = the structured time_tracking map as-is. Deep

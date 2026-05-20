@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -60,8 +61,15 @@ type tuiModel struct {
 	// T-374 §3 three-axis navigation state.
 	focusAxis     int             // 0=agentStrip, 1=composite, 2=fullScreen
 	agentCursor   int             // index into sortedAgents()
-	sectionCursor int             // index into facetOrder
+	sectionCursor int             // index into displayedOrder (T-375)
 	expanded      map[string]bool // per-section toggle override; nil ⇒ use expandedByDefault
+
+	// T-375 cache. Facet computation is non-trivial (changelog.Read,
+	// plan.Load, mail.List, deps.Build…); every keypress runs View, so
+	// without this cache an arrow would I/O 12 facets per stroke. We
+	// recompute only on refresh / initial build, not per render.
+	facetResults   map[string]facetResult
+	displayedOrder []string // recency-reordered facetOrder (§5 #5)
 }
 
 // Axis constants — readability for the focusAxis switch.
@@ -128,17 +136,23 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case axisComposite:
+		// Cursor indexes into the displayed (recency-reordered) order, so
+		// arrows + Space + Enter follow what the operator visually sees.
+		order := m.displayedOrder
+		if len(order) == 0 {
+			order = facetOrder // pre-refresh fallback (rare; defensive)
+		}
 		switch k.String() {
 		case "up":
 			if m.sectionCursor > 0 {
 				m.sectionCursor--
 			}
 		case "down":
-			if m.sectionCursor < len(facetOrder)-1 {
+			if m.sectionCursor < len(order)-1 {
 				m.sectionCursor++
 			}
 		case " ":
-			m = toggleSection(m, facetOrder[m.sectionCursor])
+			m = toggleSection(m, order[m.sectionCursor])
 		case "enter":
 			m.focusAxis = axisFullScreen
 		case "esc":
@@ -237,6 +251,10 @@ func doRefresh(m tuiModel) tuiModel {
 	} else if m.agentCursor >= n {
 		m.agentCursor = n - 1
 	}
+	// T-375: rebuild facet cache + recency-reordered display order.
+	// Done HERE (per refresh, not per render) so arrow keys don't
+	// re-run 12 facets' worth of I/O per keystroke.
+	m = recomputeFacets(m)
 	return m
 }
 
@@ -277,11 +295,12 @@ func (m tuiModel) View() string {
 // Esc returns up; q quits. The hint line stays visible so the
 // affordance is never lost (the §5 discoverability principle).
 func (m tuiModel) renderFullScreen(w int) string {
-	if m.item == nil || m.sectionCursor < 0 || m.sectionCursor >= len(facetOrder) {
+	if m.item == nil || len(m.displayedOrder) == 0 ||
+		m.sectionCursor < 0 || m.sectionCursor >= len(m.displayedOrder) {
 		return "(no section to drill)"
 	}
-	kind := facetOrder[m.sectionCursor]
-	fr := facets[kind](m.s, m.cfg, m.item)
+	kind := m.displayedOrder[m.sectionCursor]
+	fr := m.facetResults[kind] // cached — already computed at refresh
 
 	var body bytes.Buffer
 	fmt.Fprintf(&body, "%s — %s\n", m.item.ID, m.item.Title)
@@ -317,25 +336,90 @@ func (m tuiModel) renderAgentStrip() string {
 	return b.String()
 }
 
+// recencyWindow is the §5 #5 "last hour" threshold beyond which a facet
+// LastChange no longer floats to the top of the composite. In-code v1;
+// T-348 capstone polish may surface it as operator-configurable.
+const recencyWindow = 1 * time.Hour
+
 func (m tuiModel) renderComposite() string {
-	if m.item == nil {
+	if m.item == nil || len(m.displayedOrder) == 0 {
 		return "focused item: (none — workspace has no eligible item)"
 	}
-	// Walk facets here (not via showFull) so the TUI can apply the
-	// per-section cursor highlight + per-toggle expanded override. The
-	// per-section block itself is still rendered through the shared
-	// renderSection helper — zero facet-rendering logic is duplicated
-	// here (the §7 invariant).
+	// Walk the displayed order (not facetOrder) so the §5 #5 recency
+	// reorder is what the operator sees AND what the cursor indexes
+	// into. renderSection is the shared helper — zero facet-rendering
+	// logic duplicated here (§7 invariant, inherited from T-371/T-374).
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%s — %s\n", m.item.ID, m.item.Title)
 	fmt.Fprintln(&buf, strings.Repeat("─", 60))
-	for i, kind := range facetOrder {
-		fr := facets[kind](m.s, m.cfg, m.item)
+	for i, kind := range m.displayedOrder {
+		fr := m.facetResults[kind]
 		expanded := m.sectionExpanded(kind)
 		highlighted := m.focusAxis == axisComposite && i == m.sectionCursor
 		renderSection(&buf, kind, fr, expanded, highlighted)
 	}
 	return strings.TrimRight(buf.String(), "\n")
+}
+
+// recomputeFacets rebuilds the facet-results cache + displayed order on
+// the model. Called at construction (tuiTo / tuiLive) and from
+// doRefresh — NEVER per render. Pure value-transform so it sits with
+// the Bubble Tea idiom. With m.item == nil the maps are zeroed; the
+// renderers handle the empty case.
+func recomputeFacets(m tuiModel) tuiModel {
+	if m.item == nil {
+		m.facetResults = nil
+		m.displayedOrder = nil
+		return m
+	}
+	results := make(map[string]facetResult, len(facetOrder))
+	for _, kind := range facetOrder {
+		results[kind] = facets[kind](m.s, m.cfg, m.item)
+	}
+	m.facetResults = results
+	m.displayedOrder = displayedSectionOrder(results, time.Now())
+	// Clamp the cursor — a refresh can change displayed-order length
+	// only in degenerate cases (we never add/remove sections), but the
+	// defensive clamp matches T-374 F1's pattern for agentCursor.
+	if n := len(m.displayedOrder); n == 0 {
+		m.sectionCursor = 0
+	} else if m.sectionCursor >= n {
+		m.sectionCursor = n - 1
+	}
+	return m
+}
+
+// displayedSectionOrder is the §5 #5 recency-aware reorder: sections
+// with LastChange within recencyWindow float to the top in
+// reverse-chronological order; all other sections (including those
+// with zero LastChange — "unknown / long ago") keep their facetOrder
+// position. Stable: same input → same output across runs.
+func displayedSectionOrder(results map[string]facetResult, now time.Time) []string {
+	type recent struct {
+		kind string
+		when time.Time
+	}
+	var promoted []recent
+	demoted := make([]string, 0, len(facetOrder))
+	for _, kind := range facetOrder {
+		fr := results[kind]
+		if !fr.LastChange.IsZero() && now.Sub(fr.LastChange) < recencyWindow {
+			promoted = append(promoted, recent{kind: kind, when: fr.LastChange})
+		} else {
+			demoted = append(demoted, kind)
+		}
+	}
+	sort.SliceStable(promoted, func(i, j int) bool {
+		// More recent first; ties (same instant) preserve facetOrder via
+		// the stable sort of the initial walk.
+		return promoted[i].when.After(promoted[j].when)
+	})
+	out := make([]string, 0, len(facetOrder))
+	for _, r := range promoted {
+		out = append(out, r.kind)
+	}
+	out = append(out, demoted...)
+	return out
 }
 
 func (m tuiModel) renderPlanning() string {
@@ -403,6 +487,7 @@ func tuiTo(w io.Writer, s *store.Store, cfg *config.Config, opts TuiOpts) int {
 		claimed: buildClaimedIndex(s), width: opts.Width,
 		focusAxis: initialFocusAxis(regs),
 	}
+	m = recomputeFacets(m) // T-375: prime the cache so the first View renders the reordered composite
 	fmt.Fprintln(w, m.View())
 	return 0
 }
@@ -449,6 +534,7 @@ func tuiLive(s *store.Store, cfg *config.Config, opts TuiOpts) int {
 		claimed: buildClaimedIndex(s), width: opts.Width, refreshCh: refreshCh,
 		focusAxis: initialFocusAxis(regs),
 	}
+	m = recomputeFacets(m) // T-375: prime cache before tea.NewProgram
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "tui: %v\n", err)
 		return 1
