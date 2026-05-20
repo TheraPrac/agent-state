@@ -32,15 +32,25 @@ docs/runbook.md, plus the prose "the authentication system".`
 	}
 }
 
+// pln is a small helper for tests that build a *plan.Plan with
+// a specific FilesToModify / FilesToCreate / ScopeRepos slice.
+func pln(scope []string, modify []string, create []string) *plan.Plan {
+	return &plan.Plan{
+		ScopeRepos:    scope,
+		FilesToModify: modify,
+		FilesToCreate: create,
+	}
+}
+
 func TestCheckFileExistence_FlagsMissing(t *testing.T) {
-	body := "see internal/foo/bar.go for context"
+	p := pln(nil, []string{"internal/foo/bar.go"}, nil)
 	statter := func(path string) error {
 		if strings.Contains(path, "internal/foo/bar.go") {
 			return errors.New("not exist")
 		}
 		return nil
 	}
-	findings := checkFileExistence(body, "/wsroot", func(string) (string, bool) { return "", false }, statter)
+	findings := checkFileExistence(p, "/wsroot", func(string) (string, bool) { return "", false }, statter)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding; got %d (%v)", len(findings), findings)
 	}
@@ -50,9 +60,9 @@ func TestCheckFileExistence_FlagsMissing(t *testing.T) {
 }
 
 func TestCheckFileExistence_NoFindingsWhenAllExist(t *testing.T) {
-	body := "see internal/foo/bar.go"
+	p := pln(nil, []string{"internal/foo/bar.go"}, nil)
 	statter := func(string) error { return nil }
-	if got := checkFileExistence(body, "/wsroot", func(string) (string, bool) { return "", false }, statter); len(got) != 0 {
+	if got := checkFileExistence(p, "/wsroot", func(string) (string, bool) { return "", false }, statter); len(got) != 0 {
 		t.Errorf("expected no findings; got %v", got)
 	}
 }
@@ -61,7 +71,7 @@ func TestCheckFileExistence_NoFindingsWhenAllExist(t *testing.T) {
 // path begins with a known repo prefix (e.g. "as/..."), the stat
 // must happen inside the repo root, not under workspaceRoot.
 func TestCheckFileExistence_RoutesScopedPathToRepoRoot(t *testing.T) {
-	body := "see as/internal/foo.go"
+	p := pln(nil, []string{"as/internal/foo.go"}, nil)
 	var statted string
 	statter := func(path string) error {
 		statted = path
@@ -73,7 +83,7 @@ func TestCheckFileExistence_RoutesScopedPathToRepoRoot(t *testing.T) {
 		}
 		return "", false
 	}
-	if got := checkFileExistence(body, "/wsroot", repoRoot, statter); len(got) != 0 {
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
 		t.Errorf("expected no findings; got %v", got)
 	}
 	want := "/agent-root/as/internal/foo.go"
@@ -83,18 +93,18 @@ func TestCheckFileExistence_RoutesScopedPathToRepoRoot(t *testing.T) {
 }
 
 // TestCheckFileExistence_FallsBackToWorkspaceForUnknownPrefix —
-// paths without a recognized repo prefix continue to resolve under
-// workspaceRoot, preserving today's behavior for workspace-relative
-// references (e.g. docs/*.md, .plans/*.md).
+// paths without a recognized repo prefix AND without a single
+// scope_repo continue to resolve under workspaceRoot.
 func TestCheckFileExistence_FallsBackToWorkspaceForUnknownPrefix(t *testing.T) {
-	body := "see docs/runbook.md"
+	// No scope_repos → bare path falls back to workspaceRoot.
+	p := pln(nil, []string{"docs/runbook.md"}, nil)
 	var statted string
 	statter := func(path string) error {
 		statted = path
 		return nil
 	}
 	repoRoot := func(string) (string, bool) { return "", false }
-	if got := checkFileExistence(body, "/wsroot", repoRoot, statter); len(got) != 0 {
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
 		t.Errorf("expected no findings; got %v", got)
 	}
 	want := "/wsroot/docs/runbook.md"
@@ -107,7 +117,7 @@ func TestCheckFileExistence_FallsBackToWorkspaceForUnknownPrefix(t *testing.T) {
 // scope repo exists but the referenced file inside it does not,
 // the gate must still emit a file-missing finding.
 func TestCheckFileExistence_StillFlagsMissingScopedFile(t *testing.T) {
-	body := "see as/internal/missing.go"
+	p := pln(nil, []string{"as/internal/missing.go"}, nil)
 	statter := func(string) error { return errors.New("not exist") }
 	repoRoot := func(name string) (string, bool) {
 		if name == "as" {
@@ -115,7 +125,7 @@ func TestCheckFileExistence_StillFlagsMissingScopedFile(t *testing.T) {
 		}
 		return "", false
 	}
-	findings := checkFileExistence(body, "/wsroot", repoRoot, statter)
+	findings := checkFileExistence(p, "/wsroot", repoRoot, statter)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding; got %d (%v)", len(findings), findings)
 	}
@@ -128,7 +138,7 @@ func TestCheckFileExistence_StillFlagsMissingScopedFile(t *testing.T) {
 // absolute-path branch in checkFileExistence's resolution priority
 // stats the path verbatim without any prefix or workspace join.
 func TestCheckFileExistence_AbsolutePathStatsAsIs(t *testing.T) {
-	body := "see /etc/hosts.go" // .go extension to trip the path regex
+	p := pln(nil, []string{"/etc/hosts.go"}, nil)
 	var statted string
 	statter := func(path string) error {
 		statted = path
@@ -138,7 +148,7 @@ func TestCheckFileExistence_AbsolutePathStatsAsIs(t *testing.T) {
 		t.Errorf("repoRoot should NOT be consulted for absolute paths; was called")
 		return "", false
 	}
-	if got := checkFileExistence(body, "/wsroot", repoRoot, statter); len(got) != 0 {
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
 		t.Errorf("expected no findings; got %v", got)
 	}
 	if statted != "/etc/hosts.go" {
@@ -148,18 +158,16 @@ func TestCheckFileExistence_AbsolutePathStatsAsIs(t *testing.T) {
 
 // TestCheckFileExistence_SkipsScopedPathWhenRepoRootUnknown — when
 // the closure returns (false) for a known prefix, the path is
-// SKIPPED entirely (fail-open). This prevents false STALE
-// verdicts for items whose layout doesn't include every sibling
-// repo (e.g., agent running with a stripped-down checkout).
+// SKIPPED entirely (fail-open).
 func TestCheckFileExistence_SkipsScopedPathWhenRepoRootUnknown(t *testing.T) {
-	body := "see theraprac-api/internal/foo.go"
+	p := pln(nil, []string{"theraprac-api/internal/foo.go"}, nil)
 	statted := false
 	statter := func(string) error {
 		statted = true
 		return errors.New("not exist")
 	}
 	repoRoot := func(string) (string, bool) { return "", false }
-	findings := checkFileExistence(body, "/wsroot", repoRoot, statter)
+	findings := checkFileExistence(p, "/wsroot", repoRoot, statter)
 	if len(findings) != 0 {
 		t.Errorf("expected fail-open (no findings) when repo absent; got %v", findings)
 	}
@@ -317,5 +325,141 @@ func TestCheckGitChurn_StripsRepoPrefix(t *testing.T) {
 	}
 	if !foundStripped {
 		t.Errorf("expected stripped path `internal/auth/middleware.go` in git args; got %v", capturedArgs)
+	}
+}
+
+// === I-720: structured FilesToModify tests ===
+
+// TestCheckFileExistence_IgnoresFilesToCreate — paths in
+// Plan.FilesToCreate are never checked (those are by definition
+// future files; flagging them was the root I-720 bug).
+func TestCheckFileExistence_IgnoresFilesToCreate(t *testing.T) {
+	p := pln(nil, []string{"internal/foo/exists.go"}, []string{"internal/foo/new.go"})
+	statted := []string{}
+	statter := func(path string) error {
+		statted = append(statted, path)
+		return nil
+	}
+	if got := checkFileExistence(p, "/wsroot", func(string) (string, bool) { return "", false }, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	for _, s := range statted {
+		if strings.Contains(s, "new.go") {
+			t.Errorf("FilesToCreate entry was statted (should be ignored): %s", s)
+		}
+	}
+}
+
+// TestCheckFileExistence_BarePathRoutedViaSingleScopeRepo —
+// I-720's core fix: a bare path with a single scope_repo routes
+// via repoRoot(scope_repos[0]) instead of falling back to
+// workspaceRoot.
+func TestCheckFileExistence_BarePathRoutedViaSingleScopeRepo(t *testing.T) {
+	p := pln([]string{"as"}, []string{"internal/command/plan.go"}, nil)
+	var statted string
+	statter := func(path string) error {
+		statted = path
+		return nil
+	}
+	repoRoot := func(name string) (string, bool) {
+		if name == "as" {
+			return "/agent-root/as", true
+		}
+		return "", false
+	}
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	want := "/agent-root/as/internal/command/plan.go"
+	if statted != want {
+		t.Errorf("statter called with %q; want %q (routed via scope_repos[0])", statted, want)
+	}
+}
+
+// TestCheckFileExistence_BarePathFailOpenWhenSingleScopeRepoUnknown
+// — the unambiguous-scope routing also fail-opens when the
+// repoRoot closure returns false (e.g., agent without that
+// sibling repo checked out).
+func TestCheckFileExistence_BarePathFailOpenWhenSingleScopeRepoUnknown(t *testing.T) {
+	p := pln([]string{"theraprac-api"}, []string{"internal/handlers/foo.go"}, nil)
+	statted := false
+	statter := func(string) error {
+		statted = true
+		return errors.New("not exist")
+	}
+	repoRoot := func(string) (string, bool) { return "", false }
+	findings := checkFileExistence(p, "/wsroot", repoRoot, statter)
+	if len(findings) != 0 {
+		t.Errorf("expected fail-open (no findings); got %v", findings)
+	}
+	if statted {
+		t.Errorf("statter should NOT have been called when single-scope repoRoot returns false")
+	}
+}
+
+// TestCheckFileExistence_BarePathFallsBackUnderMultiScope —
+// when the plan has 2+ scope_repos, bare paths are ambiguous and
+// the heuristic falls back to workspace-relative resolution.
+func TestCheckFileExistence_BarePathFallsBackUnderMultiScope(t *testing.T) {
+	p := pln([]string{"as", "theraprac-api"}, []string{"docs/runbook.md"}, nil)
+	var statted string
+	statter := func(path string) error {
+		statted = path
+		return nil
+	}
+	repoRoot := func(name string) (string, bool) {
+		t.Errorf("repoRoot should NOT be consulted for bare path with multi-scope; was called with %q", name)
+		return "/never", true
+	}
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	if statted != "/wsroot/docs/runbook.md" {
+		t.Errorf("statter called with %q; want workspace-rooted fallback", statted)
+	}
+}
+
+// TestCheckFileExistence_PrefixedPathRoutesViaRepoRoot — explicit
+// known-repo prefix routes via repoRoot regardless of
+// scope_repos. The explicit prefix wins over the single-scope
+// inference.
+func TestCheckFileExistence_PrefixedPathRoutesViaRepoRoot(t *testing.T) {
+	// Scope says only `as` but the path explicitly names `theraprac-api`.
+	p := pln([]string{"as"}, []string{"theraprac-api/internal/foo.go"}, nil)
+	var statted string
+	statter := func(path string) error {
+		statted = path
+		return nil
+	}
+	repoRoot := func(name string) (string, bool) {
+		if name == "theraprac-api" {
+			return "/agent-root/theraprac-api", true
+		}
+		return "", false
+	}
+	if got := checkFileExistence(p, "/wsroot", repoRoot, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	if statted != "/agent-root/theraprac-api/internal/foo.go" {
+		t.Errorf("explicit prefix should win over single-scope inference; statted %q", statted)
+	}
+}
+
+// TestCheckFileExistence_EmptyFilesToModifyNoFindings — an empty
+// FilesToModify slice produces no findings (and no statter calls).
+// Legitimate case: plan only creates files.
+func TestCheckFileExistence_EmptyFilesToModifyNoFindings(t *testing.T) {
+	p := pln([]string{"as"}, nil, []string{"internal/foo/new.go"})
+	statted := false
+	statter := func(string) error {
+		statted = true
+		return nil
+	}
+	findings := checkFileExistence(p, "/wsroot", func(string) (string, bool) { return "", false }, statter)
+	if len(findings) != 0 {
+		t.Errorf("expected no findings on empty FilesToModify; got %v", findings)
+	}
+	if statted {
+		t.Errorf("statter should NOT be called when FilesToModify is empty")
 	}
 }

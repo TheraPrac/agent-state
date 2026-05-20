@@ -2,6 +2,7 @@ package freshness
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -44,10 +45,19 @@ func extractReferencedPaths(planBody string) []string {
 	return out
 }
 
-// checkFileExistence verifies every referenced path exists.
-// Returns Stale-category findings for missing paths.
+// checkFileExistence verifies every path the plan declares it will
+// MODIFY exists on disk now. Returns Stale-category findings for
+// missing paths.
 //
-// Resolution rules (in priority order, I-719):
+// I-720: pivot to structured Plan.FilesToModify (away from
+// regex-over-body). The old behavior picked up every path-shaped
+// substring in the entire plan body, including FilesToCreate
+// entries (paths that by definition shouldn't exist yet) and
+// narrative path mentions in Approach / Out of Scope. The new
+// approach only checks files the plan declares as targets of
+// modification.
+//
+// Resolution rules per FilesToModify entry (priority order):
 //
 //  1. Absolute path → stat as-is.
 //  2. Relative path with a known repo prefix (theraprac-api,
@@ -58,58 +68,90 @@ func extractReferencedPaths(planBody string) []string {
 //       open: we cannot verify, so we must not falsely promote to
 //       Stale. Mirrors the same fail-open posture checkGitChurn
 //       uses for missing scope repos.
-//  3. Relative path without a recognized prefix → stat under
-//     workspaceRoot (today's pre-I-719 behavior, preserves
-//     back-compat for plans that reference workspace-relative
-//     paths like docs/*.md or .plans/*.md).
+//  3. Bare path AND len(p.ScopeRepos) == 1 → stat via
+//     repoRoot(p.ScopeRepos[0]). I-720: this is the
+//     "unambiguous single-repo scope" case the I-719 fix missed.
+//     Closure returns false → SKIP (fail-open).
+//  4. Bare path AND 0 or 2+ scope repos → stat under
+//     workspaceRoot. Preserves back-compat for unscoped or
+//     multi-repo plans referencing docs/*.md or .plans/*.md.
 //
-// Statter is injectable for tests; the production caller passes
-// os.Stat (or its closure form). repoRoot is the same closure
-// type checkGitChurn uses.
-func checkFileExistence(planBody, workspaceRoot string, repoRoot func(name string) (string, bool), statter func(string) error) []Finding {
+// Plan.FilesToCreate is NEVER checked: those are future files.
+// The regex helper extractReferencedPaths stays in the package
+// for checkGitChurn — churn legitimately wants a broad path set.
+//
+// statter is injectable for tests; production passes os.Stat.
+// repoRoot is the same closure type checkGitChurn uses.
+func checkFileExistence(p *plan.Plan, workspaceRoot string, repoRoot func(name string) (string, bool), statter func(string) error) []Finding {
+	if p == nil {
+		return nil
+	}
+	if len(p.FilesToModify) == 0 {
+		// Legitimate case (e.g., plan only creates files). One-
+		// line stderr breadcrumb so verbose UAT logs surface the
+		// silent-skip; not a finding.
+		fmt.Fprintf(os.Stderr, "freshness: plan has no FilesToModify — file-existence heuristic skipped (no findings)\n")
+		return nil
+	}
+
 	var findings []Finding
-	for _, p := range extractReferencedPaths(planBody) {
-		// Absolute path: stat as-is.
-		if filepath.IsAbs(p) {
-			if err := statter(p); err != nil {
+	for _, path := range p.FilesToModify {
+		// 1. Absolute path: stat as-is.
+		if filepath.IsAbs(path) {
+			if err := statter(path); err != nil {
 				findings = append(findings, Finding{
 					Category: CategoryFileMissing,
-					Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", p, p),
+					Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", path, path),
 				})
 			}
 			continue
 		}
 
-		// Known-repo-prefix path: route via repoRoot closure.
-		if repo := matchedRepoPrefix(p); repo != "" {
-			root, ok := repoRoot(repo)
-			if !ok {
-				// Repo not present in this layout. Fail open:
-				// we have no way to verify the file, so don't
-				// falsely flag it missing.
-				continue
-			}
-			rel := strings.TrimPrefix(p, repo+"/")
-			abs := filepath.Join(root, rel)
-			if err := statter(abs); err != nil {
-				findings = append(findings, Finding{
-					Category: CategoryFileMissing,
-					Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", p, abs),
-				})
-			}
+		// 2. Known-repo-prefix path: route via repoRoot closure.
+		if repo := matchedRepoPrefix(path); repo != "" {
+			findings = append(findings, statScopedPath(path, repo, repoRoot, statter)...)
 			continue
 		}
 
-		// Unrecognized prefix: workspace-relative (today's behavior).
-		abs := filepath.Join(workspaceRoot, p)
+		// 3. Bare path with single scope_repo: route via
+		//    repoRoot(scope_repos[0]). I-720 — the case I-719
+		//    missed.
+		if len(p.ScopeRepos) == 1 {
+			findings = append(findings, statScopedPath(path, p.ScopeRepos[0], repoRoot, statter)...)
+			continue
+		}
+
+		// 4. Bare path with zero or multi-repo scope: workspace-
+		//    relative. Today's pre-I-720 fallback behavior.
+		abs := filepath.Join(workspaceRoot, path)
 		if err := statter(abs); err != nil {
 			findings = append(findings, Finding{
 				Category: CategoryFileMissing,
-				Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", p, abs),
+				Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", path, abs),
 			})
 		}
 	}
 	return findings
+}
+
+// statScopedPath looks up repoRoot for <repo>, strips the prefix
+// (if any), and stats the resulting path. Fail-open if repoRoot
+// returns false (closure says repo isn't present in this layout —
+// we can't verify, so don't falsely flag missing).
+func statScopedPath(path, repo string, repoRoot func(name string) (string, bool), statter func(string) error) []Finding {
+	root, ok := repoRoot(repo)
+	if !ok {
+		return nil
+	}
+	rel := strings.TrimPrefix(path, repo+"/")
+	abs := filepath.Join(root, rel)
+	if err := statter(abs); err != nil {
+		return []Finding{{
+			Category: CategoryFileMissing,
+			Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", path, abs),
+		}}
+	}
+	return nil
 }
 
 // matchedRepoPrefix returns the repo name (without trailing slash)
