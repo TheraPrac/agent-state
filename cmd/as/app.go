@@ -261,7 +261,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	createCmd.Flags().String("tag", "", "initial tag")
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")
-	// T-382: --editor flag removed. Use `st update <id> sbar --stdin` post-create.
+	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 
 	updateCmd := &cobra.Command{

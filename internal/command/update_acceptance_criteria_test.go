@@ -155,7 +155,7 @@ func TestUpdateACSingleLineStripsLeadingBullet(t *testing.T) {
 // mutate, regardless of which branch in the mode switch sourced
 // the value.
 //
-// T-382: UpdateModeEditor removed; the mode set is now Value + Stdin.
+// T-382: the third mode was removed; the mode set is now Value + Stdin.
 func TestUpdateACBlocksValueAndStdinModes(t *testing.T) {
 	const vague = "- the feature works"
 	for _, mode := range []UpdateMode{UpdateModeValue, UpdateModeStdin} {

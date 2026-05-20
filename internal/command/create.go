@@ -236,7 +236,7 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 
 	newPath, _ := s.Path(id)
 
-	// T-382: --editor opt-in flow removed. Authors fill SBAR via
+	// T-382: post-create opt-in launcher flow removed. Authors fill SBAR via
 	// `st update <id> sbar --stdin <<<'<buffer>'` post-create, or
 	// the I-588 review sub-agent below auto-fixes weak SBAR
 	// content via its own `st update --stdin` heredocs.
@@ -264,5 +264,6 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	return 0
 }
 
-// T-382: runCreateEditor (the $VISUAL/$EDITOR launcher) was removed.
-// Authors fill SBAR via stdin-based `st update` heredocs post-create.
+// T-382: the post-create launcher that opened the file in an
+// external program was removed. Authors fill SBAR via stdin-based
+// `st update` heredocs post-create.

@@ -95,9 +95,9 @@ func StdinIsPiped() bool {
 // UpdateMode controls how Update sources its value when the caller did
 // not pass a positional value argument.
 //
-// T-382: UpdateModeEditor (which opened $EDITOR) was removed. Agents
-// drive every write via Value or Stdin mode; the editor surface was
-// dead code that complicated the mode switch and forced test-coverage
+// T-382: the external-program mode was removed. Agents drive every
+// write via Value or Stdin mode; the third surface was dead code
+// that complicated the mode switch and forced test-coverage
 // workarounds. The CLI now refuses with "no value supplied — pass
 // positional value or --stdin" when neither is provided.
 type UpdateMode int
@@ -442,10 +442,9 @@ func preCheckVocab(item *model.Item, field, value string, cfg *config.Config) in
 	return 0
 }
 
-// T-382: readFromEditor (which opened $EDITOR with optional stdin
-// fallback) was removed. Update is now stdin- or positional-value-
-// only; the CLI binding refuses with "no value supplied" when
-// neither is provided.
+// T-382: the external-program reader helper was removed. Update
+// is now stdin- or positional-value-only; the CLI binding refuses
+// with "no value supplied" when neither is provided.
 
 // sbarSeedBuffer renders the 4 SBAR sections as a YAML buffer the
 // editor can present to the user. The wrapper `sbar:` line is
@@ -583,10 +582,10 @@ func parseSBARBuffer(buf string) (model.SBAR, []string) {
 	}, missing
 }
 
-// T-382: updateSBARViaEditor (the I-493 editor flow for the sbar
-// composite field) was removed. The SBAR --stdin path still uses
-// parseSBARBuffer and commitSBAR (preserved below); the editor
-// wrapper had no callers post-T-382.
+// T-382: the I-493 wrapper for the sbar composite field was
+// removed. The SBAR --stdin path still uses parseSBARBuffer and
+// commitSBAR (preserved below); the wrapper had no callers
+// post-T-382.
 
 // commitSBAR writes a fully-parsed 4-section SBAR over the item's `sbar`
 // block via the heal-capable SetSBARBlock, appends the changelog entry,
@@ -703,7 +702,7 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 	fmt.Fprintln(os.Stderr,
 		"update: summary is deprecated (I-487). Routing content to sbar.background.\n"+
 			"  Use: st update <id> sbar.background \"<text>\"\n"+
-			"  Or:  st update <id> sbar  (opens editor on the 4-section block)")
+			"  Or:  st update <id> sbar --stdin <<<'<4-section buffer>'")
 
 	var oldValue string
 	mutateErr := s.Mutate(id, func(it *model.Item) error {
@@ -782,9 +781,8 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		if p.Field == "sbar" {
 			fmt.Fprintf(os.Stderr,
 				"update: sbar is a composite block — batch mode cannot set it as a scalar.\n"+
-					"  Use: st update %s sbar               (opens the 4-section editor)\n"+
-					"   or: st update %s sbar --stdin < buf  (4-section buffer; also repairs a corrupted sbar)\n",
-				id, id)
+					"  Use: st update %s sbar --stdin < buf  (4-section buffer; also repairs a corrupted sbar)\n",
+				id)
 			return 2
 		}
 		// I-504 (review fix): list fields silently corrupt schema when
