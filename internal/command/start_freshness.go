@@ -64,8 +64,15 @@ func defaultRepoRoot(cfg *config.Config, statter func(string) error) func(name s
 // I-711 — the public entry point is freshness.Check; this helper
 // glues that into command.StartOpts (specifically --ack-drift).
 func runFreshnessGate(cfg *config.Config, s *store.Store, id string, opts StartOpts) int {
+	// I-717: wire DefaultRunEngine().RunClaude so the freshness
+	// gate's Claude sub-agent adjudication phase fires on
+	// heuristic-Drift verdicts. Terminal Stale/Fresh short-
+	// circuits before the Claude pass; engine errors fail-closed
+	// (keep heuristic verdict).
+	engine := DefaultRunEngine()
 	result, err := freshness.Check(cfg, s, id, freshness.CheckOpts{
-		RepoRoot: defaultRepoRoot(cfg, nil),
+		RepoRoot:  defaultRepoRoot(cfg, nil),
+		RunClaude: engine.RunClaude,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: freshness gate errored on %s (%v) — proceeding without re-validation\n", id, err)

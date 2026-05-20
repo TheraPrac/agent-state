@@ -2,9 +2,11 @@ package freshness
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -34,6 +36,19 @@ type CheckOpts struct {
 	// known-prefix paths (I-719). Unrecognized-prefix paths still
 	// fall back to workspace-relative resolution regardless.
 	RepoRoot func(name string) (string, bool)
+
+	// RunClaude is the function-value injection point for the
+	// Claude sub-agent adjudication phase (I-717). When non-nil,
+	// fires ONLY for heuristic-Drift verdicts to promote/demote
+	// the verdict via LLM review. Terminal verdicts (Stale/Fresh)
+	// short-circuit before the Claude pass. Nil = heuristics-only
+	// (today's pre-I-717 behavior).
+	//
+	// Signature matches command.RunEngine.RunClaude exactly so
+	// the command-package bridge can pass `engine.RunClaude`
+	// without an interface or struct (avoiding the freshness ↔
+	// command import cycle).
+	RunClaude func(cwd string, args []string, env []string) ([]byte, int, error)
 
 	// SkipCache disables read+write to the freshness cache. Used
 	// by tests that want to force a re-evaluation each call.
@@ -142,6 +157,30 @@ func Check(cfg *config.Config, s *store.Store, id string, opts CheckOpts) (*Resu
 	}
 	verdict := classifyHeuristics(findings, age, th)
 
+	// I-717: Claude sub-agent adjudication for ambiguous-middle
+	// (Drift) verdicts. Terminal verdicts (Stale, Fresh) are
+	// short-circuit — file-missing is unambiguous, no-findings
+	// has nothing to elevate.
+	//
+	// LLM verdict can demote Drift → Fresh or promote Drift →
+	// Stale; cannot move terminal verdicts. Engine error / empty
+	// output / unparseable response = fail-closed (keep heuristic
+	// Drift). The promoted CategoryClaude finding documents the
+	// adjudication for the verbose UAT log.
+	if verdict == VerdictDrift && opts.RunClaude != nil {
+		closed := closedDepsForPrompt(loaded, itemDependencies(item), approvedAt, s)
+		recentGitLog := gatherRecentGitLog(loaded, approvedAt, repoRoot, gitRunner)
+		prompt := buildFreshnessPrompt(item, loaded, findings, recentGitLog, closed)
+		newVerdict, rationale := runFreshnessClaudePass(opts.RunClaude, workspaceRoot, verdict, prompt)
+		if newVerdict != verdict && rationale != "" {
+			findings = append(findings, Finding{
+				Category: CategoryClaude,
+				Message:  rationale,
+			})
+			verdict = newVerdict
+		}
+	}
+
 	r := &Result{
 		Verdict:     verdict,
 		Findings:    findings,
@@ -154,6 +193,66 @@ func Check(cfg *config.Config, s *store.Store, id string, opts CheckOpts) (*Resu
 		_ = storeCache(workspaceRoot, id, planBody, head, r)
 	}
 	return r, nil
+}
+
+// closedDepsForPrompt returns the *model.Item slice for any
+// depends_on entry that closed since plan_approved_at with
+// keyword overlap on the plan's Approach. Reuses the same
+// matching predicate checkDependencyClosure used to produce the
+// findings, so the prompt sees exactly the items the heuristic
+// flagged.
+func closedDepsForPrompt(p *plan.Plan, deps []string, planApprovedAt time.Time, s *store.Store) []*model.Item {
+	if p == nil || s == nil {
+		return nil
+	}
+	keywords := approachKeywords(p.Approach)
+	if len(keywords) == 0 {
+		return nil
+	}
+	var out []*model.Item
+	for _, depID := range deps {
+		depItem, ok := s.Get(depID)
+		if !ok {
+			continue
+		}
+		if !isTerminal(depItem.Status) {
+			continue
+		}
+		closedAt := depItem.LastTouched
+		if closedAt.IsZero() || closedAt.Before(planApprovedAt) {
+			continue
+		}
+		text := strings.ToLower(depItem.SBAR.Recommendation + " " + depItem.SBAR.Assessment)
+		for kw := range keywords {
+			if strings.Contains(text, kw) {
+				out = append(out, depItem)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// gatherRecentGitLog runs `git log --since=<approvedAt> --oneline -n 20`
+// on the first scope repo's root (since I-717's prompt only renders
+// a single snippet) and returns the output. Returns empty string on
+// any failure — the prompt section gets skipped naturally.
+func gatherRecentGitLog(p *plan.Plan, approvedAt time.Time, repoRoot func(name string) (string, bool), runner func(repo string, args []string) ([]byte, error)) string {
+	if p == nil || approvedAt.IsZero() || len(p.ScopeRepos) == 0 || runner == nil {
+		return ""
+	}
+	root, ok := repoRoot(p.ScopeRepos[0])
+	if !ok {
+		return ""
+	}
+	out, err := runner(root, []string{
+		"log", "--oneline", "-n", "20",
+		"--since=" + approvedAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // classifyHeuristics translates the findings list into a single
