@@ -108,12 +108,12 @@ func Check(cfg *config.Config, s *store.Store, id string, opts CheckOpts) (*Resu
 	approvedAt, _ := parseRFC3339(item.PlanApprovedAt)
 
 	var findings []Finding
-	// I-719: thread repoRoot to file-existence so paths with a
-	// known repo prefix resolve in the sibling repo, not under
-	// workspaceRoot. Without this, plans for `as`-scoped items
-	// fail STALE because `as/internal/foo.go` resolves to
-	// `<workspace>/as/internal/foo.go` which never exists.
-	findings = append(findings, checkFileExistence(planBody, workspaceRoot, repoRoot, statter)...)
+	// I-720: pass the parsed plan to checkFileExistence so it
+	// can iterate structured Plan.FilesToModify (not regex-over-
+	// body) and route bare paths via the plan's ScopeRepos.
+	// FilesToCreate is no longer falsely flagged as missing.
+	// planBody is still consumed by checkGitChurn below.
+	findings = append(findings, checkFileExistence(loaded, workspaceRoot, repoRoot, statter)...)
 	findings = append(findings, checkAge(approvedAt, now, th)...)
 	findings = append(findings, checkDependencyClosure(loaded, itemDependencies(item), approvedAt, s)...)
 	// Review F6 fix: pass the same planBody used by file-existence
