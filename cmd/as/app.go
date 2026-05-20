@@ -2168,10 +2168,14 @@ rates. I-180.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			strict, _ := cmd.Flags().GetBool("strict")
-			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{Strict: strict})
+			engine := command.DefaultRunEngine()
+			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{
+				Strict: strict,
+				Engine: &engine,
+			})
 		},
 	}
-	planApproveCmd.Flags().Bool("strict", false, "refuse approval if any acceptance criterion is not verifiable (I-511)")
+	planApproveCmd.Flags().Bool("strict", false, "deprecated alias — AC verifiability gate now fires unconditionally (I-710); flag preserved for CI back-compat")
 	planResetCmd := &cobra.Command{
 		Use:   "reset <id>",
 		Short: "Revert a previously-approved plan (closes the I-178 gate; needs re-approval)",
