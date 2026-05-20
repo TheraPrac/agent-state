@@ -183,47 +183,11 @@ work_tracking:
 }
 
 // === Edit ===
-
-func TestEditNoEditor(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	os.Unsetenv("EDITOR")
-	os.Unsetenv("VISUAL")
-
-	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
-	if code != 1 {
-		t.Errorf("Edit without $EDITOR returned %d, want 1", code)
-	}
-}
-
-func TestEditNotFound(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	code := Update(s, cfg, "T-999", "title", "", UpdateModeEditor)
-	if code != 1 {
-		t.Errorf("Edit not found returned %d, want 1", code)
-	}
-}
-
-func TestEditNoDoc(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	item, _ := s.Get("T-001")
-	item.Doc = nil
-	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
-	if code != 1 {
-		t.Errorf("Edit no doc returned %d, want 1", code)
-	}
-}
-
-func TestEditNoChanges(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	// Use 'true' as editor — it doesn't modify the file
-	os.Setenv("EDITOR", "true")
-	defer os.Unsetenv("EDITOR")
-
-	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
-	if code != 0 {
-		t.Errorf("Edit no-change returned %d, want 0", code)
-	}
-}
+// T-382: the external-program-mode test cases (variants of
+// TestEditNoEditor, TestEditNotFound, TestEditNoDoc, TestEditNoChanges)
+// were removed — the surface no longer exists. The not-found / no-doc
+// cases are still covered for the remaining modes by TestUpdateNotFound
+// and TestUpdateNoDoc in command_test.go.
 
 func TestEditFromStdinFlag(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
@@ -452,19 +416,8 @@ func TestDepRmDepNotFound(t *testing.T) {
 	}
 }
 
-// === Coverage: Edit with $VISUAL fallback ===
-
-func TestEditUsesVisual(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	os.Unsetenv("EDITOR")
-	os.Setenv("VISUAL", "true")
-	defer os.Unsetenv("VISUAL")
-
-	code := Update(s, cfg, "T-001", "title", "", UpdateModeEditor)
-	if code != 0 {
-		t.Errorf("Edit with VISUAL returned %d, want 0", code)
-	}
-}
+// T-382: TestEditUsesVisual removed — $VISUAL / $EDITOR fallback
+// path no longer exists.
 
 // === Start with real git repo worktree creation ===
 

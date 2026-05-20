@@ -51,8 +51,7 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 		return
 	}
 	// Non-interactive contexts (piped stdin, CI runners, in-process test
-	// harnesses) skip the review for the same reason `st create --editor`
-	// skips $EDITOR on a non-TTY: the gate prompts for operator input
+	// harnesses) skip the review because the gate prompts for operator input
 	// (Accept/Reject/Feedback) and an empty stdin would hang the process.
 	// Tests that exercise the review path inject a mock engine + mock
 	// SelectMenu, which short-circuits this check by not going through the

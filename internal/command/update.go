@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -95,6 +94,12 @@ func StdinIsPiped() bool {
 
 // UpdateMode controls how Update sources its value when the caller did
 // not pass a positional value argument.
+//
+// T-382: the external-program mode was removed. Agents drive every
+// write via Value or Stdin mode; the third surface was dead code
+// that complicated the mode switch and forced test-coverage
+// workarounds. The CLI now refuses with "no value supplied — pass
+// positional value or --stdin" when neither is provided.
 type UpdateMode int
 
 const (
@@ -103,14 +108,12 @@ const (
 	UpdateModeValue UpdateMode = iota
 	// UpdateModeStdin reads the value from os.Stdin until EOF.
 	UpdateModeStdin
-	// UpdateModeEditor opens $EDITOR (falling back to stdin if unset).
-	UpdateModeEditor
 )
 
 // Update writes a field on an item. The value is sourced according to
-// mode: UpdateModeValue uses `value` directly, UpdateModeStdin reads
-// from stdin, UpdateModeEditor launches $EDITOR seeded with the current
-// value (and falls back to a stdin prompt if no editor is configured).
+// mode: UpdateModeValue uses `value` directly; UpdateModeStdin reads
+// from stdin. The CLI binding refuses with "no value supplied — pass
+// positional value or --stdin" when neither is provided.
 //
 // Long-form fields (description, summary, context, notes) round-trip as
 // YAML block scalars so multi-line content replaces cleanly. List fields
@@ -204,41 +207,9 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
 			return 1
 		}
-	case UpdateModeEditor:
-		// I-493: `st update <id> sbar` opens the editor on the
-		// 4-section composite buffer, parses it back, and updates all
-		// four sub-fields atomically. The generic GetField path below
-		// would seed the buffer with an empty string (sbar is a block
-		// key, not a scalar), losing the user's existing content.
-		if field == "sbar" {
-			return updateSBARViaEditor(s, cfg, id, item)
-		}
-		current, _ := item.Doc.GetField(field)
-		new, code, ok := readFromEditor(id, field, current)
-		if !ok {
-			return code
-		}
-		// I-713: for acceptance_criteria the I-491 limitation makes
-		// `current` always "" (the header line carries no inline value),
-		// so `new == current` triggers even when the user opened the
-		// editor, edited a real value, then accidentally saved empty.
-		// Treat empty editor output for the AC field as an explicit
-		// refusal — matches the stdin-mode "empty input" guard.
-		if new == "" && field == "acceptance_criteria" {
-			fmt.Fprintf(os.Stderr,
-				"update %s acceptance_criteria: refusing empty editor output — write at least one `- cmd: ...` line, or abort the editor session.\n",
-				id)
-			return 2
-		}
-		if new == current {
-			fmt.Println("No changes.")
-			return 0
-		}
-		value = new
 	}
 
-	// I-670: `sbar` is a 4-section composite, not a scalar. The editor
-	// path is handled above (updateSBARViaEditor). The stdin and
+	// I-670: `sbar` is a 4-section composite, not a scalar. Stdin and
 	// positional-value paths previously fell through to the default
 	// SetField branch below, which writes the whole input as a `sbar: |-`
 	// block scalar — silently flattening the mapping to a string and
@@ -470,58 +441,9 @@ func preCheckVocab(item *model.Item, field, value string, cfg *config.Config) in
 	return 0
 }
 
-// readFromEditor seeds $EDITOR with the field's current value, runs it,
-// and returns the user-supplied content. Falls back to a stdin prompt
-// when $EDITOR is unset (useful for non-interactive agent contexts).
-// The returned bool is false on a hard error; in that case `code` is
-// the exit code to propagate.
-func readFromEditor(id, field, current string) (string, int, bool) {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
-	}
-	if editor == "" {
-		fmt.Fprintf(os.Stderr, "No $EDITOR set. Enter new value for %s (Ctrl+D to finish):\n", field)
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "reading stdin: %v\n", err)
-			return "", 1, false
-		}
-		v := strings.TrimRight(string(data), "\n")
-		if v == "" {
-			fmt.Fprintln(os.Stderr, "empty input — no changes")
-			return "", 1, false
-		}
-		return v, 0, true
-	}
-
-	tmpFile, err := os.CreateTemp("", fmt.Sprintf("as-edit-%s-%s-*.txt", id, field))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "creating temp file: %v\n", err)
-		return "", 1, false
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	tmpFile.WriteString(current)
-	tmpFile.Close()
-
-	cmd := exec.Command(editor, tmpPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
-		return "", 1, false
-	}
-
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reading temp file: %v\n", err)
-		return "", 1, false
-	}
-	return strings.TrimRight(string(data), "\n"), 0, true
-}
+// T-382: the external-program reader helper was removed. Update
+// is now stdin- or positional-value-only; the CLI binding refuses
+// with "no value supplied" when neither is provided.
 
 // sbarSeedBuffer renders the 4 SBAR sections as a YAML buffer the
 // editor can present to the user. The wrapper `sbar:` line is
@@ -659,35 +581,16 @@ func parseSBARBuffer(buf string) (model.SBAR, []string) {
 	}, missing
 }
 
-// updateSBARViaEditor implements the I-493 editor flow for the sbar
-// composite field. Returns the CLI exit code.
-func updateSBARViaEditor(s *store.Store, cfg *config.Config, id string, item *model.Item) int {
-	seed := sbarSeedBuffer(item.SBAR)
-	edited, code, ok := readFromEditor(id, "sbar", seed)
-	if !ok {
-		return code
-	}
-	if edited == strings.TrimRight(seed, "\n") {
-		fmt.Println("No changes.")
-		return 0
-	}
-	newSBAR, missing := parseSBARBuffer(edited)
-	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"update: SBAR buffer is missing required section(s): %s\n"+
-				"  Each of situation/background/assessment/recommendation must be present, even if blank.\n",
-			strings.Join(missing, ", "))
-		return 2
-	}
-	return commitSBAR(s, cfg, id, item, newSBAR)
-}
+// T-382: the I-493 wrapper for the sbar composite field was
+// removed. The SBAR --stdin path still uses parseSBARBuffer and
+// commitSBAR (preserved below); the wrapper had no callers
+// post-T-382.
 
 // commitSBAR writes a fully-parsed 4-section SBAR over the item's `sbar`
 // block via the heal-capable SetSBARBlock, appends the changelog entry,
-// and syncs. Shared by the editor path (updateSBARViaEditor) and the
-// stdin / positional-value path added in I-670 so all three resolve to
-// identical write semantics. `item` is the pre-Mutate snapshot used only
-// to render the old value for the changelog.
+// and syncs. Used by the stdin / positional-value path added in I-670
+// (the only remaining write path post-T-382). `item` is the pre-Mutate
+// snapshot used only to render the old value for the changelog.
 func commitSBAR(s *store.Store, cfg *config.Config, id string, item *model.Item, newSBAR model.SBAR) int {
 	oldRendered := sbarSeedBuffer(item.SBAR)
 	// I-670 (review fix): preserve the I-493 invariant that an
@@ -771,12 +674,6 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
 			return 1
 		}
-	case UpdateModeEditor:
-		newVal, code, ok := readFromEditor(id, "sbar.background", item.SBAR.Background)
-		if !ok {
-			return code
-		}
-		value = newVal
 	}
 
 	// I-670: on a scalar-corrupted item the parser yields an empty
@@ -803,7 +700,7 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 	fmt.Fprintln(os.Stderr,
 		"update: summary is deprecated (I-487). Routing content to sbar.background.\n"+
 			"  Use: st update <id> sbar.background \"<text>\"\n"+
-			"  Or:  st update <id> sbar  (opens editor on the 4-section block)")
+			"  Or:  st update <id> sbar --stdin <<<'<4-section buffer>'")
 
 	var oldValue string
 	mutateErr := s.Mutate(id, func(it *model.Item) error {
@@ -882,9 +779,8 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		if p.Field == "sbar" {
 			fmt.Fprintf(os.Stderr,
 				"update: sbar is a composite block — batch mode cannot set it as a scalar.\n"+
-					"  Use: st update %s sbar               (opens the 4-section editor)\n"+
-					"   or: st update %s sbar --stdin < buf  (4-section buffer; also repairs a corrupted sbar)\n",
-				id, id)
+					"  Use: st update %s sbar --stdin < buf  (4-section buffer; also repairs a corrupted sbar)\n",
+				id)
 			return 2
 		}
 		// I-504 (review fix): list fields silently corrupt schema when

@@ -3,7 +3,6 @@ package command
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
-	"golang.org/x/term"
 )
 
 // CreateOpts holds flags for the create command.
@@ -26,11 +24,10 @@ type CreateOpts struct {
 	Tag      string
 	Depends  string
 	Sprint   string // optional: assign to sprint on creation
-	// Editor opens $EDITOR on the new file post-creation. Opt-in
-	// (default false) so agent scripts that run `st create` in a
-	// non-interactive shell are not blocked. Even with Editor=true the
-	// editor is skipped when stdin is not a TTY or $EDITOR is unset.
-	Editor bool
+	// T-382: Editor field removed. Agents drive creation via
+	// `st create <type> <title>` with subsequent stdin-based
+	// `st update sbar --stdin` heredocs; the editor surface was
+	// dead code.
 	// Engine is the run engine used by the I-588 post-create item review.
 	// The CLI wires this to DefaultRunEngine() so interactive `st create`
 	// spawns the sub-agent SBAR/title self-review; in-process callers
@@ -239,15 +236,10 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 
 	newPath, _ := s.Path(id)
 
-	// I-492: open $EDITOR on the new file so the author can fill in the
-	// SBAR scaffold immediately. Opt-in via --editor and gated on a TTY
-	// + resolvable editor — agent scripts that pipe stdin would block
-	// indefinitely on a missing editor without these guards. Editor
-	// failure is non-fatal; the item is on disk and a follow-up
-	// `st update <id> sbar` is always available.
-	if opts.Editor && newPath != "" {
-		runCreateEditor(newPath)
-	}
+	// T-382: post-create opt-in launcher flow removed. Authors fill SBAR via
+	// `st update <id> sbar --stdin <<<'<buffer>'` post-create, or
+	// the I-588 review sub-agent below auto-fixes weak SBAR
+	// content via its own `st update --stdin` heredocs.
 
 	// Commit + push the new item so it can't be silently deleted by a
 	// subsequent command's pre-run GitPull (untracked file) and so other
@@ -272,42 +264,6 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	return 0
 }
 
-// runCreateEditor launches $VISUAL (or $EDITOR) on path. No-op when
-// stdin is not a TTY (agent / piped contexts) or no editor is set —
-// silently skipping is preferable to an empty stdin prompt that would
-// hang an automated run.
-//
-// $VISUAL takes precedence over $EDITOR per the Unix convention
-// (VISUAL is the full-screen editor, EDITOR is the line editor); most
-// modern setups treat them as equivalent but users who set both
-// expect VISUAL to win.
-//
-// The editor value is shell-split via strings.Fields so common forms
-// like `EDITOR="code --wait"` or `EDITOR="vim -u NONE"` work.
-// exec.Command itself does not parse arguments out of its first
-// positional, so without splitting we would exec a binary literally
-// named "code --wait" and fail.
-func runCreateEditor(path string) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return
-	}
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		return
-	}
-	parts := strings.Fields(editor)
-	if len(parts) == 0 {
-		return
-	}
-	args := append(parts[1:], path)
-	cmd := exec.Command(parts[0], args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: editor failed: %v\n", err)
-	}
-}
+// T-382: the post-create launcher that opened the file in an
+// external program was removed. Authors fill SBAR via stdin-based
+// `st update` heredocs post-create.
