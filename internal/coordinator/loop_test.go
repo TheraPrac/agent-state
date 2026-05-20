@@ -83,15 +83,17 @@ func TestDecide(t *testing.T) {
 		t.Errorf("live + static ≥ wedge → escalate C2, got %v %s", d.Action, d.Verdict.Predicate)
 	}
 
-	// Live + stuck (elapsed ≥ mult×baseline) → escalate D2.
-	st = &WorkerState{SizeClass: 20 * time.Minute, SpawnedAt: now}
+	// Live + stuck (cost ≥ mult×cost-baseline) → escalate D2.
+	// T-365: D2 is now cost-based. The wall-clock SizeClass still drives
+	// the C2 wedge threshold, but D2 reads AICostUSD against CostBaseline.
+	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0, SpawnedAt: now}
 	live := []ProgressSnapshot{
-		{PIDAlive: true, RowCount: 1, SampledAt: now},
-		{PIDAlive: true, RowCount: 9, SampledAt: now.Add(61 * time.Minute)}, // making noise, just way over time
+		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
+		{PIDAlive: true, RowCount: 9, AICostUSD: 30.0, SampledAt: now.Add(5 * time.Minute)}, // $30 ≥ 3×$10
 	}
-	d = Decide(st, live, b, false, now.Add(61*time.Minute)) // 61m ≥ 3×20m
+	d = Decide(st, live, b, false, now.Add(5*time.Minute))
 	if d.Action != ActionEscalate || d.Verdict.Predicate != PredicateD2 {
-		t.Errorf("live + elapsed ≥ stuck_x×baseline → escalate D2, got %v %s", d.Action, d.Verdict.Predicate)
+		t.Errorf("live + cost ≥ stuck_x×cost-baseline → escalate D2, got %v %s", d.Action, d.Verdict.Predicate)
 	}
 
 	// Live + fine → continue.

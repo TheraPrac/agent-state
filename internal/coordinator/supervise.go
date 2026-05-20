@@ -29,6 +29,11 @@ type ProgressSnapshot struct {
 	ChangelogLen int       // # changelog entries for the item (monotonic item progress)
 	Stage        string    // item status / delivery stage
 	SampledAt    time.Time // wall-clock of this sample
+	AICostUSD    float64   // T-365: rolled-up cost (I-369 Option C). 0 ⇒
+	//                       no rollup yet (e.g. before the worker's first
+	//                       SubagentStop fires). The cost-based D2
+	//                       detector treats 0 as "no signal", never as
+	//                       "stuck at 0" — see DetectStuckByCost.
 }
 
 // WorkerState is the cross-respawn state the loop carries for ONE item's
@@ -38,10 +43,11 @@ type WorkerState struct {
 	Item         string
 	SessionID    string
 	PID          int
-	SpawnedAt    time.Time // registry Started of the CURRENT attempt
-	RespawnCount int       // respawn-with-context cycles already spent
-	LastFailSig  string    // failure signature of the PRIOR terminated attempt
-	SizeClass    time.Duration
+	SpawnedAt    time.Time     // registry Started of the CURRENT attempt
+	RespawnCount int           // respawn-with-context cycles already spent
+	LastFailSig  string        // failure signature of the PRIOR terminated attempt
+	SizeClass    time.Duration // legacy wall-clock baseline (kept for C2 wedge threshold)
+	CostBaseline float64       // T-365: USD baseline for cost-based D2 (per SizeClassCostBaseline)
 	Snaps        []ProgressSnapshot
 
 	// attemptStartChangelog is the item's changelog length at the moment
@@ -81,6 +87,18 @@ type StallVerdict struct {
 func SampleProgress(cfg *config.Config, item *model.Item) ProgressSnapshot {
 	now := time.Now()
 	snap := ProgressSnapshot{SampledAt: now, Stage: item.Status}
+
+	// T-365: read I-369's rolled-up cost off the item. Stored as a
+	// 6-decimal stringified float by session_log.go; absent ⇒ stays 0.
+	if item.TimeTracking != nil {
+		if raw, ok := item.TimeTracking["ai_cost_usd"]; ok {
+			if s, ok := raw.(string); ok {
+				if f, err := strconv.ParseFloat(s, 64); err == nil {
+					snap.AICostUSD = f
+				}
+			}
+		}
+	}
 
 	if entries, err := changelog.Read(cfg, item.ID); err == nil {
 		snap.ChangelogLen = len(entries)
@@ -230,12 +248,42 @@ func DetectWedged(snaps []ProgressSnapshot, wedge time.Duration) (string, bool) 
 	return "", false
 }
 
-// DetectStuck implements D2: an item consuming ≥ stuck_multiplier × the
-// median for its size-class with no error (distinct from wedged — the
-// worker may be making JSONL noise, just far over budget-of-time). This
-// is the wall-clock proxy; cost-based D2 is T-365 (the per_item
-// --max-budget-usd cap, set by st spawn, is the independent hard backstop
-// regardless). Returns (reason, true) when elapsed ≥ mult × baseline.
+// DetectStuckByCost implements D2 (T-365): an item burning ≥
+// stuck_multiplier × cost-baseline-for-its-size-class. This is the
+// dollar-denominated successor to the wall-clock DetectStuck proxy —
+// consistent with K1 (per_item budget cap is dollars) and matching the
+// §7-D2 predicate text ("consuming ≥ K2 × median for size-class"). The
+// rollup it reads is I-369's Option C: subagent turns accumulate to the
+// parent's `time_tracking.ai_cost_usd`, surfaced into ProgressSnapshot
+// by SampleProgress.
+//
+// currentCostUSD == 0 returns (false, "") — the rollup is not yet
+// populated (e.g. before the worker's first SubagentStop fires), NOT a
+// genuine "stuck at $0" signal. A worker that never spends a cent is
+// either wedged (C2's domain) or making instant progress (no D2 needed).
+//
+// The per_item --max-budget-usd cap set by st spawn is an independent
+// hard backstop regardless; D2 fires BEFORE that cap.
+func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool) {
+	if currentCostUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
+		return "", false
+	}
+	limit := baselineUSD * mult
+	if currentCostUSD >= limit {
+		return "cost $" + trimFloat(currentCostUSD) + " ≥ stuck_multiplier(" +
+			trimFloat(mult) + ") × cost-baseline $" + trimFloat(baselineUSD) +
+			" — stuck (contract §7-D2; cost-based, T-365)", true
+	}
+	return "", false
+}
+
+// DetectStuck is the LEGACY wall-clock D2 proxy from T-363. Superseded
+// by DetectStuckByCost (T-365) for the primary D2 check. Kept for
+// callers that still want the wall-clock signal (e.g. when cost rollup
+// is unavailable on a substrate that pre-dates I-369). Will be removed
+// once T-363's call sites finish migrating.
+//
+// Returns (reason, true) when elapsed ≥ mult × baseline.
 func DetectStuck(spawnedAt, now time.Time, baseline time.Duration, mult float64) (string, bool) {
 	if baseline <= 0 || mult <= 0 || spawnedAt.IsZero() {
 		return "", false
@@ -314,6 +362,36 @@ func SizeClassBaseline(item *model.Item) time.Duration {
 			return 40 * time.Minute
 		}
 		return 50 * time.Minute
+	}
+}
+
+// SizeClassCostBaseline is the heuristic median USD spend for an item's
+// size class, used by DetectStuckByCost (T-365). Values are tuned so D2
+// fires comfortably below K1's per_item cap of $40 even at K2=3 (the
+// highest baseline below × 3 = $30, leaving $10 of headroom). Same
+// type+priority shape as SizeClassBaseline; documented as heuristic
+// (empirical-from-archive medians are a follow-up item).
+//
+// Real data anchoring these picks (2026-05 archive sample): T-345 = $3,
+// T-369 (this session) ≈ $8-12 typical, T-352 = $43 (the runaway K1
+// would now catch). The defaults below would catch a T-352-class
+// runaway WELL before the $40 cap, which is the whole point.
+func SizeClassCostBaseline(item *model.Item) float64 {
+	pri := 2
+	if item.Priority != nil {
+		pri = *item.Priority
+	}
+	switch item.Type {
+	case "issue":
+		if pri <= 1 {
+			return 3.0
+		}
+		return 4.0
+	default: // task and anything else
+		if pri <= 1 {
+			return 6.0
+		}
+		return 10.0
 	}
 }
 

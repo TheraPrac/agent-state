@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,51 @@ func TestDetectStuck(t *testing.T) {
 	}
 	if _, s := DetectStuck(spawn, spawn.Add(time.Hour), 0, 3); s {
 		t.Error("zero baseline must not be stuck")
+	}
+}
+
+// T-365 — cost-based D2 detector (the successor to DetectStuck above).
+func TestDetectStuckByCost(t *testing.T) {
+	if reason, s := DetectStuckByCost(30.0, 10.0, 3.0); !s {
+		t.Errorf("$30 ≥ 3×$10 must be stuck, got (%q, %v)", reason, s)
+	} else if !strings.Contains(reason, "cost $") || !strings.Contains(reason, "§7-D2") {
+		t.Errorf("reason must name cost + §7-D2: %q", reason)
+	}
+	if _, s := DetectStuckByCost(15.0, 10.0, 3.0); s {
+		t.Error("$15 < 3×$10 must not be stuck")
+	}
+	// $0 rollup ⇒ not yet populated, NOT stuck (the I-369 wiring may not
+	// have fired its first SubagentStop yet).
+	if _, s := DetectStuckByCost(0, 10.0, 3.0); s {
+		t.Error("$0 (rollup not populated) must NOT trigger D2")
+	}
+	if _, s := DetectStuckByCost(30, 0, 3.0); s {
+		t.Error("zero baseline must not be stuck")
+	}
+	if _, s := DetectStuckByCost(30, 10.0, 0); s {
+		t.Error("zero multiplier must not be stuck")
+	}
+}
+
+// T-365 — heuristic cost baselines stay under K1=$40 with K2=3 so D2
+// fires comfortably before the hard per_item budget cap.
+func TestSizeClassCostBaseline_BelowK1Cap(t *testing.T) {
+	const k1Cap = 40.0
+	const k2Mult = 3.0
+	pInt := func(n int) *int { return &n }
+	cases := []*model.Item{
+		{Type: "issue", Priority: pInt(0)},
+		{Type: "issue", Priority: pInt(2)},
+		{Type: "task", Priority: pInt(1)},
+		{Type: "task", Priority: pInt(3)},
+		{Type: "task"}, // priority nil → default
+	}
+	for _, it := range cases {
+		baseline := SizeClassCostBaseline(it)
+		if baseline*k2Mult >= k1Cap {
+			t.Errorf("baseline $%g × K2=%g = $%g ≥ K1 $%g — D2 won't fire before budget cap (type=%s pri=%v)",
+				baseline, k2Mult, baseline*k2Mult, k1Cap, it.Type, it.Priority)
+		}
 	}
 }
 
