@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 )
@@ -204,5 +205,178 @@ func TestTui_UpdateRefreshMsgReArms(t *testing.T) {
 	ch <- refreshMsg{}
 	if got := cmd(); got == nil {
 		t.Error("re-armed Cmd must return the next refreshMsg, got nil")
+	}
+}
+
+// --- T-374 §3/§5 navigation tests (headless, no tea.NewProgram) ---
+
+// keyFor builds a tea.KeyMsg whose .String() matches the §5 model.
+func keyFor(s string) tea.KeyMsg {
+	switch s {
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}
+
+func pressKey(m tuiModel, key string) tuiModel {
+	out, _ := m.Update(keyFor(key))
+	return out.(tuiModel)
+}
+
+// q quits from every axis — the basic event-loop necessity is honoured
+// no matter where the cursor is.
+func TestTui_QQuitsFromEveryAxis(t *testing.T) {
+	for _, axis := range []int{axisAgentStrip, axisComposite, axisFullScreen} {
+		m := tuiModel{focusAxis: axis}
+		_, cmd := m.Update(keyFor("q"))
+		if cmd == nil {
+			t.Errorf("q at axis %d must return tea.Quit, got nil", axis)
+		}
+	}
+}
+
+// Axis 0 (agent strip): arrows move the cursor; Enter drills to
+// composite + retargets m.item; Esc quits (top-of-axis).
+func TestTui_AxisAgentStripArrowsAndDrill(t *testing.T) {
+	a := &agent.Registration{AgentID: "agent-a", PID: 1, SessionID: "sess-a"}
+	b := &agent.Registration{AgentID: "agent-b", PID: 2, SessionID: "sess-b"}
+	work := &model.Item{ID: "T-W", Title: "agent-b's work", ClaimedBy: "sess-b"}
+	m := tuiModel{
+		focusAxis:   axisAgentStrip,
+		agentCursor: 0,
+		agents:      []*agent.Registration{a, b},
+		claimed:     map[string]*model.Item{"sess-b": work},
+	}
+	m = pressKey(m, "right")
+	if m.agentCursor != 1 {
+		t.Errorf("right should move cursor 0→1, got %d", m.agentCursor)
+	}
+	m = pressKey(m, "right") // edge clamp — only 2 agents
+	if m.agentCursor != 1 {
+		t.Errorf("right at edge must clamp, got %d", m.agentCursor)
+	}
+	m = pressKey(m, "left")
+	if m.agentCursor != 0 {
+		t.Errorf("left should move 1→0, got %d", m.agentCursor)
+	}
+	m = pressKey(m, "left") // edge clamp at 0
+	if m.agentCursor != 0 {
+		t.Errorf("left at edge must clamp, got %d", m.agentCursor)
+	}
+
+	// Drill: cursor on agent-b → Enter retargets m.item to T-W and
+	// switches to axisComposite.
+	m.agentCursor = 1
+	m = pressKey(m, "enter")
+	if m.focusAxis != axisComposite {
+		t.Errorf("Enter on axis 0 must move to axis 1, got %d", m.focusAxis)
+	}
+	if m.item == nil || m.item.ID != "T-W" {
+		t.Errorf("Enter must retarget m.item to cursored agent's claim, got %v", m.item)
+	}
+
+	// Esc on axis 0 quits.
+	m2 := tuiModel{focusAxis: axisAgentStrip}
+	_, cmd := m2.Update(keyFor("esc"))
+	if cmd == nil {
+		t.Error("Esc on axis 0 must quit, got nil cmd")
+	}
+}
+
+// Axis 1 (composite): up/down move sectionCursor; Space toggles
+// per-section expanded override; Enter → axisFullScreen; Esc → axis 0.
+func TestTui_AxisCompositeNavToggleAndDrill(t *testing.T) {
+	m := tuiModel{focusAxis: axisComposite, sectionCursor: 0}
+	m = pressKey(m, "down")
+	if m.sectionCursor != 1 {
+		t.Errorf("down should move 0→1, got %d", m.sectionCursor)
+	}
+	// Move to the bottom and prove edge clamp.
+	for i := 0; i < len(facetOrder)+5; i++ {
+		m = pressKey(m, "down")
+	}
+	if m.sectionCursor != len(facetOrder)-1 {
+		t.Errorf("down at edge must clamp at %d, got %d",
+			len(facetOrder)-1, m.sectionCursor)
+	}
+	m = pressKey(m, "up")
+	if m.sectionCursor != len(facetOrder)-2 {
+		t.Errorf("up should decrement, got %d", m.sectionCursor)
+	}
+	// Up at the top is a no-op.
+	m.sectionCursor = 0
+	m = pressKey(m, "up")
+	if m.sectionCursor != 0 {
+		t.Errorf("up at 0 must clamp, got %d", m.sectionCursor)
+	}
+
+	// Space toggles the cursored section's expanded state, seeded from
+	// the default-policy (item is expanded-by-default ⇒ Space collapses
+	// it; the override map records false).
+	m.sectionCursor = 0 // "item" — expanded by default
+	if !m.sectionExpanded("item") {
+		t.Fatal("test premise: item expanded by default")
+	}
+	m = pressKey(m, " ")
+	if m.sectionExpanded("item") {
+		t.Errorf("Space must toggle item expanded → collapsed")
+	}
+	m = pressKey(m, " ")
+	if !m.sectionExpanded("item") {
+		t.Errorf("Space again must toggle collapsed → expanded")
+	}
+
+	// Enter drills to full-screen.
+	m = pressKey(m, "enter")
+	if m.focusAxis != axisFullScreen {
+		t.Errorf("Enter on axis 1 must move to axis 2, got %d", m.focusAxis)
+	}
+
+	// Esc from axis 1 returns to axis 0.
+	m2 := tuiModel{focusAxis: axisComposite}
+	m2 = pressKey(m2, "esc")
+	if m2.focusAxis != axisAgentStrip {
+		t.Errorf("Esc on axis 1 must return to axis 0, got %d", m2.focusAxis)
+	}
+}
+
+// Axis 2 (full-screen): Esc returns to composite.
+func TestTui_AxisFullScreenEscReturns(t *testing.T) {
+	m := tuiModel{focusAxis: axisFullScreen}
+	m = pressKey(m, "esc")
+	if m.focusAxis != axisComposite {
+		t.Errorf("Esc on axis 2 must return to axis 1, got %d", m.focusAxis)
+	}
+}
+
+// The hint line lists ONLY the keys visible at the current axis — the
+// §5 "header is the at-a-glance" / no-memorization discipline.
+func TestTui_HintLinePerAxis(t *testing.T) {
+	cases := map[int]string{
+		axisAgentStrip: "← →",
+		axisComposite:  "Space toggle",
+		axisFullScreen: "Esc back",
+	}
+	for axis, want := range cases {
+		got := tuiModel{focusAxis: axis}.hintLine()
+		if !strings.Contains(got, want) {
+			t.Errorf("axis %d hint missing %q: got %q", axis, want, got)
+		}
 	}
 }

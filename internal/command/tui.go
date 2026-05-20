@@ -43,7 +43,8 @@ const (
 )
 
 // tuiModel is the Layout-A model. Static (T-372) renders View once; live
-// (T-373) calls View on every debounced refreshMsg.
+// (T-373) calls View on every debounced refreshMsg; T-374 added the
+// per-axis cursor state below.
 type tuiModel struct {
 	s       *store.Store
 	cfg     *config.Config
@@ -55,7 +56,20 @@ type tuiModel struct {
 
 	// Live-mode wiring (zero for static / `--once`).
 	refreshCh chan refreshMsg
+
+	// T-374 §3 three-axis navigation state.
+	focusAxis     int             // 0=agentStrip, 1=composite, 2=fullScreen
+	agentCursor   int             // index into sortedAgents()
+	sectionCursor int             // index into facetOrder
+	expanded      map[string]bool // per-section toggle override; nil ⇒ use expandedByDefault
 }
+
+// Axis constants — readability for the focusAxis switch.
+const (
+	axisAgentStrip = 0
+	axisComposite  = 1
+	axisFullScreen = 2
+)
 
 // tea.Model satisfaction. T-373 wires the event loop; T-374 will add the
 // §3/§5 navigation keys on top of these handlers.
@@ -76,15 +90,110 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = v.Width
 		return m, nil
 	case tea.KeyMsg:
-		// T-373 ships only the basic event-loop necessities (quit).
-		// The §3/§5 navigation model (Space toggles, Enter drills,
-		// Esc returns, arrows) is T-374's scope — explicitly out here.
-		switch v.String() {
-		case "q", "ctrl+c", "esc":
+		return m.handleKey(v)
+	}
+	return m, nil
+}
+
+// handleKey is the §5 keyboard model: arrows move within an axis, Space
+// toggles, Enter drills, Esc returns up the axis. q / Ctrl-C quit from
+// any axis. No other keys — every affordance is visible in the hint
+// line (the discoverability discipline).
+func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	}
+	switch m.focusAxis {
+	case axisAgentStrip:
+		switch k.String() {
+		case "left":
+			if m.agentCursor > 0 {
+				m.agentCursor--
+			}
+		case "right":
+			if m.agentCursor < len(m.sortedAgents())-1 {
+				m.agentCursor++
+			}
+		case "enter":
+			if a := m.cursoredAgent(); a != nil {
+				if it, ok := m.claimed[a.SessionID]; ok && it != nil {
+					m.item = it
+				}
+			}
+			m.focusAxis = axisComposite
+			m.sectionCursor = 0
+		case "esc":
+			// Top of the axis: Esc is "quit" (T-373 muscle memory).
 			return m, tea.Quit
+		}
+	case axisComposite:
+		switch k.String() {
+		case "up":
+			if m.sectionCursor > 0 {
+				m.sectionCursor--
+			}
+		case "down":
+			if m.sectionCursor < len(facetOrder)-1 {
+				m.sectionCursor++
+			}
+		case " ":
+			m = toggleSection(m, facetOrder[m.sectionCursor])
+		case "enter":
+			m.focusAxis = axisFullScreen
+		case "esc":
+			m.focusAxis = axisAgentStrip
+		}
+	case axisFullScreen:
+		switch k.String() {
+		case "esc":
+			m.focusAxis = axisComposite
 		}
 	}
 	return m, nil
+}
+
+// toggleSection flips the per-section expanded override, seeded from
+// expandedByDefault when first toggled (so Space at a default-collapsed
+// machine section expands it; at a default-expanded human section it
+// collapses).
+func toggleSection(m tuiModel, kind string) tuiModel {
+	if m.expanded == nil {
+		m.expanded = map[string]bool{}
+	}
+	cur, has := m.expanded[kind]
+	if !has {
+		cur = expandedByDefault[kind]
+	}
+	m.expanded[kind] = !cur
+	return m
+}
+
+// sortedAgents returns the agent slice in the SAME order the strip
+// renders, so the cursor index lines up with what the operator sees.
+func (m tuiModel) sortedAgents() []*agent.Registration {
+	out := append([]*agent.Registration(nil), m.agents...)
+	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
+	return out
+}
+
+func (m tuiModel) cursoredAgent() *agent.Registration {
+	regs := m.sortedAgents()
+	if len(regs) == 0 || m.agentCursor < 0 || m.agentCursor >= len(regs) {
+		return nil
+	}
+	return regs[m.agentCursor]
+}
+
+// sectionExpanded honours the per-toggle override, falling through to
+// the §Move-5 default policy (item/plan/ac expanded; machine sections
+// collapsed). One source of truth for both the composite and the
+// full-screen renderer.
+func (m tuiModel) sectionExpanded(kind string) bool {
+	if v, ok := m.expanded[kind]; ok {
+		return v
+	}
+	return expandedByDefault[kind]
 }
 
 // waitForRefresh is the tea.Cmd Bubble Tea uses to read the NEXT
@@ -120,6 +229,14 @@ func doRefresh(m tuiModel) tuiModel {
 		// the composite renders the last-known state until the operator
 		// retargets via --item.
 	}
+	// T-374 F1: clamp the agent cursor so a deregistration during live
+	// mode does not leave the highlight pointing past the end (cursor
+	// would visually disappear until the user nudges it).
+	if n := len(m.sortedAgents()); n == 0 {
+		m.agentCursor = 0
+	} else if m.agentCursor >= n {
+		m.agentCursor = n - 1
+	}
 	return m
 }
 
@@ -138,6 +255,9 @@ func (m tuiModel) View() string {
 	if w <= 0 {
 		w = DefaultWidth
 	}
+	if m.focusAxis == axisFullScreen {
+		return m.renderFullScreen(w)
+	}
 
 	agentStrip := m.renderAgentStrip()
 	composite := m.renderComposite()
@@ -153,23 +273,46 @@ func (m tuiModel) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, mid, bot)
 }
 
+// renderFullScreen draws ONLY the cursored composite section (axis 2).
+// Esc returns up; q quits. The hint line stays visible so the
+// affordance is never lost (the §5 discoverability principle).
+func (m tuiModel) renderFullScreen(w int) string {
+	if m.item == nil || m.sectionCursor < 0 || m.sectionCursor >= len(facetOrder) {
+		return "(no section to drill)"
+	}
+	kind := facetOrder[m.sectionCursor]
+	fr := facets[kind](m.s, m.cfg, m.item)
+
+	var body bytes.Buffer
+	fmt.Fprintf(&body, "%s — %s\n", m.item.ID, m.item.Title)
+	fmt.Fprintln(&body, strings.Repeat("─", 60))
+	renderSection(&body, kind, fr, true, true) // expanded + highlighted
+
+	panel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	top := panel.Width(w - 2).Render(strings.TrimRight(body.String(), "\n"))
+	bot := panel.Width(w - 2).Render(m.renderAlerts())
+	return lipgloss.JoinVertical(lipgloss.Left, top, bot)
+}
+
 // --- panel content (deterministic; no map iteration in render order) ---
 
 func (m tuiModel) renderAgentStrip() string {
-	if len(m.agents) == 0 {
+	regs := m.sortedAgents()
+	if len(regs) == 0 {
 		return "agents: (no registered agents in this workspace)"
 	}
-	regs := append([]*agent.Registration(nil), m.agents...)
-	sort.Slice(regs, func(i, j int) bool { return regs[i].AgentID < regs[j].AgentID })
-
 	var b strings.Builder
 	b.WriteString("agents:")
-	for _, r := range regs {
+	for i, r := range regs {
 		focus := "(idle)"
-		if it, ok := m.claimed[r.SessionID]; ok {
+		if it, ok := m.claimed[r.SessionID]; ok && it != nil {
 			focus = it.ID + " " + truncate(it.Title, 40)
 		}
-		fmt.Fprintf(&b, "\n  %s  pid:%d  %s", r.AgentID, r.PID, focus)
+		prefix := "  "
+		if m.focusAxis == axisAgentStrip && i == m.agentCursor {
+			prefix = "» " // visible affordance (matches the section highlight)
+		}
+		fmt.Fprintf(&b, "\n%s%s  pid:%d  %s", prefix, r.AgentID, r.PID, focus)
 	}
 	return b.String()
 }
@@ -178,8 +321,20 @@ func (m tuiModel) renderComposite() string {
 	if m.item == nil {
 		return "focused item: (none — workspace has no eligible item)"
 	}
+	// Walk facets here (not via showFull) so the TUI can apply the
+	// per-section cursor highlight + per-toggle expanded override. The
+	// per-section block itself is still rendered through the shared
+	// renderSection helper — zero facet-rendering logic is duplicated
+	// here (the §7 invariant).
 	var buf bytes.Buffer
-	showFull(&buf, m.s, m.cfg, m.item, false) // §7: REUSES the renderer
+	fmt.Fprintf(&buf, "%s — %s\n", m.item.ID, m.item.Title)
+	fmt.Fprintln(&buf, strings.Repeat("─", 60))
+	for i, kind := range facetOrder {
+		fr := facets[kind](m.s, m.cfg, m.item)
+		expanded := m.sectionExpanded(kind)
+		highlighted := m.focusAxis == axisComposite && i == m.sectionCursor
+		renderSection(&buf, kind, fr, expanded, highlighted)
+	}
 	return strings.TrimRight(buf.String(), "\n")
 }
 
@@ -192,11 +347,29 @@ func (m tuiModel) renderPlanning() string {
 
 func (m tuiModel) renderAlerts() string {
 	parts := []string{fmt.Sprintf("%d awaiting approval", m.pending)}
-	hint := ""
+	live := ""
 	if m.refreshCh != nil {
-		hint = "  ·  q to quit · live"
+		live = " · live"
 	}
-	return "alerts: " + strings.Join(parts, "  ·  ") + hint
+	// Hint line: only the keys visible at THIS axis are shown — the §5
+	// discoverability discipline ("no memorized keys"). Rendered on a
+	// second line of the alerts band so the affordance is always
+	// adjacent to the state.
+	return "alerts: " + strings.Join(parts, "  ·  ") + live + "\n" + m.hintLine()
+}
+
+// hintLine lists the keys the operator can press from the current
+// focus axis — that's the entire keyboard model, on screen.
+func (m tuiModel) hintLine() string {
+	switch m.focusAxis {
+	case axisAgentStrip:
+		return "keys: ← → agent  ·  Enter drill  ·  q quit"
+	case axisComposite:
+		return "keys: ↑ ↓ section  ·  Space toggle  ·  Enter full-screen  ·  Esc back  ·  q quit"
+	case axisFullScreen:
+		return "keys: Esc back  ·  q quit"
+	}
+	return ""
 }
 
 // --- entrypoints ---
@@ -228,9 +401,20 @@ func tuiTo(w io.Writer, s *store.Store, cfg *config.Config, opts TuiOpts) int {
 	m := tuiModel{
 		s: s, cfg: cfg, item: it, agents: regs, pending: pending,
 		claimed: buildClaimedIndex(s), width: opts.Width,
+		focusAxis: initialFocusAxis(regs),
 	}
 	fmt.Fprintln(w, m.View())
 	return 0
+}
+
+// initialFocusAxis: agent strip if there are registered agents (the
+// natural entry point for "what is each agent doing"); composite
+// otherwise so the operator can still interact with sections.
+func initialFocusAxis(regs []*agent.Registration) int {
+	if len(regs) == 0 {
+		return axisComposite
+	}
+	return axisAgentStrip
 }
 
 // tuiLive starts the fsnotify watcher and runs the Bubble Tea program.
@@ -263,6 +447,7 @@ func tuiLive(s *store.Store, cfg *config.Config, opts TuiOpts) int {
 	m := tuiModel{
 		s: s, cfg: cfg, item: it, agents: regs, pending: pending,
 		claimed: buildClaimedIndex(s), width: opts.Width, refreshCh: refreshCh,
+		focusAxis: initialFocusAxis(regs),
 	}
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "tui: %v\n", err)

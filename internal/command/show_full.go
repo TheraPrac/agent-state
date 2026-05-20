@@ -47,27 +47,43 @@ func showFull(w io.Writer, s *store.Store, cfg *config.Config, item *model.Item,
 	for _, kind := range facetOrder { // fixed slice ⇒ deterministic order
 		fr := facets[kind](s, cfg, item)
 		expanded := all || expandedByDefault[kind]
-
-		glyph := "▶" // collapsed: the self-documenting header IS the glance
-		if expanded {
-			glyph = "▼"
-		}
-		summary := fr.Summary
-		if summary == "" {
-			summary = "—"
-		}
-		fmt.Fprintf(w, "%s %s  (%s)\n", glyph, kind, summary)
-
-		if !expanded {
-			continue
-		}
-		body := strings.TrimRight(fr.Text, "\n")
-		if body == "" {
-			continue
-		}
-		for _, line := range strings.Split(body, "\n") {
-			fmt.Fprintf(w, "    %s\n", line)
-		}
+		renderSection(w, kind, fr, expanded, false)
 	}
 	return 0
+}
+
+// renderSection writes ONE composite section to w — a self-documenting
+// header line plus (if expanded) the indented body. Extracted from
+// showFull so both the static CLI (`st show --full`) and the
+// interactive TUI's per-section cursor renderer can call it without
+// duplicating the §4/§5 glyph/header/body logic (the §7 maintainability
+// invariant; T-374 added this). `highlighted=true` marks the section
+// under the TUI cursor — static callers pass false.
+func renderSection(w io.Writer, kind string, fr facetResult, expanded, highlighted bool) {
+	glyph := "▶"
+	if expanded {
+		glyph = "▼"
+	}
+	summary := fr.Summary
+	if summary == "" {
+		summary = "—"
+	}
+	header := fmt.Sprintf("%s %s  (%s)", glyph, kind, summary)
+	if highlighted {
+		header = "» " + header // visible affordance (no color/ANSI needed);
+		// the highlighted line shifting left is the standard "→ here"
+		// selection idiom (Charm/gh/k9s); not jitter.
+	}
+	fmt.Fprintln(w, header)
+
+	if !expanded {
+		return
+	}
+	body := strings.TrimRight(fr.Text, "\n")
+	if body == "" {
+		return
+	}
+	for _, line := range strings.Split(body, "\n") {
+		fmt.Fprintf(w, "    %s\n", line)
+	}
 }
