@@ -73,7 +73,11 @@ func TestDecide(t *testing.T) {
 	}
 
 	// Live + wedged → escalate C2.
+	// BeginAttempt is set to model a live worker even though the C2
+	// wedge check fires before the D2 delta is read — consistent with
+	// the other live-worker sub-cases below per T-380.
 	st = &WorkerState{SizeClass: 40 * time.Minute} // wedge = 10m
+	st.BeginAttempt(now, 0, 0)
 	snaps := []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, SampledAt: now},
 		{PIDAlive: true, RowCount: 1, SampledAt: now.Add(12 * time.Minute)},
@@ -87,7 +91,12 @@ func TestDecide(t *testing.T) {
 	// T-365: D2 is now cost-based. The wall-clock SizeClass still drives
 	// the C2 wedge threshold, but D2 reads AICostUSD against CostBaseline.
 	// SpawnedAt is NOT read by cost-based D2 (was used by legacy DetectStuck).
+	// T-380: D2 compares the PER-ATTEMPT delta, so attemptStartCostUSD must
+	// be set explicitly via BeginAttempt — here we record $0 to model a
+	// FIRST-attempt worker with no prior cost (delta == lifetime cost).
+	// TestDecide_D2UsesPerAttemptDelta below covers the prior-cost case.
 	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
+	st.BeginAttempt(now, 0, 0)
 	live := []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
 		{PIDAlive: true, RowCount: 9, AICostUSD: 30.0, SampledAt: now.Add(5 * time.Minute)}, // $30 ≥ 3×$10
@@ -101,6 +110,7 @@ func TestDecide(t *testing.T) {
 	// DetectStuckByCost short-circuits on its baselineUSD<=0 guard and
 	// the test would pass without actually evaluating D2's threshold.
 	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
+	st.BeginAttempt(now, 0, 0) // explicit per-attempt baseline (T-380)
 	d = Decide(st, []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
 		{PIDAlive: true, RowCount: 9, AICostUSD: 5.0, SampledAt: now.Add(2 * time.Minute)}, // $5 < 3×$10 — D2 evaluates & returns false
@@ -113,9 +123,9 @@ func TestDecide(t *testing.T) {
 func TestWorkerStateAttemptLifecycle(t *testing.T) {
 	st := &WorkerState{}
 	t0 := time.Now()
-	st.BeginAttempt(t0, 7)
-	if st.SpawnedAt != t0 || st.attemptStartChangelog != 7 {
-		t.Fatal("BeginAttempt must record spawn time + per-attempt changelog baseline")
+	st.BeginAttempt(t0, 7, 12.5)
+	if st.SpawnedAt != t0 || st.attemptStartChangelog != 7 || st.attemptStartCostUSD != 12.5 {
+		t.Fatal("BeginAttempt must record spawn time + per-attempt changelog AND cost baseline")
 	}
 	st.RecordRespawn("sigA")
 	if st.RespawnCount != 1 || st.LastFailSig != "sigA" {
@@ -125,5 +135,50 @@ func TestWorkerStateAttemptLifecycle(t *testing.T) {
 	if !MadeItemProgress(ProgressSnapshot{ChangelogLen: st.attemptStartChangelog},
 		ProgressSnapshot{ChangelogLen: st.attemptStartChangelog + 1}) {
 		t.Error("changelog past the per-attempt baseline must be progress")
+	}
+}
+
+// T-380: D2 must compare THIS WORKER's spend against the baseline, not
+// the item's lifetime rollup. An item carrying $20 of prior-session
+// spend that grows by only $5 this attempt is NOT stuck — delta is $5,
+// under K2×$10. Same item growing to $60 (delta $40) IS stuck.
+func TestDecide_D2UsesPerAttemptDelta(t *testing.T) {
+	b := &Boundary{RespawnLimit: 3, StuckMultiplier: 3}
+	now := time.Now()
+	mkSt := func(priorCost float64) *WorkerState {
+		st := &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
+		st.BeginAttempt(now, 0, priorCost) // record per-attempt cost baseline
+		return st
+	}
+	// Item already at $20 from prior sessions; this attempt adds only $5.
+	st := mkSt(20.0)
+	d := Decide(st, []ProgressSnapshot{
+		{PIDAlive: true, AICostUSD: 25.0, SampledAt: now.Add(2 * time.Minute)},
+	}, b, false, now.Add(2*time.Minute))
+	if d.Action == ActionEscalate {
+		t.Errorf("delta=$5 < K2×$10=$30 must NOT escalate D2 (item lifetime $25 is irrelevant), got %v %s",
+			d.Action, d.Verdict.Predicate)
+	}
+
+	// Same item; this attempt burned to $60 — delta $40, over the threshold.
+	st = mkSt(20.0)
+	d = Decide(st, []ProgressSnapshot{
+		{PIDAlive: true, AICostUSD: 60.0, SampledAt: now.Add(2 * time.Minute)},
+	}, b, false, now.Add(2*time.Minute))
+	if d.Action != ActionEscalate || d.Verdict.Predicate != PredicateD2 {
+		t.Errorf("delta=$40 ≥ K2×$10=$30 must escalate D2, got %v %s",
+			d.Action, d.Verdict.Predicate)
+	}
+
+	// Defensive: if attemptStartCostUSD somehow exceeds current (substrate
+	// edit, clock skew), delta clamps to 0 — D2 stays silent rather than
+	// firing on a phantom negative.
+	st = mkSt(100.0)
+	d = Decide(st, []ProgressSnapshot{
+		{PIDAlive: true, AICostUSD: 50.0, SampledAt: now.Add(2 * time.Minute)},
+	}, b, false, now.Add(2*time.Minute))
+	if d.Action == ActionEscalate {
+		t.Errorf("negative delta must clamp to 0 (no false D2), got %v %s",
+			d.Action, d.Verdict.Predicate)
 	}
 }

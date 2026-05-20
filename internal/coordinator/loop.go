@@ -112,21 +112,30 @@ func Decide(st *WorkerState, snaps []ProgressSnapshot, b *Boundary, itemComplete
 	if reason, wedged := DetectWedged(snaps, WedgeThreshold(st.SizeClass)); wedged {
 		return SuperviseDecision{Action: ActionEscalate, Verdict: StallVerdict{Predicate: PredicateC2, Reason: reason}}
 	}
-	// T-365: D2 is now cost-based. Reads I-369's rollup from the latest
-	// snapshot. A still-zero AICostUSD (rollup not yet populated)
-	// returns (false, "") — never a false "stuck at $0".
-	if reason, stuck := DetectStuckByCost(last.AICostUSD, st.CostBaseline, b.StuckMultiplier); stuck {
+	// T-365 + T-380: D2 is cost-based AND per-attempt. Compares THIS
+	// WORKER's spend since spawn (delta) against the heuristic baseline.
+	// Item-lifetime rollup is wrong-unit here — see attemptStartCostUSD's
+	// comment on WorkerState. Negative delta (rollup oddity, e.g. a
+	// substrate edit) clamps to 0 so D2 cannot mis-fire on a phantom
+	// negative.
+	delta := last.AICostUSD - st.attemptStartCostUSD
+	if delta < 0 {
+		delta = 0
+	}
+	if reason, stuck := DetectStuckByCost(delta, st.CostBaseline, b.StuckMultiplier); stuck {
 		return SuperviseDecision{Action: ActionEscalate, Verdict: StallVerdict{Predicate: PredicateD2, Reason: reason}}
 	}
 	return SuperviseDecision{Action: ActionContinue}
 }
 
-// BeginAttempt records the per-attempt baseline + spawn time. Called by
+// BeginAttempt records the per-attempt baselines + spawn time. Called by
 // the loop immediately after a (re)spawn so Decide measures progress
-// relative to THIS attempt, not the item's whole history.
-func (st *WorkerState) BeginAttempt(spawnedAt time.Time, changelogLen int) {
+// (T-363: changelog delta) AND cost burn (T-380: cost delta) relative
+// to THIS attempt, not the item's whole history.
+func (st *WorkerState) BeginAttempt(spawnedAt time.Time, changelogLen int, costUSD float64) {
 	st.SpawnedAt = spawnedAt
 	st.attemptStartChangelog = changelogLen
+	st.attemptStartCostUSD = costUSD
 }
 
 // RecordRespawn advances the respawn bookkeeping after the loop has

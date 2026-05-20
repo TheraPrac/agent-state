@@ -132,3 +132,33 @@ func TestCoordinateDryRunNoEligibleItem(t *testing.T) {
 		t.Errorf("must surface WHY nothing ran, got %q", out)
 	}
 }
+
+// TestSpawnDoesNotMutateAICostUSD guards the T-380 degrade-path invariant
+// documented in superviseItem: when freshItem returns nil and we fall back
+// to baseItem, we rely on baseItem.ai_cost_usd == postItem.ai_cost_usd —
+// which only holds because Spawn forks a worker and never invokes a
+// subagent itself. The only writer of ai_cost_usd is session_log.go's
+// SubagentStop handler. If Spawn ever grows a path that calls into the
+// subagent-stop rollup (e.g. record-run-metrics on a synchronous probe),
+// the degrade path would silently revert D2 to item-lifetime semantics —
+// exactly the bug T-380 fixes. This source-scan test fails build the
+// moment that contract is violated.
+func TestSpawnDoesNotMutateAICostUSD(t *testing.T) {
+	src, err := os.ReadFile("spawn.go")
+	if err != nil {
+		t.Fatalf("read spawn.go: %v", err)
+	}
+	body := string(src)
+	for _, forbidden := range []string{
+		`"ai_cost_usd"`,            // direct write to the field
+		"RollupItemID",             // routes a SubagentStop to an item
+		"recordSubagentStopMetric", // hypothetical hook entry point
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("command/spawn.go contains %q — the T-380 degrade-path "+
+				"invariant (baseItem.ai_cost_usd == postItem.ai_cost_usd "+
+				"after Spawn) assumes Spawn does NOT mutate cost. See the "+
+				"comment in superviseItem's postItem-nil branch.", forbidden)
+		}
+	}
+}

@@ -29,11 +29,15 @@ type ProgressSnapshot struct {
 	ChangelogLen int       // # changelog entries for the item (monotonic item progress)
 	Stage        string    // item status / delivery stage
 	SampledAt    time.Time // wall-clock of this sample
-	AICostUSD    float64   // T-365: rolled-up cost (I-369 Option C). 0 ⇒
-	//                       no rollup yet (e.g. before the worker's first
-	//                       SubagentStop fires). The cost-based D2
-	//                       detector treats 0 as "no signal", never as
-	//                       "stuck at 0" — see DetectStuckByCost.
+	AICostUSD    float64   // T-365: rolled-up cost (I-369 Option C). The
+	//                       item's LIFETIME spend; 0 ⇒ no rollup yet (e.g.
+	//                       before the worker's first SubagentStop fires).
+	//                       T-380: D2 does NOT read this field directly —
+	//                       Decide computes a per-attempt DELTA against
+	//                       WorkerState.attemptStartCostUSD and passes
+	//                       that to DetectStuckByCost. The "treat 0 as no
+	//                       signal" guard now lives on the delta, in
+	//                       DetectStuckByCost's deltaUSD <= 0 short-circuit.
 }
 
 // WorkerState is the cross-respawn state the loop carries for ONE item's
@@ -55,6 +59,28 @@ type WorkerState struct {
 	// attempt (a respawn reproducing the same failure must read as "no
 	// progress THIS attempt"). Set via WorkerState.BeginAttempt (loop.go).
 	attemptStartChangelog int
+
+	// attemptStartCostUSD is the item's rolled-up cost at the moment the
+	// CURRENT attempt was spawned (T-380). D2 measures THIS WORKER's
+	// burn — `current - attemptStartCostUSD` — NOT item-lifetime spend,
+	// which would accumulate across many sessions and falsely
+	// silence/trigger D2 depending on the item's history. Sibling of
+	// attemptStartChangelog (T-363's per-attempt progress baseline);
+	// set via BeginAttempt.
+	//
+	// Respawn race (T-380): there is a bounded window between killWorker
+	// SIGTERM and the next iteration's freshItem read where the dying
+	// worker's last in-flight subagent-stop-metrics hook may still flush
+	// and bump ai_cost_usd higher than the value freshItem captured. By
+	// the time Decide reads the next delta, attemptStartCostUSD has
+	// already been re-captured from postItem (BeginAttempt) — so at
+	// worst, the NEXT supervision tick's delta looks $X lower than reality
+	// for one poll (D2 under-fires by $X). The following tick observes
+	// the full burn once the rollup catches up, so the under-fire is
+	// self-correcting within one supervision interval. Cumulative respawn
+	// spend is bounded by respawn_limit via ClassifyRespawn (B1/C2), not
+	// by D2.
+	attemptStartCostUSD float64
 }
 
 // Predicate is a contract-§7 escalation predicate the detectors raise.
@@ -265,41 +291,55 @@ func parseCostUSD(raw any) float64 {
 	return 0
 }
 
-// DetectStuckByCost implements D2 (T-365): an item burning ≥
-// stuck_multiplier × cost-baseline-for-its-size-class. This is the
-// dollar-denominated successor to the wall-clock DetectStuck proxy —
-// consistent with K1 (per_item budget cap is dollars) and matching the
-// §7-D2 predicate text ("consuming ≥ K2 × median for size-class"). The
-// rollup it reads is I-369's Option C: subagent turns accumulate to the
-// parent's `time_tracking.ai_cost_usd`, surfaced into ProgressSnapshot
-// by SampleProgress.
+// DetectStuckByCost implements D2 (T-365 + T-380): a WORKER burning ≥
+// stuck_multiplier × cost-baseline-for-the-item's-size-class IN THIS
+// ATTEMPT. The first argument is the PER-ATTEMPT cost delta (see
+// WorkerState.attemptStartCostUSD), NOT the item's lifetime rollup —
+// caller (Decide) computes `last.AICostUSD - st.attemptStartCostUSD`
+// before invoking. Dollar-denominated, consistent with K1 (per_item
+// budget cap is dollars) and matching the §7-D2 predicate text
+// ("consuming ≥ K2 × median for size-class"). The underlying cost
+// data is I-369's Option C rollup, surfaced into ProgressSnapshot by
+// SampleProgress.
 //
 // Preconditions enforced by the caller (Decide in loop.go), NOT by this
 // function:
 //   - Only fires while PIDAlive==true (Decide's "live worker" branch).
 //     A terminated worker is classified by ClassifyRespawn (B1/C2), not D2.
-//   - Cross-respawn cost accumulation is bounded by respawn_limit via
-//     ClassifyRespawn, NOT by D2. D2 looks only at the current item's
-//     rolled-up spend — a worker that exits and respawns under the limit
-//     resets the live D2 evaluation but the cost stays on the item.
+//   - D2 measures THIS ATTEMPT's burn — the caller passes the per-attempt
+//     delta `last.AICostUSD - st.attemptStartCostUSD`, NOT item lifetime
+//     spend. BeginAttempt resets attemptStartCostUSD on each respawn, so
+//     D2 itself naturally resets across respawns. Cumulative cross-respawn
+//     spend is bounded by respawn_limit via ClassifyRespawn — D2 doesn't
+//     try to backstop unbounded respawn cycles; that's B1/C2's job.
 //
-// currentCostUSD == 0 returns (false, "") — the rollup is not yet
-// populated (e.g. before the worker's first SubagentStop fires), NOT a
-// genuine "stuck at $0" signal. A worker that never spends a cent is
-// either wedged (C2's domain) or making instant progress (no D2 needed).
+// deltaUSD == 0 returns (false, "") — TWO legitimate sources of zero both
+// reduce to "no D2 signal":
+//  1. The rollup is not yet populated (e.g. before the worker's first
+//     SubagentStop fires) — same as pre-T-380.
+//  2. This attempt has not spent anything yet (post-T-380: on a fresh
+//     attempt or respawn, last.AICostUSD == attemptStartCostUSD until
+//     the worker burns its first cent).
+//
+// Neither case is a genuine "stuck at $0" signal. A worker that never
+// spends a cent is either wedged (C2's domain) or making instant
+// progress (no D2 needed).
 //
 // The startup blind window (between spawn and first SubagentStop) is
 // covered by K1's per_item --max-budget-usd hard cap, set by st spawn
 // regardless of D2 state. K1 fires before any runaway exceeds budget.
-func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool) {
-	if currentCostUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
+func DetectStuckByCost(deltaUSD, baselineUSD, mult float64) (string, bool) {
+	if deltaUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
 		return "", false
 	}
 	limit := baselineUSD * mult
-	if currentCostUSD >= limit {
-		return "cost $" + trimFloat(currentCostUSD) + " ≥ stuck_multiplier(" +
+	if deltaUSD >= limit {
+		// T-380: render "attempt cost" not bare "cost" so an operator
+		// reading the changelog doesn't confuse this dollar figure with
+		// the item's lifetime ai_cost_usd field.
+		return "attempt cost $" + trimFloat(deltaUSD) + " ≥ stuck_multiplier(" +
 			trimFloat(mult) + ") × cost-baseline $" + trimFloat(baselineUSD) +
-			" — stuck (contract §7-D2; cost-based, T-365)", true
+			" — stuck (contract §7-D2; per-attempt delta, T-365+T-380)", true
 	}
 	return "", false
 }
@@ -385,7 +425,8 @@ func SizeClassBaseline(item *model.Item) time.Duration {
 // fires comfortably below K1's per_item cap of $40 even at K2=3 (the
 // highest baseline below × 3 = $30, leaving $10 of headroom). Same
 // type+priority shape as SizeClassBaseline; documented as heuristic.
-// Empirical-medians-from-archive replacement is tracked as T-380.
+// Empirical per-session deltas (the right shape — see T-380's archive
+// finding) are tracked as T-383.
 //
 // NOTE: the K1-headroom guarantee holds ONLY when K2 ≤ 3. If the
 // operator raises stuck_multiplier in coordinator.yaml above 3, the

@@ -238,9 +238,24 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 		// (code-review finding 3).
 		postItem := freshItem(cfg, itemID)
 		if postItem == nil {
-			postItem = baseItem // store momentarily unreadable; degrade, don't crash
+			// Store momentarily unreadable. baseItem is the right fallback
+			// for COST: ai_cost_usd is only mutated by subagent-stop-metrics
+			// hooks (I-369/T-330), which fire from a worker's own subagent
+			// calls — and Spawn between baseItem and postItem only forks
+			// the worker, it never invokes a subagent itself. So
+			// baseItem.ai_cost_usd == postItem.ai_cost_usd in normal
+			// operation; the cost reading does NOT regress to wrong-unit
+			// (item-lifetime) semantics on this degrade path. Changelog
+			// length CAN differ (Spawn writes st-start claim rows on
+			// attempt 1), which costs B1 a touch of precision on
+			// progress-detection during a store hiccup — acceptable
+			// degrade, not a cost-semantic regression.
+			postItem = baseItem
 		}
-		st.BeginAttempt(time.Now(), coordinator.SampleProgress(cfg, postItem).ChangelogLen)
+		// T-380: capture post-spawn cost too, so D2 measures THIS WORKER's
+		// burn (delta from this baseline) instead of item-lifetime rollup.
+		postSnap := coordinator.SampleProgress(cfg, postItem)
+		st.BeginAttempt(time.Now(), postSnap.ChangelogLen, postSnap.AICostUSD)
 		fmt.Printf("coordinate: spawned worker on %s (attempt %d, size-class %s, observe: st watch | st transcript %s)\n",
 			itemID, st.RespawnCount+1, st.SizeClass, itemID)
 
@@ -305,6 +320,9 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 				return 0
 
 			case coordinator.ActionRespawn:
+				// killWorker → next-iter freshItem race is bounded; see
+				// WorkerState.attemptStartCostUSD doc in supervise.go for
+				// the D2-correctness argument.
 				killWorker(cfg, itemID)
 				st.RecordRespawn(lastSig)
 				extraCtx = fmt.Sprintf(
