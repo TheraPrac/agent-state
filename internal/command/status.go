@@ -21,21 +21,21 @@ import (
 
 // ANSI color constants
 const (
-	cReset  = "\033[0m"
-	cBold   = "\033[1m"
-	cDim    = "\033[2m"
-	cRed    = "\033[31m"
-	cGreen  = "\033[32m"
-	cYellow = "\033[33m"
+	cReset   = "\033[0m"
+	cBold    = "\033[1m"
+	cDim     = "\033[2m"
+	cRed     = "\033[31m"
+	cGreen   = "\033[32m"
+	cYellow  = "\033[33m"
 	cMagenta = "\033[35m"
-	cCyan   = "\033[36m"
-	cWhite  = "\033[37m"
-	cBlue   = "\033[34m"
-	cBoldW  = "\033[1m\033[37m"
-	cBoldC  = "\033[1m\033[36m"
-	cBoldM  = "\033[1m\033[35m"
-	cBoldB  = "\033[1m\033[34m"
-	cOrange = "\033[38;5;208m"
+	cCyan    = "\033[36m"
+	cWhite   = "\033[37m"
+	cBlue    = "\033[34m"
+	cBoldW   = "\033[1m\033[37m"
+	cBoldC   = "\033[1m\033[36m"
+	cBoldM   = "\033[1m\033[35m"
+	cBoldB   = "\033[1m\033[34m"
+	cOrange  = "\033[38;5;208m"
 )
 
 // StatusOpts holds flags for the status command.
@@ -52,11 +52,11 @@ type StatusOpts struct {
 
 	// Sprints renders the tabular epic→sprint→item progress view (the
 	// surface formerly served by `st run status`). T-325: one entry point.
-	Sprints       bool
-	SprintsID     string // filter to a single epic or sprint slug
-	SprintsAll    bool   // include archived
-	SprintsClosed bool   // only closed/archived
-	SprintsRunning bool  // only sprints with a running pipeline
+	Sprints        bool
+	SprintsID      string // filter to a single epic or sprint slug
+	SprintsAll     bool   // include archived
+	SprintsClosed  bool   // only closed/archived
+	SprintsRunning bool   // only sprints with a running pipeline
 
 	// T-329: query/sort/filter on the unified status surface. All three are
 	// composable; Filters AND together; Sort applies after filters; Since
@@ -74,9 +74,22 @@ type StatusOpts struct {
 	// flips back to the global view — the operator's "show me
 	// everything" knob.
 	AgentAll bool
+
+	// T-377 (I-712): --me activates the per-agent 4-dimension rollup
+	// (DONE / IN-FLIGHT / NEEDS-YOU / PROPOSED-NEXT) instead of the
+	// dashboard. Agent defaults to cfg.Identity().ID; --agent overrides.
+	// Since/JSON reuse the existing T-329 fields above.
+	Me    bool
+	Agent string
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
+	// T-377 (I-712): --me routes to the per-agent rollup before any
+	// dashboard plumbing. It does NOT need refresh / filters / sort /
+	// sprints / agent-scoping — it has its own predicates per section.
+	if opts.Me {
+		return statusMeTo(os.Stdout, s, cfg, opts)
+	}
 	// T-329: validate query flags up front so a typo surfaces immediately
 	// (not after a refresh round-trip + dashboard render).
 	filters, ferr := parseFilterSpecs(opts.Filters)
@@ -552,12 +565,12 @@ func printQueuedTasks(s *store.Store, cfg *config.Config, g *deps.Graph, filterT
 
 	// Group by epic → sprint → tag
 	type group struct {
-		epic    string
-		eTitle  string
-		sprint  string
-		sTitle  string
-		tag     string
-		items   []*model.Item
+		epic   string
+		eTitle string
+		sprint string
+		sTitle string
+		tag    string
+		items  []*model.Item
 	}
 	type gkey struct{ epic, sprint, tag string }
 
@@ -783,9 +796,9 @@ func printActivePipeline(s *store.Store, cfg *config.Config, w io.Writer) {
 
 	now := time.Now()
 	type pipelineRow struct {
-		Item    *model.Item
-		Sess    *session.Session
-		Reason  string // "claimed" or "active"
+		Item   *model.Item
+		Sess   *session.Session
+		Reason string // "claimed" or "active"
 	}
 	var rows []pipelineRow
 	for _, item := range s.All() {

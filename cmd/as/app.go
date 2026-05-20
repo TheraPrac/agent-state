@@ -1274,6 +1274,9 @@ verdict drifts toward what the operator actually accepts.`,
 			// workspace. --all also implies AgentAll so the operator's
 			// "show me everything" knob is consistent.
 			globalView, _ := cmd.Flags().GetBool("global")
+			// T-377 (I-712): per-agent 4-dimension rollup.
+			me, _ := cmd.Flags().GetBool("me")
+			agentOverride, _ := cmd.Flags().GetString("agent")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
@@ -1283,6 +1286,7 @@ verdict drifts toward what the operator actually accepts.`,
 				SprintsRunning: sprintsRunning,
 				Filters:        filters, Sort: sortStr, Since: since, JSON: jsonOut,
 				AgentAll: globalView || all,
+				Me:       me, Agent: agentOverride,
 			})
 		},
 	}
@@ -1305,6 +1309,11 @@ verdict drifts toward what the operator actually accepts.`,
 		"filter spec key:value, repeatable (keys: agent, assigned, status, type, tag, priority, epic, sprint)")
 	statusCmd.Flags().String("sort", "",
 		"sort field[,asc|desc] (fields: cost, time, lines, last_touched, priority, id)")
+	// T-377 (I-712): per-agent 4-dimension rollup.
+	statusCmd.Flags().Bool("me", false,
+		"per-agent rollup: DONE / IN-FLIGHT / NEEDS-YOU / PROPOSED-NEXT (--since window, default 24h)")
+	statusCmd.Flags().String("agent", "",
+		"with --me: override the agent id (default: cfg.Identity().ID)")
 	statusCmd.Flags().String("since", "",
 		"only items touched within this duration (e.g. 7d, 24h, 30m)")
 	statusCmd.Flags().Bool("json", false, "emit JSON instead of human-readable text")
