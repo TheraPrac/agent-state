@@ -19,12 +19,22 @@ import (
 // an un-verifiable acceptance criterion (per plan.ValidateACs).
 //
 // I-589: Strict no longer governs the SBAR substance gate — the SBAR
-// gate is now hard-blocking by default at every approval. The flag is
-// preserved as a no-op alias for SBAR (still fires the I-511 AC
-// verifiability gate) so existing CI invocations passing `--strict`
-// keep working unchanged.
+// gate is now hard-blocking by default at every approval.
+//
+// I-710: Strict no longer governs the AC verifiability gate either —
+// the AC gate fires unconditionally on every approval (analog of the
+// I-589 SBAR flip). The `Strict` field is preserved as a no-op alias
+// so existing CI invocations passing `--strict` keep working
+// unchanged.
+//
+// I-710 also added `Engine`, a pointer to the RunEngine used to spawn
+// a Claude plan-review sub-agent before the validator gates. A nil
+// Engine skips the review entirely (preserves the in-process test
+// surface, matching the I-588 pattern). The CLI binding at
+// `cmd/as/app.go` sets Engine to `&command.DefaultRunEngine()`.
 type PlanApproveOpts struct {
 	Strict bool
+	Engine *RunEngine
 }
 
 // PlanApprove marks an item's plan as approved. Sets PlanApproved=true,
@@ -80,20 +90,37 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 			return 2
 		}
 	}
-	if opts.Strict {
-		findings := loadStrictACFindings(cfg, id)
-		if len(findings) > 0 {
-			fmt.Fprintf(os.Stderr,
-				"%s --strict: %d acceptance criterion/criteria not obviously verifiable; refusing approval:\n",
-				id, len(findings))
-			for _, f := range findings {
-				fmt.Fprintf(os.Stderr, "  %s\n", f.String())
-			}
-			fmt.Fprintf(os.Stderr,
-				"Edit .plans/%s.md to make each AC testable (cmd: prefix, named test, or measurable threshold), then re-run `st plan approve --strict %s`.\n",
-				id, id)
-			return 2
+
+	// I-710: plan-review sub-agent runs BEFORE the AC validator gates.
+	// Engine-nil path (in-process tests) skips the review entirely.
+	// Review failure (Reject / Feedback / claude error) = approval
+	// refused (fail closed) — the gate is load-bearing for the
+	// plan-before-code hook.
+	if opts.Engine != nil {
+		if code := runPlanReview(s, cfg, id, item, *opts.Engine); code != 0 {
+			return code
 		}
+		// Reload item in case the sub-agent's auto-fix mutated fields.
+		if refreshed, ok := s.Get(id); ok {
+			item = refreshed
+		}
+	}
+
+	// I-710: AC verifiability gate fires unconditionally (lifted out
+	// of the `if opts.Strict` branch — analog of the I-589 SBAR flip).
+	// `--strict` is preserved as a no-op alias for backward
+	// compatibility with existing CI invocations.
+	if findings := loadStrictACFindings(cfg, id); len(findings) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"%s: %d acceptance criterion/criteria not obviously verifiable; refusing approval:\n",
+			id, len(findings))
+		for _, f := range findings {
+			fmt.Fprintf(os.Stderr, "  %s\n", f.String())
+		}
+		fmt.Fprintf(os.Stderr,
+			"Edit .plans/%s.md to make each AC testable (cmd: prefix, named test, or measurable threshold), then re-run `st plan approve %s`.\n",
+			id, id)
+		return 2
 	}
 
 	approver := cfg.AgentID()
@@ -255,6 +282,18 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 			}
 			return 1
 		}
+	}
+	// I-710: re-validate plan-sidecar ACs at the hook surface so a
+	// post-approval edit that knocks an AC back to un-verifiable
+	// closes the plan-before-code gate without requiring an explicit
+	// `st plan reset`. Same posture as the I-589 SBAR re-check above.
+	if findings := loadStrictACFindings(cfg, id); len(findings) > 0 {
+		fmt.Printf("approved but %d acceptance criterion/criteria are no longer verifiable — fix .plans/%s.md or run `st plan reset %s`\n",
+			len(findings), id, id)
+		for _, f := range findings {
+			fmt.Fprintf(os.Stderr, "  %s\n", f.String())
+		}
+		return 1
 	}
 	fmt.Printf("approved by %s at %s\n", fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
 	return 0

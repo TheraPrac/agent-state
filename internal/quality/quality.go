@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
 )
 
 // Severity classifies a Violation. errors block the gate they are
@@ -121,4 +122,73 @@ func HasError(vs []Violation) bool {
 		}
 	}
 	return false
+}
+
+// scaffoldApproach values that should NOT pass as a real plan
+// approach. Match is whole-string case-insensitive after TrimSpace.
+var scaffoldApproach = map[string]bool{
+	"todo":  true,
+	"tbd":   true,
+	"n/a":   true,
+	"none":  true,
+	"":      true,
+}
+
+// ValidatePlan reports Violations against the substance of a plan
+// sidecar. Rules:
+//   - empty or scaffold Approach (TODO/TBD/N/A/None or empty) → error
+//   - empty ScopeRepos → error
+//   - any plan.ValidateACs finding → error (one per finding)
+//
+// I-710 — the analog of ValidateSBAR for plan sidecars. Reuses
+// plan.ValidateACs (I-511) as the single source of truth for AC
+// verifiability rules; this function bundles AC findings into the
+// Violation shape so quality consumers (PlanApprove, PlanCheck) get
+// one uniform surface.
+func ValidatePlan(p *plan.Plan) []Violation {
+	var out []Violation
+	if p == nil {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan",
+			Message:  "plan sidecar missing — write .plans/<id>.md before approving",
+		})
+		return out
+	}
+	approach := strings.TrimSpace(p.Approach)
+	if scaffoldApproach[strings.ToLower(approach)] {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan.approach",
+			Message:  "approach is empty or scaffold (TODO/TBD/N/A/None) — describe the technical approach in one or two paragraphs",
+		})
+	}
+	if len(p.ScopeRepos) == 0 {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan.scope_repos",
+			Message:  "scope_repos is empty — list every repo this plan touches (as, theraprac-api, theraprac-web, theraprac-infra) in the frontmatter or `## Scope` section",
+		})
+	}
+	out = append(out, ValidateACList(p.ACs)...)
+	return out
+}
+
+// ValidateACList wraps plan.ValidateACs (I-511) and returns its
+// findings in the Violation shape used elsewhere in this package.
+// Centralizes the public Violation surface so callers outside the
+// plan package (notably command.Update for I-713) can validate AC
+// lists without importing the plan package directly.
+//
+// I-710.
+func ValidateACList(acs []string) []Violation {
+	var out []Violation
+	for _, f := range plan.ValidateACs(acs) {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    fmt.Sprintf("acceptance_criteria[%d]", f.Index),
+			Message:  f.Reason + ": " + fmt.Sprintf("%q", f.AC),
+		})
+	}
+	return out
 }
