@@ -51,7 +51,7 @@ func File(path string) (*model.Item, error) {
 		inFence        bool   // inside a markdown ``` fenced code block
 		nestKey        string // current nested parent key (e.g., "work_tracking")
 		currentList    []string
-		inListOfMaps   bool        // true when parsing list of objects (testing_evidence.runs)
+		inListOfMaps   bool // true when parsing list of objects (testing_evidence.runs)
 		listOfMaps     []map[string]string
 		currentMapItem map[string]string
 	)
@@ -445,6 +445,8 @@ func storeScalar(item *model.Item, key, val string) {
 		item.Epic = val
 	case "sprint":
 		item.Sprint = val
+	case "arc":
+		item.Arc = val
 	case "claimed_by":
 		item.ClaimedBy = val
 	case "claimed_at":

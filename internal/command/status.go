@@ -81,6 +81,10 @@ type StatusOpts struct {
 	// Since/JSON reuse the existing T-329 fields above.
 	Me    bool
 	Agent string
+
+	// T-378 (I-712): --arc <name> filters every --me section to items
+	// whose Arc field equals <name>. Empty ⇒ no filter (everything).
+	Arc string
 }
 
 func Status(s *store.Store, cfg *config.Config, id string, opts StatusOpts) int {
