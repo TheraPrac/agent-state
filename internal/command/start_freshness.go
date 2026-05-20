@@ -3,11 +3,45 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/freshness"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// defaultRepoRoot resolves a scope-repo name to its conventional
+// on-disk location: a sibling of the workspace clone. The standard
+// agent-workspace layout puts each repo at
+// `<agent-root>/<repo-name>`, and the workspace itself lives at
+// `<agent-root>/theraprac-workspace`. So
+// `filepath.Dir(cfg.Root())/<name>` is the canonical resolution.
+//
+// Returns ("", false) when the candidate path does not exist on
+// disk so the heuristic's fail-open branch fires (don't falsely
+// flag a file missing when the repo itself isn't present in this
+// layout, e.g. an agent that doesn't check out every sibling).
+//
+// I-719.
+func defaultRepoRoot(cfg *config.Config) func(name string) (string, bool) {
+	return func(name string) (string, bool) {
+		if cfg == nil {
+			return "", false
+		}
+		// theraprac-workspace resolves to the workspace itself,
+		// preserving today's workspace-relative behavior for any
+		// docs/* or .plans/* path that happened to be written
+		// with the workspace prefix.
+		if name == "theraprac-workspace" {
+			return cfg.Root(), true
+		}
+		candidate := filepath.Join(filepath.Dir(cfg.Root()), name)
+		if _, err := os.Stat(candidate); err != nil {
+			return "", false
+		}
+		return candidate, true
+	}
+}
 
 // runFreshnessGate is the command-side bridge between Start and the
 // freshness package. Returns:
@@ -24,7 +58,9 @@ import (
 // I-711 — the public entry point is freshness.Check; this helper
 // glues that into command.StartOpts (specifically --ack-drift).
 func runFreshnessGate(cfg *config.Config, s *store.Store, id string, opts StartOpts) int {
-	result, err := freshness.Check(cfg, s, id, freshness.CheckOpts{})
+	result, err := freshness.Check(cfg, s, id, freshness.CheckOpts{
+		RepoRoot: defaultRepoRoot(cfg),
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: freshness gate errored on %s (%v) — proceeding without re-validation\n", id, err)
 		return 0

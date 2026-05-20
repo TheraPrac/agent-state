@@ -44,17 +44,64 @@ func extractReferencedPaths(planBody string) []string {
 	return out
 }
 
-// checkFileExistence verifies every referenced path exists under
-// workspaceRoot. Returns Stale-category findings for missing paths.
+// checkFileExistence verifies every referenced path exists.
+// Returns Stale-category findings for missing paths.
+//
+// Resolution rules (in priority order, I-719):
+//
+//  1. Absolute path → stat as-is.
+//  2. Relative path with a known repo prefix (theraprac-api,
+//     theraprac-web, theraprac-infra, theraprac-workspace, as) →
+//     strip the prefix and look up the repo root via the closure:
+//     - Closure returns root → stat at <root>/<rel-path>.
+//     - Closure returns false → SKIP the path (no finding). Fail
+//       open: we cannot verify, so we must not falsely promote to
+//       Stale. Mirrors the same fail-open posture checkGitChurn
+//       uses for missing scope repos.
+//  3. Relative path without a recognized prefix → stat under
+//     workspaceRoot (today's pre-I-719 behavior, preserves
+//     back-compat for plans that reference workspace-relative
+//     paths like docs/*.md or .plans/*.md).
+//
 // Statter is injectable for tests; the production caller passes
-// os.Stat (or its closure form).
-func checkFileExistence(planBody, workspaceRoot string, statter func(string) error) []Finding {
+// os.Stat (or its closure form). repoRoot is the same closure
+// type checkGitChurn uses.
+func checkFileExistence(planBody, workspaceRoot string, repoRoot func(name string) (string, bool), statter func(string) error) []Finding {
 	var findings []Finding
 	for _, p := range extractReferencedPaths(planBody) {
-		abs := p
-		if !filepath.IsAbs(p) {
-			abs = filepath.Join(workspaceRoot, p)
+		// Absolute path: stat as-is.
+		if filepath.IsAbs(p) {
+			if err := statter(p); err != nil {
+				findings = append(findings, Finding{
+					Category: CategoryFileMissing,
+					Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", p, p),
+				})
+			}
+			continue
 		}
+
+		// Known-repo-prefix path: route via repoRoot closure.
+		if repo := matchedRepoPrefix(p); repo != "" {
+			root, ok := repoRoot(repo)
+			if !ok {
+				// Repo not present in this layout. Fail open:
+				// we have no way to verify the file, so don't
+				// falsely flag it missing.
+				continue
+			}
+			rel := strings.TrimPrefix(p, repo+"/")
+			abs := filepath.Join(root, rel)
+			if err := statter(abs); err != nil {
+				findings = append(findings, Finding{
+					Category: CategoryFileMissing,
+					Message:  fmt.Sprintf("plan references %q but the file no longer exists at %s", p, abs),
+				})
+			}
+			continue
+		}
+
+		// Unrecognized prefix: workspace-relative (today's behavior).
+		abs := filepath.Join(workspaceRoot, p)
 		if err := statter(abs); err != nil {
 			findings = append(findings, Finding{
 				Category: CategoryFileMissing,
@@ -63,6 +110,18 @@ func checkFileExistence(planBody, workspaceRoot string, statter func(string) err
 		}
 	}
 	return findings
+}
+
+// matchedRepoPrefix returns the repo name (without trailing slash)
+// when p begins with a known-repo prefix; otherwise "". Used by
+// checkFileExistence to route stat lookups through repoRoot.
+func matchedRepoPrefix(p string) string {
+	for _, pfx := range knownRepoPrefixes {
+		if strings.HasPrefix(p, pfx) {
+			return strings.TrimSuffix(pfx, "/")
+		}
+	}
+	return ""
 }
 
 // checkAge translates the plan_approved_at timestamp against the

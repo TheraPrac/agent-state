@@ -40,7 +40,7 @@ func TestCheckFileExistence_FlagsMissing(t *testing.T) {
 		}
 		return nil
 	}
-	findings := checkFileExistence(body, "/wsroot", statter)
+	findings := checkFileExistence(body, "/wsroot", func(string) (string, bool) { return "", false }, statter)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding; got %d (%v)", len(findings), findings)
 	}
@@ -52,8 +52,97 @@ func TestCheckFileExistence_FlagsMissing(t *testing.T) {
 func TestCheckFileExistence_NoFindingsWhenAllExist(t *testing.T) {
 	body := "see internal/foo/bar.go"
 	statter := func(string) error { return nil }
-	if got := checkFileExistence(body, "/wsroot", statter); len(got) != 0 {
+	if got := checkFileExistence(body, "/wsroot", func(string) (string, bool) { return "", false }, statter); len(got) != 0 {
 		t.Errorf("expected no findings; got %v", got)
+	}
+}
+
+// TestCheckFileExistence_RoutesScopedPathToRepoRoot — I-719: when a
+// path begins with a known repo prefix (e.g. "as/..."), the stat
+// must happen inside the repo root, not under workspaceRoot.
+func TestCheckFileExistence_RoutesScopedPathToRepoRoot(t *testing.T) {
+	body := "see as/internal/foo.go"
+	var statted string
+	statter := func(path string) error {
+		statted = path
+		return nil // file exists
+	}
+	repoRoot := func(name string) (string, bool) {
+		if name == "as" {
+			return "/agent-root/as", true
+		}
+		return "", false
+	}
+	if got := checkFileExistence(body, "/wsroot", repoRoot, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	want := "/agent-root/as/internal/foo.go"
+	if statted != want {
+		t.Errorf("statter called with %q; want %q (routed via repoRoot, not workspace)", statted, want)
+	}
+}
+
+// TestCheckFileExistence_FallsBackToWorkspaceForUnknownPrefix —
+// paths without a recognized repo prefix continue to resolve under
+// workspaceRoot, preserving today's behavior for workspace-relative
+// references (e.g. docs/*.md, .plans/*.md).
+func TestCheckFileExistence_FallsBackToWorkspaceForUnknownPrefix(t *testing.T) {
+	body := "see docs/runbook.md"
+	var statted string
+	statter := func(path string) error {
+		statted = path
+		return nil
+	}
+	repoRoot := func(string) (string, bool) { return "", false }
+	if got := checkFileExistence(body, "/wsroot", repoRoot, statter); len(got) != 0 {
+		t.Errorf("expected no findings; got %v", got)
+	}
+	want := "/wsroot/docs/runbook.md"
+	if statted != want {
+		t.Errorf("statter called with %q; want %q (workspace-rooted fallback)", statted, want)
+	}
+}
+
+// TestCheckFileExistence_StillFlagsMissingScopedFile — when the
+// scope repo exists but the referenced file inside it does not,
+// the gate must still emit a file-missing finding.
+func TestCheckFileExistence_StillFlagsMissingScopedFile(t *testing.T) {
+	body := "see as/internal/missing.go"
+	statter := func(string) error { return errors.New("not exist") }
+	repoRoot := func(name string) (string, bool) {
+		if name == "as" {
+			return "/agent-root/as", true
+		}
+		return "", false
+	}
+	findings := checkFileExistence(body, "/wsroot", repoRoot, statter)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding; got %d (%v)", len(findings), findings)
+	}
+	if findings[0].Category != CategoryFileMissing {
+		t.Errorf("expected CategoryFileMissing; got %s", findings[0].Category)
+	}
+}
+
+// TestCheckFileExistence_SkipsScopedPathWhenRepoRootUnknown — when
+// the closure returns (false) for a known prefix, the path is
+// SKIPPED entirely (fail-open). This prevents false STALE
+// verdicts for items whose layout doesn't include every sibling
+// repo (e.g., agent running with a stripped-down checkout).
+func TestCheckFileExistence_SkipsScopedPathWhenRepoRootUnknown(t *testing.T) {
+	body := "see theraprac-api/internal/foo.go"
+	statted := false
+	statter := func(string) error {
+		statted = true
+		return errors.New("not exist")
+	}
+	repoRoot := func(string) (string, bool) { return "", false }
+	findings := checkFileExistence(body, "/wsroot", repoRoot, statter)
+	if len(findings) != 0 {
+		t.Errorf("expected fail-open (no findings) when repo absent; got %v", findings)
+	}
+	if statted {
+		t.Errorf("statter should NOT have been called when repo is unknown")
 	}
 }
 
