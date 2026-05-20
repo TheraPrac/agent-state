@@ -111,9 +111,9 @@ const (
 )
 
 // Update writes a field on an item. The value is sourced according to
-// mode: UpdateModeValue uses `value` directly, UpdateModeStdin reads
-// from stdin, UpdateModeEditor launches $EDITOR seeded with the current
-// value (and falls back to a stdin prompt if no editor is configured).
+// mode: UpdateModeValue uses `value` directly; UpdateModeStdin reads
+// from stdin. The CLI binding refuses with "no value supplied — pass
+// positional value or --stdin" when neither is provided.
 //
 // Long-form fields (description, summary, context, notes) round-trip as
 // YAML block scalars so multi-line content replaces cleanly. List fields
@@ -209,8 +209,7 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 		}
 	}
 
-	// I-670: `sbar` is a 4-section composite, not a scalar. The editor
-	// path is handled above (updateSBARViaEditor). The stdin and
+	// I-670: `sbar` is a 4-section composite, not a scalar. Stdin and
 	// positional-value paths previously fell through to the default
 	// SetField branch below, which writes the whole input as a `sbar: |-`
 	// block scalar — silently flattening the mapping to a string and
@@ -589,10 +588,9 @@ func parseSBARBuffer(buf string) (model.SBAR, []string) {
 
 // commitSBAR writes a fully-parsed 4-section SBAR over the item's `sbar`
 // block via the heal-capable SetSBARBlock, appends the changelog entry,
-// and syncs. Shared by the editor path (updateSBARViaEditor) and the
-// stdin / positional-value path added in I-670 so all three resolve to
-// identical write semantics. `item` is the pre-Mutate snapshot used only
-// to render the old value for the changelog.
+// and syncs. Used by the stdin / positional-value path added in I-670
+// (the only remaining write path post-T-382). `item` is the pre-Mutate
+// snapshot used only to render the old value for the changelog.
 func commitSBAR(s *store.Store, cfg *config.Config, id string, item *model.Item, newSBAR model.SBAR) int {
 	oldRendered := sbarSeedBuffer(item.SBAR)
 	// I-670 (review fix): preserve the I-493 invariant that an
