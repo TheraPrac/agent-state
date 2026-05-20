@@ -1,6 +1,8 @@
 package command
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -63,6 +65,12 @@ func TestShowFull_Deterministic(t *testing.T) {
 
 func TestShowFull_SelfDocumentingHeaders(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	// I-716: setupTestEnv seeds a passable sidecar; this test
+	// exercises the empty-plan/empty-AC self-documenting headers,
+	// so remove the fixture sidecar first.
+	if err := os.Remove(filepath.Join(cfg.PlansDir(), "T-001.md")); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("removing fixture sidecar: %v", err)
+	}
 	out := captureStdout(t, func() {
 		Show(s, cfg, "T-001", ShowOpts{Full: true})
 	})

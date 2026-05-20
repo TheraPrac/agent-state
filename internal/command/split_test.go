@@ -1,6 +1,8 @@
 package command
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -193,6 +195,12 @@ func TestSplit(t *testing.T) {
 
 	t.Run("refuses_missing_plan_sidecar", func(t *testing.T) {
 		s, cfg := setupTestEnv(t)
+		// I-716: setupTestEnv seeds a passable sidecar; this
+		// subtest explicitly exercises the missing-sidecar path,
+		// so remove the fixture sidecar first.
+		if err := os.Remove(filepath.Join(cfg.PlansDir(), "T-001.md")); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("removing fixture sidecar: %v", err)
+		}
 		_, _, err := Split(s, cfg, "T-001")
 		if err == nil || !strings.Contains(err.Error(), "no plan sidecar") {
 			t.Errorf("expected refusal when plan is missing; got err=%v", err)
