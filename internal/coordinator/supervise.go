@@ -304,25 +304,10 @@ func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool)
 	return "", false
 }
 
-// DetectStuck is the LEGACY wall-clock D2 proxy from T-363. Superseded
-// by DetectStuckByCost (T-365) for the primary D2 check. Kept only for
-// callers on substrates that pre-date I-369 (none in the live
-// workspace at T-365 close). Removal scheduled: see T-381.
-//
-// Returns (reason, true) when elapsed ≥ mult × baseline.
-func DetectStuck(spawnedAt, now time.Time, baseline time.Duration, mult float64) (string, bool) {
-	if baseline <= 0 || mult <= 0 || spawnedAt.IsZero() {
-		return "", false
-	}
-	limit := time.Duration(float64(baseline) * mult)
-	elapsed := now.Sub(spawnedAt)
-	if elapsed >= limit {
-		return "elapsed " + elapsed.Round(time.Second).String() + " ≥ stuck_multiplier(" +
-			trimFloat(mult) + ") × size-class baseline " + baseline.String() +
-			" — stuck (contract §7-D2; wall-clock proxy, cost-based D2 is T-365)", true
-	}
-	return "", false
-}
+// (T-381: wall-clock DetectStuck deleted — superseded by
+// DetectStuckByCost in T-365; production migration met; no remaining
+// callers. See git history pre-T-381 if the wall-clock proxy is ever
+// needed back, e.g. for substrates pre-dating I-369.)
 
 // ClassifyRespawn is the B1/C2 decision made when a worker has TERMINATED
 // (PID gone) without completing the item. It decides — purely — whether

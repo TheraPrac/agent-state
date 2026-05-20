@@ -75,24 +75,8 @@ func TestDetectWedged(t *testing.T) {
 	}
 }
 
-func TestDetectStuck(t *testing.T) {
-	spawn := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-	base := 30 * time.Minute
-	if _, s := DetectStuck(spawn, spawn.Add(95*time.Minute), base, 3); !s {
-		t.Error("95m ≥ 3×30m must be stuck")
-	}
-	if _, s := DetectStuck(spawn, spawn.Add(60*time.Minute), base, 3); s {
-		t.Error("60m < 3×30m must not be stuck")
-	}
-	if _, s := DetectStuck(time.Time{}, spawn, base, 3); s {
-		t.Error("zero spawn time must not be stuck (no basis)")
-	}
-	if _, s := DetectStuck(spawn, spawn.Add(time.Hour), 0, 3); s {
-		t.Error("zero baseline must not be stuck")
-	}
-}
-
-// T-365 — cost-based D2 detector (the successor to DetectStuck above).
+// T-365 — cost-based D2 detector. (T-381 removed TestDetectStuck and
+// the wall-clock function alongside it; see git history if needed.)
 func TestDetectStuckByCost(t *testing.T) {
 	if reason, s := DetectStuckByCost(30.0, 10.0, 3.0); !s {
 		t.Errorf("$30 ≥ 3×$10 must be stuck, got (%q, %v)", reason, s)
