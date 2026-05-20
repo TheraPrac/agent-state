@@ -267,8 +267,11 @@ func TestEditFromStdinEmpty(t *testing.T) {
 func TestEditListFieldPreservesIndentation(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
 
-	// First, set some initial ACs via stdin
-	input1 := "- description: \"first check\"\n  command: \"echo test1\"\n- description: \"second check\"\n  command: \"echo test2\"\n"
+	// First, set some initial ACs via stdin. I-713 enforces AC
+	// verifiability at this write surface, so fixtures use `cmd:`
+	// prefixes (the replace-vs-append test is about list-block
+	// rewriting, not AC content shape).
+	input1 := "- cmd: echo test1\n- cmd: echo test2\n"
 	oldStdin := os.Stdin
 	r, w, _ := os.Pipe()
 	os.Stdin = r
@@ -282,7 +285,7 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	}
 
 	// Now replace with different content via stdin — this should REPLACE, not append
-	input2 := "- description: \"replaced check\"\n  command: \"echo replaced\"\n"
+	input2 := "- cmd: echo replaced\n"
 	r2, w2, _ := os.Pipe()
 	os.Stdin = r2
 	w2.WriteString(input2)
@@ -297,10 +300,12 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	// Re-read item and verify: should have only the replacement, not both
 	item, _ := s.Get("T-001")
 	raw := item.Doc.String()
-	// Count occurrences of "description:" in the acceptance_criteria block
-	descCount := strings.Count(raw, "description:")
-	if descCount != 1 {
-		t.Errorf("expected 1 description in ACs after replacement, got %d.\nRaw doc:\n%s", descCount, raw)
+	// Count occurrences of "echo " in the acceptance_criteria block.
+	// Pre-I-713: the test counted "description:" (the old YAML mapping
+	// shape). Post-I-713 the canonical shape is `- cmd: ...` lines.
+	echoCount := strings.Count(raw, "echo ")
+	if echoCount != 1 {
+		t.Errorf("expected 1 echo command in ACs after replacement, got %d.\nRaw doc:\n%s", echoCount, raw)
 	}
 	// Verify the old content is gone
 	if strings.Contains(raw, "first check") {

@@ -11,9 +11,36 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
+
+// splitACInput parses an acceptance_criteria stdin/value payload into
+// the candidate AC list. Accepts either bare lines or `- ` YAML
+// list-prefixed lines, drops blanks, and strips the leading `- `
+// (and any surrounding whitespace) so quality.ValidateACList sees
+// the AC payload, not the YAML formatting. I-713.
+func splitACInput(value string) []string {
+	var out []string
+	for _, raw := range strings.Split(value, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// Strip a leading list-item bullet so the validator sees
+		// the AC content directly.
+		if strings.HasPrefix(line, "- ") {
+			line = strings.TrimSpace(line[2:])
+		}
+		// Some callers paste lines with a stray "-" alone — treat as blank.
+		if line == "" || line == "-" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
 
 // listFields are the TOP-LEVEL fields stored as YAML lists. A value for
 // one of these is written as list items via ReplaceList, never a scalar —
@@ -241,6 +268,37 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 				"   followed by an indented body).\n",
 			id, field, id)
 		return 2
+	}
+
+	// I-713: item-level acceptance_criteria writes must carry the
+	// same verifiability bar as plan-sidecar writes (I-511/I-710).
+	// Pre-validate the incoming list via quality.ValidateACList
+	// before the mutate so vague ACs ("the feature works"), non-cmd
+	// raw shapes ("make e2e"), and absolute paths ("cmd: /abs/...")
+	// are refused at the write surface. No --strict opt-in, no
+	// --allow-weak-ac escape hatch — mirrors the I-589 SBAR posture
+	// for `st plan approve`. Empty input is also refused: an empty
+	// AC list is a meaningful state but requires an explicit
+	// affirmative path (filed as a follow-up if needed).
+	if field == "acceptance_criteria" {
+		acs := splitACInput(value)
+		if len(acs) == 0 {
+			fmt.Fprintf(os.Stderr,
+				"update %s acceptance_criteria: refusing empty input — pipe a populated list (`- cmd: ...` lines), one AC per line.\n",
+				id)
+			return 2
+		}
+		if vios := quality.ValidateACList(acs); quality.HasError(vios) {
+			fmt.Fprintf(os.Stderr,
+				"update %s acceptance_criteria: %d AC(s) not verifiable; refusing write:\n",
+				id, len(vios))
+			for _, v := range vios {
+				fmt.Fprintf(os.Stderr, "  %s\n", v)
+			}
+			fmt.Fprintf(os.Stderr,
+				"Each AC must start with `cmd:` (e.g., `cmd: go test ./...`), name a test (e.g., `TestFoo passes`), or include a measurable threshold (e.g., `< 50ms`, `returns 200`).\n")
+			return 2
+		}
 	}
 
 	var oldValue string
