@@ -97,16 +97,18 @@ func Coordinate(s *store.Store, cfg *config.Config, opts CoordinateOpts) int {
 				b.RespawnLimit, b.PerItemUSD, b.PerObjectiveUSD, b.StuckMultiplier, b.ParallelismCap, b.DedupeWindowMin)
 			fmt.Printf("picked:      %s — %s\n", item.ID, item.Title)
 			fmt.Printf("why:         %s\n", why)
-			fmt.Printf("size-class:  %s (D2 baseline; stuck at ≥ %g×)\n",
-				coordinator.SizeClassBaseline(item), b.StuckMultiplier)
+			fmt.Printf("size-class:  %s wall-clock · $%g cost (D2 cost-based; stuck at ≥ %g×)\n",
+				coordinator.SizeClassBaseline(item),
+				coordinator.SizeClassCostBaseline(item), b.StuckMultiplier)
 			fmt.Println("next:        st spawn " + item.ID + spawnBudgetSuffix(opts.BudgetOverride))
 			return 0
 		}
 
 		fmt.Printf("coordinate: dispatch rationale — %s\n", why)
 		st := &coordinator.WorkerState{
-			Item:      item.ID,
-			SizeClass: coordinator.SizeClassBaseline(item),
+			Item:         item.ID,
+			SizeClass:    coordinator.SizeClassBaseline(item),     // kept for C2 wedge threshold
+			CostBaseline: coordinator.SizeClassCostBaseline(item), // T-365: cost-based D2
 		}
 		rc := superviseItem(s, cfg, b, dd, ex, st, item.ID, opts, base, idleCap)
 		if rc != 0 {

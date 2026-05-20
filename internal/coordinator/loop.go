@@ -112,7 +112,10 @@ func Decide(st *WorkerState, snaps []ProgressSnapshot, b *Boundary, itemComplete
 	if reason, wedged := DetectWedged(snaps, WedgeThreshold(st.SizeClass)); wedged {
 		return SuperviseDecision{Action: ActionEscalate, Verdict: StallVerdict{Predicate: PredicateC2, Reason: reason}}
 	}
-	if reason, stuck := DetectStuck(st.SpawnedAt, now, st.SizeClass, b.StuckMultiplier); stuck {
+	// T-365: D2 is now cost-based. Reads I-369's rollup from the latest
+	// snapshot. A still-zero AICostUSD (rollup not yet populated)
+	// returns (false, "") — never a false "stuck at $0".
+	if reason, stuck := DetectStuckByCost(last.AICostUSD, st.CostBaseline, b.StuckMultiplier); stuck {
 		return SuperviseDecision{Action: ActionEscalate, Verdict: StallVerdict{Predicate: PredicateD2, Reason: reason}}
 	}
 	return SuperviseDecision{Action: ActionContinue}
