@@ -1,6 +1,8 @@
 package command
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -25,15 +27,23 @@ func stdinForACTest(t *testing.T, value string, fn func()) {
 
 // suppressStderr swallows stderr for fn. The AC validator emits
 // detailed findings to stderr that the tests don't need to inspect.
+// Drains the pipe in a goroutine so a > 64KB-buffer write inside fn
+// can't deadlock (same class as PR #140 F1). Restores os.Stderr via
+// t.Cleanup so a panic mid-fn can't poison the test binary.
 func suppressStderr(t *testing.T, fn func()) {
 	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 	origStderr := os.Stderr
-	r, w, _ := os.Pipe()
 	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, r); close(done) }()
 	defer func() {
 		w.Close()
-		os.Stderr = origStderr
-		_, _ = r.Read(make([]byte, 4096))
+		<-done
 	}()
 	fn()
 }
@@ -106,10 +116,49 @@ func TestUpdateACPassesOnNamedTestReference(t *testing.T) {
 	}
 }
 
-// TestUpdateACBlocksAllThreeModes — same vague AC fed through all
-// three UpdateMode paths must produce the same exit-2 result. The
-// I-713 contract: validation is mode-agnostic.
-func TestUpdateACBlocksAllThreeModes(t *testing.T) {
+// TestUpdateACSingleLineStripsLeadingBullet — review F4: when a
+// caller passes a positional single-line value with a `- ` prefix,
+// the bullet must be stripped BEFORE the mutate so the stored AC
+// matches what the validator approved. Without this strip, the
+// single-line list-write path would persist `- cmd: go test ./...`
+// as the AC content (wrapping the bullet in a second list item).
+// Assertion is on the raw YAML doc so the test catches a doubled
+// `- "- cmd:"` line directly (item.AcceptanceCriteria is parsed
+// lazily and may not refresh post-write in-process).
+func TestUpdateACSingleLineStripsLeadingBullet(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	suppressStderr(t, func() {
+		if code := Update(s, cfg, "T-001", "acceptance_criteria", "- cmd: go test ./...", UpdateModeValue); code != 0 {
+			t.Fatalf("expected exit 0 on valid AC with leading bullet; got %d", code)
+		}
+	})
+	item, _ := s.Get("T-001")
+	raw := item.Doc.String()
+	// listItemRaw quotes the value because it contains `:`. The
+	// content under the bullet should be `"cmd: go test ./..."`
+	// (the stripped form), not `"- cmd: go test ./..."` (which
+	// would mean the bullet was kept as part of the AC content).
+	if !strings.Contains(raw, `- "cmd: go test ./..."`) {
+		t.Errorf("expected raw doc to contain `- \"cmd: go test ./...\"`; got:\n%s", raw)
+	}
+	// The bug we're guarding: a doubled bullet that wraps the
+	// original `- cmd:` as a quoted scalar inside another list item.
+	if strings.Contains(raw, `- "- cmd:`) {
+		t.Errorf("stored AC has doubled `- \"- cmd:\"` prefix (single-line strip didn't fire):\n%s", raw)
+	}
+}
+
+// TestUpdateACBlocksValueAndStdinModes — same vague AC fed through
+// the two non-editor modes must produce the same exit-2 result.
+// UpdateModeEditor's empty-output refusal is covered separately by
+// TestUpdateACEditorEmptyOutputRefused; running editor mode against
+// a real $EDITOR script for the vague-AC case requires test-infra
+// (cp-based stub editor) that the existing SBAR editor tests do
+// not currently exercise either. The I-713 contract — validation
+// is mode-agnostic — is structurally true because the AC gate runs
+// after value resolution and before the mutate, regardless of which
+// branch in the mode switch sourced the value.
+func TestUpdateACBlocksValueAndStdinModes(t *testing.T) {
 	const vague = "- the feature works"
 	for _, mode := range []UpdateMode{UpdateModeValue, UpdateModeStdin} {
 		t.Run(modeName(mode), func(t *testing.T) {
@@ -118,10 +167,6 @@ func TestUpdateACBlocksAllThreeModes(t *testing.T) {
 			}
 		})
 	}
-	// UpdateModeEditor needs an $EDITOR script to write the value;
-	// skipped at the unit-test layer (covered by the Update field
-	// switch — the validator runs after the value is sourced from
-	// any mode).
 }
 
 func modeName(m UpdateMode) string {
@@ -197,21 +242,30 @@ func equalStringSlices(a, b []string) bool {
 // format from the update validator must match the format
 // quality.ValidateACList emits (the adapter over plan.ValidateACs).
 // Asserted by checking the stderr contains the
-// `acceptance_criteria[N]` field prefix.
+// `acceptance_criteria[N]` field prefix. Pipe drained in a
+// goroutine via io.ReadAll so output > 4KB can't truncate or
+// deadlock (review F1).
 func TestUpdateACFindingFormatMatchesAdapter(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
 	origStderr := os.Stderr
-	r, w, _ := os.Pipe()
 	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	stderrBuf := &bytes.Buffer{}
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(stderrBuf, r); close(done) }()
+
 	stdinForACTest(t, "- the feature works\n", func() {
 		_ = Update(s, cfg, "T-001", "acceptance_criteria", "", UpdateModeStdin)
 	})
 	w.Close()
-	os.Stderr = origStderr
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	stderr := string(buf[:n])
-	if !strings.Contains(stderr, "acceptance_criteria[") {
-		t.Errorf("expected `acceptance_criteria[i]` field prefix in stderr; got:\n%s", stderr)
+	<-done
+
+	if !strings.Contains(stderrBuf.String(), "acceptance_criteria[") {
+		t.Errorf("expected `acceptance_criteria[i]` field prefix in stderr; got:\n%s", stderrBuf.String())
 	}
 }

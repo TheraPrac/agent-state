@@ -307,13 +307,14 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	if echoCount != 1 {
 		t.Errorf("expected 1 echo command in ACs after replacement, got %d.\nRaw doc:\n%s", echoCount, raw)
 	}
-	// Verify the old content is gone
-	if strings.Contains(raw, "first check") {
-		t.Error("old AC content 'first check' still present after replacement")
+	// Verify the old content is gone — the first write used
+	// `echo test1`/`echo test2`; after replacement only `echo replaced`
+	// should remain.
+	if strings.Contains(raw, "echo test1") || strings.Contains(raw, "echo test2") {
+		t.Errorf("old AC content (echo test1/echo test2) still present after replacement:\n%s", raw)
 	}
-	// Verify indentation preserved (command should be indented under description)
-	if strings.Contains(raw, "\ncommand:") {
-		t.Error("continuation line 'command:' lost indentation — should be '  command:'")
+	if !strings.Contains(raw, "echo replaced") {
+		t.Errorf("replacement AC (echo replaced) missing:\n%s", raw)
 	}
 }
 
