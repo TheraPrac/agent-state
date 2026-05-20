@@ -8,6 +8,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -152,6 +153,22 @@ title: Done task
 	s, err := store.New(cfg)
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
+	}
+
+	// I-716: seed a passable plan sidecar for every task/issue
+	// fixture so the new missing-sidecar refusal in PlanApprove /
+	// PlanCheck / freshness.Check doesn't break the ~18 existing
+	// PlanApprove(s, cfg, "T-001", PlanApproveOpts{}) call sites.
+	// Tests that need the no-sidecar path explicitly delete the
+	// fixture file in their setup.
+	for _, id := range []string{"T-001", "T-002", "T-003", "I-001"} {
+		if err := plan.Save(cfg.PlansDir(), id, &plan.Plan{
+			Approach:   "Fixture plan for tests.",
+			ScopeRepos: []string{"as"},
+			ACs:        []string{"cmd: go test ./..."},
+		}); err != nil {
+			t.Fatalf("seeding sidecar for %s: %v", id, err)
+		}
 	}
 
 	return s, cfg

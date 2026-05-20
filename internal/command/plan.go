@@ -139,7 +139,20 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// is non-empty, and (c) every AC is verifiable per
 	// `plan.ValidateACs`. `--strict` is preserved as a no-op alias
 	// for backward compatibility with existing CI invocations.
-	if _, vios, _ := loadPlanForValidation(cfg, id); quality.HasError(vios) {
+	//
+	// I-716: closes the missing-sidecar carve-out inherited from
+	// I-511. When the item is task/issue and the sidecar is absent,
+	// refuse approval with exit 2 pointing at `st plan prep <id>`.
+	// Ideas/promotions skip per the I-487 type carve-out (no SBAR,
+	// no enforced plan-body).
+	_, vios, sidecarFound := loadPlanForValidation(cfg, id)
+	if !sidecarFound && (item.Type == "task" || item.Type == "issue") {
+		fmt.Fprintf(os.Stderr,
+			"%s: missing .plans/%s.md — refusing approval. Run `st plan prep %s` to author a sidecar before re-running `st plan approve %s`. (I-716 closes the I-511/I-710 carve-out — no plan body, no approval.)\n",
+			id, id, id, id)
+		return 2
+	}
+	if quality.HasError(vios) {
 		fmt.Fprintf(os.Stderr,
 			"%s: plan substance gate failed (%d violation(s)); refusing approval:\n",
 			id, len(vios))
@@ -318,7 +331,18 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 	// without requiring an explicit `st plan reset`. Same posture as
 	// the I-589 SBAR re-check above. All output to stderr so the
 	// stdout verdict line stays parseable by hook callers.
-	if _, vios, _ := loadPlanForValidation(cfg, id); quality.HasError(vios) {
+	//
+	// I-716: also re-validate sidecar EXISTENCE. A post-approval
+	// deletion of `.plans/<id>.md` must close the hook gate (else
+	// an agent could delete its plan after approval and continue
+	// editing code).
+	_, vios, sidecarFound := loadPlanForValidation(cfg, id)
+	if !sidecarFound && (item.Type == "task" || item.Type == "issue") {
+		fmt.Fprintf(os.Stderr,
+			"approved but .plans/%s.md is missing — restore the sidecar or run `st plan reset %s`\n", id, id)
+		return 1
+	}
+	if quality.HasError(vios) {
 		fmt.Fprintf(os.Stderr,
 			"approved but %d plan substance violation(s) — fix .plans/%s.md or run `st plan reset %s`\n",
 			len(vios), id, id)

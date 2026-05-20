@@ -2,6 +2,8 @@ package command
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -44,6 +46,12 @@ func TestArtifact_KnownItemFacetContent(t *testing.T) {
 
 func TestArtifact_MissingFacetDegradesCleanly(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	// I-716: setupTestEnv seeds a passable sidecar; this test
+	// explicitly exercises the "no plan / no AC" facet degrade
+	// path, so remove the sidecar first.
+	if err := os.Remove(filepath.Join(cfg.PlansDir(), "T-001.md")); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("removing fixture sidecar: %v", err)
+	}
 	// T-001 fixture has no plan / no AC — must say so, rc 0, no panic.
 	for _, k := range []string{"plan", "ac", "history"} {
 		var rc int

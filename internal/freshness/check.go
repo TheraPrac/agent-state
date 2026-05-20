@@ -1,6 +1,7 @@
 package freshness
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -66,9 +67,18 @@ func Check(cfg *config.Config, s *store.Store, id string, opts CheckOpts) (*Resu
 	}
 	loaded, _ := plan.Load(cfg.PlansDir(), id)
 	if loaded == nil {
-		// No sidecar — nothing to validate against. Mirrors the
-		// I-710 missing-sidecar carve-out.
-		return &Result{Verdict: VerdictFresh}, nil
+		// I-716: closes the missing-sidecar carve-out. An item
+		// with plan_approved=true but no sidecar is Stale — the
+		// plan body either was never authored or got deleted
+		// post-approval. Either way, st start must refuse so
+		// the operator re-preps before any code edits.
+		return &Result{
+			Verdict: VerdictStale,
+			Findings: []Finding{{
+				Category: CategoryFileMissing,
+				Message:  fmt.Sprintf("plan_approved is true but .plans/%s.md is missing — re-prep required (I-716)", id),
+			}},
+		}, nil
 	}
 
 	now := opts.Now
