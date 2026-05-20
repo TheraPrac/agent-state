@@ -149,15 +149,13 @@ func TestUpdateACSingleLineStripsLeadingBullet(t *testing.T) {
 }
 
 // TestUpdateACBlocksValueAndStdinModes — same vague AC fed through
-// the two non-editor modes must produce the same exit-2 result.
-// UpdateModeEditor's empty-output refusal is covered separately by
-// TestUpdateACEditorEmptyOutputRefused; running editor mode against
-// a real $EDITOR script for the vague-AC case requires test-infra
-// (cp-based stub editor) that the existing SBAR editor tests do
-// not currently exercise either. The I-713 contract — validation
-// is mode-agnostic — is structurally true because the AC gate runs
-// after value resolution and before the mutate, regardless of which
-// branch in the mode switch sourced the value.
+// the two modes must produce the same exit-2 result. The I-713
+// contract (validation is mode-agnostic) is structurally true
+// because the AC gate runs after value resolution and before the
+// mutate, regardless of which branch in the mode switch sourced
+// the value.
+//
+// T-382: UpdateModeEditor removed; the mode set is now Value + Stdin.
 func TestUpdateACBlocksValueAndStdinModes(t *testing.T) {
 	const vague = "- the feature works"
 	for _, mode := range []UpdateMode{UpdateModeValue, UpdateModeStdin} {
@@ -175,8 +173,6 @@ func modeName(m UpdateMode) string {
 		return "value"
 	case UpdateModeStdin:
 		return "stdin"
-	case UpdateModeEditor:
-		return "editor"
 	}
 	return "unknown"
 }

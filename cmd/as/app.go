@@ -244,10 +244,8 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			tag, _ := cmd.Flags().GetString("tag")
 			depends, _ := cmd.Flags().GetString("depends")
 			sprint, _ := cmd.Flags().GetString("sprint")
-			editor, _ := cmd.Flags().GetBool("editor")
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
-				Editor: editor,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
 				// (tests, migrations) leave Engine zero and skip the review.
@@ -263,9 +261,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	createCmd.Flags().String("tag", "", "initial tag")
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")
-	// I-492: opt-in editor. Skips automatically in non-TTY contexts so
-	// agent scripts that pipe stdin do not block on a missing editor.
-	createCmd.Flags().Bool("editor", false, "open $EDITOR on the new item to fill the SBAR scaffold")
+	// T-382: --editor flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 
 	updateCmd := &cobra.Command{
@@ -325,33 +321,24 @@ fields, and the SBAR composite stay on the single-field paths.`,
 				exitCode = command.Update(appStore, appCfg, id, field, args[2], command.UpdateModeValue)
 			case command.StdinIsPiped():
 				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
-			case field == "sbar":
-				// I-493: sbar is the one field with a 4-section
-				// composite editor. The generic-field $EDITOR
-				// fallback is rejected per I-503 (CLI is agent-
-				// driven and a non-TTY editor blocks forever),
-				// but sbar has no positional / single-stdin form
-				// that captures the structure, so the editor
-				// remains its canonical edit path.
-				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeEditor)
 			default:
-				// I-503: no value, no --stdin, no piped stdin →
-				// reject. The historical $EDITOR fallback was
-				// useless in agent contexts (no TTY for
-				// vim/nano) and silently blocked. Surface a
-				// clear usage hint instead.
+				// T-382: every "no value, no --stdin" path now
+				// refuses (was: sbar opened $EDITOR via the
+				// I-493 flow). Agents drive every write via
+				// stdin-based heredocs; the editor flow had no
+				// production callers.
 				fmt.Fprintf(os.Stderr,
 					"update: no value supplied for %s.%s\n"+
 						"  st update <id> <field> <value>           # short value\n"+
 						"  st update <id> <field> --stdin            # multi-line via stdin\n"+
 						"  st update <id> field1=v field2=v ...     # batch (I-504)\n"+
-						"  st update <id> sbar                       # SBAR composite editor (I-493)\n",
+						"  st update <id> sbar --stdin               # SBAR composite via 4-section buffer\n",
 					id, field)
 				exitCode = 2
 			}
 		},
 	}
-	updateCmd.Flags().Bool("stdin", false, "read value from stdin instead of opening $EDITOR")
+	updateCmd.Flags().Bool("stdin", false, "read value from stdin")
 	root.AddCommand(updateCmd)
 
 	checkCmd := &cobra.Command{

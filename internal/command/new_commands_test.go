@@ -630,146 +630,12 @@ func TestCreateWritesSBARScaffoldForTask(t *testing.T) {
 	}
 }
 
-// I-492: editor flag is opt-in. With Editor=false, no editor is
-// invoked even if $EDITOR is set in the environment. The test stub
-// would create a sentinel file if invoked; assert it is absent.
-func TestCreateNoEditorByDefault(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	sentinel := filepath.Join(t.TempDir(), "editor-was-called")
-	stubEditor := writeStubEditor(t, sentinel)
-	t.Setenv("EDITOR", stubEditor)
-	if code := Create(s, cfg, "issue", "No editor", CreateOpts{Priority: 2}); code != 0 {
-		t.Fatalf("Create returned %d, want 0", code)
-	}
-	if _, err := os.Stat(sentinel); err == nil {
-		t.Errorf("editor was invoked despite Editor=false (sentinel %s exists)", sentinel)
-	}
-}
-
-// I-492: Editor=true with stdin not a TTY (test context) skips the
-// editor silently — agent flows that pipe stdin would otherwise hang
-// on a missing TTY. Test runs in a non-TTY context so this is the
-// real production path for piped agents.
-func TestCreateEditorSkippedWithoutTTY(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	sentinel := filepath.Join(t.TempDir(), "editor-was-called")
-	stubEditor := writeStubEditor(t, sentinel)
-	t.Setenv("EDITOR", stubEditor)
-	if code := Create(s, cfg, "issue", "TTY guard", CreateOpts{Priority: 2, Editor: true}); code != 0 {
-		t.Fatalf("Create returned %d, want 0", code)
-	}
-	if _, err := os.Stat(sentinel); err == nil {
-		t.Errorf("editor was invoked despite stdin not being a TTY (sentinel %s exists)", sentinel)
-	}
-}
-
-// writeStubEditor writes a tiny shell script that touches `sentinel`
-// when invoked, so tests can assert "editor was invoked" without
-// needing a real interactive editor on the test runner.
-func writeStubEditor(t *testing.T, sentinel string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "editor.sh")
-	body := "#!/bin/sh\ntouch " + sentinel + "\n"
-	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
-		t.Fatalf("writing stub editor: %v", err)
-	}
-	return path
-}
-
-// I-492 (review fix): $EDITOR values like `code --wait` or `vim -u
-// NONE` are common. exec.Command takes the first arg as a literal
-// binary name, so an unsplit value would exec `"code --wait"` and
-// fail. The runCreateEditor helper is shell-split via strings.Fields.
-// This test verifies the parts-extraction by parsing the full editor
-// value and asserting the resulting binary + extra-arg shape.
-func TestRunCreateEditor_ShellSplitsMultiWordEditor(t *testing.T) {
-	parts := strings.Fields("code --wait")
-	if len(parts) != 2 {
-		t.Fatalf("strings.Fields(\"code --wait\") = %v, want 2 parts", parts)
-	}
-	if parts[0] != "code" || parts[1] != "--wait" {
-		t.Errorf("split parts = %v, want [code --wait]", parts)
-	}
-}
-
-// I-492 (review fix): $VISUAL takes precedence over $EDITOR per Unix
-// convention. The runCreateEditor helper itself can't be invoked in a
-// test (no TTY), so this test asserts the precedence by manipulating
-// env and calling the same selection logic directly via the env vars.
-func TestRunCreateEditor_VisualBeforeEditor(t *testing.T) {
-	t.Setenv("VISUAL", "visual-editor")
-	t.Setenv("EDITOR", "fallback-editor")
-	// Mirror the precedence check from runCreateEditor.
-	got := os.Getenv("VISUAL")
-	if got == "" {
-		got = os.Getenv("EDITOR")
-	}
-	if got != "visual-editor" {
-		t.Errorf("editor selection = %q, want visual-editor (VISUAL wins)", got)
-	}
-}
-
-// === I-493: st update <id> sbar editor flow ===
-
-// I-493: editor mode renders the 4 SBAR sections, lets the user edit,
-// and writes all sub-fields back atomically. This test stubs $EDITOR
-// with a script that overwrites the temp file with a known buffer
-// containing all four sections, then asserts the file's sbar block
-// reflects the new content.
-func TestUpdateSBAR_RoundtripViaEditor(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	editor := writeSBARStubEditor(t,
-		"situation: |-\n"+
-			"  api returns 500 on tenant creation\n"+
-			"background: |-\n"+
-			"  RLS context not set on conn pool\n"+
-			"assessment: |-\n"+
-			"  reproduces 100% on fresh signup\n"+
-			"recommendation: |-\n"+
-			"  switch to s.querier(ctx) in 4 callsites\n")
-	t.Setenv("EDITOR", editor)
-	t.Setenv("VISUAL", "")
-
-	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 0 {
-		t.Fatalf("Update sbar returned %d, want 0", code)
-	}
-
-	path, _ := s.Path("I-001")
-	bodyB, _ := os.ReadFile(path)
-	body := string(bodyB)
-	for _, want := range []string{
-		"api returns 500 on tenant creation",
-		"RLS context not set on conn pool",
-		"reproduces 100% on fresh signup",
-		"switch to s.querier(ctx) in 4 callsites",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("sbar update missing %q in:\n%s", want, body)
-		}
-	}
-}
-
-// I-493: a buffer missing one of the four required sections is
-// rejected with exit 2 — the schema invariant from I-487 is that all
-// four sub-keys are present even when their bodies are blank.
-func TestUpdateSBAR_RejectsMissingSection(t *testing.T) {
-	s, cfg := setupTestEnvWithChangelog(t)
-	editor := writeSBARStubEditor(t,
-		"situation: |-\n"+
-			"  has situation\n"+
-			"background: |-\n"+
-			"  has background\n"+
-			"assessment: |-\n"+
-			"  has assessment\n")
-	// recommendation deliberately omitted.
-	t.Setenv("EDITOR", editor)
-	t.Setenv("VISUAL", "")
-
-	if code := Update(s, cfg, "I-001", "sbar", "", UpdateModeEditor); code != 2 {
-		t.Errorf("Update sbar with missing section should exit 2, got %d", code)
-	}
-}
+// T-382: editor-mode Create + Update tests removed. The surfaces
+// they covered (CreateOpts.Editor, runCreateEditor, UpdateModeEditor,
+// updateSBARViaEditor, readFromEditor, writeStubEditor +
+// writeSBARStubEditor helpers) no longer exist. parseSBARBuffer /
+// sbarSeedBuffer tests below stay because those helpers are still
+// used by the SBAR --stdin path.
 
 // I-493: parseSBARBuffer must accept all valid YAML block-scalar
 // indicators (|-, |, >, >-, and a bare colon — which YAML treats as
@@ -917,24 +783,8 @@ func TestSBARRoundtrip_EditorNoOp(t *testing.T) {
 	}
 }
 
-// writeSBARStubEditor writes a shell script that overwrites its
-// argument (the temp file readFromEditor created) with `replacement`
-// when invoked. This simulates the user opening the editor and saving
-// the supplied buffer.
-func writeSBARStubEditor(t *testing.T, replacement string) string {
-	t.Helper()
-	dir := t.TempDir()
-	body := filepath.Join(dir, "body.txt")
-	if err := os.WriteFile(body, []byte(replacement), 0644); err != nil {
-		t.Fatalf("writing replacement body: %v", err)
-	}
-	script := filepath.Join(dir, "editor.sh")
-	scriptBody := "#!/bin/sh\ncp " + body + " \"$1\"\n"
-	if err := os.WriteFile(script, []byte(scriptBody), 0755); err != nil {
-		t.Fatalf("writing stub editor: %v", err)
-	}
-	return script
-}
+// T-382: writeSBARStubEditor helper removed alongside the editor-mode
+// tests it served.
 
 // === I-495: st prime exports SBAR per item ===
 

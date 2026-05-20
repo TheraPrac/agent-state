@@ -733,19 +733,24 @@ func TestCrossCommandConsistency(t *testing.T) {
 // I-503: `st update <id> <field>` (no value, no --stdin) used to fall
 // back to $EDITOR — useless from the agent Bash tool (no TTY) and
 // would silently block. The fallback is rejected with a usage hint.
-// SBAR is exempt because I-493's 4-section editor is the only
-// canonical edit path for the composite block.
-func TestUpdateRejectsEmptyEditorMode(t *testing.T) {
+//
+// T-382: renamed from TestUpdateRejectsEmptyEditorMode and extended
+// to cover sbar (which previously had the I-493 editor exemption).
+func TestUpdateRefusesNoValueNoStdin(t *testing.T) {
 	ws := setupWorkspace(t)
-	_, stderr, code := runAs(t, ws, "update", "T-001", "title")
-	if code != 2 {
-		t.Errorf("update with no value should exit 2, got %d (stderr=%q)", code, stderr)
-	}
-	if !strings.Contains(stderr, "no value supplied") {
-		t.Errorf("expected usage hint on stderr, got: %q", stderr)
-	}
-	if !strings.Contains(stderr, "--stdin") {
-		t.Errorf("expected --stdin pointer in usage hint, got: %q", stderr)
+	for _, field := range []string{"title", "sbar"} {
+		t.Run(field, func(t *testing.T) {
+			_, stderr, code := runAs(t, ws, "update", "T-001", field)
+			if code != 2 {
+				t.Errorf("update %s with no value should exit 2, got %d (stderr=%q)", field, code, stderr)
+			}
+			if !strings.Contains(stderr, "no value supplied") {
+				t.Errorf("expected usage hint on stderr, got: %q", stderr)
+			}
+			if !strings.Contains(stderr, "--stdin") {
+				t.Errorf("expected --stdin pointer in usage hint, got: %q", stderr)
+			}
+		})
 	}
 }
 
