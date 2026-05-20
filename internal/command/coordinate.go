@@ -320,17 +320,9 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 				return 0
 
 			case coordinator.ActionRespawn:
-				// killWorker SIGTERMs the worker, but its in-flight subagent
-				// calls may take a beat to drain — subagent-stop-metrics.sh
-				// could fire one more time AFTER kill and push the item's
-				// ai_cost_usd higher than what freshItem read at the top of
-				// the next iteration. The race is bounded: by then we're
-				// past Spawn, attemptStartCostUSD is captured from postItem,
-				// and at worst the NEXT supervision tick's delta will look
-				// $X lower than reality for one poll (D2 under-fires by
-				// $X), self-correcting on the following tick once the
-				// rollup catches up. Cumulative respawn spend is bounded
-				// by respawn_limit via ClassifyRespawn (B1/C2), not by D2.
+				// killWorker → next-iter freshItem race is bounded; see
+				// WorkerState.attemptStartCostUSD doc in supervise.go for
+				// the D2-correctness argument.
 				killWorker(cfg, itemID)
 				st.RecordRespawn(lastSig)
 				extraCtx = fmt.Sprintf(

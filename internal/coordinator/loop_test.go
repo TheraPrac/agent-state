@@ -73,7 +73,11 @@ func TestDecide(t *testing.T) {
 	}
 
 	// Live + wedged → escalate C2.
+	// BeginAttempt is set to model a live worker even though the C2
+	// wedge check fires before the D2 delta is read — consistent with
+	// the other live-worker sub-cases below per T-380.
 	st = &WorkerState{SizeClass: 40 * time.Minute} // wedge = 10m
+	st.BeginAttempt(now, 0, 0)
 	snaps := []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, SampledAt: now},
 		{PIDAlive: true, RowCount: 1, SampledAt: now.Add(12 * time.Minute)},

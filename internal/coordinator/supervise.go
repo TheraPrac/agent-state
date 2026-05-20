@@ -29,11 +29,15 @@ type ProgressSnapshot struct {
 	ChangelogLen int       // # changelog entries for the item (monotonic item progress)
 	Stage        string    // item status / delivery stage
 	SampledAt    time.Time // wall-clock of this sample
-	AICostUSD    float64   // T-365: rolled-up cost (I-369 Option C). 0 ⇒
-	//                       no rollup yet (e.g. before the worker's first
-	//                       SubagentStop fires). The cost-based D2
-	//                       detector treats 0 as "no signal", never as
-	//                       "stuck at 0" — see DetectStuckByCost.
+	AICostUSD    float64   // T-365: rolled-up cost (I-369 Option C). The
+	//                       item's LIFETIME spend; 0 ⇒ no rollup yet (e.g.
+	//                       before the worker's first SubagentStop fires).
+	//                       T-380: D2 does NOT read this field directly —
+	//                       Decide computes a per-attempt DELTA against
+	//                       WorkerState.attemptStartCostUSD and passes
+	//                       that to DetectStuckByCost. The "treat 0 as no
+	//                       signal" guard now lives on the delta, in
+	//                       DetectStuckByCost's deltaUSD <= 0 short-circuit.
 }
 
 // WorkerState is the cross-respawn state the loop carries for ONE item's
@@ -63,6 +67,19 @@ type WorkerState struct {
 	// silence/trigger D2 depending on the item's history. Sibling of
 	// attemptStartChangelog (T-363's per-attempt progress baseline);
 	// set via BeginAttempt.
+	//
+	// Respawn race (T-380): there is a bounded window between killWorker
+	// SIGTERM and the next iteration's freshItem read where the dying
+	// worker's last in-flight subagent-stop-metrics hook may still flush
+	// and bump ai_cost_usd higher than the value freshItem captured. By
+	// the time Decide reads the next delta, attemptStartCostUSD has
+	// already been re-captured from postItem (BeginAttempt) — so at
+	// worst, the NEXT supervision tick's delta looks $X lower than reality
+	// for one poll (D2 under-fires by $X). The following tick observes
+	// the full burn once the rollup catches up, so the under-fire is
+	// self-correcting within one supervision interval. Cumulative respawn
+	// spend is bounded by respawn_limit via ClassifyRespawn (B1/C2), not
+	// by D2.
 	attemptStartCostUSD float64
 }
 
@@ -296,23 +313,33 @@ func parseCostUSD(raw any) float64 {
 //     spend is bounded by respawn_limit via ClassifyRespawn — D2 doesn't
 //     try to backstop unbounded respawn cycles; that's B1/C2's job.
 //
-// currentCostUSD == 0 returns (false, "") — the rollup is not yet
-// populated (e.g. before the worker's first SubagentStop fires), NOT a
-// genuine "stuck at $0" signal. A worker that never spends a cent is
-// either wedged (C2's domain) or making instant progress (no D2 needed).
+// deltaUSD == 0 returns (false, "") — TWO legitimate sources of zero both
+// reduce to "no D2 signal":
+//  1. The rollup is not yet populated (e.g. before the worker's first
+//     SubagentStop fires) — same as pre-T-380.
+//  2. This attempt has not spent anything yet (post-T-380: on a fresh
+//     attempt or respawn, last.AICostUSD == attemptStartCostUSD until
+//     the worker burns its first cent).
+//
+// Neither case is a genuine "stuck at $0" signal. A worker that never
+// spends a cent is either wedged (C2's domain) or making instant
+// progress (no D2 needed).
 //
 // The startup blind window (between spawn and first SubagentStop) is
 // covered by K1's per_item --max-budget-usd hard cap, set by st spawn
 // regardless of D2 state. K1 fires before any runaway exceeds budget.
-func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool) {
-	if currentCostUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
+func DetectStuckByCost(deltaUSD, baselineUSD, mult float64) (string, bool) {
+	if deltaUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
 		return "", false
 	}
 	limit := baselineUSD * mult
-	if currentCostUSD >= limit {
-		return "cost $" + trimFloat(currentCostUSD) + " ≥ stuck_multiplier(" +
+	if deltaUSD >= limit {
+		// T-380: render "attempt cost" not bare "cost" so an operator
+		// reading the changelog doesn't confuse this dollar figure with
+		// the item's lifetime ai_cost_usd field.
+		return "attempt cost $" + trimFloat(deltaUSD) + " ≥ stuck_multiplier(" +
 			trimFloat(mult) + ") × cost-baseline $" + trimFloat(baselineUSD) +
-			" — stuck (contract §7-D2; cost-based, T-365)", true
+			" — stuck (contract §7-D2; per-attempt delta, T-365+T-380)", true
 	}
 	return "", false
 }
