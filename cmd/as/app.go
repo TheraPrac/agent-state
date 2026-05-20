@@ -2174,6 +2174,13 @@ rates. I-180.`,
 	// code. `st plan approve` and `st plan reset` toggle the gate; the
 	// audit fields PlanApprovedAt + PlanApprovedBy track who/when so a
 	// reviewer can trace the approval back.
+	//
+	// T-376: `st plan prep` was added to the same verb group as the
+	// canonical name for plan drafting (the top-level `st prep` alias
+	// remains for one release window with a deprecation banner). The
+	// hook ecosystem comment above only enumerates the approval gate
+	// surfaces; prep does not affect the gate state but lives under
+	// the same `plan` verb for discoverability.
 	planCmd := &cobra.Command{
 		Use:   "plan",
 		Short: "Manage per-item plan approvals (I-178 plan-before-code gate)",
