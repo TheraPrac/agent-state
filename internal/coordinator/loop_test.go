@@ -86,7 +86,8 @@ func TestDecide(t *testing.T) {
 	// Live + stuck (cost ≥ mult×cost-baseline) → escalate D2.
 	// T-365: D2 is now cost-based. The wall-clock SizeClass still drives
 	// the C2 wedge threshold, but D2 reads AICostUSD against CostBaseline.
-	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0, SpawnedAt: now}
+	// SpawnedAt is NOT read by cost-based D2 (was used by legacy DetectStuck).
+	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
 	live := []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
 		{PIDAlive: true, RowCount: 9, AICostUSD: 30.0, SampledAt: now.Add(5 * time.Minute)}, // $30 ≥ 3×$10
@@ -96,14 +97,16 @@ func TestDecide(t *testing.T) {
 		t.Errorf("live + cost ≥ stuck_x×cost-baseline → escalate D2, got %v %s", d.Action, d.Verdict.Predicate)
 	}
 
-	// Live + fine → continue.
-	st = &WorkerState{SizeClass: 60 * time.Minute, SpawnedAt: now}
+	// Live + fine → continue. CostBaseline MUST be non-zero or
+	// DetectStuckByCost short-circuits on its baselineUSD<=0 guard and
+	// the test would pass without actually evaluating D2's threshold.
+	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
 	d = Decide(st, []ProgressSnapshot{
-		{PIDAlive: true, RowCount: 1, SampledAt: now},
-		{PIDAlive: true, RowCount: 9, SampledAt: now.Add(2 * time.Minute)},
+		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
+		{PIDAlive: true, RowCount: 9, AICostUSD: 5.0, SampledAt: now.Add(2 * time.Minute)}, // $5 < 3×$10 — D2 evaluates & returns false
 	}, b, false, now.Add(2*time.Minute))
 	if d.Action != ActionContinue {
-		t.Errorf("live + progressing + within time → continue, got %v", d.Action)
+		t.Errorf("live + progressing + cost < threshold → continue, got %v", d.Action)
 	}
 }
 

@@ -88,16 +88,11 @@ func SampleProgress(cfg *config.Config, item *model.Item) ProgressSnapshot {
 	now := time.Now()
 	snap := ProgressSnapshot{SampledAt: now, Stage: item.Status}
 
-	// T-365: read I-369's rolled-up cost off the item. Stored as a
-	// 6-decimal stringified float by session_log.go; absent ⇒ stays 0.
+	// T-365: read I-369's rolled-up cost off the item. Pure parsing
+	// extracted into parseCostUSD so the type-switch is unit-testable
+	// without spinning a config / changelog / registry.
 	if item.TimeTracking != nil {
-		if raw, ok := item.TimeTracking["ai_cost_usd"]; ok {
-			if s, ok := raw.(string); ok {
-				if f, err := strconv.ParseFloat(s, 64); err == nil {
-					snap.AICostUSD = f
-				}
-			}
-		}
+		snap.AICostUSD = parseCostUSD(item.TimeTracking["ai_cost_usd"])
 	}
 
 	if entries, err := changelog.Read(cfg, item.ID); err == nil {
@@ -248,6 +243,28 @@ func DetectWedged(snaps []ProgressSnapshot, wedge time.Duration) (string, bool) 
 	return "", false
 }
 
+// parseCostUSD reads a time_tracking.ai_cost_usd value from the
+// map[string]interface{} substrate. session_log.go currently writes a
+// 6-decimal stringified float, so string is the live path — but we
+// defensively handle float64 and int too (matches the floatField
+// pattern in internal/command/itemmetrics.go) so a future
+// storage-format change does not silently blind D2. Unknown / missing
+// types return 0 (the "rollup not yet populated" signal — see
+// DetectStuckByCost).
+func parseCostUSD(raw any) float64 {
+	switch v := raw.(type) {
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	}
+	return 0
+}
+
 // DetectStuckByCost implements D2 (T-365): an item burning ≥
 // stuck_multiplier × cost-baseline-for-its-size-class. This is the
 // dollar-denominated successor to the wall-clock DetectStuck proxy —
@@ -257,13 +274,23 @@ func DetectWedged(snaps []ProgressSnapshot, wedge time.Duration) (string, bool) 
 // parent's `time_tracking.ai_cost_usd`, surfaced into ProgressSnapshot
 // by SampleProgress.
 //
+// Preconditions enforced by the caller (Decide in loop.go), NOT by this
+// function:
+//   - Only fires while PIDAlive==true (Decide's "live worker" branch).
+//     A terminated worker is classified by ClassifyRespawn (B1/C2), not D2.
+//   - Cross-respawn cost accumulation is bounded by respawn_limit via
+//     ClassifyRespawn, NOT by D2. D2 looks only at the current item's
+//     rolled-up spend — a worker that exits and respawns under the limit
+//     resets the live D2 evaluation but the cost stays on the item.
+//
 // currentCostUSD == 0 returns (false, "") — the rollup is not yet
 // populated (e.g. before the worker's first SubagentStop fires), NOT a
 // genuine "stuck at $0" signal. A worker that never spends a cent is
 // either wedged (C2's domain) or making instant progress (no D2 needed).
 //
-// The per_item --max-budget-usd cap set by st spawn is an independent
-// hard backstop regardless; D2 fires BEFORE that cap.
+// The startup blind window (between spawn and first SubagentStop) is
+// covered by K1's per_item --max-budget-usd hard cap, set by st spawn
+// regardless of D2 state. K1 fires before any runaway exceeds budget.
 func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool) {
 	if currentCostUSD <= 0 || baselineUSD <= 0 || mult <= 0 {
 		return "", false
@@ -278,10 +305,9 @@ func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool)
 }
 
 // DetectStuck is the LEGACY wall-clock D2 proxy from T-363. Superseded
-// by DetectStuckByCost (T-365) for the primary D2 check. Kept for
-// callers that still want the wall-clock signal (e.g. when cost rollup
-// is unavailable on a substrate that pre-dates I-369). Will be removed
-// once T-363's call sites finish migrating.
+// by DetectStuckByCost (T-365) for the primary D2 check. Kept only for
+// callers on substrates that pre-date I-369 (none in the live
+// workspace at T-365 close). Removal scheduled: see T-381.
 //
 // Returns (reason, true) when elapsed ≥ mult × baseline.
 func DetectStuck(spawnedAt, now time.Time, baseline time.Duration, mult float64) (string, bool) {
@@ -369,8 +395,15 @@ func SizeClassBaseline(item *model.Item) time.Duration {
 // size class, used by DetectStuckByCost (T-365). Values are tuned so D2
 // fires comfortably below K1's per_item cap of $40 even at K2=3 (the
 // highest baseline below × 3 = $30, leaving $10 of headroom). Same
-// type+priority shape as SizeClassBaseline; documented as heuristic
-// (empirical-from-archive medians are a follow-up item).
+// type+priority shape as SizeClassBaseline; documented as heuristic.
+// Empirical-medians-from-archive replacement is tracked as T-380.
+//
+// NOTE: the K1-headroom guarantee holds ONLY when K2 ≤ 3. If the
+// operator raises stuck_multiplier in coordinator.yaml above 3, the
+// max baseline × K2 may exceed K1's cap; D2 would then never fire
+// before K1 — see TestSizeClassCostBaseline_BelowK1Cap which proves
+// the K2=3 case and TestSizeClassCostBaseline_K2CeilingBreach which
+// proves K2=4 breaks the invariant for at least one size class.
 //
 // Real data anchoring these picks (2026-05 archive sample): T-345 = $3,
 // T-369 (this session) ≈ $8-12 typical, T-352 = $43 (the runaway K1

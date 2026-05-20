@@ -119,7 +119,7 @@ func TestDetectStuckByCost(t *testing.T) {
 // fires comfortably before the hard per_item budget cap.
 func TestSizeClassCostBaseline_BelowK1Cap(t *testing.T) {
 	const k1Cap = 40.0
-	const k2Mult = 3.0
+	const k2Mult = 3.0 // the documented ceiling: function doc says baselines hold K1 headroom AT K2 ≤ 3
 	pInt := func(n int) *int { return &n }
 	cases := []*model.Item{
 		{Type: "issue", Priority: pInt(0)},
@@ -134,6 +134,66 @@ func TestSizeClassCostBaseline_BelowK1Cap(t *testing.T) {
 			t.Errorf("baseline $%g × K2=%g = $%g ≥ K1 $%g — D2 won't fire before budget cap (type=%s pri=%v)",
 				baseline, k2Mult, baseline*k2Mult, k1Cap, it.Type, it.Priority)
 		}
+	}
+}
+
+// TestSizeClassCostBaseline_K2CeilingBreach proves the K2 ceiling
+// documented in SizeClassCostBaseline's doc: raising K2 above 3
+// breaks the K1-headroom guarantee for at least one size class. This
+// is the asymmetric "if the operator raises stuck_multiplier > 3 the
+// heuristics no longer protect K1 budget cap" invariant — surfaced as
+// a test so anyone tempted to bump K2 finds the proof here.
+func TestSizeClassCostBaseline_K2CeilingBreach(t *testing.T) {
+	const k1Cap = 40.0
+	const k2Above = 4.0 // any K2 > 3 must violate the invariant for at least one size class
+	pInt := func(n int) *int { return &n }
+	allCases := []*model.Item{
+		{Type: "issue", Priority: pInt(0)},
+		{Type: "issue", Priority: pInt(2)},
+		{Type: "task", Priority: pInt(1)},
+		{Type: "task", Priority: pInt(3)},
+		{Type: "task"},
+	}
+	var breached bool
+	for _, it := range allCases {
+		if SizeClassCostBaseline(it)*k2Above >= k1Cap {
+			breached = true
+			break
+		}
+	}
+	if !breached {
+		t.Fatalf("expected at least one size class to breach K1=$%g at K2=%g — "+
+			"if this test stops failing, either the baselines were lowered "+
+			"(re-check the K2 ceiling) or K1 was raised (update test)", k1Cap, k2Above)
+	}
+}
+
+// TestParseCostUSD covers the I-369 cost-rollup parsing branch added
+// by T-365. Tested as a pure function so we don't depend on a config /
+// changelog / registry. Without this test, a future storage-format
+// change (string → float64 → int) could silently blind D2 because the
+// existing TestDetectStuckByCost builds ProgressSnapshot directly and
+// skips the parsing branch.
+func TestParseCostUSD(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  any
+		want float64
+	}{
+		{"string (current session_log.go format)", "12.500000", 12.5},
+		{"string with trailing zeros", "3.068790", 3.06879},
+		{"float64 (defensive fallback)", float64(7.25), 7.25},
+		{"int (defensive fallback)", 3, 3.0},
+		{"nil (missing key) ⇒ zero", nil, 0.0},
+		{"unsupported type ⇒ zero", []string{"weird"}, 0.0},
+		{"unparseable string ⇒ zero", "not-a-number", 0.0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseCostUSD(c.raw); got != c.want {
+				t.Errorf("parseCostUSD(%#v) = %g, want %g", c.raw, got, c.want)
+			}
+		})
 	}
 }
 
