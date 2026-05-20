@@ -70,6 +70,12 @@ type tuiModel struct {
 	// recompute only on refresh / initial build, not per render.
 	facetResults   map[string]facetResult
 	displayedOrder []string // recency-reordered facetOrder (§5 #5)
+
+	// T-379 (I-712): per-agent status rollup rendered as a 5th panel.
+	// Cached on the same refresh cadence as facetResults; arc filter is
+	// not in v1 (operator uses CLI --arc for filtered views — keeps the
+	// TUI keyboard model at T-374's §5 minimum).
+	statusMe statusMeReport
 }
 
 // Axis constants — readability for the focusAxis switch.
@@ -280,6 +286,7 @@ func (m tuiModel) View() string {
 	agentStrip := m.renderAgentStrip()
 	composite := m.renderComposite()
 	planning := m.renderPlanning()
+	statusSurface := m.renderStatusSurface() // T-379
 	alerts := m.renderAlerts()
 
 	panel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
@@ -287,8 +294,43 @@ func (m tuiModel) View() string {
 	left := panel.Width(compositeWidth).Render(composite)
 	right := panel.Width(planningWidth).Render(planning)
 	mid := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	status := panel.Width(w - 2).Render(statusSurface)
 	bot := panel.Width(w - 2).Render(alerts)
-	return lipgloss.JoinVertical(lipgloss.Left, top, mid, bot)
+	return lipgloss.JoinVertical(lipgloss.Left, top, mid, status, bot)
+}
+
+// renderStatusSurface (T-379, I-712 #3) renders the 4-section status
+// rollup as a compact panel between the composite/planning row and the
+// alerts band. Reuses T-377's buildStatusMe output cached in m.statusMe
+// — no facet logic duplicated; recomputed once per refresh.
+func (m tuiModel) renderStatusSurface() string {
+	if m.statusMe.Agent == "" {
+		return "status: (no agent identity resolved — set --agent or run from a per-agent workspace)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "status (window: %s)", m.statusMe.Since)
+	renderStatusLine(&b, "DONE", m.statusMe.Done)
+	renderStatusLine(&b, "IN-FLIGHT", m.statusMe.InFlight)
+	renderStatusLine(&b, "NEEDS-YOU", m.statusMe.NeedsYou)
+	renderStatusLine(&b, "PROPOSED-NEXT", m.statusMe.ProposedNext)
+	return b.String()
+}
+
+// renderStatusLine writes one section line: "LABEL  (N)  ID — title".
+// Empty sections render as "LABEL  (0)  (none)". The top-1 item is the
+// glanceable signal — operators can `st status --me` from the CLI for
+// the full list.
+func renderStatusLine(b *strings.Builder, label string, entries []statusMeEntry) {
+	fmt.Fprintf(b, "\n  %-13s (%d)  ", label, len(entries))
+	if len(entries) == 0 {
+		b.WriteString("(none)")
+		return
+	}
+	top := entries[0]
+	fmt.Fprintf(b, "%s — %s", top.ID, truncate(top.Title, 60))
+	if len(entries) > 1 {
+		fmt.Fprintf(b, " (+%d more)", len(entries)-1)
+	}
 }
 
 // renderFullScreen draws ONLY the cursored composite section (axis 2).
@@ -367,6 +409,16 @@ func (m tuiModel) renderComposite() string {
 // the Bubble Tea idiom. With m.item == nil the maps are zeroed; the
 // renderers handle the empty case.
 func recomputeFacets(m tuiModel) tuiModel {
+	// T-379: rebuild the status rollup ONCE per refresh too. It doesn't
+	// depend on m.item (it's a per-agent view of the whole store), so
+	// it's populated even when no item is focused.
+	if agent := m.cfg.Identity().ID; agent != "" {
+		m.statusMe = buildStatusMe(m.s, m.cfg, agent,
+			time.Now().Add(-defaultSince), "")
+	} else {
+		m.statusMe = statusMeReport{}
+	}
+
 	if m.item == nil {
 		m.facetResults = nil
 		m.displayedOrder = nil

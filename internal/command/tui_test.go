@@ -493,3 +493,22 @@ func TestTui_RecomputeFacets_NilItemSafe(t *testing.T) {
 			m.facetResults, m.displayedOrder)
 	}
 }
+
+// T-379: the status surface panel renders 4 section lines.
+func TestTui_StatusSurfaceRendersFourSections(t *testing.T) {
+	// buildStatusMe needs a non-empty agent identity; without it the
+	// surface degrades to the "(no agent identity resolved)" line,
+	// missing the section labels the test asserts.
+	t.Setenv("AS_AGENT_ID", "agent-b")
+	out, rc := tuiRender(t, TuiOpts{Width: 160})
+	if rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	for _, want := range []string{
+		"status (window:", "DONE", "IN-FLIGHT", "NEEDS-YOU", "PROPOSED-NEXT",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status surface missing %q\n%s", want, out)
+		}
+	}
+}
