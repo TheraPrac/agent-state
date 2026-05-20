@@ -630,12 +630,12 @@ func TestCreateWritesSBARScaffoldForTask(t *testing.T) {
 	}
 }
 
-// T-382: editor-mode Create + Update tests removed. The surfaces
-// they covered (CreateOpts.Editor, runCreateEditor, UpdateModeEditor,
-// updateSBARViaEditor, readFromEditor, writeStubEditor +
-// writeSBARStubEditor helpers) no longer exist. parseSBARBuffer /
-// sbarSeedBuffer tests below stay because those helpers are still
-// used by the SBAR --stdin path.
+// T-382: the external-program-mode Create + Update tests were
+// removed. The surfaces they covered (the post-create launcher,
+// the third Update mode and its helper, the SBAR composite
+// wrapper, plus the stub-program helpers) no longer exist.
+// parseSBARBuffer / sbarSeedBuffer tests below stay because those
+// helpers are still used by the SBAR --stdin path.
 
 // I-493: parseSBARBuffer must accept all valid YAML block-scalar
 // indicators (|-, |, >, >-, and a bare colon — which YAML treats as

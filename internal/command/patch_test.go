@@ -183,11 +183,11 @@ work_tracking:
 }
 
 // === Edit ===
-// T-382: TestEditNoEditor, TestEditNotFound (UpdateModeEditor variant),
-// TestEditNoDoc, TestEditNoChanges removed — the editor mode surface
-// no longer exists. The not-found / no-doc cases are still covered
-// for the remaining modes by TestUpdateNotFound and TestUpdateNoDoc
-// in command_test.go.
+// T-382: the external-program-mode test cases (variants of
+// TestEditNoEditor, TestEditNotFound, TestEditNoDoc, TestEditNoChanges)
+// were removed — the surface no longer exists. The not-found / no-doc
+// cases are still covered for the remaining modes by TestUpdateNotFound
+// and TestUpdateNoDoc in command_test.go.
 
 func TestEditFromStdinFlag(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
