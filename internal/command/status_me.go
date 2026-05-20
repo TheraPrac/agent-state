@@ -72,7 +72,7 @@ func statusMeTo(w io.Writer, s *store.Store, cfg *config.Config, opts StatusOpts
 	}
 	cutoff := time.Now().Add(-since)
 
-	report := buildStatusMe(s, cfg, agent, cutoff)
+	report := buildStatusMe(s, cfg, agent, cutoff, opts.Arc)
 
 	if opts.JSON {
 		return emitStatusMeJSON(w, report)
@@ -107,7 +107,9 @@ func resolveSince(spec string) (time.Duration, error) {
 
 // buildStatusMe is the pure aggregator — no I/O beyond the supplied
 // store + queue load. Used by tests directly with synthetic fixtures.
-func buildStatusMe(s *store.Store, cfg *config.Config, agent string, cutoff time.Time) statusMeReport {
+// `arc`, when non-empty, restricts every section to items with that Arc
+// (T-378).
+func buildStatusMe(s *store.Store, cfg *config.Config, agent string, cutoff time.Time, arc string) statusMeReport {
 	r := statusMeReport{
 		Agent: agent,
 		Since: time.Since(cutoff).Round(time.Second).String(),
@@ -119,10 +121,11 @@ func buildStatusMe(s *store.Store, cfg *config.Config, agent string, cutoff time
 		NeedsYou:     []statusMeEntry{},
 		ProposedNext: []statusMeEntry{},
 	}
+	matchesArc := func(it *model.Item) bool { return arc == "" || it.Arc == arc }
 
 	// DONE + IN-FLIGHT: scan items.
 	for _, it := range s.All() {
-		if it == nil {
+		if it == nil || !matchesArc(it) {
 			continue
 		}
 		// IN-FLIGHT: status active AND assigned to me.
@@ -144,8 +147,8 @@ func buildStatusMe(s *store.Store, cfg *config.Config, agent string, cutoff time
 			continue
 		}
 		it, ok := s.Get(e.ID)
-		if !ok {
-			continue // dangling queue entry — silently skip
+		if !ok || !matchesArc(it) {
+			continue // dangling or filtered out
 		}
 		entry := toEntry(it)
 		queuePos := pos + 1 // 1-indexed for operator readability

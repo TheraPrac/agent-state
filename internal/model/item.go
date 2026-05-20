@@ -19,19 +19,23 @@ type Item struct {
 	LastTouched time.Time
 
 	// Optional scalar fields
-	Completed      *time.Time
-	Priority       *int
+	Completed *time.Time
+	Priority  *int
 	// DEPRECATED (I-406) — read-only for legacy-file round-trip during
 	// the deprecation window. New items use Priority instead. Remove
 	// once a sweep confirms no agent-state files still carry severity.
-	Severity string
-	Category       string
-	Repo           string
-	Summary        string
-	AssignedTo     string // agent ID
-	LastTouchedBy  string // agent ID
-	Epic           string // epic ID (adjective-verb-noun)
-	Sprint         string // sprint ID (adjective-verb-noun)
+	Severity      string
+	Category      string
+	Repo          string
+	Summary       string
+	AssignedTo    string // agent ID
+	LastTouchedBy string // agent ID
+	Epic          string // epic ID (adjective-verb-noun)
+	Sprint        string // sprint ID (adjective-verb-noun)
+	Arc           string // T-378 (I-712): strategic work-stream grouping
+	//                       — sibling of sprint/epic at a longer horizon.
+	//                       Any name an operator uses is the arc; not
+	//                       predefined. One per item in v1.
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
@@ -207,7 +211,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"created": true, "last_touched": true, "completed": true,
 	"priority": true, "severity": true, "category": true, "repo": true,
 	"assigned_to": true, "last_touched_by": true, "epic": true,
-	"sprint": true, "claimed_by": true, "claimed_at": true,
+	"sprint": true, "arc": true, "claimed_by": true, "claimed_at": true,
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
 	// storeList

@@ -1274,9 +1274,10 @@ verdict drifts toward what the operator actually accepts.`,
 			// workspace. --all also implies AgentAll so the operator's
 			// "show me everything" knob is consistent.
 			globalView, _ := cmd.Flags().GetBool("global")
-			// T-377 (I-712): per-agent 4-dimension rollup.
+			// T-377 (I-712): per-agent 4-dimension rollup. --arc filters (T-378).
 			me, _ := cmd.Flags().GetBool("me")
 			agentOverride, _ := cmd.Flags().GetString("agent")
+			arc, _ := cmd.Flags().GetString("arc")
 			exitCode = command.Status(appStore, appCfg, id, command.StatusOpts{
 				Issues: issues, Tasks: tasks, Recent: recent,
 				All: all, Completed: completed, Check: check,
@@ -1286,7 +1287,7 @@ verdict drifts toward what the operator actually accepts.`,
 				SprintsRunning: sprintsRunning,
 				Filters:        filters, Sort: sortStr, Since: since, JSON: jsonOut,
 				AgentAll: globalView || all,
-				Me:       me, Agent: agentOverride,
+				Me:       me, Agent: agentOverride, Arc: arc,
 			})
 		},
 	}
@@ -1314,6 +1315,9 @@ verdict drifts toward what the operator actually accepts.`,
 		"per-agent rollup: DONE / IN-FLIGHT / NEEDS-YOU / PROPOSED-NEXT (--since window, default 24h)")
 	statusCmd.Flags().String("agent", "",
 		"with --me: override the agent id (default: cfg.Identity().ID)")
+	// T-378 (I-712): filter the --me rollup to one arc.
+	statusCmd.Flags().String("arc", "",
+		"with --me: filter every section to items in the given arc")
 	statusCmd.Flags().String("since", "",
 		"only items touched within this duration (e.g. 7d, 24h, 30m)")
 	statusCmd.Flags().Bool("json", false, "emit JSON instead of human-readable text")
@@ -1592,6 +1596,53 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 		},
 	})
 	root.AddCommand(epicCmd)
+
+	// T-378 (I-712): strategic-work-stream arc tagging. Any name an
+	// operator uses IS the arc — no registry, no predefined list.
+	arcCmd := &cobra.Command{
+		Use:   "arc",
+		Short: "Strategic work-stream tagging (sibling of sprint/epic)",
+	}
+	arcCmd.AddCommand(&cobra.Command{
+		Use:   "add <name> <id…>",
+		Short: "Tag items with an arc (overwrites prior arc)",
+		Args:  cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ArcAdd(appStore, appCfg, args[0], args[1:])
+		},
+	})
+	arcCmd.AddCommand(&cobra.Command{
+		Use:   "rm <id…>",
+		Short: "Clear the arc on items",
+		Args:  cobra.MinimumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ArcRm(appStore, appCfg, args)
+		},
+	})
+	arcShowCmd := &cobra.Command{
+		Use:   "show <name>",
+		Short: "List items in an arc",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			exitCode = command.ArcShow(appStore, appCfg, args[0], jsonOut)
+		},
+	}
+	arcShowCmd.Flags().Bool("json", false, "machine output")
+	arcCmd.AddCommand(arcShowCmd)
+
+	arcListCmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List arcs in use (with counts)",
+		Aliases: []string{"ls"},
+		Run: func(cmd *cobra.Command, args []string) {
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			exitCode = command.ArcList(appStore, appCfg, jsonOut)
+		},
+	}
+	arcListCmd.Flags().Bool("json", false, "machine output")
+	arcCmd.AddCommand(arcListCmd)
+	root.AddCommand(arcCmd)
 
 	sprintCmd := &cobra.Command{
 		Use:   "sprint",
