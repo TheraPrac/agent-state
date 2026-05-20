@@ -289,10 +289,12 @@ func parseCostUSD(raw any) float64 {
 // function:
 //   - Only fires while PIDAlive==true (Decide's "live worker" branch).
 //     A terminated worker is classified by ClassifyRespawn (B1/C2), not D2.
-//   - Cross-respawn cost accumulation is bounded by respawn_limit via
-//     ClassifyRespawn, NOT by D2. D2 looks only at the current item's
-//     rolled-up spend — a worker that exits and respawns under the limit
-//     resets the live D2 evaluation but the cost stays on the item.
+//   - D2 measures THIS ATTEMPT's burn — the caller passes the per-attempt
+//     delta `last.AICostUSD - st.attemptStartCostUSD`, NOT item lifetime
+//     spend. BeginAttempt resets attemptStartCostUSD on each respawn, so
+//     D2 itself naturally resets across respawns. Cumulative cross-respawn
+//     spend is bounded by respawn_limit via ClassifyRespawn — D2 doesn't
+//     try to backstop unbounded respawn cycles; that's B1/C2's job.
 //
 // currentCostUSD == 0 returns (false, "") — the rollup is not yet
 // populated (e.g. before the worker's first SubagentStop fires), NOT a
@@ -396,7 +398,8 @@ func SizeClassBaseline(item *model.Item) time.Duration {
 // fires comfortably below K1's per_item cap of $40 even at K2=3 (the
 // highest baseline below × 3 = $30, leaving $10 of headroom). Same
 // type+priority shape as SizeClassBaseline; documented as heuristic.
-// Empirical-medians-from-archive replacement is tracked as T-380.
+// Empirical per-session deltas (the right shape — see T-380's archive
+// finding) are tracked as T-383.
 //
 // NOTE: the K1-headroom guarantee holds ONLY when K2 ≤ 3. If the
 // operator raises stuck_multiplier in coordinator.yaml above 3, the

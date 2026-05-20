@@ -238,7 +238,19 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 		// (code-review finding 3).
 		postItem := freshItem(cfg, itemID)
 		if postItem == nil {
-			postItem = baseItem // store momentarily unreadable; degrade, don't crash
+			// Store momentarily unreadable. baseItem is the right fallback
+			// for COST: ai_cost_usd is only mutated by subagent-stop-metrics
+			// hooks (I-369/T-330), which fire from a worker's own subagent
+			// calls — and Spawn between baseItem and postItem only forks
+			// the worker, it never invokes a subagent itself. So
+			// baseItem.ai_cost_usd == postItem.ai_cost_usd in normal
+			// operation; the cost reading does NOT regress to wrong-unit
+			// (item-lifetime) semantics on this degrade path. Changelog
+			// length CAN differ (Spawn writes st-start claim rows on
+			// attempt 1), which costs B1 a touch of precision on
+			// progress-detection during a store hiccup — acceptable
+			// degrade, not a cost-semantic regression.
+			postItem = baseItem
 		}
 		// T-380: capture post-spawn cost too, so D2 measures THIS WORKER's
 		// burn (delta from this baseline) instead of item-lifetime rollup.
@@ -308,6 +320,17 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 				return 0
 
 			case coordinator.ActionRespawn:
+				// killWorker SIGTERMs the worker, but its in-flight subagent
+				// calls may take a beat to drain — subagent-stop-metrics.sh
+				// could fire one more time AFTER kill and push the item's
+				// ai_cost_usd higher than what freshItem read at the top of
+				// the next iteration. The race is bounded: by then we're
+				// past Spawn, attemptStartCostUSD is captured from postItem,
+				// and at worst the NEXT supervision tick's delta will look
+				// $X lower than reality for one poll (D2 under-fires by
+				// $X), self-correcting on the following tick once the
+				// rollup catches up. Cumulative respawn spend is bounded
+				// by respawn_limit via ClassifyRespawn (B1/C2), not by D2.
 				killWorker(cfg, itemID)
 				st.RecordRespawn(lastSig)
 				extraCtx = fmt.Sprintf(

@@ -87,7 +87,12 @@ func TestDecide(t *testing.T) {
 	// T-365: D2 is now cost-based. The wall-clock SizeClass still drives
 	// the C2 wedge threshold, but D2 reads AICostUSD against CostBaseline.
 	// SpawnedAt is NOT read by cost-based D2 (was used by legacy DetectStuck).
+	// T-380: D2 compares the PER-ATTEMPT delta, so attemptStartCostUSD must
+	// be set explicitly via BeginAttempt — here we record $0 to model a
+	// FIRST-attempt worker with no prior cost (delta == lifetime cost).
+	// TestDecide_D2UsesPerAttemptDelta below covers the prior-cost case.
 	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
+	st.BeginAttempt(now, 0, 0)
 	live := []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
 		{PIDAlive: true, RowCount: 9, AICostUSD: 30.0, SampledAt: now.Add(5 * time.Minute)}, // $30 ≥ 3×$10
@@ -101,6 +106,7 @@ func TestDecide(t *testing.T) {
 	// DetectStuckByCost short-circuits on its baselineUSD<=0 guard and
 	// the test would pass without actually evaluating D2's threshold.
 	st = &WorkerState{SizeClass: 60 * time.Minute, CostBaseline: 10.0}
+	st.BeginAttempt(now, 0, 0) // explicit per-attempt baseline (T-380)
 	d = Decide(st, []ProgressSnapshot{
 		{PIDAlive: true, RowCount: 1, AICostUSD: 1.0, SampledAt: now},
 		{PIDAlive: true, RowCount: 9, AICostUSD: 5.0, SampledAt: now.Add(2 * time.Minute)}, // $5 < 3×$10 — D2 evaluates & returns false
