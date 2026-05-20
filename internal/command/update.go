@@ -11,9 +11,36 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/store"
 	"github.com/jfinlinson/agent-state/internal/validate"
 )
+
+// splitACInput parses an acceptance_criteria stdin/value payload into
+// the candidate AC list. Accepts either bare lines or `- ` YAML
+// list-prefixed lines, drops blanks, and strips the leading `- `
+// (and any surrounding whitespace) so quality.ValidateACList sees
+// the AC payload, not the YAML formatting. I-713.
+func splitACInput(value string) []string {
+	var out []string
+	for _, raw := range strings.Split(value, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// Strip a leading list-item bullet so the validator sees
+		// the AC content directly.
+		if strings.HasPrefix(line, "- ") {
+			line = strings.TrimSpace(line[2:])
+		}
+		// Some callers paste lines with a stray "-" alone — treat as blank.
+		if line == "" || line == "-" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
 
 // listFields are the TOP-LEVEL fields stored as YAML lists. A value for
 // one of these is written as list items via ReplaceList, never a scalar —
@@ -191,6 +218,18 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 		if !ok {
 			return code
 		}
+		// I-713: for acceptance_criteria the I-491 limitation makes
+		// `current` always "" (the header line carries no inline value),
+		// so `new == current` triggers even when the user opened the
+		// editor, edited a real value, then accidentally saved empty.
+		// Treat empty editor output for the AC field as an explicit
+		// refusal — matches the stdin-mode "empty input" guard.
+		if new == "" && field == "acceptance_criteria" {
+			fmt.Fprintf(os.Stderr,
+				"update %s acceptance_criteria: refusing empty editor output — write at least one `- cmd: ...` line, or abort the editor session.\n",
+				id)
+			return 2
+		}
 		if new == current {
 			fmt.Println("No changes.")
 			return 0
@@ -241,6 +280,51 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 				"   followed by an indented body).\n",
 			id, field, id)
 		return 2
+	}
+
+	// I-713: item-level acceptance_criteria writes must carry the
+	// same verifiability bar as plan-sidecar writes (I-511/I-710).
+	// Pre-validate the incoming list via quality.ValidateACList
+	// before the mutate so vague ACs ("the feature works"), non-cmd
+	// raw shapes ("make e2e"), and absolute paths ("cmd: /abs/...")
+	// are refused at the write surface. No --strict opt-in, no
+	// --allow-weak-ac escape hatch — mirrors the I-589 SBAR posture
+	// for `st plan approve`.
+	//
+	// Empty-input coverage: truly-empty stdin is caught by the
+	// pre-existing guard at ~line 203 (exit 1). The empty-list path
+	// here fires for non-empty-but-bullet-only input (e.g. "-\n-\n")
+	// that splitACInput collapses to a zero-length slice. The
+	// editor-mode empty case is handled in the editor branch above.
+	if field == "acceptance_criteria" {
+		// I-713 + review F4: strip the leading `- ` bullet on single-line
+		// positional writes BEFORE the mutate, so the value the validator
+		// sees and the value the store writes match byte-for-byte. Without
+		// this, `st update T-001 acceptance_criteria "- cmd: ..."` would
+		// pass validation (bullet stripped) but the single-line list-write
+		// path would persist the raw `- cmd: ...` as the AC content
+		// (wrapping it in a second list bullet).
+		if !strings.Contains(value, "\n") && strings.HasPrefix(value, "- ") {
+			value = strings.TrimSpace(value[2:])
+		}
+		acs := splitACInput(value)
+		if len(acs) == 0 {
+			fmt.Fprintf(os.Stderr,
+				"update %s acceptance_criteria: refusing bullet-only or whitespace-only input — pipe a populated list (`- cmd: ...` lines), one AC per line.\n",
+				id)
+			return 2
+		}
+		if vios := quality.ValidateACList(acs); quality.HasError(vios) {
+			fmt.Fprintf(os.Stderr,
+				"update %s acceptance_criteria: %d AC(s) not verifiable; refusing write:\n",
+				id, len(vios))
+			for _, v := range vios {
+				fmt.Fprintf(os.Stderr, "  %s\n", v)
+			}
+			fmt.Fprintf(os.Stderr,
+				"Each AC must start with `cmd:` (e.g., `cmd: go test ./...`), name a test (e.g., `TestFoo passes`), or include a measurable threshold (e.g., `< 50ms`, `returns 200`).\n")
+			return 2
+		}
 	}
 
 	var oldValue string
@@ -810,11 +894,15 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		// forms (I-691 added the one-line positional form alongside
 		// the multi-line --stdin form).
 		if listFields[p.Field] {
+			extra := ""
+			if p.Field == "acceptance_criteria" {
+				extra = "  Note: I-713 — acceptance_criteria writes carry the plan.ValidateACs verifiability gate; each AC must be `cmd:` prefixed, name a test, or include a measurable threshold.\n"
+			}
 			fmt.Fprintf(os.Stderr,
 				"update: %s is a list field — batch mode cannot set list fields as a scalar.\n"+
 					"  Use: st update %s %s \"<single item>\"   (one-line list replacement), or\n"+
-					"       st update %s %s --stdin             (multi-line list replacement)\n",
-				p.Field, id, p.Field, id, p.Field)
+					"       st update %s %s --stdin             (multi-line list replacement)\n%s",
+				p.Field, id, p.Field, id, p.Field, extra)
 			return 2
 		}
 		if p.Field == "summary" {
