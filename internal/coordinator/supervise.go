@@ -46,7 +46,7 @@ type WorkerState struct {
 	SpawnedAt    time.Time     // registry Started of the CURRENT attempt
 	RespawnCount int           // respawn-with-context cycles already spent
 	LastFailSig  string        // failure signature of the PRIOR terminated attempt
-	SizeClass    time.Duration // legacy wall-clock baseline (kept for C2 wedge threshold)
+	SizeClass    time.Duration // wall-clock baseline driving C2's WedgeThreshold (sole use post-T-381)
 	CostBaseline float64       // T-365: USD baseline for cost-based D2 (per SizeClassCostBaseline)
 	Snaps        []ProgressSnapshot
 
@@ -304,25 +304,12 @@ func DetectStuckByCost(currentCostUSD, baselineUSD, mult float64) (string, bool)
 	return "", false
 }
 
-// DetectStuck is the LEGACY wall-clock D2 proxy from T-363. Superseded
-// by DetectStuckByCost (T-365) for the primary D2 check. Kept only for
-// callers on substrates that pre-date I-369 (none in the live
-// workspace at T-365 close). Removal scheduled: see T-381.
-//
-// Returns (reason, true) when elapsed ≥ mult × baseline.
-func DetectStuck(spawnedAt, now time.Time, baseline time.Duration, mult float64) (string, bool) {
-	if baseline <= 0 || mult <= 0 || spawnedAt.IsZero() {
-		return "", false
-	}
-	limit := time.Duration(float64(baseline) * mult)
-	elapsed := now.Sub(spawnedAt)
-	if elapsed >= limit {
-		return "elapsed " + elapsed.Round(time.Second).String() + " ≥ stuck_multiplier(" +
-			trimFloat(mult) + ") × size-class baseline " + baseline.String() +
-			" — stuck (contract §7-D2; wall-clock proxy, cost-based D2 is T-365)", true
-	}
-	return "", false
-}
+// (T-381: wall-clock DetectStuck deleted — superseded by
+// DetectStuckByCost in T-365; production migration met; no remaining
+// callers. SizeClassBaseline below is retained: it still feeds C2's
+// WedgeThreshold for the transcript-silence window. See git history
+// pre-T-381 if the wall-clock D2 proxy is ever needed back, e.g.
+// for substrates pre-dating I-369.)
 
 // ClassifyRespawn is the B1/C2 decision made when a worker has TERMINATED
 // (PID gone) without completing the item. It decides — purely — whether
@@ -367,11 +354,13 @@ func ClassifyRespawn(st *WorkerState, terminalSig string, madeProgress bool, b *
 }
 
 // SizeClassBaseline is the documented default median wall-clock for an
-// item's size class, used by D2's wall-clock proxy. These are deliberately
-// coarse heuristics keyed by type+priority — NOT empirically-derived
-// medians (that needs the historical cost/time rollup tracked as T-365).
-// They are intentionally generous so D2 catches genuine runaways, not
-// normal variance; the per_item budget cap is the hard backstop.
+// item's size class. After T-381's deletion of the wall-clock DetectStuck
+// proxy, this function is consumed solely by WedgeThreshold for C2's
+// transcript-silence window (D2 is now cost-based via DetectStuckByCost
+// + SizeClassCostBaseline). These are deliberately coarse heuristics
+// keyed by type+priority — NOT empirically-derived medians; they are
+// intentionally generous so C2 only fires for genuine wedges, not
+// normal variance.
 func SizeClassBaseline(item *model.Item) time.Duration {
 	pri := 2
 	if item.Priority != nil {
