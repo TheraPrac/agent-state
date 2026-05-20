@@ -380,3 +380,116 @@ func TestTui_HintLinePerAxis(t *testing.T) {
 		}
 	}
 }
+
+// --- T-375 §5 #5 recency-aware reorder tests ---
+
+// A facet whose LastChange is within recencyWindow floats to the top
+// in reverse-chronological order; the rest preserves facetOrder.
+func TestTui_DisplayedSectionOrder_RecencyReorder(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	results := map[string]facetResult{
+		"item":       {LastChange: now.Add(-30 * time.Minute)}, // recent
+		"plan":       {LastChange: now.Add(-90 * time.Minute)}, // NOT recent (>1h)
+		"ac":         {},                                       // zero ⇒ unknown
+		"history":    {LastChange: now.Add(-5 * time.Minute)},  // recent + most recent
+		"testing":    {},                                       // zero
+		"pr":         {},
+		"uat":        {},
+		"commits":    {},
+		"deps":       {},
+		"bus":        {LastChange: now.Add(-50 * time.Minute)}, // recent
+		"worktree":   {},
+		"accounting": {},
+	}
+	got := displayedSectionOrder(results, now)
+	// First three are the recent set in reverse-chronological order:
+	// history (5m) > item (30m) > bus (50m).
+	want := []string{"history", "item", "bus"}
+	for i, k := range want {
+		if got[i] != k {
+			t.Errorf("recent set[%d] = %q, want %q (full got=%v)", i, got[i], k, got)
+		}
+	}
+	// The remainder must preserve facetOrder (skipping the promoted three).
+	wantRest := []string{"plan", "ac", "testing", "pr", "uat", "commits", "deps", "worktree", "accounting"}
+	for i, k := range wantRest {
+		if got[len(want)+i] != k {
+			t.Errorf("remainder[%d] = %q, want %q (full got=%v)", i, got[len(want)+i], k, got)
+		}
+	}
+}
+
+// No recent facets ⇒ displayedSectionOrder is byte-identical to
+// facetOrder. The static showFull path implicitly relies on this
+// (the static fixture has 57-day-old items) — confirms why T-371
+// tests stay green.
+func TestTui_DisplayedSectionOrder_NoRecencyEqualsFacetOrder(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	results := map[string]facetResult{}
+	for _, k := range facetOrder {
+		results[k] = facetResult{LastChange: now.Add(-48 * time.Hour)} // all stale
+	}
+	got := displayedSectionOrder(results, now)
+	for i, k := range facetOrder {
+		if got[i] != k {
+			t.Errorf("position %d: got %q, want %q (full got=%v)", i, got[i], k, got)
+		}
+	}
+}
+
+// Determinism: shuffled map input → identical output (no map iteration
+// governs visual order — the T-369 F1 / T-370 / T-371 / T-374 discipline).
+func TestTui_DisplayedSectionOrder_Deterministic(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	mk := func() map[string]facetResult {
+		// All within recency window but at the SAME instant — promoted
+		// set order falls to the stable sort, which preserves facetOrder.
+		out := map[string]facetResult{}
+		for _, k := range facetOrder {
+			out[k] = facetResult{LastChange: now.Add(-5 * time.Minute)}
+		}
+		return out
+	}
+	a := displayedSectionOrder(mk(), now)
+	b := displayedSectionOrder(mk(), now)
+	if strings.Join(a, ",") != strings.Join(b, ",") {
+		t.Fatalf("non-deterministic:\nA: %v\nB: %v", a, b)
+	}
+	// With all equal-time, stable sort keeps facetOrder.
+	for i, k := range facetOrder {
+		if a[i] != k {
+			t.Errorf("equal-time tie at %d: got %q, want %q", i, a[i], k)
+		}
+	}
+}
+
+// recomputeFacets primes the cache + clamps cursor on length change.
+// The cache is THE perf win: arrows must not re-run facets per keystroke
+// (verified indirectly by the value being there post-refresh).
+func TestTui_RecomputeFacetsCachesAndClamps(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	it, _ := s.Get("T-001")
+	m := tuiModel{s: s, cfg: cfg, item: it, sectionCursor: 99}
+	m = recomputeFacets(m)
+	if m.facetResults == nil {
+		t.Fatal("facetResults must be populated after recomputeFacets")
+	}
+	if len(m.displayedOrder) != len(facetOrder) {
+		t.Errorf("displayedOrder length = %d, want %d", len(m.displayedOrder), len(facetOrder))
+	}
+	if m.sectionCursor != len(m.displayedOrder)-1 {
+		t.Errorf("cursor must clamp to len-1=%d, got %d",
+			len(m.displayedOrder)-1, m.sectionCursor)
+	}
+}
+
+// nil item ⇒ cache cleared, no panic.
+func TestTui_RecomputeFacets_NilItemSafe(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	m := tuiModel{s: s, cfg: cfg, item: nil}
+	m = recomputeFacets(m)
+	if m.facetResults != nil || m.displayedOrder != nil {
+		t.Errorf("nil-item recompute must zero the cache; got results=%v order=%v",
+			m.facetResults, m.displayedOrder)
+	}
+}
