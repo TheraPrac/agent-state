@@ -106,3 +106,47 @@ The updated recommendation reflects the new findings.`
 		t.Errorf("narrative-only input should return empty; got %q", got)
 	}
 }
+
+// TestExtractRecommendation_TwoVerdictHeadersReturnsLast — when a
+// sub-agent emits two verdict-token candidates in one report (e.g.,
+// echoing a prior iteration's Reject before re-evaluating to
+// Accept), the LAST verdict wins. Behavioral pin for I-718's
+// last-verdict-wins selection.
+func TestExtractRecommendation_TwoVerdictHeadersReturnsLast(t *testing.T) {
+	output := `Initial pass:
+
+RECOMMENDATION: Reject
+
+After re-evaluation:
+
+RECOMMENDATION: Accept`
+	got := extractRecommendation(output)
+	if !strings.Contains(strings.ToLower(got), "accept") {
+		t.Errorf("expected LAST verdict (Accept); got %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "reject") {
+		t.Errorf("LAST-wins selection picked Reject instead of Accept: %q", got)
+	}
+}
+
+// TestExtractRecommendation_ApproveMapsToAccept — sub-agents that
+// emit `RECOMMENDATION: Approve` should map to the Accept menu
+// option (parity with the downstream `Contains("approve")` check).
+// Review F1 fix: "approve" added to extractRecVerdictTokens.
+func TestExtractRecommendation_ApproveMapsToAccept(t *testing.T) {
+	got := extractRecommendation(`**RECOMMENDATION**: Approve — looks good`)
+	if !strings.HasPrefix(got, "[1] Accept") {
+		t.Errorf("expected Approve to route to [1] Accept menu option; got %q", got)
+	}
+}
+
+// TestExtractRecommendation_RationaleWithSecondEmDashKeepsVerdict —
+// review F3 fix: switched LastIndex to Index for separator
+// detection, so `RECOMMENDATION — Accept — for reasons above`
+// doesn't drop the verdict in favor of the trailing fragment.
+func TestExtractRecommendation_RationaleWithSecondEmDashKeepsVerdict(t *testing.T) {
+	got := extractRecommendation(`**RECOMMENDATION** — Accept — for reasons above`)
+	if !strings.HasPrefix(got, "[1] Accept") {
+		t.Errorf("rationale's second em-dash dropped the verdict; got %q", got)
+	}
+}

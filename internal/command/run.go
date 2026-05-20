@@ -5358,9 +5358,45 @@ func oneLine(s string) string {
 	return s
 }
 
-// planRecommendation evaluates a plan/design and returns a recommendation string.
-// extractRecommendation pulls the recommendation from claude's review output
-// and returns it as a one-line string. Looks for Accept/Reject/Chat keywords.
+// extractRecHeaderRE matches lines that LOOK like a verdict header:
+// only markdown-bold (`**`), markdown-heading (`##`), and whitespace
+// before the literal "recommendation" (case-insensitive), then a word
+// boundary. Catches both the inline-separator form
+// (`**RECOMMENDATION**: Accept`, `RECOMMENDATION — Accept`) and the
+// markdown-heading form (`## RECOMMENDATION` with the verdict on the
+// next line). Narrative mentions ("the updated recommendation
+// reflects...") don't match because they have prose words before
+// "recommendation". Package-level so the compile happens once.
+var extractRecHeaderRE = regexp.MustCompile(`(?i)^[\s*#]*recommendation\b`)
+
+// extractRecVerdictTokens is the canonical set of verdict tokens
+// recognized as a leading word in `extractRest`'s output. Sub-agents
+// emitting any of these as the first token of the verdict line get
+// the verdict-anchored last-match-wins selection. The downstream
+// map-to-menu block (below) also recognizes "approve" as equivalent
+// to "accept" (some sub-agents emit it); kept in sync here.
+var extractRecVerdictTokens = []string{
+	"accept", "approve", "reject", "feedback", "split", "interactive",
+}
+
+// extractRecommendation pulls the verdict line out of a Claude
+// sub-agent's review output. Looks for Accept / Approve / Reject /
+// Feedback / Split / Interactive on header-shape lines, returning
+// the verdict and rationale joined as "[N] Label — <text>" so
+// callers can route to a menu option. I-180 / I-588 / I-710 / I-718.
+//
+// Selection algorithm (I-718):
+//   - Collect ALL lines matching extractRecHeaderRE.
+//   - For each, run extractRest (same-line separator, then 3-line
+//     next-non-empty lookahead) to get the candidate text.
+//   - Prefer the LAST candidate whose extracted text begins with
+//     a recognized verdict token (see extractRecVerdictTokens).
+//   - If no candidate has a verdict token, return the LAST candidate
+//     (behavior FLIP from pre-I-718: the old code used FIRST-match-
+//     wins, which silently picked narrative over the trailing
+//     verdict header. Callers should treat this as the deliberate
+//     correction — no existing sub-agent prompt emits two
+//     unknown-token candidates with first-vs-last semantics).
 func extractRecommendation(output string) string {
 	if output == "" {
 		return ""
@@ -5368,33 +5404,15 @@ func extractRecommendation(output string) string {
 
 	lines := strings.Split(output, "\n")
 
-	// I-718: collect ALL header-shape candidate extractions, then
-	// prefer the LAST one whose extracted text begins with a
-	// recognized verdict token. Previous logic broke on the FIRST
-	// "recommendation"-containing line and returned its extraction,
-	// which picked narrative ("the updated recommendation
-	// reflects...") over the trailing verdict header
-	// ("RECOMMENDATION: Accept"). Bug surfaced on three Sprint 2
-	// plan reviews (I-717 twice, T-382 once).
-	//
-	// recHeader matches lines that LOOK like a verdict header:
-	// only markdown-bold (`**`), markdown-heading (`##`), and
-	// whitespace before the literal "recommendation" (case-
-	// insensitive), then a word boundary. Catches both the
-	// inline-separator form (`**RECOMMENDATION**: Accept`,
-	// `RECOMMENDATION — Accept`) and the markdown-heading form
-	// (`## RECOMMENDATION` with the verdict on the next line).
-	// Narrative mentions like "the updated recommendation
-	// reflects..." don't match because they have prose words
-	// before "recommendation".
-	recHeader := regexp.MustCompile(`(?i)^[\s*#]*recommendation\b`)
-
 	extractRest := func(i int, line string) string {
-		// Try same-line ":" first, then "—" — colons preserve "Accept"
-		// in "RECOMMENDATION: Accept — reason" where em-dash would
-		// drop it.
+		// Try same-line ":" first (colon preserves "Accept" in
+		// "RECOMMENDATION: Accept — reason"), then em-dash.
+		// I-718: switched from LastIndex to Index so a rationale
+		// containing a second separator (e.g.,
+		// "RECOMMENDATION — Accept — for reasons above") doesn't
+		// drop the verdict in favor of the trailing fragment.
 		for _, sep := range []string{":", "—"} {
-			if idx := strings.LastIndex(line, sep); idx >= 0 {
+			if idx := strings.Index(line, sep); idx >= 0 {
 				rest := strings.TrimSpace(line[idx+len(sep):])
 				rest = strings.ReplaceAll(rest, "**", "")
 				rest = strings.ReplaceAll(rest, "*", "")
@@ -5416,12 +5434,12 @@ func extractRecommendation(output string) string {
 		return ""
 	}
 
-	verdictTokens := []string{"accept", "reject", "feedback", "split", "interactive"}
 	hasVerdictToken := func(s string) bool {
 		ls := strings.ToLower(s)
 		// Pick the first whitespace/punctuation-delimited token —
 		// "Stale — keyword fresh was incidental" should NOT match
 		// "fresh" inside the rationale, only the leading "Stale".
+		// "Accept with notes" → first token is "accept" → matches.
 		first := strings.TrimLeft(ls, " \t-—:*")
 		for _, sep := range []string{" ", "\t", "—", "-", ":", ","} {
 			if idx := strings.Index(first, sep); idx >= 0 {
@@ -5429,20 +5447,17 @@ func extractRecommendation(output string) string {
 				break
 			}
 		}
-		for _, tok := range verdictTokens {
+		for _, tok := range extractRecVerdictTokens {
 			if first == tok {
 				return true
 			}
 		}
-		// Also accept "accept" as a substring of "accept with notes"
-		// to keep the existing "accept with notes" path working when
-		// the leading token is "accept" followed by " with".
 		return false
 	}
 
 	var lastVerdict, lastAny string
 	for i, line := range lines {
-		if !recHeader.MatchString(line) {
+		if !extractRecHeaderRE.MatchString(line) {
 			continue
 		}
 		rest := extractRest(i, line)
@@ -5478,6 +5493,16 @@ func extractRecommendation(output string) string {
 	}
 	if strings.Contains(lower, "chat") || strings.Contains(lower, "feedback") {
 		return "[3] Feedback — " + recLine
+	}
+	// I-718: split + interactive are in extractRecVerdictTokens
+	// (so they're recognized as leading-token verdicts and survive
+	// the parse), so they also get menu prefixes here for the
+	// downstream `showReviewGate` to surface as distinct options.
+	if strings.Contains(lower, "interactive") {
+		return "[4] Interactive — " + recLine
+	}
+	if strings.Contains(lower, "split") {
+		return "[5] Split — " + recLine
 	}
 	return recLine
 }
