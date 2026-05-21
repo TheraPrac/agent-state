@@ -144,6 +144,33 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		}
 	}
 
+	// I-731: active-envs sentinel — surface the operator's declared
+	// active envs at session-start + warn on stale declaration.
+	// Pairs with claude-config/hooks/active-envs-guard.sh which is the
+	// hard gate at PreToolUse time. This sentinel is purely cosmetic
+	// (warn-only); the file is at <root>/.as/active-envs.yaml.
+	if !quiet {
+		activeEnvsPath := filepath.Join(cfg.Root(), ".as", "active-envs.yaml")
+		if ae, perr := quality.ParseActiveEnvs(activeEnvsPath); perr == nil {
+			activeList := strings.Join(ae.Active, ", ")
+			if activeList == "" {
+				activeList = "(none)"
+			}
+			tornList := strings.Join(ae.TornDown, ", ")
+			if tornList == "" {
+				tornList = "(none)"
+			}
+			fmt.Printf("  active_envs: \033[32m%s\033[0m\n", activeList)
+			fmt.Printf("  torn_down:   \033[90m%s\033[0m\n", tornList)
+			for _, v := range quality.ValidateActiveEnvs(ae, quality.ActiveEnvsValidateOpts{}) {
+				fmt.Printf("  \033[33m⚠\033[0m active-envs %s: %s\n", v.Field, v.Message)
+			}
+		} else if !os.IsNotExist(perr) {
+			// File exists but couldn't be opened — surface as a warning.
+			fmt.Printf("  \033[33m⚠\033[0m active-envs.yaml unreadable: %v\n", perr)
+		}
+	}
+
 	// Index.md coverage
 	indexPath := cfg.IndexPath()
 	indexContent, err := os.ReadFile(indexPath)
