@@ -61,6 +61,11 @@ func loadPlanForValidation(cfg *config.Config, id string) (*plan.Plan, []quality
 type PlanApproveOpts struct {
 	Strict bool
 	Engine *RunEngine
+	// BypassReview skips the I-710 plan-review sub-agent (operator escape
+	// hatch when the sub-agent is broken or the plan has been manually
+	// reviewed). I-752: added after I-738 hung 53min on the unbounded
+	// sub-agent. The validator gates (SBAR, AC verifiability) still run.
+	BypassReview bool
 }
 
 // PlanApprove marks an item's plan as approved. Sets PlanApproved=true,
@@ -122,7 +127,7 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// Review failure (Reject / Feedback / claude error) = approval
 	// refused (fail closed) — the gate is load-bearing for the
 	// plan-before-code hook.
-	if opts.Engine != nil {
+	if opts.Engine != nil && !opts.BypassReview {
 		if code := runPlanReview(s, cfg, id, item, *opts.Engine); code != 0 {
 			return code
 		}
@@ -130,6 +135,10 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		if refreshed, ok := s.Get(id); ok {
 			item = refreshed
 		}
+	} else if opts.BypassReview {
+		// I-752: warn loudly so the escape hatch is never silently exercised.
+		fmt.Fprintf(os.Stderr,
+			"%s: --bypass-review set — plan-review sub-agent skipped\n", id)
 	}
 
 	// I-710: plan substance gate fires unconditionally (lifted out

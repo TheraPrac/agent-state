@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
@@ -1972,6 +1973,9 @@ func executeClaude(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 	if agentID := cfg.AgentID(); agentID != "" {
 		env = append(env, "AS_AGENT_ID="+agentID)
 	}
+	// I-752: per-step env overrides (e.g. plan-review injects
+	// AS_CLAUDE_WALL_TIMEOUT=10m so defaultRunClaude tightens its wall cap).
+	env = append(env, step.ExtraEnv...)
 
 	// Record session on item
 	recordSession(s, cfg, itemID, sessionID, step.Name())
@@ -4770,12 +4774,26 @@ const defaultCIIdleTimeout = 10 * time.Minute
 const maxWallTimeout = 2 * time.Hour
 
 func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, error) {
+	// I-752: per-call wall cap honors AS_CLAUDE_WALL_TIMEOUT in the env
+	// slice so plan-review (10m) doesn't inherit the 2h ceiling. Parse
+	// failures log + fall back so a typo never silently raises the cap.
+	wallTimeout := maxWallTimeout
+	for _, e := range env {
+		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
+			if parsed, perr := time.ParseDuration(v); perr == nil {
+				wallTimeout = parsed
+			} else {
+				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — falling back to %s\n", v, perr, maxWallTimeout)
+			}
+		}
+	}
+
 	// Use the run context if available (Ctrl+C cancels it), with wall timeout as safety
 	parentCtx := context.Background()
 	if activeRunCtx != nil {
 		parentCtx = activeRunCtx
 	}
-	ctx, cancel := context.WithTimeout(parentCtx, maxWallTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, wallTimeout)
 	defer cancel()
 
 	// Resolve claude binary — may not be on subprocess PATH
@@ -4788,6 +4806,21 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stderr = os.Stderr
 
+	// I-752: put the child in its own process group so context cancel
+	// reaps tool-call grandchildren (the I-738 incident — sub-agent
+	// orphaned a 53min Read/Grep loop because exec.CommandContext only
+	// SIGKILL'd the leader). Override cmd.Cancel to SIGTERM the pgroup;
+	// WaitDelay lets the leader get SIGKILL if it ignores SIGTERM.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var pgid int
+	cmd.Cancel = func() error {
+		if pgid > 0 {
+			return syscall.Kill(-pgid, syscall.SIGTERM)
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, 0, fmt.Errorf("stdout pipe: %w", err)
@@ -4796,6 +4829,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	if err := cmd.Start(); err != nil {
 		return nil, 0, fmt.Errorf("start: %w", err)
 	}
+	pgid, _ = syscall.Getpgid(cmd.Process.Pid)
 
 	// Activity watchdog — kills process if no output for idleTimeout
 	// Extract item ID from env for status display
@@ -4885,7 +4919,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
 
-	waitTimeout := maxWallTimeout
+	waitTimeout := wallTimeout
 	if gotResult {
 		waitTimeout = 10 * time.Second // result received — process should exit quickly
 	}
@@ -4911,7 +4945,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 			if idle >= activity.idleTimeout {
 				return lastResult, 1, fmt.Errorf("killed: no output for %s (idle timeout)", idle.Round(time.Second))
 			}
-			return lastResult, 1, fmt.Errorf("killed: wall time limit (%s)", maxWallTimeout)
+			return lastResult, 1, fmt.Errorf("killed: wall time limit (%s)", wallTimeout)
 		}
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
@@ -5002,6 +5036,19 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 		cmd.Dir = dir
 	}
 
+	// I-752: process-group kill — same pattern as defaultRunClaude, so
+	// `sh -c` forked children (test runners, deploy scripts) get reaped
+	// when the parent context cancels instead of orphaning.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var pgid int
+	cmd.Cancel = func() error {
+		if pgid > 0 {
+			return syscall.Kill(-pgid, syscall.SIGTERM)
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second
+
 	// Pipe stdout+stderr, stream to terminal, track activity
 	stdoutPipe, _ := cmd.StdoutPipe()
 	cmd.Stderr = os.Stderr
@@ -5009,6 +5056,7 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 	if err := cmd.Start(); err != nil {
 		return nil, 0, err
 	}
+	pgid, _ = syscall.Getpgid(cmd.Process.Pid)
 
 	activity := &activityTracker{
 		lastSeen:    time.Now(),

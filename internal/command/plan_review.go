@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -15,6 +16,31 @@ import (
 // findings in the I-588 SBAR review precedent; beyond two iterations
 // the model usually loops on the same edits.
 const maxPlanReviewAutoFixIterations = 2
+
+// defaultPlanReviewWallTimeout is the per-step wall cap injected into the
+// plan-review sub-agent via AS_CLAUDE_WALL_TIMEOUT. I-738 hung 53min on the
+// global 2h ceiling; observed normal runtime is 1–4 min (I-735/736/737).
+// Operator override: AS_PLAN_APPROVE_TIMEOUT (duration string).
+const defaultPlanReviewWallTimeout = 10 * time.Minute
+
+// resolvePlanReviewTimeout reads AS_PLAN_APPROVE_TIMEOUT (a Go duration
+// string) and falls back to defaultPlanReviewWallTimeout. On parse error
+// it logs to stderr and uses the default — a typo must never silently
+// raise the cap back toward the 2h global ceiling.
+func resolvePlanReviewTimeout() time.Duration {
+	raw := os.Getenv("AS_PLAN_APPROVE_TIMEOUT")
+	if raw == "" {
+		return defaultPlanReviewWallTimeout
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"AS_PLAN_APPROVE_TIMEOUT=%q: %v — falling back to %s\n",
+			raw, err, defaultPlanReviewWallTimeout)
+		return defaultPlanReviewWallTimeout
+	}
+	return parsed
+}
 
 // runPlanReview spawns a Claude sub-agent to critically review the
 // plan sidecar for `id`, auto-fixing weak content via `st update`
@@ -41,19 +67,35 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 		return 0
 	}
 	cwd := cfg.Root()
+	wallCap := resolvePlanReviewTimeout()
 
 	// Loop bound is strictly less-than so the final iteration that
 	// fails to auto-fix falls out into the post-loop fail-closed
 	// path. The Accept/Reject/catch-all branches return inline;
 	// only the Accept-with-notes branch continues the loop.
 	for iter := 0; iter < maxPlanReviewAutoFixIterations; iter++ {
-		// Build the prompt and execute claude.
+		// Build the prompt and execute claude. I-752: inject the wall
+		// cap via ExtraEnv so defaultRunClaude tightens its ceiling
+		// from the 2h global to the plan-review-specific cap.
 		prompt := buildPlanReviewPrompt(id, item)
-		step := config.RunStepDef{Type: "claude", Prompt: prompt}
+		step := config.RunStepDef{
+			Type:     "claude",
+			Prompt:   prompt,
+			ExtraEnv: []string{"AS_CLAUDE_WALL_TIMEOUT=" + wallCap.String()},
+		}
 		step.SetName("plan_review_approve")
 		sr := executeClaude(s, cfg, id, "", step, RunOpts{}, engine, cwd, "", false)
 
 		if !sr.Passed && sr.FullOutput == "" {
+			// I-752: surface the wall-time case explicitly so the operator
+			// knows to extend AS_PLAN_APPROVE_TIMEOUT or use --bypass-review,
+			// rather than chasing a generic "sub-agent failed" message.
+			if strings.Contains(sr.Error, "wall time limit") {
+				fmt.Fprintf(os.Stderr,
+					"%s: plan review timed out after %s — refusing approval. Re-run, set AS_PLAN_APPROVE_TIMEOUT=<longer>, or pass --bypass-review.\n",
+					id, wallCap)
+				return 2
+			}
 			fmt.Fprintf(os.Stderr,
 				"%s: plan-review sub-agent failed (%s) — refusing approval. Re-run `st plan approve %s` to retry, or `st plan reset %s` to redraft.\n",
 				id, sr.Error, id, id)
