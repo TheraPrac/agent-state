@@ -10,6 +10,7 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/sprintinherit"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -127,6 +128,19 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "  warning: sprint-drift check skipped — registry unreadable: %v\n", rerr)
+		}
+	}
+
+	// I-736: CLAUDE.md drift sentinel. Soft warnings — never fail.
+	// Catches drift via git pull / hand-edits / pre-existing bloat that
+	// bypasses hooks/claude-md-bloat-guard.sh. Skipped in quiet mode
+	// (parity with sprint-drift warning model).
+	if !quiet {
+		claudeMdPath := filepath.Join(cfg.Root(), "claude-config", "CLAUDE.md")
+		if _, err := os.Stat(claudeMdPath); err == nil {
+			for _, f := range quality.ScanCLAUDEMd(claudeMdPath, 150, 200) {
+				fmt.Printf("  \033[33m⚠\033[0m claude-md drift [%s] line %d: %s\n", f.Pattern, f.Line, f.Snippet)
+			}
 		}
 	}
 
