@@ -116,9 +116,21 @@ func runAs(t *testing.T, workspace string, args ...string) (string, string, int)
 	t.Helper()
 	cmd := exec.Command(binPath, args...)
 	cmd.Dir = workspace
+	// I-758: clear CLAUDECODE so the agent-mode item-review branch
+	// doesn't fire in these integration tests. The tests don't wire a
+	// fake claude engine — they exercise the binary end-to-end with
+	// DefaultRunEngine, which spawns a real claude subprocess. With
+	// CLAUDECODE inherited from a Claude Code parent shell, the new
+	// agent-mode branch would fire the review and (depending on the
+	// real claude verdict) auto-archive freshly-created items, making
+	// these tests non-deterministic. AS_INTERNAL_NO_REVIEW=1 belt-and-
+	// braces blocks the review at the earliest skip point regardless
+	// of any future env semantics drift.
 	cmd.Env = append(os.Environ(),
 		"AS_AGENT_ID=test-agent",
 		"AS_SESSION_ID=test-session-001",
+		"CLAUDECODE=",
+		"AS_INTERNAL_NO_REVIEW=1",
 	)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

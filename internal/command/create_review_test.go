@@ -363,3 +363,113 @@ func TestCreateItemReview_InternalNoReviewEnvSkips(t *testing.T) {
 		t.Errorf("AS_INTERNAL_NO_REVIEW=1 should skip review even with an engine wired; got %d calls", got)
 	}
 }
+
+// TestCreateItemReview_AgentModeAcceptKeeps: I-758 — when CLAUDECODE=1
+// is set (agent context), the review runs in non-interactive mode.
+// On an Accept verdict the item is kept with no operator menu prompt.
+// This is the path that previously silently skipped via the
+// term.IsTerminal check, shipping items with TODO scaffolds.
+func TestCreateItemReview_AgentModeAcceptKeeps(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nAccept"}}
+	// Critical: SelectMenu is nil, simulating the agent-spawned
+	// non-TTY case that used to silently skip the review entirely.
+	engine := RunEngine{RunClaude: f.run}
+
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "Agent-created task", CreateOpts{Priority: 2, Engine: engine}); code != 0 {
+			t.Fatalf("Create returned %d", code)
+		}
+	})
+	if got := atomic.LoadInt32(&f.calls); got != 1 {
+		t.Errorf("agent-mode Accept should call review exactly once; got %d", got)
+	}
+	// Item should remain (not archived).
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-005")
+	if !ok {
+		t.Fatal("expected T-005 to exist after agent-mode Accept")
+	}
+	if item.Status == "abandoned" {
+		t.Errorf("agent-mode Accept should keep item; got status=%q", item.Status)
+	}
+}
+
+// TestCreateItemReview_AgentModeRejectArchives: when CLAUDECODE=1 and
+// the sub-agent recommends Reject, the item is auto-archived without
+// an operator menu prompt — the agent-mode analog of the operator
+// flow that hits option "2".
+func TestCreateItemReview_AgentModeRejectArchives(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nReject — duplicate of T-001"}}
+	engine := RunEngine{RunClaude: f.run}
+
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "Agent-rejected task", CreateOpts{Priority: 2, Engine: engine}); code != 0 {
+			t.Fatalf("Create returned %d", code)
+		}
+	})
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-005")
+	if !ok {
+		t.Fatal("expected T-005 to exist after agent-mode Reject (closed to archive)")
+	}
+	if item.Status != "abandoned" {
+		t.Errorf("agent-mode Reject should archive; got status=%q", item.Status)
+	}
+}
+
+// TestCreateItemReview_AgentModeAmbiguousKeeps: an ambiguous verdict
+// (Feedback / unknown / empty) in agent mode keeps the item rather
+// than risking a destructive Reject — there's no operator to consult
+// for clarification.
+func TestCreateItemReview_AgentModeAmbiguousKeeps(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nFeedback — operator: please clarify scope"}}
+	engine := RunEngine{RunClaude: f.run}
+
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "Agent ambiguous task", CreateOpts{Priority: 2, Engine: engine}); code != 0 {
+			t.Fatalf("Create returned %d", code)
+		}
+	})
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-005")
+	if !ok {
+		t.Fatal("expected T-005 to exist after agent-mode ambiguous verdict")
+	}
+	if item.Status == "abandoned" {
+		t.Errorf("agent-mode ambiguous verdict should keep item (no destructive Reject); got status=%q", item.Status)
+	}
+}
+
+// TestCreateItemReview_NonAgentNonTTYStillSkips: the original
+// non-TTY skip is preserved for non-agent contexts (genuine
+// pipe-into-st-create from CI runners that don't set CLAUDECODE).
+// The operative guard in create_review.go is the three-way
+// conjunction `engine.SelectMenu == nil && !term.IsTerminal(stdin)
+// && !isAgent`. All three must hold for the skip to fire:
+// SelectMenu is nil (test wires RunClaude only), stdin is not a
+// TTY (true under `go test`), and isAgent is false (CLAUDECODE
+// cleared below). The review should NOT fire here — preserves the
+// I-588 carve-out for piped contexts that would hang on the
+// operator menu.
+func TestCreateItemReview_NonAgentNonTTYStillSkips(t *testing.T) {
+	// Explicitly clear CLAUDECODE in case the test harness inherits it.
+	t.Setenv("CLAUDECODE", "")
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nAccept"}}
+	engine := RunEngine{RunClaude: f.run} // SelectMenu nil → original skip path
+
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "Non-agent piped task", CreateOpts{Priority: 2, Engine: engine}); code != 0 {
+			t.Fatalf("Create returned %d", code)
+		}
+	})
+	if got := atomic.LoadInt32(&f.calls); got != 0 {
+		t.Errorf("non-agent non-TTY without SelectMenu should still skip review; got %d calls", got)
+	}
+}

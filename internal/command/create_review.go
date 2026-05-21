@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -24,9 +25,20 @@ import (
 // "Accept with notes" auto-fix, same Accept/Reject/Feedback gate menu, same
 // extractRecommendation / extractNotesFromReview helpers.
 //
+// Outcomes:
+//   - Accept (operator menu or agent-mode shortcut) — item kept as-is.
+//   - Accept with notes — sub-agent auto-fixes via `st update`, then re-reviews.
+//   - Reject (operator menu "2" or agent-mode shortcut) — DESTRUCTIVE: item
+//     is closed and moved to `agent-state/archive/` via `archiveAbandonedItem`
+//     with `status: abandoned`. In agent mode this fires without operator
+//     confirmation; in operator mode the operator selected option "2".
+//   - Feedback (operator menu "3" only) — operator types direction, sub-agent
+//     revises in a constrained-feedback loop.
+//   - Ambiguous verdict in agent mode — item kept (no operator to consult; do
+//     not risk a destructive Reject on a non-explicit verdict).
+//
 // Failure is non-fatal: a claude error or missing engine prints a stderr
-// warning and returns. The new item is already on disk and a follow-up
-// `st update <id> sbar` is always available.
+// warning and returns without touching the item.
 func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *model.Item, engine RunEngine) {
 	if item == nil {
 		return
@@ -50,16 +62,32 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 	if os.Getenv("AS_INTERNAL_NO_REVIEW") == "1" {
 		return
 	}
-	// Non-interactive contexts (piped stdin, CI runners, in-process test
-	// harnesses) skip the review because the gate prompts for operator input
-	// (Accept/Reject/Feedback) and an empty stdin would hang the process.
-	// Tests that exercise the review path inject a mock engine + mock
-	// SelectMenu, which short-circuits this check by not going through the
-	// CLI entry point — they call command.Create() directly with a fake
-	// engine, and the fake's SelectMenu replaces the TTY-bound default.
-	// The `term.IsTerminal` guard is applied AFTER the engine.RunClaude
-	// nil check above so test engines with a real SelectMenu still run.
-	if engine.SelectMenu == nil && !term.IsTerminal(int(os.Stdin.Fd())) {
+	// I-758: detect agent context via the CLAUDECODE=1 env var Claude
+	// Code sets in every tool subprocess. Previously this function
+	// silently returned on any non-TTY context (line below), which
+	// meant every agent-spawned `st create` shipped its item with TODO
+	// scaffolds — the I-588 review never fired. Filed after the
+	// 2026-05-21 incident where I-731/I-732/I-733 sat with scaffold
+	// SBAR for 17 hours after creation.
+	//
+	// In agent mode the review runs but the operator-input menu is
+	// short-circuited deterministically by the sub-agent's
+	// recommendation: Accept → keep; Reject → archive; Feedback /
+	// unknown → keep (a no-op rather than indefinite hang). The
+	// auto-Accept-with-notes loop is unchanged.
+	//
+	// Operator-TTY behavior (the original skip) is unchanged for
+	// genuine pipe-into-st-create contexts: tests, CI runners, and
+	// in-process harnesses that aren't tagged CLAUDECODE=1 still skip.
+	// Truthy match instead of `== "1"` so a future Claude Code release
+	// that ships e.g. `CLAUDECODE=2` (or a version string) still routes
+	// agent-spawned creates through the review. The risk of a strict
+	// equality check is silent regression: the agent-mode branch would
+	// stop firing, items would resume shipping with TODO scaffold SBAR,
+	// and the only signal would be I-589's plan-approve gate catching
+	// them hours later. Code-review finding on PR #155.
+	isAgent := os.Getenv("CLAUDECODE") != ""
+	if engine.SelectMenu == nil && !term.IsTerminal(int(os.Stdin.Fd())) && !isAgent {
 		return
 	}
 
@@ -109,18 +137,50 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 			continue
 		}
 
-		choice := showReviewGate(ReviewGateInfo{
-			ItemID:         itemID,
-			Title:          item.Title,
-			GateType:       "Item Review",
-			Iteration:      iteration,
-			Recommendation: rec,
-			ReviewDuration: reviewDur,
-		}, []menuOption{
-			{"1", "Accept   — keep the item and proceed"},
-			{"2", "Reject   — archive the item (abandon)"},
-			{"3", "Feedback — type direction, claude revises (constrained)"},
-		}, engine)
+		// I-758: agent context with no SelectMenu wired — convert the
+		// sub-agent's recommendation into a deterministic choice without
+		// prompting (the TTY menu would hang on empty stdin).
+		// Accept-with-notes was already auto-fixed above; remaining
+		// cases are Accept / Reject / Feedback-or-unknown.
+		//
+		// Tests that wire engine.SelectMenu still go through
+		// showReviewGate even when CLAUDECODE=1 is inherited from a
+		// Claude Code parent — the agent-mode shortcut is the
+		// "no operator-input mechanism available" fallback, not a
+		// CLAUDECODE-only override.
+		var choice string
+		if isAgent && engine.SelectMenu == nil {
+			loweredRec := strings.ToLower(rec)
+			switch {
+			case strings.Contains(loweredRec, "reject"):
+				choice = "2"
+				fmt.Fprintf(os.Stderr, "[%s] agent-mode item review: Reject verdict — auto-archiving\n", itemID)
+			case strings.Contains(loweredRec, "accept"):
+				choice = "1"
+				fmt.Fprintf(os.Stderr, "[%s] agent-mode item review: Accept — keeping item\n", itemID)
+			default:
+				// Feedback or unknown recommendation in agent mode: keep
+				// the item rather than risk a destructive Reject on an
+				// ambiguous verdict. The Accept-with-notes auto-fix loop
+				// above already burned its iterations; any further
+				// refinement is an operator-side decision.
+				choice = "1"
+				fmt.Fprintf(os.Stderr, "[%s] agent-mode item review: ambiguous verdict (%q) — keeping item (no operator to consult)\n", itemID, rec)
+			}
+		} else {
+			choice = showReviewGate(ReviewGateInfo{
+				ItemID:         itemID,
+				Title:          item.Title,
+				GateType:       "Item Review",
+				Iteration:      iteration,
+				Recommendation: rec,
+				ReviewDuration: reviewDur,
+			}, []menuOption{
+				{"1", "Accept   — keep the item and proceed"},
+				{"2", "Reject   — archive the item (abandon)"},
+				{"3", "Feedback — type direction, claude revises (constrained)"},
+			}, engine)
+		}
 
 		switch choice {
 		case "^C":
