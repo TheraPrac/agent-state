@@ -100,7 +100,8 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		SilenceUsage: true,
 	}
 
-	// Groups for `st help` and `make docs` (docgen).
+	// Groups surfaced in `st help` and rendered as section headers by
+	// the docgen subcommand. Group titles are user-facing copy.
 	root.AddGroup(
 		&cobra.Group{ID: "queue-stack", Title: "Queue & Stack"},
 		&cobra.Group{ID: "state-mgmt", Title: "State Management"},
@@ -2557,14 +2558,13 @@ Kinds:
 	}
 	root.AddCommand(initCmd)
 
-	// I-738: hidden docgen subcommand that regenerates
-	// theraprac-workspace/docs/st-cli-reference.md from this cobra tree.
-	// Hidden because it's a build tool, not for operator use.
 	root.AddCommand(newDocgenCmd())
 
-	// I-738: centralized GroupID assignments so `st help` and `make docs`
-	// render commands under stable sections. Unassigned commands surface
-	// in the "Other" bucket — adding a new command here is opt-in.
+	// Apply group assignments after every command is registered. Keeping
+	// the taxonomy centralized in commandGroupAssignments (vs. setting
+	// GroupID inline at each command-creation block) keeps the group
+	// map reviewable in one place and lets unannotated commands fall
+	// through to the "Other" bucket without per-command edits.
 	for _, c := range root.Commands() {
 		if gid, ok := commandGroupAssignments[c.Name()]; ok {
 			c.GroupID = gid

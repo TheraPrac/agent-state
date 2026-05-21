@@ -59,11 +59,11 @@ install: build
 install-wrapper:
 	@WRAPPER_PATH="$(WRAPPER_PATH)" bash scripts/install-dispatcher.sh
 
-# I-738: regenerate theraprac-workspace/docs/st-cli-reference.md from
-# the live cobra tree. Skips silently if the workspace docs dir isn't
-# resolvable from this clone — matches the reconcile-verify pattern so
-# non-canonical clone layouts get a useful message instead of a stray
-# file. Override with ST_WORKSPACE_ROOT for unusual setups.
+# Regenerate theraprac-workspace/docs/st-cli-reference.md from the live
+# cobra tree. Skips silently if the workspace docs dir isn't resolvable
+# from this clone — matches the reconcile-verify pattern so non-canonical
+# clone layouts get a useful message instead of a stray file. Override
+# with ST_WORKSPACE_ROOT for unusual setups.
 docs:
 	@WS="$${ST_WORKSPACE_ROOT:-../theraprac-workspace}"; \
 	if [ ! -d "$$WS/docs" ]; then \

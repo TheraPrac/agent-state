@@ -71,13 +71,8 @@ func newDocgenCmd() *cobra.Command {
 
 // renderDocs writes preamble + auto-generated command reference + postamble.
 func renderDocs(w io.Writer, root *cobra.Command) error {
-	if _, err := io.WriteString(w, docgenPreamble); err != nil {
+	if err := writeWithTrailingNewline(w, docgenPreamble); err != nil {
 		return err
-	}
-	if !strings.HasSuffix(docgenPreamble, "\n") {
-		if _, err := io.WriteString(w, "\n"); err != nil {
-			return err
-		}
 	}
 	if _, err := io.WriteString(w, "## Command reference\n"); err != nil {
 		return err
@@ -108,16 +103,22 @@ func renderDocs(w io.Writer, root *cobra.Command) error {
 				return err
 			}
 		}
-		if _, err := io.WriteString(w, docgenPostamble); err != nil {
+		if err := writeWithTrailingNewline(w, docgenPostamble); err != nil {
 			return err
-		}
-		if !strings.HasSuffix(docgenPostamble, "\n") {
-			if _, err := io.WriteString(w, "\n"); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
+}
+
+func writeWithTrailingNewline(w io.Writer, s string) error {
+	if _, err := io.WriteString(w, s); err != nil {
+		return err
+	}
+	if strings.HasSuffix(s, "\n") {
+		return nil
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
 }
 
 // collectGroups buckets the root's direct children by GroupID. Commands
@@ -137,7 +138,7 @@ func collectGroups(root *cobra.Command) map[string][]*cobra.Command {
 	}
 	for gid := range out {
 		sort.SliceStable(out[gid], func(i, j int) bool {
-			return cmdName(out[gid][i]) < cmdName(out[gid][j])
+			return out[gid][i].Name() < out[gid][j].Name()
 		})
 	}
 	return out
@@ -190,34 +191,20 @@ type docLine struct {
 	short string
 }
 
-// collectCommandLines flattens a top-level command into one or more bash
-// lines. Leaves render as a single line; containers expand to their
-// visible subcommands. Two-level containers (rare) expand further so a
-// command like `st sprint plan` shows up explicitly instead of just `st
-// sprint`.
+// collectCommandLines flattens a command subtree into bash reference
+// lines. Leaves render as a single line under the running prefix;
+// containers recurse so arbitrary nesting (depth-1 `st queue show`,
+// depth-2 `st sprint plan show` if it existed) collapses to one line
+// per leaf without baking depth into the walker.
 func collectCommandLines(c *cobra.Command, prefix string) []docLine {
 	subs := visibleSubcommands(c)
 	if len(subs) == 0 {
 		return []docLine{{use: prefix + " " + c.Use, short: c.Short}}
 	}
+	childPrefix := prefix + " " + c.Name()
 	var lines []docLine
-	childPrefix := prefix + " " + cmdName(c)
 	for _, s := range subs {
-		gc := visibleSubcommands(s)
-		if len(gc) == 0 {
-			lines = append(lines, docLine{
-				use:   childPrefix + " " + s.Use,
-				short: s.Short,
-			})
-			continue
-		}
-		grandPrefix := childPrefix + " " + cmdName(s)
-		for _, g := range gc {
-			lines = append(lines, docLine{
-				use:   grandPrefix + " " + g.Use,
-				short: g.Short,
-			})
-		}
+		lines = append(lines, collectCommandLines(s, childPrefix)...)
 	}
 	return lines
 }
@@ -231,17 +218,9 @@ func visibleSubcommands(c *cobra.Command) []*cobra.Command {
 		out = append(out, s)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return cmdName(out[i]) < cmdName(out[j])
+		return out[i].Name() < out[j].Name()
 	})
 	return out
-}
-
-func cmdName(c *cobra.Command) string {
-	use := c.Use
-	if i := strings.IndexAny(use, " \t"); i >= 0 {
-		return use[:i]
-	}
-	return use
 }
 
 func groupTitle(root *cobra.Command, gid string) string {

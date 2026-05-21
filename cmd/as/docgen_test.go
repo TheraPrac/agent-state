@@ -7,9 +7,8 @@ import (
 )
 
 // TestDocgenRender exercises the in-process renderer end-to-end on the
-// real cobra tree from newApp. Locking in the AC-required substrings
-// here means a missing group annotation or a regressed walker fails
-// `go test` before the regenerated doc ever lands in the workspace.
+// real cobra tree. A missing group annotation or regressed walker
+// fails `go test` before a broken doc ever lands in the workspace.
 func TestDocgenRender(t *testing.T) {
 	app := newApp("")
 	var buf bytes.Buffer
@@ -22,11 +21,8 @@ func TestDocgenRender(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		// Auto-generated marker (AC 6).
 		"Auto-generated",
-		// Preamble survival (AC 8).
 		"## Workspace clone layout",
-		// Command coverage (AC 7).
 		"st show",
 		"st queue",
 		"st arc",
@@ -35,7 +31,6 @@ func TestDocgenRender(t *testing.T) {
 		"st tui",
 		"st recommend",
 		"st status",
-		// Group section headers (AC 9 — added by plan reviewer).
 		"### Queue & Stack",
 		"### State Management",
 		"### Workflow",
@@ -46,7 +41,6 @@ func TestDocgenRender(t *testing.T) {
 		}
 	}
 
-	// The hidden docgen command should not appear in its own output.
 	if strings.Contains(got, "st docgen") {
 		t.Error("hidden `st docgen` command leaked into generated doc")
 	}
