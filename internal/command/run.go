@@ -4775,15 +4775,20 @@ const maxWallTimeout = 2 * time.Hour
 
 func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, error) {
 	// I-752: per-call wall cap honors AS_CLAUDE_WALL_TIMEOUT in the env
-	// slice so plan-review (10m) doesn't inherit the 2h ceiling. Parse
-	// failures log + fall back so a typo never silently raises the cap.
+	// slice so plan-review (10m) doesn't inherit the 2h ceiling. The
+	// parse-error fallback is the 2h global ceiling — callers needing a
+	// tighter floor MUST resolve the value before passing it in (see
+	// resolvePlanReviewTimeout in plan_review.go, which falls back to
+	// 10m on a bad AS_PLAN_APPROVE_TIMEOUT before forwarding here).
+	// The stderr warning is loud so operators see the actual cap in
+	// effect instead of assuming the override stuck.
 	wallTimeout := maxWallTimeout
 	for _, e := range env {
 		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
 			if parsed, perr := time.ParseDuration(v); perr == nil {
 				wallTimeout = parsed
 			} else {
-				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — falling back to %s\n", v, perr, maxWallTimeout)
+				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — using global %s ceiling (callers should resolve invalid values upstream)\n", v, perr, maxWallTimeout)
 			}
 		}
 	}
@@ -4807,17 +4812,16 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	cmd.Stderr = os.Stderr
 
 	// I-752: put the child in its own process group so context cancel
-	// reaps tool-call grandchildren (the I-738 incident — sub-agent
-	// orphaned a 53min Read/Grep loop because exec.CommandContext only
-	// SIGKILL'd the leader). Override cmd.Cancel to SIGTERM the pgroup;
-	// WaitDelay lets the leader get SIGKILL if it ignores SIGTERM.
+	// reaps tool-call grandchildren. With Setpgid:true on darwin/linux
+	// the kernel sets PGID == leader PID, so cmd.Process.Pid IS the
+	// pgid — no separate Getpgid call (avoids a race where Cancel could
+	// fire between Start returning and a post-Start Getpgid assignment).
+	// cmd.Process is non-nil whenever Cancel can fire (Cancel is only
+	// armed after Start succeeds). WaitDelay lets the exec package
+	// SIGKILL the leader if SIGTERM is ignored.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var pgid int
 	cmd.Cancel = func() error {
-		if pgid > 0 {
-			return syscall.Kill(-pgid, syscall.SIGTERM)
-		}
-		return cmd.Process.Signal(syscall.SIGTERM)
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = 2 * time.Second
 
@@ -4829,7 +4833,6 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	if err := cmd.Start(); err != nil {
 		return nil, 0, fmt.Errorf("start: %w", err)
 	}
-	pgid, _ = syscall.Getpgid(cmd.Process.Pid)
 
 	// Activity watchdog — kills process if no output for idleTimeout
 	// Extract item ID from env for status display
@@ -5036,16 +5039,13 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 		cmd.Dir = dir
 	}
 
-	// I-752: process-group kill — same pattern as defaultRunClaude, so
-	// `sh -c` forked children (test runners, deploy scripts) get reaped
-	// when the parent context cancels instead of orphaning.
+	// I-752: process-group kill — same pattern as defaultRunClaude.
+	// Setpgid:true makes PGID == leader PID on darwin/linux, so we
+	// signal -cmd.Process.Pid directly (Process is non-nil whenever
+	// Cancel can fire).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var pgid int
 	cmd.Cancel = func() error {
-		if pgid > 0 {
-			return syscall.Kill(-pgid, syscall.SIGTERM)
-		}
-		return cmd.Process.Signal(syscall.SIGTERM)
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = 2 * time.Second
 
@@ -5056,7 +5056,6 @@ func runCmdGuarded(dir, command string, idleTimeout time.Duration) ([]byte, int,
 	if err := cmd.Start(); err != nil {
 		return nil, 0, err
 	}
-	pgid, _ = syscall.Getpgid(cmd.Process.Pid)
 
 	activity := &activityTracker{
 		lastSeen:    time.Now(),

@@ -48,9 +48,11 @@ func TestDefaultRunClaudeProcessGroupKilled(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		// 300ms wall cap — fast enough to keep the test snappy,
-		// long enough for the shim to write its child PID.
-		_, _, _ = defaultRunClaude(tmp, nil, []string{"AS_CLAUDE_WALL_TIMEOUT=300ms"})
+		// 1500ms wall cap — fast enough to keep the test snappy,
+		// long enough to absorb shell cold-start latency under
+		// parallel suite load (300ms races shim startup on a busy
+		// CI box).
+		_, _, _ = defaultRunClaude(tmp, nil, []string{"AS_CLAUDE_WALL_TIMEOUT=1500ms"})
 		close(done)
 	}()
 

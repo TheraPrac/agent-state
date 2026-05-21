@@ -135,8 +135,11 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		if refreshed, ok := s.Get(id); ok {
 			item = refreshed
 		}
-	} else if opts.BypassReview {
+	} else if opts.Engine != nil && opts.BypassReview {
 		// I-752: warn loudly so the escape hatch is never silently exercised.
+		// Guard on Engine != nil so the documented "Engine-nil path skips
+		// the review entirely" invariant stays silent for test callers
+		// that pass Engine: nil + BypassReview: true.
 		fmt.Fprintf(os.Stderr,
 			"%s: --bypass-review set — plan-review sub-agent skipped\n", id)
 	}
