@@ -1,4 +1,4 @@
-.PHONY: build test clean install install-wrapper reconcile-verify
+.PHONY: build test clean install install-wrapper reconcile-verify docs
 
 # WRAPPER_PATH is where the per-agent dispatcher lands. The default
 # (~/bin/st) is in PATH ahead of /usr/local/bin on the developer machine,
@@ -58,3 +58,16 @@ install: build
 # bootstrap script on a fresh machine).
 install-wrapper:
 	@WRAPPER_PATH="$(WRAPPER_PATH)" bash scripts/install-dispatcher.sh
+
+# Regenerate theraprac-workspace/docs/st-cli-reference.md from the live
+# cobra tree. Skips silently if the workspace docs dir isn't resolvable
+# from this clone — matches the reconcile-verify pattern so non-canonical
+# clone layouts get a useful message instead of a stray file. Override
+# with ST_WORKSPACE_ROOT for unusual setups.
+docs:
+	@WS="$${ST_WORKSPACE_ROOT:-../theraprac-workspace}"; \
+	if [ ! -d "$$WS/docs" ]; then \
+	  echo "docs: skipped (no workspace docs/ at $$WS — set ST_WORKSPACE_ROOT)"; \
+	  exit 0; \
+	fi; \
+	go run ./cmd/as docgen --output "$$WS/docs/st-cli-reference.md"

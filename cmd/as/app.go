@@ -35,7 +35,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Commands that don't need config/store
 			switch cmd.Name() {
-			case "version", "init":
+			case "version", "init", "docgen":
 				return nil
 			}
 			dir := cwd
@@ -99,6 +99,22 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		},
 		SilenceUsage: true,
 	}
+
+	// Groups surfaced in `st help` and rendered as section headers by
+	// the docgen subcommand. Group titles are user-facing copy.
+	root.AddGroup(
+		&cobra.Group{ID: "queue-stack", Title: "Queue & Stack"},
+		&cobra.Group{ID: "state-mgmt", Title: "State Management"},
+		&cobra.Group{ID: "workflow", Title: "Workflow"},
+		&cobra.Group{ID: "testing", Title: "Testing & Evidence"},
+		&cobra.Group{ID: "uat-pipeline", Title: "UAT & Pipeline"},
+		&cobra.Group{ID: "querying", Title: "Querying"},
+		&cobra.Group{ID: "deps", Title: "Dependencies"},
+		&cobra.Group{ID: "epics-sprints-notes", Title: "Epics, Sprints, Notes"},
+		&cobra.Group{ID: "arcs", Title: "Arcs"},
+		&cobra.Group{ID: "agents", Title: "Agents"},
+		&cobra.Group{ID: "maintenance", Title: "Maintenance"},
+	)
 
 	// --- State commands ---
 
@@ -2545,7 +2561,91 @@ Kinds:
 	}
 	root.AddCommand(initCmd)
 
+	root.AddCommand(newDocgenCmd())
+
+	// Apply group assignments after every command is registered. Keeping
+	// the taxonomy centralized in commandGroupAssignments (vs. setting
+	// GroupID inline at each command-creation block) keeps the group
+	// map reviewable in one place and lets unannotated commands fall
+	// through to the "Other" bucket without per-command edits.
+	for _, c := range root.Commands() {
+		if gid, ok := commandGroupAssignments[c.Name()]; ok {
+			c.GroupID = gid
+		}
+	}
+
 	return root
+}
+
+// commandGroupAssignments maps a top-level command's name() to the
+// GroupID of its docs/help section. Names match cobra's Name() (first
+// word of Use). Add a command here once it should appear in a named
+// section of docs/st-cli-reference.md; until then it lands in "Other".
+var commandGroupAssignments = map[string]string{
+	// Queue & Stack
+	"queue": "queue-stack",
+	"stack": "queue-stack",
+	"push":  "queue-stack",
+	"pop":   "queue-stack",
+
+	// State Management
+	"show":   "state-mgmt",
+	"list":   "state-mgmt",
+	"create": "state-mgmt",
+	"update": "state-mgmt",
+	"check":  "state-mgmt",
+	"tag":    "state-mgmt",
+
+	// Workflow
+	"start":   "workflow",
+	"close":   "workflow",
+	"finish":  "workflow",
+	"release": "workflow",
+	"commit":  "workflow",
+
+	// Testing & Evidence
+	"test": "testing",
+	"pr":   "testing",
+
+	// UAT & Pipeline
+	"uat":          "uat-pipeline",
+	"merge":        "uat-pipeline",
+	"deploy-check": "uat-pipeline",
+	"smoke":        "uat-pipeline",
+
+	// Querying
+	"status":    "querying",
+	"stats":     "querying",
+	"ready":     "querying",
+	"prime":     "querying",
+	"resume":    "querying",
+	"log":       "querying",
+	"recommend": "querying",
+	"artifact":  "querying",
+	"watch":     "querying",
+	"tui":       "querying",
+
+	// Dependencies
+	"dep": "deps",
+
+	// Epics, Sprints, Notes
+	"epic":   "epics-sprints-notes",
+	"sprint": "epics-sprints-notes",
+	"note":   "epics-sprints-notes",
+
+	// Arcs
+	"arc": "arcs",
+
+	// Agents
+	"agent":  "agents",
+	"agents": "agents",
+	"mail":   "agents",
+
+	// Maintenance
+	"index":     "maintenance",
+	"migrate":   "maintenance",
+	"reconcile": "maintenance",
+	"sync":      "maintenance",
 }
 
 // allLookLikePairs reports whether every argument is of the form
