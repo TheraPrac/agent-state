@@ -213,14 +213,15 @@ type RunConfig struct {
 
 // RunStepDef defines a single pipeline step for st run.
 type RunStepDef struct {
-	Type       string  // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
-	Command    string  // for command type
-	Prompt     string  // for claude type (optional, uses default)
-	Resolution string  // for close type (e.g. "completed")
-	Timeout    int     // for watch/deploy (seconds, default 600)
-	Coverage   bool    // for test type
-	Budget     float64 // per-step budget override (USD, 0 = use default)
-	name       string  // set by RunPipeline(), not from config
+	Type       string   // claude, test, pr, merge, merge_precheck, deploy, smoke, uat, gate, close, command
+	Command    string   // for command type
+	Prompt     string   // for claude type (optional, uses default)
+	Resolution string   // for close type (e.g. "completed")
+	Timeout    int      // for watch/deploy (seconds, default 600)
+	Coverage   bool     // for test type
+	Budget     float64  // per-step budget override (USD, 0 = use default)
+	ExtraEnv   []string // I-752: extra KEY=VAL env vars appended in executeClaude (e.g. AS_CLAUDE_WALL_TIMEOUT for plan-review)
+	name       string   // set by RunPipeline(), not from config
 }
 
 // Name returns the step's name (set when building the pipeline from config).

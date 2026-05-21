@@ -2207,14 +2207,17 @@ rates. I-180.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			strict, _ := cmd.Flags().GetBool("strict")
+			bypassReview, _ := cmd.Flags().GetBool("bypass-review")
 			engine := command.DefaultRunEngine()
 			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{
-				Strict: strict,
-				Engine: &engine,
+				Strict:       strict,
+				Engine:       &engine,
+				BypassReview: bypassReview,
 			})
 		},
 	}
 	planApproveCmd.Flags().Bool("strict", false, "deprecated alias — AC verifiability gate now fires unconditionally (I-710); flag preserved for CI back-compat")
+	planApproveCmd.Flags().Bool("bypass-review", false, "skip the I-710 plan-review sub-agent (operator escape hatch when the sub-agent is broken or the plan has been manually reviewed) — I-752")
 	planResetCmd := &cobra.Command{
 		Use:   "reset <id>",
 		Short: "Revert a previously-approved plan (closes the I-178 gate; needs re-approval)",
