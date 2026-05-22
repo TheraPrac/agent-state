@@ -417,3 +417,118 @@ func TestPlanApproveStrict_PassesWithPopulatedSBAR(t *testing.T) {
 		t.Error("populated SBAR should pass strict gate and flip PlanApproved")
 	}
 }
+
+// I-767: PlanInvalidate deletes the sidecar so the item becomes
+// plan-prep-eligible again. setupTestEnv seeds T-001 with a sidecar.
+func TestPlanInvalidateDeletesSidecar(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if !plan.Exists(cfg.PlansDir(), "T-001") {
+		t.Fatal("fixture should seed a T-001 sidecar")
+	}
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("invalidate returned %d", code)
+	}
+	if plan.Exists(cfg.PlansDir(), "T-001") {
+		t.Error("sidecar should be gone after invalidate")
+	}
+}
+
+// I-767: invalidate clears the approval stamp + audit fields, the
+// same fields PlanReset clears.
+func TestPlanInvalidateClearsApproval(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("invalidate: %d", code)
+	}
+	item, _ := s.Get("T-001")
+	if item.PlanApproved {
+		t.Error("PlanApproved should be false after invalidate")
+	}
+	if item.PlanApprovedBy != "" || item.PlanApprovedAt != "" {
+		t.Error("audit fields should be cleared on invalidate")
+	}
+}
+
+// I-767: invalidate refuses (exit 1) when there is nothing to
+// invalidate — no sidecar, no report, not approved.
+func TestPlanInvalidateRefusesWhenNothing(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// Remove the seeded sidecar so T-001 has nothing to invalidate.
+	if err := plan.Delete(cfg.PlansDir(), "T-001"); err != nil {
+		t.Fatalf("pre-delete sidecar: %v", err)
+	}
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 1 {
+		t.Errorf("invalidate with nothing to do should exit 1; got %d", code)
+	}
+}
+
+// I-767: invalidate also removes the .report.md sidecar.
+func TestPlanInvalidateDeletesReport(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := plan.SaveReport(cfg.PlansDir(), "T-001", "review narrative"); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("invalidate: %d", code)
+	}
+	if plan.ReportExists(cfg.PlansDir(), "T-001") {
+		t.Error("report should be gone after invalidate")
+	}
+}
+
+// I-767: invalidate writes an auditable plan_invalidate changelog entry.
+func TestPlanInvalidateWritesChangelog(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("invalidate: %d", code)
+	}
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatalf("read changelog: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Op == "plan_invalidate" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected plan_invalidate entry in changelog")
+	}
+}
+
+// I-767: invalidate drops the now-dangling sidecar path from
+// linked_plans so the I-512 invariant is not left referencing a
+// deleted file. PlanApprove stamps linked_plans.
+func TestPlanInvalidateRemovesLinkedPlan(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+	if item, _ := s.Get("T-001"); len(item.LinkedPlans) == 0 {
+		t.Fatal("approve should stamp linked_plans")
+	}
+	if code := PlanInvalidate(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("invalidate: %d", code)
+	}
+	item, _ := s.Get("T-001")
+	for _, lp := range item.LinkedPlans {
+		if strings.Contains(lp, "T-001") {
+			t.Errorf("linked_plans should not retain the invalidated sidecar; got %v", item.LinkedPlans)
+		}
+	}
+}
+
+// I-767: invalidate on an unknown item id exits 1.
+func TestPlanInvalidateNotFound(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if code := PlanInvalidate(s, cfg, "T-999"); code != 1 {
+		t.Errorf("invalidate on missing item should exit 1; got %d", code)
+	}
+}

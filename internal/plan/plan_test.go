@@ -330,3 +330,47 @@ func TestSaveWithOptsRejectedSkipsACValidation(t *testing.T) {
 		t.Errorf("rejected plan should save under strict; got %v", err)
 	}
 }
+
+// I-767: Delete removes the plan sidecar; a missing file is not an
+// error (idempotent).
+func TestDeleteRemovesSidecar(t *testing.T) {
+	dir := t.TempDir()
+	Save(dir, "T-001", &Plan{
+		Approach:   "test",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: echo ok"},
+	})
+	if !Exists(dir, "T-001") {
+		t.Fatal("sidecar should exist after Save")
+	}
+	if err := Delete(dir, "T-001"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if Exists(dir, "T-001") {
+		t.Error("sidecar should be gone after Delete")
+	}
+	// Idempotent: deleting an already-absent sidecar is not an error.
+	if err := Delete(dir, "T-001"); err != nil {
+		t.Errorf("Delete on missing sidecar should be a no-op; got %v", err)
+	}
+}
+
+// I-767: DeleteReport removes the .report.md sidecar; idempotent.
+func TestDeleteReportRemovesReport(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveReport(dir, "T-001", "review narrative"); err != nil {
+		t.Fatalf("SaveReport: %v", err)
+	}
+	if !ReportExists(dir, "T-001") {
+		t.Fatal("report should exist after SaveReport")
+	}
+	if err := DeleteReport(dir, "T-001"); err != nil {
+		t.Fatalf("DeleteReport: %v", err)
+	}
+	if ReportExists(dir, "T-001") {
+		t.Error("report should be gone after DeleteReport")
+	}
+	if err := DeleteReport(dir, "T-001"); err != nil {
+		t.Errorf("DeleteReport on missing report should be a no-op; got %v", err)
+	}
+}

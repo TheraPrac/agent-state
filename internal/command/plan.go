@@ -307,6 +307,96 @@ func PlanReset(s *store.Store, cfg *config.Config, id string) int {
 	return 0
 }
 
+// PlanInvalidate discards the plan sidecar for `id` so the next
+// `st plan prep <id>` re-authors it from scratch. This is the STRONG
+// form of plan invalidation, distinct from PlanReset's weak form:
+//
+//   - PlanReset    — revokes the I-178 approval stamp; the plan body
+//                    stays and just needs another `st plan approve`.
+//   - PlanInvalidate — deletes the plan body (and report) entirely;
+//                    the item becomes genuinely unplanned and
+//                    `st plan prep` re-runs Claude against an empty
+//                    slate.
+//
+// Used when an item's implementation approach fundamentally changes
+// (I-767 — motivated by I-733's bash-hook → Go-subcommand
+// re-architecture, where the old plan body was obsolete, not just
+// pending re-approval).
+//
+// Refuses (exit 1) when there is nothing to invalidate — no sidecar,
+// no report, and not plan-approved — mirroring PlanReset's
+// "nothing to reset" guard.
+func PlanInvalidate(s *store.Store, cfg *config.Config, id string) int {
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+
+	plansDir := cfg.PlansDir()
+	hadSidecar := plan.Exists(plansDir, id)
+	hadReport := plan.ReportExists(plansDir, id)
+
+	if !hadSidecar && !hadReport && !item.PlanApproved {
+		fmt.Fprintf(os.Stderr, "%s has no plan sidecar, no report, and is not plan-approved — nothing to invalidate\n", id)
+		return 1
+	}
+
+	sidecarRel := relativePlanPath(plansDir, cfg.Root(), id)
+
+	if err := plan.Delete(plansDir, id); err != nil {
+		fmt.Fprintf(os.Stderr, "deleting plan sidecar for %s: %v\n", id, err)
+		return 1
+	}
+	if err := plan.DeleteReport(plansDir, id); err != nil {
+		fmt.Fprintf(os.Stderr, "deleting plan report for %s: %v\n", id, err)
+		return 1
+	}
+
+	priorBy := item.PlanApprovedBy
+	priorAt := item.PlanApprovedAt
+
+	if err := s.Mutate(id, func(it *model.Item) error {
+		it.PlanApproved = false
+		it.PlanApprovedAt = ""
+		it.PlanApprovedBy = ""
+		it.Doc.SetField("plan_approved", "false")
+		it.Doc.SetField("plan_approved_at", "")
+		it.Doc.SetField("plan_approved_by", "")
+		// Drop the now-dangling sidecar path from linked_plans so the
+		// I-512 invariant (linked_plans points at live plan content)
+		// is not left referencing a deleted file.
+		if len(it.LinkedPlans) > 0 {
+			kept := it.LinkedPlans[:0]
+			for _, lp := range it.LinkedPlans {
+				if lp != sidecarRel {
+					kept = append(kept, lp)
+				}
+			}
+			it.LinkedPlans = kept
+			it.Doc.ReplaceList("linked_plans", it.LinkedPlans)
+		}
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+		return 1
+	}
+
+	reason := "I-767 plan invalidate (sidecar discarded for re-authoring)"
+	if priorBy != "" {
+		reason = fmt.Sprintf("%s — was approved by %s at %s", reason, priorBy, priorAt)
+	}
+	_ = changelog.Append(cfg, id, changelog.Entry{
+		Op:       "plan_invalidate",
+		OldValue: priorBy,
+		Reason:   reason,
+	})
+
+	fmt.Printf("Invalidated plan for %s — sidecar discarded. Run `st plan prep %s` to author a fresh plan.\n", id, id)
+	autoSync(s, fmt.Sprintf("st plan invalidate: %s", id))
+	return 0
+}
+
 // PlanCheck prints the approval state for `id` and exits 0 if approved,
 // 1 if not. Designed for the `plan-before-code-guard.sh` hook to call as
 // `st plan check $ITEM_ID > /dev/null` so the hook can deny Edit/Write

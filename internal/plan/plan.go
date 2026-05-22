@@ -53,6 +53,28 @@ func ReportExists(dir, id string) bool {
 	return err == nil
 }
 
+// Delete removes the plan sidecar .plans/<id>.md. A missing file is
+// not an error (idempotent), mirroring Load's IsNotExist tolerance.
+// I-767: used by `st plan invalidate` to discard a stale plan body
+// so `st plan prep` re-authors from scratch.
+func Delete(dir, id string) error {
+	err := os.Remove(filepath.Join(dir, id+".md"))
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// DeleteReport removes the plan-review report sidecar
+// .plans/<id>.report.md. A missing file is not an error. I-767.
+func DeleteReport(dir, id string) error {
+	err := os.Remove(ReportPath(dir, id))
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // LoadReport reads a plan-review report sidecar. Returns ("", nil) if
 // the file does not exist, mirroring Load's missing-file semantics.
 func LoadReport(dir, id string) (string, error) {

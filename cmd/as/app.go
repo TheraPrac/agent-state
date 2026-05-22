@@ -2242,6 +2242,26 @@ rates. I-180.`,
 			exitCode = command.PlanReset(appStore, appCfg, args[0])
 		},
 	}
+	planInvalidateCmd := &cobra.Command{
+		Use:   "invalidate <id>",
+		Short: "Discard a plan body so it can be re-authored from scratch (I-767)",
+		Long: `Plan invalidate deletes the .plans/<id>.md sidecar (and its
+.report.md), clears the item's approval stamp, and drops the
+dangling sidecar path from linked_plans. The item becomes
+genuinely unplanned, so the next ` + "`st plan prep <id>`" + ` re-runs
+Claude against an empty slate.
+
+Use this when an item's implementation APPROACH fundamentally
+changes and the existing plan body is obsolete — not merely
+pending re-approval.
+
+  st plan reset <id>      — revoke approval; same plan, re-approve it
+  st plan invalidate <id> — discard the plan; re-author it`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PlanInvalidate(appStore, appCfg, args[0])
+		},
+	}
 	planCheckCmd := &cobra.Command{
 		Use:   "check <id>",
 		Short: "Print plan-approval state and exit 0 if approved, 1 otherwise (for hook integration)",
@@ -2289,7 +2309,7 @@ implement step during st run.`,
 	}
 	prepFlags(planPrepCmd)
 
-	planCmd.AddCommand(planApproveCmd, planResetCmd, planCheckCmd, planShowCmd, planPrepCmd)
+	planCmd.AddCommand(planApproveCmd, planResetCmd, planInvalidateCmd, planCheckCmd, planShowCmd, planPrepCmd)
 	root.AddCommand(planCmd)
 
 	filesCmd := &cobra.Command{
