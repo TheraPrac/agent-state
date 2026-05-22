@@ -95,7 +95,14 @@ func checkFileExistence(p *plan.Plan, workspaceRoot string, repoRoot func(name s
 	}
 
 	var findings []Finding
-	for _, path := range p.FilesToModify {
+	for _, raw := range p.FilesToModify {
+		// I-777: an authored bullet keeps its trailing
+		// " — description" prose; extract just the path before
+		// any stat. Empty result → skip silently (no finding).
+		path := normalizeModifyPath(raw)
+		if path == "" {
+			continue
+		}
 		// 1. Absolute path: stat as-is.
 		if filepath.IsAbs(path) {
 			if err := statter(path); err != nil {
@@ -132,6 +139,51 @@ func checkFileExistence(p *plan.Plan, workspaceRoot string, repoRoot func(name s
 		}
 	}
 	return findings
+}
+
+// normalizeModifyPath extracts a clean file path from a
+// FilesToModify bullet's raw text. plan.parseList keeps the
+// entire bullet after the "- " marker, so an authored entry like
+//
+//	`internal/foo.go` — adds the bar helper
+//
+// arrives in p.FilesToModify as the literal string (backticks,
+// em-dash, and prose included). Statting that whole string always
+// failed and produced a false CategoryFileMissing — see I-777.
+//
+// Extraction rules:
+//
+//  1. Trim whitespace.
+//  2. If any backtick span exists, take the FIRST one — handles
+//     both leading "`path` — desc" and prose-then-path forms.
+//  3. Strip a trailing " — desc" / " – desc" / " -- desc" /
+//     " - desc" (each surrounded by spaces, so internal hyphens
+//     in paths are safe).
+//  4. Trim residual backticks and whitespace.
+//
+// Empty result → caller skips (no finding).
+func normalizeModifyPath(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	// First backtick span anywhere — covers leading "`path` — desc"
+	// and prose-then-path "see `path`" shapes uniformly.
+	if i := strings.IndexByte(s, '`'); i >= 0 {
+		rest := s[i+1:]
+		if j := strings.IndexByte(rest, '`'); j >= 0 {
+			s = rest[:j]
+		}
+	}
+	// Strip trailing " <sep> <description>". Em-/en-dash first so
+	// the single-hyphen rule never matches inside them.
+	for _, sep := range []string{" — ", " – ", " -- ", " - "} {
+		if i := strings.Index(s, sep); i >= 0 {
+			s = s[:i]
+			break
+		}
+	}
+	return strings.Trim(s, "` \t")
 }
 
 // statScopedPath looks up repoRoot for <repo>, strips the prefix

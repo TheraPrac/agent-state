@@ -463,3 +463,94 @@ func TestCheckFileExistence_EmptyFilesToModifyNoFindings(t *testing.T) {
 		t.Errorf("statter should NOT be called when FilesToModify is empty")
 	}
 }
+
+// TestNormalizeModifyPath — table-driven coverage of the bullet-
+// to-path extraction the I-777 fix introduced. Each authored bullet
+// shape encountered in real plans plus a couple of degenerate cases.
+func TestNormalizeModifyPath(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"backtick path with em-dash description",
+			"`as/internal/freshness/heuristics.go` — add normalizeModifyPath helper",
+			"as/internal/freshness/heuristics.go"},
+		{"backtick path with en-dash description",
+			"`internal/foo.go` – does the thing",
+			"internal/foo.go"},
+		{"backtick path with double-hyphen description",
+			"`internal/foo.go` -- markdown-safe variant",
+			"internal/foo.go"},
+		{"backtick path with spaced single-hyphen description",
+			"`internal/foo.go` - terse description",
+			"internal/foo.go"},
+		{"bare path with em-dash description (no backticks)",
+			"internal/foo.go — adds the bar helper",
+			"internal/foo.go"},
+		{"bare backticked path (no description)",
+			"`internal/foo.go`",
+			"internal/foo.go"},
+		{"plain bare path stays untouched",
+			"internal/foo.go",
+			"internal/foo.go"},
+		{"internal-hyphen path is preserved (no spaced-hyphen match)",
+			"internal/foo-bar/baz.go",
+			"internal/foo-bar/baz.go"},
+		{"backticked internal-hyphen path with description",
+			"`internal/foo-bar/baz.go` — desc",
+			"internal/foo-bar/baz.go"},
+		{"prose-then-backtick path",
+			"see `internal/foo.go` for details",
+			"internal/foo.go"},
+		{"empty input → empty (caller skips)",
+			"",
+			""},
+		{"whitespace-only → empty",
+			"   \t  ",
+			""},
+		{"description fully inside one backtick span",
+			"`internal/foo.go — desc`",
+			"internal/foo.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeModifyPath(tc.in); got != tc.want {
+				t.Errorf("normalizeModifyPath(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckFileExistence_ParsesBacktickedDescribedBullet — the
+// regression case for I-777. A FilesToModify entry that arrives
+// as the authored "`path` — description" prose must be statted at
+// just the path, not the whole bullet. Statter succeeds only for
+// the bare path; expect zero findings.
+func TestCheckFileExistence_ParsesBacktickedDescribedBullet(t *testing.T) {
+	const bullet = "`as/internal/command/watch.go` — add the progress channel to poll()"
+	const wantPath = "internal/command/watch.go"
+
+	p := pln([]string{"as"}, []string{bullet}, nil)
+	var statted []string
+	statter := func(path string) error {
+		statted = append(statted, path)
+		if strings.HasSuffix(path, wantPath) {
+			return nil
+		}
+		return errors.New("not exist")
+	}
+	repoRoot := func(name string) (string, bool) {
+		if name == "as" {
+			return "/agent-root/as", true
+		}
+		return "", false
+	}
+	findings := checkFileExistence(p, "/wsroot", repoRoot, statter)
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings (path should be extracted from bullet); got %v", findings)
+	}
+	if len(statted) != 1 || !strings.HasSuffix(statted[0], wantPath) || strings.Contains(statted[0], "—") {
+		t.Errorf("statter calls: %v — want exactly one ending in %q with no em-dash", statted, wantPath)
+	}
+}
