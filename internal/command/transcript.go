@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/agentprogress"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/mail"
@@ -375,6 +376,17 @@ func mailRow(m mail.Message) transcript.TaggedRow {
 	return transcript.TaggedRow{
 		Tag: "msg",
 		Row: transcript.Row{Kind: transcript.KindText, Timestamp: parseRFC3339(m.At), Text: txt},
+	}
+}
+
+// progressRow renders one agent-progress record (the per-turn Stop-hook
+// summary; I-775) as a synthetic prose row tagged with the agent's OWN
+// id — so CompressByAgent groups it inline under that agent's rows. The
+// "▸ " marker distinguishes it from JSONL-derived rows at a glance.
+func progressRow(rec agentprogress.Record) transcript.TaggedRow {
+	return transcript.TaggedRow{
+		Tag: rec.AgentID,
+		Row: transcript.Row{Kind: transcript.KindText, Timestamp: rec.Updated, Text: "▸ " + foldLine(rec.Progress)},
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/agentprogress"
 	"github.com/jfinlinson/agent-state/internal/agentps"
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -132,6 +133,9 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 	recent := map[string][]transcript.TaggedRow{}
 	var lastChg time.Time
 	chgWarned := false
+	// I-775: per-agent watermark for the agent-progress channel — emit
+	// only records whose Updated has advanced since the last poll.
+	lastProgress := map[string]time.Time{}
 
 	addRow := func(tag string, row transcript.Row) {
 		s := append(recent[tag], transcript.TaggedRow{Tag: tag, Row: row})
@@ -174,6 +178,28 @@ func Watch(cfg *config.Config, opts WatchOpts) int {
 						addRow("chg", changelogRow(e).Row)
 						changed = true
 					}
+				}
+			}
+		}
+		// I-775 progress channel: surface the per-turn Stop-hook
+		// records written by claude-config/hooks/agent-progress.sh.
+		// Tag the row with the agent's own id so CompressByAgent
+		// groups it inline under that agent's rows. Best-effort:
+		// missing dir / unreadable file is silently skipped — `st
+		// watch` must keep working before any agent has emitted a
+		// record. Sort agent ids for deterministic accumulation.
+		if recs, err := agentprogress.Load(agentprogress.ProgressDir(cfg)); err == nil {
+			pids := make([]string, 0, len(recs))
+			for id := range recs {
+				pids = append(pids, id)
+			}
+			sort.Strings(pids)
+			for _, id := range pids {
+				rec := recs[id]
+				if rec.Updated.After(lastProgress[id]) {
+					lastProgress[id] = rec.Updated
+					addRow(rec.AgentID, progressRow(rec).Row)
+					changed = true
 				}
 			}
 		}
