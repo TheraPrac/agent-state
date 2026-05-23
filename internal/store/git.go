@@ -200,6 +200,136 @@ func restoreLockedItems(snapshots map[string][]byte) {
 // fetched main via plumbing (commit-tree + update-ref), and push again.
 // The working tree's index is never touched; rebase conflicts cannot
 // arise.
+
+// checkMainBranchGate is the I-807 defense-in-depth gate. It fails closed
+// when the workspace HEAD is the default branch (`main`) AND the dirty
+// working tree contains any tracked-modified file outside the agent-state
+// allowlist (`agent-state/`, `.as/`). Prevents the silent-branch-flip +
+// auto-push pattern observed in commit 9edc8732b, where a workspace whose
+// HEAD was silently flipped from a feature branch back to `main` would
+// have its non-agent-state edits (e.g. claude-config/, docs/) auto-committed
+// and pushed to origin/main with no PR or review.
+//
+// Fail-opens (returns nil) when:
+//   - branch detection itself fails (detached HEAD, fresh clone, errors) —
+//     we only gate when we KNOW we're on main, avoiding over-blocking
+//   - branch is not `main`
+//   - ST_SYNC_ALLOW_MAIN=1 is set in the env (operator override, mirrors
+//     I-759 / I-765 override shape; emits an audit-stderr line)
+//
+// Skips `??` (pure-untracked) porcelain entries to preserve I-442's
+// peer-WIP protection — `git add -u` won't auto-stage them, so flagging
+// them would over-block on peer agents leaving untracked files in
+// agent-state/issues/ mid-`st create`.
+//
+// Pairs structurally with I-765 (broader gate, all branches, same code
+// path — additive).
+func checkMainBranchGate(root string) error {
+	if os.Getenv("ST_SYNC_ALLOW_MAIN") == "1" {
+		fmt.Fprintln(os.Stderr, "[I-807] ST_SYNC_ALLOW_MAIN=1 — bypassing main-branch dirty-non-state gate")
+		return nil
+	}
+
+	branchOut, err := gitOutput(root, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return nil // fail-open: don't gate when we can't tell which branch
+	}
+	branch := strings.TrimSpace(branchOut)
+	if branch != "main" {
+		return nil
+	}
+
+	// Resolve git toplevel so porcelain paths come back relative to the
+	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
+	// not relative to ItemDir which would emit `../claude-config/...`.
+	toplevelOut, err := gitOutput(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil // fail-open
+	}
+	toplevel := strings.TrimSpace(toplevelOut)
+
+	// Compute the items-root prefix relative to the git toplevel. In
+	// production this is `agent-state/`; in flat-layout test fixtures
+	// (items live directly at the git root) the rel is `.` and the
+	// prefix collapses to empty — which makes every path allowlisted,
+	// so the gate fails-open on flat layouts. This is intentional:
+	// flat layouts don't have a non-state surface to gate.
+	//
+	// Resolve symlinks on both sides BEFORE computing Rel: macOS routes
+	// /var → /private/var, and `git rev-parse --show-toplevel` returns
+	// the canonical (post-symlink) form while t.TempDir() / the cfg.root
+	// keep the symlink form. Without EvalSymlinks the Rel result is
+	// `../../private/var/...` and the gate would mis-classify legitimate
+	// agent-state files as non-state.
+	canonRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		canonRoot = root
+	}
+	canonToplevel, err := filepath.EvalSymlinks(toplevel)
+	if err != nil {
+		canonToplevel = toplevel
+	}
+	itemsRel, err := filepath.Rel(canonToplevel, canonRoot)
+	if err != nil {
+		return nil // fail-open
+	}
+	itemsPrefix := ""
+	if itemsRel != "." {
+		itemsPrefix = filepath.ToSlash(itemsRel) + "/"
+	}
+
+	statusOut, err := gitOutput(toplevel, "status", "--porcelain")
+	if err != nil {
+		return nil // fail-open
+	}
+
+	var offenders []string
+	for _, line := range strings.Split(statusOut, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		code := line[:2]
+		path := line[3:]
+		// Skip pure-untracked entries: `git add -u` won't stage them,
+		// and flagging would regress I-442's peer-WIP protection.
+		if code == "??" {
+			continue
+		}
+		// Defense-in-depth: skip the lock file we ourselves hold.
+		if path == ".st-git.lock" {
+			continue
+		}
+		// Rename entries appear as `R  old -> new`; gate only the new name.
+		if strings.Contains(path, " -> ") {
+			parts := strings.SplitN(path, " -> ", 2)
+			path = parts[len(parts)-1]
+		}
+		// Flat layout (itemsPrefix == "") → every path is items-rooted →
+		// nothing is "non-state" → no offenders.
+		if itemsPrefix == "" {
+			continue
+		}
+		if strings.HasPrefix(path, itemsPrefix) || strings.HasPrefix(path, ".as/") {
+			continue
+		}
+		offenders = append(offenders, path)
+	}
+
+	if len(offenders) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "I-807: refusing to commit + push %d non-agent-state file(s) on branch \"main\":\n", len(offenders))
+	for _, p := range offenders {
+		fmt.Fprintf(&b, "  - %s\n", p)
+	}
+	b.WriteString("\nBranch is main — this would bypass PR review.\n")
+	b.WriteString("Recovery: open a feature branch (git checkout -b fix/<id>-<slug>), commit these files there, push, and open a PR.\n")
+	b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_MAIN=1\n")
+	return errors.New(b.String())
+}
+
 func (s *Store) GitSync(message string, newPaths ...string) error {
 	if s.cfg.Git == nil || !s.cfg.Git.AutoCommit {
 		return nil
@@ -222,6 +352,14 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	// already wrote to disk; we still emit the recovery hint and stop
 	// here so we don't compound the corrupt state.
 	if err := PreFlightGitState(root); err != nil {
+		return err
+	}
+
+	// I-807: fail closed if the workspace HEAD is `main` AND the dirty
+	// working tree contains any non-agent-state file. Prevents the
+	// silent-branch-flip + auto-push pattern from commit 9edc8732b.
+	// Pairs with I-765's broader gate (additive in the same helper).
+	if err := checkMainBranchGate(root); err != nil {
 		return err
 	}
 
@@ -665,14 +803,14 @@ const refreshFetchTimeout = 10 * time.Second
 //     pull cannot overwrite them, mirroring GitPull's protection.
 //  3. `git fetch origin` with a timeout — fetch failure → RefreshOffline.
 //  4. Inspect ahead/behind counts:
-//       - ahead > 0 AND behind > 0: RefreshDiverged (true divergence;
-//         caller must `git pull --rebase` or equivalent recovery).
-//       - ahead > 0 AND behind == 0: RefreshAhead with AheadCount
-//         (I-430: unpushed local commits, recoverable via `st sync`).
-//       - behind == 0: RefreshUpToDate (silent success).
-//       - behind > 0 with uncommitted blockers: RefreshBlocked.
-//       - behind > 0 otherwise: `git pull --ff-only`. Success →
-//         RefreshPulled (PulledCount = behind). Failure → RefreshBlocked.
+//     - ahead > 0 AND behind > 0: RefreshDiverged (true divergence;
+//     caller must `git pull --rebase` or equivalent recovery).
+//     - ahead > 0 AND behind == 0: RefreshAhead with AheadCount
+//     (I-430: unpushed local commits, recoverable via `st sync`).
+//     - behind == 0: RefreshUpToDate (silent success).
+//     - behind > 0 with uncommitted blockers: RefreshBlocked.
+//     - behind > 0 otherwise: `git pull --ff-only`. Success →
+//     RefreshPulled (PulledCount = behind). Failure → RefreshBlocked.
 //  5. Restore locked-item snapshots.
 //
 // Never auto-stashes, auto-rebases, or pushes. Operator intervention

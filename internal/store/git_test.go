@@ -944,3 +944,183 @@ func TestVerifyPushLanded_DistinctDiagnostics(t *testing.T) {
 		t.Errorf("a genuinely-landed push must verify clean once the remote-tracking ref exists, got: %v", err)
 	}
 }
+
+// ---- I-807: checkMainBranchGate tests ----
+
+// setupI807Workspace builds the workspace-with-nested-agent-state layout
+// used by all I-807 gate tests: workspace root with agent-state/ subdirs,
+// a sibling .as/config.yaml, and (optionally) a pre-committed tracked
+// non-state file at claude-config/hooks/foo.sh so subsequent edits show
+// as tracked-modified rather than `??`-untracked.
+func setupI807Workspace(t *testing.T, preCommitNonState bool) (workspace, asDir string) {
+	t.Helper()
+	workspace = t.TempDir()
+	itemDir := filepath.Join(workspace, "agent-state")
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(itemDir, dir), 0755)
+	}
+	writeItem(t, filepath.Join(itemDir, "tasks", "T-001-first-task.md"), `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: First task
+
+depends_on:
+- []
+`)
+	asDir = filepath.Join(workspace, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: agent-state\n"), 0644)
+
+	// Pre-commit a tracked non-state file so later edits show up as
+	// tracked-modified (XY = " M") rather than untracked (XY = "??"),
+	// which the gate skips by design.
+	if preCommitNonState {
+		nonStateDir := filepath.Join(workspace, "claude-config", "hooks")
+		os.MkdirAll(nonStateDir, 0755)
+		os.WriteFile(filepath.Join(nonStateDir, "foo.sh"), []byte("#!/bin/sh\necho original\n"), 0755)
+	}
+
+	initGitRepo(t, workspace)
+
+	// Ensure the test branch is `main` regardless of the user's
+	// init.defaultBranch config — the gate only fires on main.
+	cmd := exec.Command("git", "branch", "-M", "main")
+	cmd.Dir = workspace
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch -M main: %v\n%s", err, out)
+	}
+
+	return workspace, asDir
+}
+
+func loadI807Store(t *testing.T, asDir string) *Store {
+	t.Helper()
+	cfg, err := config.LoadFrom(filepath.Join(asDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New store: %v", err)
+	}
+	return s
+}
+
+func TestGitSync_RefusesPushOnMain_WhenNonStateFileDirty(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	// Modify the tracked non-state file → tracked-modified entry.
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho modified\n"), 0755)
+
+	// Mutate an item to give GitSync something legitimate to commit.
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	err := s.GitSync("agent-b: update T-001")
+	if err == nil {
+		t.Fatalf("expected GitSync to fail closed; it succeeded")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "claude-config/hooks/foo.sh") {
+		t.Errorf("error must name the offending file; got: %q", msg)
+	}
+	if !strings.Contains(msg, "main") {
+		t.Errorf("error must name the branch (main); got: %q", msg)
+	}
+	if !strings.Contains(msg, "ST_SYNC_ALLOW_MAIN") {
+		t.Errorf("error must mention the override env var; got: %q", msg)
+	}
+}
+
+func TestGitSync_AllowsPushOnMain_WhenOnlyStateDirty(t *testing.T) {
+	_, asDir := setupI807Workspace(t, false)
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (clean non-state)"); err != nil {
+		t.Fatalf("GitSync should succeed when only agent-state is dirty: %v", err)
+	}
+}
+
+func TestGitSync_AllowsPushOnMain_WithEnvOverride(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho modified-with-override\n"), 0755)
+
+	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (override set)"); err != nil {
+		t.Fatalf("GitSync should succeed with ST_SYNC_ALLOW_MAIN=1: %v", err)
+	}
+}
+
+func TestGitSync_AllowsPushOnFeatureBranch_WhenNonStateDirty(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	// Switch off main: the gate must fail-open and let the sync proceed.
+	cmd := exec.Command("git", "checkout", "-b", "fix/I-807-test-feature")
+	cmd.Dir = workspace
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b: %v\n%s", err, out)
+	}
+
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho modified-on-feature\n"), 0755)
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (feature branch)"); err != nil {
+		t.Fatalf("GitSync should succeed on a non-main branch: %v", err)
+	}
+}
+
+// TestGitSync_AllowsPushOnMain_WhenOnlyUntrackedNonState locks in the
+// I-442 peer-WIP protection: pure-untracked (`??`) non-state files MUST
+// NOT trigger the I-807 gate. `git add -u` wouldn't stage them anyway,
+// so they're not a push-to-main risk; flagging them would regress I-442.
+func TestGitSync_AllowsPushOnMain_WhenOnlyUntrackedNonState(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, false)
+
+	// Drop an UNTRACKED non-state file. Never git add-ed; porcelain
+	// will report it as `??` — the gate must skip it.
+	nonStateDir := filepath.Join(workspace, "claude-config", "hooks")
+	os.MkdirAll(nonStateDir, 0755)
+	os.WriteFile(filepath.Join(nonStateDir, "new.sh"),
+		[]byte("#!/bin/sh\necho brand-new untracked\n"), 0755)
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (untracked non-state present)"); err != nil {
+		t.Fatalf("GitSync must skip ?? entries (I-442): %v", err)
+	}
+
+	// And the untracked file should still be untracked (not swept in).
+	statusCmd := exec.Command("git", "status", "--porcelain", "claude-config/hooks/new.sh")
+	statusCmd.Dir = workspace
+	out, _ := statusCmd.Output()
+	if !strings.HasPrefix(string(out), "??") {
+		t.Errorf("untracked file should remain untracked after GitSync; status output: %q", string(out))
+	}
+}
