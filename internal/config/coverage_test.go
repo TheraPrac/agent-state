@@ -168,6 +168,88 @@ func TestConfigTestingSection(t *testing.T) {
 	}
 }
 
+// I-776: scope_classes maps an item-declared class name to a class-specific
+// required-suite set, parsed under testing → scope_classes → <class> → <suite>: <cmd>.
+func TestScopeClassesParsed(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  required_suites:
+    api_unit: cd ../theraprac-api && make test-unit
+
+  scope_classes:
+    workspace-config:
+      workspace_test: bash claude-config/hooks/run-changed-hook-tests.sh
+    docs-only:
+      docs_lint: bash scripts/docs-lint.sh
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Testing == nil || cfg.Testing.ScopeClasses == nil {
+		t.Fatal("Testing.ScopeClasses should be initialized")
+	}
+	if len(cfg.Testing.ScopeClasses) != 2 {
+		t.Errorf("scope_classes: got %d, want 2", len(cfg.Testing.ScopeClasses))
+	}
+	class, ok := cfg.Testing.ScopeClasses["workspace-config"]
+	if !ok {
+		t.Fatal("missing workspace-config scope class")
+	}
+	if len(class.RequiredSuites) != 1 {
+		t.Errorf("workspace-config required_suites: got %d, want 1", len(class.RequiredSuites))
+	}
+	sc, ok := class.RequiredSuites["workspace_test"]
+	if !ok {
+		t.Fatal("missing workspace_test suite under workspace-config")
+	}
+	if sc.Command != "bash claude-config/hooks/run-changed-hook-tests.sh" {
+		t.Errorf("workspace_test command = %q", sc.Command)
+	}
+
+	docs, ok := cfg.Testing.ScopeClasses["docs-only"]
+	if !ok {
+		t.Fatal("missing docs-only scope class")
+	}
+	if docs.RequiredSuites["docs_lint"].Command != "bash scripts/docs-lint.sh" {
+		t.Errorf("docs_lint command = %q", docs.RequiredSuites["docs_lint"].Command)
+	}
+
+	// Default required_suites still parsed alongside scope_classes.
+	if cfg.Testing.RequiredSuites["api_unit"].Command != "cd ../theraprac-api && make test-unit" {
+		t.Error("default required_suites should still parse when scope_classes is present")
+	}
+}
+
+// I-776: an item that declares no scope_class must not interact with the
+// scope_classes parser state — the default RequiredSuites is unchanged and
+// ScopeClasses stays initialized (not nil) for future lookups.
+func TestScopeClassesEmptyWhenNotConfigured(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  required_suites:
+    api_unit: cd ../theraprac-api && make test-unit
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Testing.ScopeClasses == nil {
+		t.Fatal("ScopeClasses map should be initialized (non-nil), even when empty")
+	}
+	if len(cfg.Testing.ScopeClasses) != 0 {
+		t.Errorf("ScopeClasses should be empty, got %d entries", len(cfg.Testing.ScopeClasses))
+	}
+}
+
 func TestConfigDeliverySection(t *testing.T) {
 	root := t.TempDir()
 	asDir := filepath.Join(root, ".as")

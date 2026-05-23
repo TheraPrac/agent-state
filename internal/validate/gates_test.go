@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -319,6 +320,154 @@ func TestGateTestingCompleteScopeNotTriggered(t *testing.T) {
 	results := EvaluateGates(item, "close", cfg, allItems)
 	if !GatesPassed(results) {
 		t.Error("testing_complete should pass when scope suites not triggered")
+	}
+}
+
+// I-776: when an item declares a scope_class, testing_complete iterates that
+// class's required suites instead of cfg.Testing.RequiredSuites. A
+// workspace-config item with only `workspace_test: pass …` recorded must
+// pass — no api/web evidence required.
+func TestTestingComplete_ScopeClassUsesClassRequiredSuites(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+			"api_lint": {Command: "make lint"},
+		},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {Command: "bash claude-config/hooks/run-changed-hook-tests.sh"},
+				},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("I-776", "active")
+	item.ScopeClass = "workspace-config"
+	item.TestingEvidence = map[string]interface{}{
+		"workspace_test": "pass abc1234 2026-05-23T07:00:00-06:00",
+		// No api_unit / api_lint — that's the whole point.
+	}
+	allItems := map[string]*model.Item{"I-776": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if !GatesPassed(results) {
+		f := FirstFailure(results)
+		t.Errorf("workspace-config item with workspace_test should pass; got %s: %s", f.Gate, f.Message)
+	}
+}
+
+// I-776: if an item declares a scope_class but the class's required suite
+// is missing evidence, the gate fails with the standard "required suite
+// not recorded" message — same shape as the default-class failure, so the
+// recovery instruction (`st test … workspace_test`) is self-explanatory.
+func TestTestingComplete_ScopeClassMissingClassSuite(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {Command: "bash run.sh"},
+				},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("I-776", "active")
+	item.ScopeClass = "workspace-config"
+	// No workspace_test evidence.
+	allItems := map[string]*model.Item{"I-776": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Fatal("expected testing_complete to fail when class required suite missing")
+	}
+	f := FirstFailure(results)
+	if f.Gate != "testing_complete" {
+		t.Errorf("failing gate = %q, want testing_complete", f.Gate)
+	}
+	// Message must name the missing suite so the operator/agent knows what to run.
+	if !strings.Contains(f.Message, "workspace_test") {
+		t.Errorf("failure message should name workspace_test, got: %s", f.Message)
+	}
+}
+
+// I-776: an item declaring an unknown scope_class fails fast with a
+// targeted message. Silent fallback to the default class would re-impose
+// api/web suites that the agent explicitly opted out of — worse than a
+// loud failure that says "fix your config or your item".
+func TestTestingComplete_UnknownScopeClass(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+		},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			// "workspace-config" defined elsewhere; this item names a bogus class.
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("I-776", "active")
+	item.ScopeClass = "bogus-class"
+	item.TestingEvidence = map[string]interface{}{
+		"api_unit": "pass abc1234 2026-05-23T07:00:00-06:00",
+	}
+	allItems := map[string]*model.Item{"I-776": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Fatal("expected testing_complete to fail for unknown scope_class")
+	}
+	f := FirstFailure(results)
+	if !strings.Contains(f.Message, "unknown scope_class") || !strings.Contains(f.Message, "bogus-class") {
+		t.Errorf("failure should name the unknown class explicitly, got: %s", f.Message)
+	}
+}
+
+// I-776: items WITHOUT a scope_class continue to use the default
+// RequiredSuites — this is the regression guard for the 99% case.
+func TestTestingComplete_NoScopeClassUsesGlobalRequired(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+		},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {Command: "x"},
+				},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("T-099", "active")
+	// No ScopeClass — should require api_unit, not workspace_test.
+	item.TestingEvidence = map[string]interface{}{
+		"workspace_test": "pass x 2026-05-23T07:00:00-06:00",
+	}
+	allItems := map[string]*model.Item{"T-099": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Fatal("expected testing_complete to fail — default class requires api_unit which is unrecorded")
+	}
+	f := FirstFailure(results)
+	if !strings.Contains(f.Message, "api_unit") {
+		t.Errorf("failure should name api_unit (the default-class required suite), got: %s", f.Message)
 	}
 }
 

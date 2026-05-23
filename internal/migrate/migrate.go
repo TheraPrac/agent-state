@@ -230,6 +230,7 @@ var canonicalOrder = []string{
 	"_blank_8",
 	"context",
 	"priority", "severity", "category", "repo", "source",
+	"scope_class",
 	"approach_decision",
 	"assigned_to", "last_touched_by",
 	"tags", "epic", "sprint",
@@ -396,6 +397,8 @@ func (b *builder) emitField(field string) {
 		b.emitListIfPresent("invariants", b.item.Invariants)
 	case "priority":
 		b.emitPriority()
+	case "scope_class":
+		b.emitScalarIfPresent("scope_class", b.item.ScopeClass)
 	case "tags":
 		b.emitTags()
 	case "epic":

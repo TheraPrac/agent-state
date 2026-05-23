@@ -447,6 +447,8 @@ func storeScalar(item *model.Item, key, val string) {
 		item.Sprint = val
 	case "arc":
 		item.Arc = val
+	case "scope_class":
+		item.ScopeClass = val
 	case "claimed_by":
 		item.ClaimedBy = val
 	case "claimed_at":

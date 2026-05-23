@@ -157,8 +157,24 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 		return GateResult{Passed: true, Gate: "testing_complete"}
 	}
 
+	// I-776: pick which required-suite set applies to this item. When the
+	// item declares scope_class, that class's required suites are the
+	// canonical set for the testing-complete gate (workspace-config items
+	// get workspace_test instead of api/web Tier 1). Unknown scope_class
+	// fails fast — silent fallback to the default class would silently
+	// re-impose api/web requirements on an item that explicitly opted out.
+	requiredSuites := cfg.Testing.RequiredSuites
+	if item.ScopeClass != "" {
+		class, ok := cfg.Testing.ScopeClasses[item.ScopeClass]
+		if !ok {
+			return GateResult{Passed: false, Gate: "testing_complete",
+				Message: fmt.Sprintf("unknown scope_class %q — declare in config.testing.scope_classes or remove from item", item.ScopeClass)}
+		}
+		requiredSuites = class.RequiredSuites
+	}
+
 	// Check required suites: every configured required suite must have a "pass" record
-	for name := range cfg.Testing.RequiredSuites {
+	for name := range requiredSuites {
 		val := getTestingEvidence(item, name)
 		if val == "" || val == "null" {
 			return GateResult{Passed: false, Gate: "testing_complete",

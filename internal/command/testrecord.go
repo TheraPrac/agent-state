@@ -66,13 +66,25 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 		return 1
 	}
 
-	// Look up suite
+	// Look up suite. I-776: if the item declares a scope_class, suites in
+	// that class's required-suite set are treated as required for THIS item
+	// (same enforcement as the default required_suites — `--skip` refused).
 	suiteCmd := ""
 	isRequired := false
 	isScope := false
-	if sc, ok := cfg.Testing.RequiredSuites[suite]; ok {
-		isRequired = true
-		suiteCmd = sc.Command
+	if item.ScopeClass != "" {
+		if class, ok := cfg.Testing.ScopeClasses[item.ScopeClass]; ok {
+			if sc, ok := class.RequiredSuites[suite]; ok {
+				isRequired = true
+				suiteCmd = sc.Command
+			}
+		}
+	}
+	if !isRequired {
+		if sc, ok := cfg.Testing.RequiredSuites[suite]; ok {
+			isRequired = true
+			suiteCmd = sc.Command
+		}
 	}
 	if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
 		isScope = true

@@ -131,6 +131,29 @@ type TestingConfig struct {
 	RequiredSuites     map[string]SuiteConfig
 	ScopeSuites        map[string]ScopeSuiteConfig
 	CoverageThresholds *CoverageThresholds
+
+	// I-776: ScopeClasses maps a class name (e.g. "workspace-config") to a
+	// class-specific required-suite set. When an item declares scope_class,
+	// the testing-complete gate iterates that class's RequiredSuites instead
+	// of the default TestingConfig.RequiredSuites.
+	//
+	// Config shape is flat (4 levels deep, matching the line parser's cap):
+	//
+	//   testing:
+	//     scope_classes:
+	//       workspace-config:
+	//         workspace_test: bash claude-config/hooks/run-changed-hook-tests.sh
+	//
+	// Direct key/value entries under the class name ARE the class's required
+	// suites — there is no inner `required_suites:` key.
+	ScopeClasses map[string]ScopeClassConfig
+}
+
+// ScopeClassConfig is one named scope class's required-suite set.
+// Suite names follow the same conventions as TestingConfig.RequiredSuites;
+// SuiteConfig values are reused as-is.
+type ScopeClassConfig struct {
+	RequiredSuites map[string]SuiteConfig
 }
 
 type CoverageThresholds struct {
@@ -1174,6 +1197,27 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 					cfg.Testing.CoverageThresholds.Functions = v
 				}
 			}
+		case "scope_classes":
+			// I-776: flat shape — testing → scope_classes → <class> → <suite>: <cmd>.
+			// At this point, levels[2] is the class name and `key`/`val` are
+			// the suite name and its command. The class-name section header
+			// (val == "") is a no-op since we lazily create the map below.
+			if val == "" {
+				return
+			}
+			className := levels[2]
+			if className == "" {
+				// Defensive: a kv at level<3 under scope_classes is malformed.
+				return
+			}
+			class, ok := cfg.Testing.ScopeClasses[className]
+			if !ok {
+				class = ScopeClassConfig{RequiredSuites: make(map[string]SuiteConfig)}
+			} else if class.RequiredSuites == nil {
+				class.RequiredSuites = make(map[string]SuiteConfig)
+			}
+			class.RequiredSuites[key] = SuiteConfig{Command: val}
+			cfg.Testing.ScopeClasses[className] = class
 		}
 
 	case "pipeline":
@@ -1404,7 +1448,11 @@ func ensureTesting(cfg *Config) {
 		cfg.Testing = &TestingConfig{
 			RequiredSuites: make(map[string]SuiteConfig),
 			ScopeSuites:    make(map[string]ScopeSuiteConfig),
+			ScopeClasses:   make(map[string]ScopeClassConfig),
 		}
+	}
+	if cfg.Testing.ScopeClasses == nil {
+		cfg.Testing.ScopeClasses = make(map[string]ScopeClassConfig)
 	}
 }
 

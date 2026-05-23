@@ -98,6 +98,75 @@ func TestTestRecordNoTestingConfig(t *testing.T) {
 	}
 }
 
+// I-776: when the item declares a scope_class, suites in that class's
+// required-suite set are resolvable by `st test … --run` even though
+// they are NOT in cfg.Testing.RequiredSuites. Evidence is recorded as
+// "pass <sha> <ts>" under testing_evidence.<suite>, same shape as a
+// default-class required-suite recording.
+func TestTestRecord_ScopeClassSuite(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+
+	// Configure a workspace-config scope class with one required suite.
+	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
+		"workspace-config": {
+			RequiredSuites: map[string]config.SuiteConfig{
+				"workspace_test": {Command: "bash claude-config/hooks/run-changed-hook-tests.sh"},
+			},
+		},
+	}
+
+	// Mark T-003 with the scope_class.
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = "workspace-config"
+		it.Doc.SetField("scope_class", "workspace-config")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	// Record evidence for the class's required suite.
+	code := TestRecord(s, cfg, "T-003", "workspace_test", testRecordOpts())
+	if code != 0 {
+		t.Fatalf("TestRecord returned %d, want 0 — class-scoped suite should resolve", code)
+	}
+
+	item, _ := s.Get("T-003")
+	ev, ok := getNestedField(item, "testing_evidence", "workspace_test")
+	if !ok || !strings.HasPrefix(ev, "pass abc1234") {
+		t.Errorf("testing_evidence.workspace_test = %q, want pass abc1234 …", ev)
+	}
+}
+
+// I-776: agents must not be able to `--skip` a class's required suite —
+// same enforcement as default-class required suites. Workspace-config
+// items still need their workspace_test evidence; skipping it would
+// re-create the gate-bypass problem the scope-class mechanism solves.
+func TestTestRecord_ScopeClassSuiteRefusesSkip(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
+		"workspace-config": {
+			RequiredSuites: map[string]config.SuiteConfig{
+				"workspace_test": {Command: "bash run.sh"},
+			},
+		},
+	}
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = "workspace-config"
+		it.Doc.SetField("scope_class", "workspace-config")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := testRecordOpts()
+	opts.Skip = "not applicable"
+	code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
+	if code == 0 {
+		t.Error("TestRecord should refuse --skip on a class's required suite (got exit 0)")
+	}
+}
+
 func TestTestRecordSHATruncation(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	opts := TestRecordOpts{

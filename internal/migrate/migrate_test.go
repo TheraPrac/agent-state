@@ -1181,3 +1181,86 @@ func TestHelperFunctions(t *testing.T) {
 		t.Errorf("suiteValue(colon) = %q", got)
 	}
 }
+
+// I-776: scope_class is a new top-level scalar emitted after priority/severity/
+// category/repo/source. Round-trip: parse → canonical → re-parse → field preserved.
+func TestCanonical_ScopeClassRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	content := `id: I-776
+type: issue
+status: active
+created: 2026-05-23T07:00:00-06:00
+last_touched: 2026-05-23T07:00:00-06:00
+
+title: Hard gate carve-out for workspace-config items
+
+priority: 3
+scope_class: workspace-config
+
+depends_on:
+- []
+`
+	path := writeTestFile(t, dir, "I-776.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if item.ScopeClass != "workspace-config" {
+		t.Fatalf("input parse: ScopeClass = %q, want workspace-config", item.ScopeClass)
+	}
+
+	canonical := Canonical(item, testConfig())
+	if !strings.Contains(canonical, "scope_class: workspace-config") {
+		t.Errorf("canonical missing scope_class line:\n%s", canonical)
+	}
+
+	// scope_class must appear AFTER priority (canonical order — see migrate.go).
+	priorityIdx := strings.Index(canonical, "priority:")
+	scopeIdx := strings.Index(canonical, "scope_class:")
+	if priorityIdx < 0 || scopeIdx < 0 || scopeIdx < priorityIdx {
+		t.Errorf("scope_class must appear after priority; priorityIdx=%d scopeIdx=%d", priorityIdx, scopeIdx)
+	}
+
+	// Re-parse to confirm round-trip fidelity.
+	roundPath := writeTestFile(t, dir, "I-776-canonical.md", canonical)
+	round, err := parse.File(roundPath)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if round.ScopeClass != "workspace-config" {
+		t.Errorf("round-trip ScopeClass = %q", round.ScopeClass)
+	}
+}
+
+// I-776: items without a scope_class must not emit a stray "scope_class:"
+// line — keeps the diff clean for the 99% of items that have never declared
+// a class.
+func TestCanonical_ScopeClassEmptyOmitted(t *testing.T) {
+	dir := t.TempDir()
+	content := `id: T-099
+type: task
+status: queued
+created: 2026-05-23T07:00:00-06:00
+last_touched: 2026-05-23T07:00:00-06:00
+
+title: An ordinary task without scope_class
+
+priority: 2
+
+depends_on:
+- []
+`
+	path := writeTestFile(t, dir, "T-099.md", content)
+	item, err := parse.File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if item.ScopeClass != "" {
+		t.Fatalf("ScopeClass should be empty, got %q", item.ScopeClass)
+	}
+
+	canonical := Canonical(item, testConfig())
+	if strings.Contains(canonical, "scope_class:") {
+		t.Errorf("canonical should NOT contain a scope_class line:\n%s", canonical)
+	}
+}

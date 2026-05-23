@@ -36,6 +36,10 @@ type Item struct {
 	//                       — sibling of sprint/epic at a longer horizon.
 	//                       Any name an operator uses is the arc; not
 	//                       predefined. One per item in v1.
+	ScopeClass     string // I-776: gate scope class. When set, overrides
+	//                       the default required_suites with the class's
+	//                       required-suite set from cfg.Testing.ScopeClasses[name].
+	//                       Empty = use cfg.Testing.RequiredSuites (default).
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
