@@ -36,6 +36,10 @@ type Item struct {
 	//                       — sibling of sprint/epic at a longer horizon.
 	//                       Any name an operator uses is the arc; not
 	//                       predefined. One per item in v1.
+	ScopeClass     string // I-776: gate scope class. When set, overrides
+	//                       the default required_suites with the class's
+	//                       required-suite set from cfg.Testing.ScopeClasses[name].
+	//                       Empty = use cfg.Testing.RequiredSuites (default).
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
@@ -211,7 +215,8 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"created": true, "last_touched": true, "completed": true,
 	"priority": true, "severity": true, "category": true, "repo": true,
 	"assigned_to": true, "last_touched_by": true, "epic": true,
-	"sprint": true, "arc": true, "claimed_by": true, "claimed_at": true,
+	"sprint": true, "arc": true, "scope_class": true,
+	"claimed_by": true, "claimed_at": true,
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
 	// storeList

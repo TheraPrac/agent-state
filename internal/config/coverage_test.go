@@ -168,6 +168,246 @@ func TestConfigTestingSection(t *testing.T) {
 	}
 }
 
+// I-776: scope_classes maps an item-declared class name to a class-specific
+// required-suite set, parsed under testing → scope_classes → <class> → <suite>: <cmd>.
+func TestScopeClassesParsed(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  required_suites:
+    api_unit: cd ../theraprac-api && make test-unit
+
+  scope_classes:
+    workspace-config:
+      workspace_test: bash claude-config/hooks/run-changed-hook-tests.sh
+    docs-only:
+      docs_lint: bash scripts/docs-lint.sh
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Testing == nil || cfg.Testing.ScopeClasses == nil {
+		t.Fatal("Testing.ScopeClasses should be initialized")
+	}
+	if len(cfg.Testing.ScopeClasses) != 2 {
+		t.Errorf("scope_classes: got %d, want 2", len(cfg.Testing.ScopeClasses))
+	}
+	class, ok := cfg.Testing.ScopeClasses["workspace-config"]
+	if !ok {
+		t.Fatal("missing workspace-config scope class")
+	}
+	if len(class.RequiredSuites) != 1 {
+		t.Errorf("workspace-config required_suites: got %d, want 1", len(class.RequiredSuites))
+	}
+	sc, ok := class.RequiredSuites["workspace_test"]
+	if !ok {
+		t.Fatal("missing workspace_test suite under workspace-config")
+	}
+	if sc.Command != "bash claude-config/hooks/run-changed-hook-tests.sh" {
+		t.Errorf("workspace_test command = %q", sc.Command)
+	}
+
+	docs, ok := cfg.Testing.ScopeClasses["docs-only"]
+	if !ok {
+		t.Fatal("missing docs-only scope class")
+	}
+	if docs.RequiredSuites["docs_lint"].Command != "bash scripts/docs-lint.sh" {
+		t.Errorf("docs_lint command = %q", docs.RequiredSuites["docs_lint"].Command)
+	}
+
+	// Default required_suites still parsed alongside scope_classes.
+	if cfg.Testing.RequiredSuites["api_unit"].Command != "cd ../theraprac-api && make test-unit" {
+		t.Error("default required_suites should still parse when scope_classes is present")
+	}
+}
+
+// I-776: an item that declares no scope_class must not interact with the
+// scope_classes parser state — the default RequiredSuites is unchanged and
+// ScopeClasses stays initialized (not nil) for future lookups.
+func TestScopeClassesEmptyWhenNotConfigured(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  required_suites:
+    api_unit: cd ../theraprac-api && make test-unit
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Testing.ScopeClasses == nil {
+		t.Fatal("ScopeClasses map should be initialized (non-nil), even when empty")
+	}
+	if len(cfg.Testing.ScopeClasses) != 0 {
+		t.Errorf("ScopeClasses should be empty, got %d entries", len(cfg.Testing.ScopeClasses))
+	}
+}
+
+// I-776: nested suite form (`<suite>: { command: <cmd> }`) is unsupported —
+// the parser must reject it loudly rather than silently registering a phantom
+// suite literally named 'command'. Register the class first via a real
+// flat-form suite line so the `key == "command"` reject branch is exercised
+// rather than short-circuited by the class never being created.
+func TestScopeClassesNestedFormRejected(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  scope_classes:
+    workspace-config:
+      real_suite: bash real.sh
+      nested_suite:
+        command: bash nested.sh
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	class, ok := cfg.Testing.ScopeClasses["workspace-config"]
+	if !ok {
+		t.Fatal("flat-form real_suite should have registered the class — fixture is broken")
+	}
+	// The real flat-form suite parsed normally.
+	if class.RequiredSuites["real_suite"].Command != "bash real.sh" {
+		t.Errorf("real_suite did not parse — got %q", class.RequiredSuites["real_suite"].Command)
+	}
+	// The nested-form `command:` line at indent 8 (level 4, clamped to 3) would
+	// otherwise register a phantom suite literally named "command" — verify it
+	// did NOT.
+	if _, bad := class.RequiredSuites["command"]; bad {
+		t.Error("nested `command:` form should be rejected — got a phantom suite named 'command'")
+	}
+	// Same check for the `artifacts` reject variant.
+	if _, bad := class.RequiredSuites["artifacts"]; bad {
+		t.Error("nested `artifacts:` form should also be rejected")
+	}
+}
+
+// I-776: same check for the `artifacts:` nested-form rejection, with the
+// class pre-registered.
+func TestScopeClassesNestedArtifactsRejected(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  scope_classes:
+    workspace-config:
+      real_suite: bash real.sh
+      nested:
+        artifacts:
+          - reports/**
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	class, ok := cfg.Testing.ScopeClasses["workspace-config"]
+	if !ok {
+		t.Fatal("class should have been registered via real_suite")
+	}
+	if _, bad := class.RequiredSuites["artifacts"]; bad {
+		t.Error("nested `artifacts:` form should be rejected")
+	}
+}
+
+// I-776: missing class-name header (`scope_classes:\n  workspace_test: cmd`)
+// would otherwise create a phantom class named after the suite. The defensive
+// className == "" check doesn't fire on its own because levels[2] is set on
+// the same iteration, so the parser explicitly rejects the "levels[2]==key"
+// same-iteration shape.
+func TestScopeClassesMissingClassHeaderRejected(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `testing:
+  scope_classes:
+    workspace_test: bash run.sh
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, bad := cfg.Testing.ScopeClasses["workspace_test"]; bad {
+		t.Error("missing class-name header should be rejected — got a phantom class 'workspace_test'")
+	}
+	if len(cfg.Testing.ScopeClasses) != 0 {
+		t.Errorf("ScopeClasses should be empty on malformed config, got: %v", cfg.Testing.ScopeClasses)
+	}
+}
+
+// I-776: top-level `scope_classes:` (outside `testing:`) is rejected so a
+// common YAML typo doesn't silently strip the carve-out.
+func TestScopeClassesTopLevelRejected(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	configContent := `scope_classes:
+  workspace-config:
+    workspace_test: bash run.sh
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Testing != nil && len(cfg.Testing.ScopeClasses) > 0 {
+		t.Errorf("top-level scope_classes should be silently dropped (with stderr warning), got: %v", cfg.Testing.ScopeClasses)
+	}
+}
+
+// I-776: RequiredSuitesFor central helper — every reader of "which suites
+// apply to this item" must route through here.
+func TestRequiredSuitesFor(t *testing.T) {
+	cfg := &TestingConfig{
+		RequiredSuites: map[string]SuiteConfig{"api_unit": {Command: "a"}},
+		ScopeClasses: map[string]ScopeClassConfig{
+			"workspace-config": {RequiredSuites: map[string]SuiteConfig{"workspace_test": {Command: "w"}}},
+		},
+	}
+
+	// Default class (no scope_class declared)
+	got, ok := cfg.RequiredSuitesFor("")
+	if !ok || got["api_unit"].Command != "a" {
+		t.Errorf("default class: got=%v ok=%v", got, ok)
+	}
+
+	// Known class
+	got, ok = cfg.RequiredSuitesFor("workspace-config")
+	if !ok || got["workspace_test"].Command != "w" {
+		t.Errorf("known class: got=%v ok=%v", got, ok)
+	}
+	if _, badAPI := got["api_unit"]; badAPI {
+		t.Error("class set must NOT include default-class suites")
+	}
+
+	// Unknown class
+	got, ok = cfg.RequiredSuitesFor("bogus")
+	if ok {
+		t.Errorf("unknown class should return ok=false, got=%v", got)
+	}
+
+	// Nil receiver
+	var nilCfg *TestingConfig
+	got, ok = nilCfg.RequiredSuitesFor("anything")
+	if !ok || got != nil {
+		t.Errorf("nil receiver: got=%v ok=%v, want nil/true", got, ok)
+	}
+}
+
 func TestConfigDeliverySection(t *testing.T) {
 	root := t.TempDir()
 	asDir := filepath.Join(root, ".as")

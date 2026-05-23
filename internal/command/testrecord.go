@@ -66,15 +66,28 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 		return 1
 	}
 
-	// Look up suite
+	// I-776: route required-suite lookup through the central helper so this
+	// command agrees with the gate on which suites apply to THIS item. Unknown
+	// scope_class fails fast — without this check, an agent could `st test`
+	// against the default class's suites for an item the gate will later
+	// reject for an unknown class, leaving dirty evidence behind.
+	requiredSuites, classOK := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	if !classOK {
+		fmt.Fprintf(os.Stderr, "unknown scope_class %q — declare in config.testing.scope_classes or remove from item\n", item.ScopeClass)
+		return 1
+	}
+
+	// Suite-name precedence: class-required (when scope_class is set) → default
+	// required → scope. ScopeSuites lookup is now an `else if` instead of
+	// unconditional so a name collision (same suite in a class and ScopeSuites)
+	// cannot silently overwrite the resolved class command.
 	suiteCmd := ""
 	isRequired := false
 	isScope := false
-	if sc, ok := cfg.Testing.RequiredSuites[suite]; ok {
+	if sc, ok := requiredSuites[suite]; ok {
 		isRequired = true
 		suiteCmd = sc.Command
-	}
-	if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
+	} else if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
 		isScope = true
 		suiteCmd = sc.Command
 	}
@@ -273,10 +286,11 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		return 1
 	}
 
-	// Upload artifacts (if configured)
-	_, isReq := cfg.Testing.RequiredSuites[suite]
-	_, isScp := cfg.Testing.ScopeSuites[suite]
-	artifactCount := uploadArtifacts(cfg, suite, keyPrefix, isReq, isScp, backend)
+	// Upload artifacts (if configured). I-776: pass through the item's
+	// scope_class so uploadArtifacts looks in the right bucket — a class-only
+	// required suite has its Artifacts under cfg.Testing.ScopeClasses[class],
+	// not under the default RequiredSuites.
+	artifactCount := uploadArtifacts(cfg, suite, keyPrefix, item.ScopeClass, backend)
 	if artifactCount > 0 {
 		fmt.Printf("  uploaded %d artifact(s)\n", artifactCount)
 	}
@@ -551,18 +565,23 @@ func runCmdInDirStreaming(dir, command string) ([]byte, int, error) {
 
 // uploadArtifacts globs artifact patterns from the suite config, bundles matches
 // into a tar.gz, and uploads it. Returns the number of files bundled.
-func uploadArtifacts(cfg *config.Config, suite, keyPrefix string, isRequired, isScope bool, backend evidence.Backend) int {
+//
+// I-776: precedence mirrors the suite lookup in TestRecord — class-required
+// (when scopeClass is set) → default required → scope. The artifact bucket
+// has to match the bucket the suite came from, or class-only suites would
+// silently drop their configured Artifacts patterns.
+func uploadArtifacts(cfg *config.Config, suite, keyPrefix, scopeClass string, backend evidence.Backend) int {
 	if cfg.Testing == nil {
 		return 0
 	}
 
 	var patterns []string
-	if isRequired {
-		if sc, ok := cfg.Testing.RequiredSuites[suite]; ok {
+	if requiredSuites, ok := cfg.Testing.RequiredSuitesFor(scopeClass); ok {
+		if sc, found := requiredSuites[suite]; found {
 			patterns = sc.Artifacts
 		}
 	}
-	if isScope {
+	if patterns == nil {
 		if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
 			patterns = sc.Artifacts
 		}

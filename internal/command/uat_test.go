@@ -320,3 +320,99 @@ func TestUATScopeSuiteSkippedSummaryCount(t *testing.T) {
 		t.Errorf("expected '0 auto-fail' in summary, got:\n%s", output)
 	}
 }
+
+// I-776: workspace-config items show the class's required suite in the
+// AUTOMATED CHECKS block, NOT the default api/web Tier 1 — UAT must agree
+// with the gate, which iterates the class-scoped set.
+func TestUATScopeClassChecksClassSuites(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
+		"workspace-config": {
+			RequiredSuites: map[string]config.SuiteConfig{
+				"workspace_test": {Command: "bash run.sh"},
+			},
+		},
+	}
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = "workspace-config"
+		it.Doc.SetField("scope_class", "workspace-config")
+		it.SetNested("testing_evidence", "workspace_test", "pass abc123 2026-05-23T08:00:00-06:00")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := UATOpts{
+		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("ok"), 0, nil },
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	UAT(s, cfg, "T-003", opts)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "workspace_test") {
+		t.Errorf("expected workspace_test in AUTOMATED CHECKS for workspace-config item:\n%s", output)
+	}
+	// Default api/web suites must NOT appear — they're not required for this item.
+	for _, defaultSuite := range []string{"api_unit", "api_lint", "web_typecheck", "web_unit"} {
+		if strings.Contains(output, defaultSuite) {
+			t.Errorf("expected NO %s in AUTOMATED CHECKS for workspace-config item:\n%s", defaultSuite, output)
+		}
+	}
+}
+
+// I-776: scope-suite policy is skipped for class items in UAT, same as the
+// gate. A stale `web_e2e: required` marker on a workspace-config item must
+// not surface as a UAT failure.
+func TestUATScopeClassSkipsScopeSuiteRequired(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
+		"workspace-config": {
+			RequiredSuites: map[string]config.SuiteConfig{
+				"workspace_test": {Command: "bash run.sh"},
+			},
+		},
+	}
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = "workspace-config"
+		it.Doc.SetField("scope_class", "workspace-config")
+		it.SetNested("testing_evidence", "workspace_test", "pass abc123 2026-05-23T08:00:00-06:00")
+		// Stale marker — must be ignored.
+		it.SetNested("testing_evidence", "web_e2e", "required")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := UATOpts{
+		RunCmd:  func(cmd string) ([]byte, int, error) { return []byte("ok"), 0, nil },
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	UAT(s, cfg, "T-003", opts)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if strings.Contains(output, "web_e2e") {
+		t.Errorf("class items should not surface scope_suites markers in UAT:\n%s", output)
+	}
+}

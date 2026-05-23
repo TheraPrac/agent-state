@@ -6,6 +6,7 @@ package migrate
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -230,6 +231,7 @@ var canonicalOrder = []string{
 	"_blank_8",
 	"context",
 	"priority", "severity", "category", "repo", "source",
+	"scope_class",
 	"approach_decision",
 	"assigned_to", "last_touched_by",
 	"tags", "epic", "sprint",
@@ -396,6 +398,15 @@ func (b *builder) emitField(field string) {
 		b.emitListIfPresent("invariants", b.item.Invariants)
 	case "priority":
 		b.emitPriority()
+	case "scope_class":
+		// I-776: scope_class is a boolean-ish opt-in field — emit only when set.
+		// Unlike epic/sprint where a `null` marker may carry meaning, a stale
+		// `scope_class: null` line on an item whose class was cleared is just
+		// noise and would re-introduce the bypass anti-pattern (an inert
+		// declaration that operators might think still activates the carve-out).
+		if b.item.ScopeClass != "" {
+			b.add("scope_class: " + b.item.ScopeClass)
+		}
 	case "tags":
 		b.emitTags()
 	case "epic":
@@ -576,8 +587,11 @@ func (b *builder) emitTestingEvidence() {
 
 	b.add("")
 
-	// required_suites
-	suiteNames := b.cfg.Testing.RequiredSuiteNames()
+	// required_suites — I-776: emit the item's class-scoped set so reconcile
+	// doesn't write empty api/web placeholders onto a workspace-config item.
+	// Unknown class falls back to no emission (the gate failure will surface
+	// the unknown-class error; nothing useful to canonicalize here).
+	suiteNames := classScopedRequiredSuiteNames(b.cfg, b.item)
 	if len(suiteNames) > 0 {
 		b.add("  required_suites:")
 		maxLen := maxKeyLen(suiteNames)
@@ -590,8 +604,17 @@ func (b *builder) emitTestingEvidence() {
 
 	b.add("")
 
-	// scope_suites
-	scopeNames := b.cfg.Testing.ScopeSuiteNames()
+	// scope_suites — I-776: class items have a closed required-set
+	// definition and don't observe scope-suite policy at the gate, so
+	// reconcile must not bake default scope-suite placeholders into
+	// their files. Without this guard, a workspace-config item would
+	// always carry stale `api_integration: null`, `web_e2e: null` rows
+	// that could later be flipped to `required` and re-create the
+	// diverged-evidence shape the class carve-out retires.
+	var scopeNames []string
+	if b.item.ScopeClass == "" {
+		scopeNames = b.cfg.Testing.ScopeSuiteNames()
+	}
 	if len(scopeNames) > 0 {
 		b.add("  scope_suites:")
 		maxLen := maxKeyLen(scopeNames)
@@ -931,4 +954,24 @@ func maxKeyLen(keys []string) int {
 		}
 	}
 	return max
+}
+
+// classScopedRequiredSuiteNames returns the required-suite names that apply
+// to a given item — its scope_class's set when declared, else the default.
+// Sorted; empty when the class is unknown (the gate surfaces that as a
+// targeted failure; canonical-emit just skips the block).
+func classScopedRequiredSuiteNames(cfg *config.Config, item *model.Item) []string {
+	if cfg == nil || cfg.Testing == nil {
+		return nil
+	}
+	required, ok := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(required))
+	for name := range required {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

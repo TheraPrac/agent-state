@@ -131,6 +131,55 @@ type TestingConfig struct {
 	RequiredSuites     map[string]SuiteConfig
 	ScopeSuites        map[string]ScopeSuiteConfig
 	CoverageThresholds *CoverageThresholds
+
+	// I-776: ScopeClasses maps a class name (e.g. "workspace-config") to a
+	// class-specific required-suite set. When an item declares scope_class,
+	// the testing-complete gate iterates that class's RequiredSuites instead
+	// of the default TestingConfig.RequiredSuites.
+	//
+	// Config shape is flat (4 levels deep, matching the line parser's cap):
+	//
+	//   testing:
+	//     scope_classes:
+	//       workspace-config:
+	//         workspace_test: bash claude-config/hooks/run-changed-hook-tests.sh
+	//
+	// Direct key/value entries under the class name ARE the class's required
+	// suites — there is no inner `required_suites:` key.
+	ScopeClasses map[string]ScopeClassConfig
+}
+
+// ScopeClassConfig is one named scope class's required-suite set.
+// Suite names follow the same conventions as TestingConfig.RequiredSuites;
+// SuiteConfig values are reused as-is.
+type ScopeClassConfig struct {
+	RequiredSuites map[string]SuiteConfig
+}
+
+// RequiredSuitesFor returns the required-suite set that applies to a given
+// item, plus a "class resolved" flag. I-776: every code path that needs to
+// know which suites are required for an item MUST route through this helper
+// so the gate, st test, st uat, st run auto-runner, the queue advisor, and
+// the canonical-emit slot all stay in lock-step on what counts as required.
+//
+//   - scopeClass == ""           → default RequiredSuites, ok=true.
+//   - scopeClass set + found     → class's RequiredSuites, ok=true.
+//   - scopeClass set + not found → nil, ok=false (caller decides: fail fast,
+//                                  or surface "unknown scope_class").
+//
+// A nil receiver returns nil/true (no testing config → nothing required).
+func (t *TestingConfig) RequiredSuitesFor(scopeClass string) (map[string]SuiteConfig, bool) {
+	if t == nil {
+		return nil, true
+	}
+	if scopeClass == "" {
+		return t.RequiredSuites, true
+	}
+	class, ok := t.ScopeClasses[scopeClass]
+	if !ok {
+		return nil, false
+	}
+	return class.RequiredSuites, true
 }
 
 type CoverageThresholds struct {
@@ -1174,6 +1223,59 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 					cfg.Testing.CoverageThresholds.Functions = v
 				}
 			}
+		case "scope_classes":
+			// I-776: flat shape only — testing → scope_classes → <class> → <suite>: <cmd>.
+			// Three failure modes have to be detected explicitly because the
+			// shared line parser would otherwise mis-shape them into a phantom
+			// class or phantom suite:
+			//
+			// 1. Missing class header: `scope_classes:\n  workspace_test: cmd`
+			//    levels[2] gets set to the suite key on this iteration, so the
+			//    `className == ""` defense doesn't fire on its own. We reject
+			//    by requiring at least 4 populated levels[].
+			//
+			// 2. Nested command form: `<class>:\n  <suite>:\n    command: cmd`
+			//    The deepest line is at indent 8 which the parser clamps to
+			//    level=3, overwriting levels[3]="<suite>" with "command".
+			//    Reject the literal key "command" (and the other nested fields
+			//    SuiteConfig supports) so the operator gets a loud error
+			//    instead of a phantom suite named "command".
+			//
+			// 3. Section header lines (val == "") are no-ops — the lazy
+			//    map-create below handles class registration on the first
+			//    leaf line.
+			if val == "" {
+				return
+			}
+			className := levels[2]
+			// Detect form (1): if levels[2] is empty, this is a leaf with no
+			// class header above it. Also reject if levels[2] is the same as
+			// the key — that's the same-iteration mis-assignment shape, e.g.
+			// `scope_classes:\n  workspace_test: cmd` where levels[2]="workspace_test"
+			// because the parser just wrote it.
+			if className == "" || className == key {
+				fmt.Fprintf(os.Stderr,
+					"warning: malformed scope_classes entry %q at indent under scope_classes — every suite must be nested under a class name (testing.scope_classes.<class>.<suite>: <cmd>); dropping\n",
+					key)
+				return
+			}
+			// Detect form (2): nested suite shape would surface SuiteConfig
+			// field names (command/artifacts) as the leaf key. Reject loudly
+			// — only the flat shape is supported in v1.
+			if key == "command" || key == "artifacts" {
+				fmt.Fprintf(os.Stderr,
+					"warning: scope_classes does not support the nested suite form (%q under %q.%q); use the flat shape (<class>.<suite>: <cmd>) — dropping\n",
+					key, className, levels[3])
+				return
+			}
+			class, ok := cfg.Testing.ScopeClasses[className]
+			if !ok {
+				class = ScopeClassConfig{RequiredSuites: make(map[string]SuiteConfig)}
+			} else if class.RequiredSuites == nil {
+				class.RequiredSuites = make(map[string]SuiteConfig)
+			}
+			class.RequiredSuites[key] = SuiteConfig{Command: val}
+			cfg.Testing.ScopeClasses[className] = class
 		}
 
 	case "pipeline":
@@ -1208,6 +1310,16 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 				(*step).WatchCI = val == "true"
 			}
 		}
+
+	case "scope_classes":
+		// I-776: scope_classes must live UNDER testing:. A bare top-level
+		// `scope_classes:` block is a common YAML mistake when adding a new
+		// section — warn loudly instead of silently dropping it, otherwise
+		// items declaring scope_class get "unknown scope_class" with no
+		// diagnostic distinguishing 'malformed config' from 'typo on item'.
+		fmt.Fprintf(os.Stderr,
+			"warning: scope_classes:%q at top level — scope_classes must live under testing: (testing.scope_classes.<class>.<suite>); dropping\n",
+			key)
 
 	case "evidence":
 		if cfg.Evidence == nil {
@@ -1404,7 +1516,11 @@ func ensureTesting(cfg *Config) {
 		cfg.Testing = &TestingConfig{
 			RequiredSuites: make(map[string]SuiteConfig),
 			ScopeSuites:    make(map[string]ScopeSuiteConfig),
+			ScopeClasses:   make(map[string]ScopeClassConfig),
 		}
+	}
+	if cfg.Testing.ScopeClasses == nil {
+		cfg.Testing.ScopeClasses = make(map[string]ScopeClassConfig)
 	}
 }
 

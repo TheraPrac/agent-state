@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -157,8 +158,36 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 		return GateResult{Passed: true, Gate: "testing_complete"}
 	}
 
-	// Check required suites: every configured required suite must have a "pass" record
-	for name := range cfg.Testing.RequiredSuites {
+	// I-776: route through the central helper so every required-suite reader
+	// (gate, st test, st uat, st run auto-runner, queue advisor, canonical
+	// emit) agrees on what counts as required for this item.
+	requiredSuites, classOK := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	if !classOK {
+		// Unknown scope_class: fail fast. Silent fallback would re-impose the
+		// default class's suites on an item that explicitly opted out, which
+		// defeats the point of declaring scope_class.
+		return GateResult{Passed: false, Gate: "testing_complete",
+			Message: fmt.Sprintf("unknown scope_class %q — declare in config.testing.scope_classes or remove from item", item.ScopeClass)}
+	}
+	// I-776: empty class is a config error, not a free pass. A class declared
+	// in config with zero required suites would trivially pass the gate with
+	// no evidence recorded — exactly the silent-bypass anti-pattern I-776 is
+	// meant to retire. The default class (no scope_class declared) is allowed
+	// to be empty for back-compat with configs that have no required_suites.
+	if item.ScopeClass != "" && len(requiredSuites) == 0 {
+		return GateResult{Passed: false, Gate: "testing_complete",
+			Message: fmt.Sprintf("scope_class %q has no required suites declared — fix config.testing.scope_classes.%s", item.ScopeClass, item.ScopeClass)}
+	}
+
+	// Iterate required suites in sorted order so the failure message is
+	// deterministic when multiple are missing — agents see the same suite
+	// named first across runs instead of map-iteration-order roulette.
+	suiteNames := make([]string, 0, len(requiredSuites))
+	for name := range requiredSuites {
+		suiteNames = append(suiteNames, name)
+	}
+	sort.Strings(suiteNames)
+	for _, name := range suiteNames {
 		val := getTestingEvidence(item, name)
 		if val == "" || val == "null" {
 			return GateResult{Passed: false, Gate: "testing_complete",
@@ -170,12 +199,24 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 		}
 	}
 
-	// Check scope suites: only those marked "required" (by st pr) must pass
-	for name := range cfg.Testing.ScopeSuites {
-		val := getTestingEvidence(item, name)
-		if val == "required" {
-			return GateResult{Passed: false, Gate: "testing_complete",
-				Message: fmt.Sprintf("scope suite %q required but not recorded — run `st test %s %s`", name, item.ID, name)}
+	// Scope suites: only items WITHOUT a scope_class observe the default
+	// scope-suite policy (st pr triggers + post-record marker). When an
+	// item declares a scope_class, the class IS the complete required-set
+	// definition — scope suites are not part of its gate model. If a class
+	// needs additional suites (api_integration, web_e2e, etc.) the operator
+	// declares them inside the class's required-suite set.
+	if item.ScopeClass == "" {
+		scopeNames := make([]string, 0, len(cfg.Testing.ScopeSuites))
+		for name := range cfg.Testing.ScopeSuites {
+			scopeNames = append(scopeNames, name)
+		}
+		sort.Strings(scopeNames)
+		for _, name := range scopeNames {
+			val := getTestingEvidence(item, name)
+			if val == "required" {
+				return GateResult{Passed: false, Gate: "testing_complete",
+					Message: fmt.Sprintf("scope suite %q required but not recorded — run `st test %s %s`", name, item.ID, name)}
+			}
 		}
 	}
 

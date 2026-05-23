@@ -199,7 +199,8 @@ func TestCanonicalTopLevelKeys_MatchesParser(t *testing.T) {
 		"created": true, "last_touched": true, "completed": true,
 		"priority": true, "severity": true, "category": true, "repo": true,
 		"assigned_to": true, "last_touched_by": true, "epic": true,
-		"sprint": true, "arc": true, "claimed_by": true, "claimed_at": true,
+		"sprint": true, "arc": true, "scope_class": true,
+		"claimed_by": true, "claimed_at": true,
 		"plan_approved": true, "plan_approved_at": true,
 		"plan_approved_by": true, "parallel_group": true,
 		// storeList

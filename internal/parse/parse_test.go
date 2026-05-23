@@ -979,3 +979,37 @@ func TestParseScalarPlusRealItemsMergesNoSilentDrop(t *testing.T) {
 		t.Errorf("NextActions = %#v, want %#v (scalar must merge as element 0, never be dropped)", item.NextActions, want)
 	}
 }
+
+
+// I-776: scope_class is a top-level scalar declaring which gate-model class
+// this item uses. Parser must lift it onto Item.ScopeClass for the
+// testing-complete gate to read.
+func TestParseScopeClass(t *testing.T) {
+	content := "id: I-776\ntype: issue\nstatus: active\n" +
+		"created: 2026-05-23T07:00:00-06:00\nlast_touched: 2026-05-23T07:00:00-06:00\n" +
+		"title: t\nscope_class: workspace-config\n"
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.ScopeClass != "workspace-config" {
+		t.Errorf("ScopeClass = %q, want %q", item.ScopeClass, "workspace-config")
+	}
+}
+
+// I-776: omitted scope_class must round-trip as an empty string so the
+// gate falls back to the default required_suites for the 99% of items
+// that do not declare a class.
+func TestParseScopeClassOmitted(t *testing.T) {
+	content := "id: T-099\ntype: task\nstatus: queued\n" +
+		"created: 2026-05-23T07:00:00-06:00\nlast_touched: 2026-05-23T07:00:00-06:00\n" +
+		"title: t\n"
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.ScopeClass != "" {
+		t.Errorf("ScopeClass = %q, want empty", item.ScopeClass)
+	}
+}
+

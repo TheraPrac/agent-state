@@ -825,7 +825,7 @@ func NextAction(s *store.Store, cfg *config.Config, id string) string {
 
 func nextActionForItem(item *model.Item, id string, cfg *config.Config) string {
 	stage := deliveryStage(item)
-	hasTests := hasItemTests(item.TestingEvidence, cfg)
+	hasTests := hasItemTests(item, cfg)
 	hasManifest := hasItemManifest(item)
 
 	switch {
@@ -853,12 +853,22 @@ func nextActionForItem(item *model.Item, id string, cfg *config.Config) string {
 	}
 }
 
-func hasItemTests(te map[string]interface{}, cfg *config.Config) bool {
+func hasItemTests(item *model.Item, cfg *config.Config) bool {
 	if cfg.Testing == nil {
 		return true
 	}
-	for name := range cfg.Testing.RequiredSuites {
-		val, ok := te[name]
+	// I-776: query the item's class-scoped required-suite set so the queue
+	// advisor agrees with the gate on what "tests recorded" means. An item
+	// with workspace_test=pass should not be flagged as "tests not passing"
+	// just because it lacks api_unit evidence.
+	requiredSuites, classOK := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	if !classOK {
+		// Unknown scope_class — treat as "needs attention" so the next-action
+		// hint surfaces something rather than silently passing.
+		return false
+	}
+	for name := range requiredSuites {
+		val, ok := item.TestingEvidence[name]
 		if !ok {
 			return false
 		}

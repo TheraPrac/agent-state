@@ -2965,21 +2965,35 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 		return ""
 	}
 
+	// I-776: iterate the item's class-scoped required-suite set, not the
+	// global default. Without this, st run on a workspace-config item would
+	// try to auto-execute api_unit / web_typecheck in a worktree without
+	// those repos checked out.
+	requiredSuites, classOK := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	if !classOK {
+		sr.Error = fmt.Sprintf("unknown scope_class %q on %s — fix item or config.testing.scope_classes", item.ScopeClass, itemID)
+		return sr
+	}
+
 	// Find missing required suites
 	var missing []string
-	for name := range cfg.Testing.RequiredSuites {
+	for name := range requiredSuites {
 		val := getEvidence("required_suites", name)
 		if !strings.HasPrefix(val, "pass") {
 			missing = append(missing, name)
 		}
 	}
 
-	// Find triggered but unrun scope suites
+	// Find triggered but unrun scope suites — scope-suite policy only applies
+	// to default-class items (I-776: class items have a closed required-set
+	// definition; scope suites are not part of the class gate).
 	var missingScope []string
-	for name := range cfg.Testing.ScopeSuites {
-		val := getEvidence("scope_suites", name)
-		if val == "required" {
-			missingScope = append(missingScope, name)
+	if item.ScopeClass == "" {
+		for name := range cfg.Testing.ScopeSuites {
+			val := getEvidence("scope_suites", name)
+			if val == "required" {
+				missingScope = append(missingScope, name)
+			}
 		}
 	}
 
@@ -3003,9 +3017,9 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 		s, _ = store.New(cfg)
 		item, _ = s.Get(itemID)
 
-		// Verify everything passes now
+		// Verify everything passes now — same class-aware set as the first pass.
 		var stillMissing []string
-		for name := range cfg.Testing.RequiredSuites {
+		for name := range requiredSuites {
 			val := getEvidence("required_suites", name)
 			if !strings.HasPrefix(val, "pass") {
 				stillMissing = append(stillMissing, name)
@@ -3504,18 +3518,29 @@ func buildDefaultPrompt(s *store.Store, cfg *config.Config, itemID, sprintID str
 		b.WriteString("\n")
 	}
 
-	// Required test suites
-	if cfg.Testing != nil && len(cfg.Testing.RequiredSuites) > 0 {
-		b.WriteString("## Required Test Suites\n")
-		b.WriteString("ALL of these must pass BEFORE committing:\n")
-		for name := range cfg.Testing.RequiredSuites {
-			b.WriteString(fmt.Sprintf("  st test %s %s --run\n", itemID, name))
+	// Required test suites — I-776: use the item's class-scoped set so the
+	// LLM brief points at the suites the gate will actually check, not the
+	// global default that doesn't apply to class items.
+	if cfg.Testing != nil {
+		requiredSuites, _ := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+		if len(requiredSuites) > 0 {
+			b.WriteString("## Required Test Suites\n")
+			if item.ScopeClass != "" {
+				b.WriteString(fmt.Sprintf("Scope class %q — these (not the default api/web Tier 1) must pass BEFORE committing:\n", item.ScopeClass))
+			} else {
+				b.WriteString("ALL of these must pass BEFORE committing:\n")
+			}
+			for name := range requiredSuites {
+				b.WriteString(fmt.Sprintf("  st test %s %s --run\n", itemID, name))
+			}
+			b.WriteString("\n")
 		}
-		b.WriteString("\n")
 	}
 
-	// Scope test suites (triggered by st pr based on file changes)
-	if cfg.Testing != nil && len(cfg.Testing.ScopeSuites) > 0 {
+	// Scope test suites — only listed for default-class items; class items
+	// have a closed required-set definition and don't observe scope-suite
+	// triggers.
+	if cfg.Testing != nil && item.ScopeClass == "" && len(cfg.Testing.ScopeSuites) > 0 {
 		b.WriteString("## Scope Test Suites\n")
 		b.WriteString("After recording the PR with `st pr`, check which scope suites were triggered.\n")
 		b.WriteString("Run any that show as 'required' in testing_evidence:\n")
