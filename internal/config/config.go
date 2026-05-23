@@ -77,6 +77,11 @@ type Config struct {
 	// to a peer agent's workspace under an ST_ROOT env leak. I-778.
 	startDir string
 
+	// agentRootCache memoizes the resolved AgentRoot() value (filesystem
+	// walks are amortized across many call sites per session). I-778.
+	agentRootCache string
+	agentRootResolved bool
+
 	// Discovered is true when a .as/config.yaml was found (vs using defaults)
 	Discovered bool
 }
@@ -524,43 +529,106 @@ func (c *Config) AgentsDir() string {
 // worktree dir and collide on any item id. Returns "" when worktree
 // integration is disabled or BaseDir is empty (so callers don't
 // accidentally write into the agent root).
+//
+// I-778: routed through AgentRoot() rather than filepath.Dir(c.root) so
+// WorktreeBase and the worktree call sites stay consistent under an
+// ST_ROOT-leaked cfg.root — otherwise createWorktrees would mkdir the
+// worktree under the peer agent's tree while git worktree-add ran
+// against the real agent's clone.
 func (c *Config) WorktreeBase() string {
 	if c.Worktree == nil || !c.Worktree.Enabled || c.Worktree.BaseDir == "" {
 		return ""
 	}
-	agentRoot := filepath.Dir(c.root)
+	agentRoot := c.AgentRoot()
+	if agentRoot == "" {
+		return ""
+	}
 	return filepath.Join(agentRoot, c.Worktree.BaseDir)
 }
 
-// AgentRoot returns the per-agent root directory (the dir that holds
-// per-agent worktrees and source clones, e.g. <agents>/theraprac-agent-b).
-// Resolution order:
-//  1. If worktree.parent_dir is set to an absolute path, return it
-//     (operator override; preserves the pre-I-778 behavior for any
-//     deployment that pinned an explicit absolute parent dir).
-//  2. Walk up from c.startDir looking for a .as/agent-workspace.yaml.
-//     The first one found has a `path:` field naming the per-agent
-//     root; return that path. This anchors the helper to the
-//     invocation site, recovering the correct agent even when c.root
-//     was set from an ST_ROOT env var leaking from a peer agent's
-//     session (the I-778 reproducer).
-//  3. Walk up from filepath.Dir(c.root) — handles the case where
-//     startDir was the workspace itself but ST_ROOT had redirected
-//     discovery to a peer's workspace.
-//  4. Fall back to filepath.Dir(c.root) — the I-407 default that
-//     matches WorktreeBase().
+// AgentRoot returns the per-agent root directory — the dir that holds
+// per-agent worktrees, .as/agent-workspace.yaml, and (by default) the
+// per-agent source repo clones. NEVER overridden by worktree.parent_dir;
+// that field overrides where REPOS live, which is a separate concept
+// (see RepoParent). I-778.
 //
-// I-778. Replaces the duplicated `cfg.Root() + wt.ParentDir` pattern
-// at seven call sites in internal/command/.
+// Resolution order:
+//  1. Walk up from c.startDir looking for the per-agent marker
+//     `.as/agent-workspace.yaml`. The marker MUST satisfy all three
+//     I-778 sanity checks:
+//       (a) top-level `path:` field — indented `path:` keys nested
+//           inside other YAML mappings are rejected,
+//       (b) `agent_id:` matching c.trustedAgentID() — only env-var or
+//           local-config sourced IDs are trusted (path-inferred IDs
+//           derive from cfg.root, which is the exact thing the leak
+//           corrupts, so they would defeat recovery),
+//       (c) `path:` resolves to an existing absolute directory on disk.
+//  2. Walk up from filepath.Dir(c.root) with the same checks —
+//     handles the case where startDir was the workspace itself but
+//     ST_ROOT had redirected discovery to a peer's workspace.
+//  3. Fall back to filepath.Dir(c.root) — the I-407 default.
+//
+// Result is memoized; the directory layout is immutable for the
+// lifetime of a Config so the walk runs at most once per session.
+// Use ResetAgentRootCache() in tests that mutate cfg.root / cfg.startDir.
 func (c *Config) AgentRoot() string {
-	if c.Worktree != nil && c.Worktree.ParentDir != "" && filepath.IsAbs(c.Worktree.ParentDir) {
+	if c.agentRootResolved {
+		return c.agentRootCache
+	}
+	resolved := c.resolveAgentRoot()
+	c.agentRootCache = resolved
+	c.agentRootResolved = true
+	return resolved
+}
+
+// RepoParent returns the directory under which the configured source
+// repo clones live (joined with the repo's mapped name to get the
+// repo dir). Defaults to AgentRoot() so repos sit one level up from
+// the workspace per the I-418 layout, but is overridden by
+// worktree.parent_dir when set: absolute paths are honored verbatim
+// (operator escape hatch for non-standard layouts); relative paths
+// are joined with c.root for back-compat with pre-I-778 `parent_dir:
+// ..` configs. I-778.
+//
+// This is the helper the 7+3 worktree call sites that previously
+// inlined `cfg.Worktree.ParentDir → cfg.Root() + ParentDir` should
+// call. AgentRoot() is for code that needs the per-agent root
+// regardless of where repos live (e.g., WorktreeBase, the freshness
+// gate's sibling-repo probe, the single-agent drift warning).
+func (c *Config) RepoParent() string {
+	if c.Worktree != nil && c.Worktree.ParentDir != "" {
+		if filepath.IsAbs(c.Worktree.ParentDir) {
+			return c.Worktree.ParentDir
+		}
+		if c.root != "" {
+			// Try the walk first: if startDir recovers a per-agent
+			// marker, prefer it over joining the leaked c.root with
+			// the relative override (the ST_ROOT-leak repro).
+			if found := c.AgentRoot(); found != "" && found != filepath.Dir(c.root) {
+				return found
+			}
+			return filepath.Join(c.root, c.Worktree.ParentDir)
+		}
 		return c.Worktree.ParentDir
 	}
-	if found := walkForAgentRoot(c.startDir); found != "" {
+	return c.AgentRoot()
+}
+
+// ResetAgentRootCache discards the memoized AgentRoot result. Intended
+// for tests that mutate cfg.root / cfg.startDir / cfg.Worktree after
+// construction. I-778.
+func (c *Config) ResetAgentRootCache() {
+	c.agentRootCache = ""
+	c.agentRootResolved = false
+}
+
+func (c *Config) resolveAgentRoot() string {
+	wantAgentID := c.trustedAgentID()
+	if found := walkForAgentRoot(c.startDir, wantAgentID); found != "" {
 		return found
 	}
 	if c.root != "" {
-		if found := walkForAgentRoot(filepath.Dir(c.root)); found != "" {
+		if found := walkForAgentRoot(filepath.Dir(c.root), wantAgentID); found != "" {
 			return found
 		}
 		return filepath.Dir(c.root)
@@ -568,20 +636,50 @@ func (c *Config) AgentRoot() string {
 	return ""
 }
 
-// walkForAgentRoot walks up from dir looking for .as/agent-workspace.yaml
-// and returns the `path:` field's value when found. Used by AgentRoot()
-// to anchor the per-agent root to the invocation site rather than the
-// (possibly ST_ROOT-leaked) discovered config root. I-778.
-func walkForAgentRoot(dir string) string {
+// trustedAgentID returns the agent id only when sourced from a
+// channel that doesn't depend on cfg.root (env var or local config
+// file). Path-inferred IDs are deliberately omitted because they
+// derive from cfg.root and would defeat the I-778 recovery (a leaked
+// cfg.root makes path-inference name the peer agent, which would
+// then reject the real agent's marker). I-778.
+func (c *Config) trustedAgentID() string {
+	id := c.Identity()
+	switch id.Source {
+	case "env", "local-config":
+		return id.ID
+	}
+	return ""
+}
+
+// walkForAgentRoot walks up from dir looking for the per-agent marker
+// .as/agent-workspace.yaml. The returned path: value must satisfy:
+//   - top-level `path:` (no leading indentation — flat YAML only)
+//   - absolute and resolvable to an existing directory on disk
+//   - matching `agent_id:` (when wantAgentID != "")
+//
+// No boundary stop is enforced: the per-marker identity sanity check
+// (matching agent_id) is what prevents a stray marker upstream of a
+// workspace from hijacking the result. The walk terminates naturally
+// when it hits filesystem root. I-778.
+func walkForAgentRoot(dir, wantAgentID string) string {
 	if dir == "" {
 		return ""
 	}
-	dir, _ = filepath.Abs(dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil || abs == "" {
+		return ""
+	}
+	dir = abs
 	for {
 		candidate := filepath.Join(dir, ".as", "agent-workspace.yaml")
 		if body, err := os.ReadFile(candidate); err == nil {
-			if path := parseAgentWorkspacePath(body); path != "" {
-				return path
+			path, gotAgentID := parseAgentWorkspaceMarker(body)
+			if path != "" && filepath.IsAbs(path) {
+				if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+					if wantAgentID == "" || gotAgentID == "" || gotAgentID == wantAgentID {
+						return path
+					}
+				}
 			}
 		}
 		parent := filepath.Dir(dir)
@@ -592,26 +690,39 @@ func walkForAgentRoot(dir string) string {
 	}
 }
 
-// parseAgentWorkspacePath extracts the `path:` field from a flat
-// agent-workspace.yaml body. Mirrors agentps.parseRosterFile — keeps
-// the package free of a YAML dependency. I-778.
-func parseAgentWorkspacePath(body []byte) string {
+// parseAgentWorkspaceMarker extracts the top-level `path:` and `agent_id:`
+// fields from a flat agent-workspace.yaml. Lines with any leading
+// whitespace are ignored so a nested `path:` key (e.g., under a future
+// `repos:` block) can't be mistaken for the top-level field. I-778.
+func parseAgentWorkspaceMarker(body []byte) (path string, agentID string) {
 	for _, line := range strings.Split(string(body), "\n") {
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		// Top-level only: reject indented lines so nested mappings
+		// (e.g. repos:\n  path: ...) cannot satisfy the parser.
+		if line[0] == ' ' || line[0] == '\t' {
+			continue
+		}
 		k, v, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
 		k = strings.TrimSpace(k)
-		if k != "path" {
-			continue
-		}
 		v = strings.TrimSpace(v)
 		v = strings.Trim(v, `"'`)
-		if v != "" {
-			return v
+		switch k {
+		case "path":
+			if path == "" {
+				path = v
+			}
+		case "agent_id":
+			if agentID == "" {
+				agentID = v
+			}
 		}
 	}
-	return ""
+	return path, agentID
 }
 
 // WorktreeBaseLegacy returns the pre-I-407 worktree location (under the

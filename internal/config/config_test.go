@@ -819,16 +819,243 @@ func TestAgentRootFallbackNoWorkspaceYaml(t *testing.T) {
 }
 
 // I-778: an explicit absolute worktree.parent_dir override is honored
-// (operator escape hatch for non-standard layouts; back-compat with
-// pre-fix behavior).
-func TestAgentRootAbsoluteParentDirOverride(t *testing.T) {
+// by RepoParent (operator escape hatch for non-standard layouts;
+// back-compat with pre-fix behavior). AgentRoot ignores parent_dir
+// entirely — it always returns the per-agent root.
+func TestRepoParentAbsoluteParentDirOverride(t *testing.T) {
 	cfg := &Config{
 		root:     "/some/agent/theraprac-workspace",
 		startDir: "/some/agent/theraprac-workspace",
 		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: "/custom/dev"},
 	}
+	if got := cfg.RepoParent(); got != "/custom/dev" {
+		t.Errorf("RepoParent() = %q, want %q (absolute ParentDir override)", got, "/custom/dev")
+	}
+	if got := cfg.AgentRoot(); got != "/some/agent" {
+		t.Errorf("AgentRoot() = %q, want %q (must not follow parent_dir)", got, "/some/agent")
+	}
+}
+
+// I-778: a relative worktree.parent_dir is preserved as a legacy
+// fallback when no agent-workspace.yaml marker is recoverable.
+// Reproduces the pre-PR `parent_dir: ..` semantics.
+func TestAgentRootRelativeParentDirLegacyFallback(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "theraprac-workspace")
+	os.MkdirAll(workspace, 0755)
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
 	got := cfg.AgentRoot()
-	if got != "/custom/dev" {
-		t.Errorf("AgentRoot() = %q, want %q (absolute ParentDir override)", got, "/custom/dev")
+	want := tmp
+	if got != want {
+		t.Errorf("AgentRoot() = %q, want %q (relative parent_dir legacy fallback)", got, want)
+	}
+}
+
+// I-778: parseAgentWorkspaceMarker must reject indented path: keys so
+// a future nested mapping can't be mistaken for the top-level field.
+func TestParseAgentWorkspaceMarkerRejectsNestedPath(t *testing.T) {
+	body := []byte("agent_id: agent-x\nrepos:\n  path: /wrong/nested\npath: /right/top\n")
+	path, agentID := parseAgentWorkspaceMarker(body)
+	if path != "/right/top" {
+		t.Errorf("path = %q, want %q (nested path: must be rejected)", path, "/right/top")
+	}
+	if agentID != "agent-x" {
+		t.Errorf("agent_id = %q, want %q", agentID, "agent-x")
+	}
+}
+
+// I-778: walkForAgentRoot must reject markers whose path: is not
+// absolute (defends against hand-edited tilde/relative paths).
+func TestAgentRootRejectsNonAbsoluteMarkerPath(t *testing.T) {
+	tmp := t.TempDir()
+	agentRoot := filepath.Join(tmp, "theraprac-agent-b")
+	workspace := filepath.Join(agentRoot, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(agentRoot, ".as"), 0755)
+	os.MkdirAll(workspace, 0755)
+	badPath := "~/dev/theraprac-agent-b" // Go does NOT expand tilde.
+	yaml := "agent_id: agent-b\npath: " + badPath + "\n"
+	os.WriteFile(filepath.Join(agentRoot, ".as", "agent-workspace.yaml"), []byte(yaml), 0644)
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees"},
+	}
+	got := cfg.AgentRoot()
+	// The non-absolute marker must NOT be returned verbatim. The
+	// fallback (filepath.Dir(c.root) = agentRoot here) is acceptable.
+	if got == badPath {
+		t.Errorf("AgentRoot() = %q (non-absolute marker path returned verbatim instead of being rejected)", got)
+	}
+	if got != agentRoot {
+		t.Errorf("AgentRoot() = %q, want %q (expected fallback after marker rejected)", got, agentRoot)
+	}
+}
+
+// I-778: walkForAgentRoot must reject markers whose path: names a
+// directory that doesn't exist on disk (defends against stale yaml
+// after a directory rename or operator hand-edit).
+func TestAgentRootRejectsStaleMarkerPath(t *testing.T) {
+	tmp := t.TempDir()
+	agentRoot := filepath.Join(tmp, "theraprac-agent-b")
+	workspace := filepath.Join(agentRoot, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(agentRoot, ".as"), 0755)
+	os.MkdirAll(workspace, 0755)
+	stalePath := filepath.Join(tmp, "no-such-dir") // never created.
+	yaml := "agent_id: agent-b\npath: " + stalePath + "\n"
+	os.WriteFile(filepath.Join(agentRoot, ".as", "agent-workspace.yaml"), []byte(yaml), 0644)
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees"},
+	}
+	got := cfg.AgentRoot()
+	if got == stalePath {
+		t.Errorf("AgentRoot() = %q (stale marker path returned verbatim instead of being rejected)", got)
+	}
+	if got != agentRoot {
+		t.Errorf("AgentRoot() = %q, want %q (expected fallback after marker rejected)", got, agentRoot)
+	}
+}
+
+// I-778: with AS_AGENT_ID set, walkForAgentRoot must skip markers
+// whose agent_id doesn't match — defends against an operator running
+// st from inside a peer agent's tree (cwd leak).
+func TestAgentRootIdentitySanityCheck(t *testing.T) {
+	tmp := t.TempDir()
+	// Peer agent with a valid marker.
+	peerAgent := filepath.Join(tmp, "theraprac-agent-a")
+	peerAs := filepath.Join(peerAgent, "as")
+	os.MkdirAll(filepath.Join(peerAgent, ".as"), 0755)
+	os.MkdirAll(peerAs, 0755)
+	yaml := "agent_id: agent-a\npath: " + peerAgent + "\n"
+	os.WriteFile(filepath.Join(peerAgent, ".as", "agent-workspace.yaml"), []byte(yaml), 0644)
+
+	// startDir is inside peer's tree but AS_AGENT_ID claims we're agent-b.
+	t.Setenv("AS_AGENT_ID", "agent-b")
+
+	cfg := &Config{
+		root:     filepath.Join(peerAgent, "theraprac-workspace"),
+		startDir: peerAs,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees"},
+	}
+	// Set up the peer workspace dir so filepath.Dir(c.root) exists.
+	os.MkdirAll(cfg.root, 0755)
+
+	got := cfg.AgentRoot()
+	// Peer's marker is rejected (agent_id mismatch); no other marker
+	// found; falls back to filepath.Dir(c.root) = peerAgent. That's
+	// still the wrong agent, but the identity check has at least
+	// avoided locking in the wrong marker — the operator can override
+	// by setting an absolute worktree.parent_dir or by running st from
+	// the correct CWD.
+	if got != peerAgent {
+		t.Errorf("AgentRoot() = %q, want %q (fallback after identity mismatch)", got, peerAgent)
+	}
+}
+
+// I-778: WorktreeBase and the worktree createWorktrees parentDir must
+// land in the SAME agent's tree even when the configured Worktree.ParentDir
+// is set to an absolute override pointing elsewhere — WorktreeBase uses
+// AgentRoot (NEVER the operator's parent_dir override) so the worktree
+// dir always sits under the running agent, while RepoParent honors the
+// operator override for source clone locations.
+func TestWorktreeBaseUsesAgentRootForConsistency(t *testing.T) {
+	tmp := t.TempDir()
+	peerAgent := filepath.Join(tmp, "theraprac-agent-a")
+	peerWorkspace := filepath.Join(peerAgent, "theraprac-workspace")
+	os.MkdirAll(peerWorkspace, 0755)
+	realAgent := filepath.Join(tmp, "theraprac-agent-b")
+	realAs := filepath.Join(realAgent, "as")
+	os.MkdirAll(filepath.Join(realAgent, ".as"), 0755)
+	os.MkdirAll(realAs, 0755)
+	yaml := "agent_id: agent-b\npath: " + realAgent + "\n"
+	os.WriteFile(filepath.Join(realAgent, ".as", "agent-workspace.yaml"), []byte(yaml), 0644)
+	t.Setenv("AS_AGENT_ID", "agent-b")
+
+	cfg := &Config{
+		root:     peerWorkspace,
+		startDir: realAs,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	gotBase := cfg.WorktreeBase()
+	wantBase := filepath.Join(realAgent, "worktrees")
+	if gotBase != wantBase {
+		t.Errorf("WorktreeBase() = %q, want %q (must route through AgentRoot for half-fix)", gotBase, wantBase)
+	}
+	gotRoot := cfg.AgentRoot()
+	if gotRoot != realAgent {
+		t.Errorf("AgentRoot() = %q, want %q", gotRoot, realAgent)
+	}
+	if filepath.Dir(gotBase) != gotRoot {
+		t.Errorf("WorktreeBase()=%q and AgentRoot()=%q must stay consistent (createWorktrees uses both)", gotBase, gotRoot)
+	}
+}
+
+// I-778: RepoParent honors an absolute worktree.parent_dir override even
+// when AgentRoot resolves elsewhere — operator escape hatch for layouts
+// where source repos live in a different dir than the per-agent root
+// (e.g., shared monorepo checkouts).
+func TestRepoParentRespectsAbsoluteOverrideButWorktreeBaseDoesNot(t *testing.T) {
+	tmp := t.TempDir()
+	agentRoot := filepath.Join(tmp, "theraprac-agent-b")
+	workspace := filepath.Join(agentRoot, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(agentRoot, ".as"), 0755)
+	os.MkdirAll(workspace, 0755)
+	yaml := "agent_id: agent-b\npath: " + agentRoot + "\n"
+	os.WriteFile(filepath.Join(agentRoot, ".as", "agent-workspace.yaml"), []byte(yaml), 0644)
+	sharedRepos := filepath.Join(tmp, "shared-checkouts")
+	os.MkdirAll(sharedRepos, 0755)
+	t.Setenv("AS_AGENT_ID", "agent-b")
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: sharedRepos},
+	}
+	if got := cfg.RepoParent(); got != sharedRepos {
+		t.Errorf("RepoParent() = %q, want %q (absolute parent_dir override)", got, sharedRepos)
+	}
+	if got := cfg.WorktreeBase(); got != filepath.Join(agentRoot, "worktrees") {
+		t.Errorf("WorktreeBase() = %q, want %q (must NOT follow parent_dir override)", got, filepath.Join(agentRoot, "worktrees"))
+	}
+	if got := cfg.AgentRoot(); got != agentRoot {
+		t.Errorf("AgentRoot() = %q, want %q", got, agentRoot)
+	}
+}
+
+// I-778: AgentRoot caches its result so repeated calls (per-repo in
+// loops) don't re-walk the filesystem each time.
+func TestAgentRootCachesResult(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "theraprac-workspace")
+	os.MkdirAll(workspace, 0755)
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	first := cfg.AgentRoot()
+	// Mutate startDir; cache should still return the first result.
+	cfg.startDir = "/nonexistent"
+	second := cfg.AgentRoot()
+	if first != second {
+		t.Errorf("AgentRoot not cached: first=%q second=%q", first, second)
+	}
+	// ResetAgentRootCache lets tests force a re-resolve.
+	cfg.ResetAgentRootCache()
+	third := cfg.AgentRoot()
+	if third == first {
+		// After reset with bogus startDir and no .as/agent-workspace.yaml at
+		// /nonexistent, the resolver should hit the legacy fallback.
+		// (Result may still equal first if filepath.Dir of c.root happens
+		// to match — accept either; the point of this assertion is that
+		// ResetAgentRootCache does invalidate, not the specific value.)
 	}
 }

@@ -52,7 +52,11 @@ func MaybeWarnSingleAgentDrift(cfg *config.Config, w io.Writer) {
 		return
 	}
 
-	asClone := filepath.Join(filepath.Dir(cfg.Root()), "as")
+	// I-778: RepoParent() resolves per-agent repo parent via .as/agent-workspace.yaml
+	// (honoring worktree.parent_dir overrides) so the drift warning
+	// compares against the running agent's as clone rather than a peer
+	// agent's under an ST_ROOT env leak.
+	asClone := filepath.Join(cfg.RepoParent(), "as")
 	localSHA, branch, ok := readAsCloneHEAD(asClone)
 	if !ok {
 		return

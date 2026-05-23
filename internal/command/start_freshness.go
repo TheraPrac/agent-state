@@ -41,7 +41,10 @@ func defaultRepoRoot(cfg *config.Config, statter func(string) error) func(name s
 		if name == "theraprac-workspace" {
 			return cfg.Root(), true
 		}
-		candidate := filepath.Join(filepath.Dir(cfg.Root()), name)
+		// I-778: RepoParent() resolves per-agent repo parent via .as/agent-workspace.yaml
+		// so the freshness gate doesn't probe a peer agent's clone under an
+		// ST_ROOT env leak.
+		candidate := filepath.Join(cfg.RepoParent(), name)
 		if err := statter(candidate); err != nil {
 			return "", false
 		}

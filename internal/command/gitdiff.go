@@ -21,13 +21,14 @@ type fileEntry struct {
 }
 
 // resolveRepoDir returns the directory for a repo, respecting worktree.parent_dir config.
-// I-778: parent resolution routed through cfg.AgentRoot() so an ST_ROOT-leaked
-// cfg.Root() can't redirect this to a peer agent's clone.
+// I-778: parent resolution routed through cfg.RepoParent() so an ST_ROOT-leaked
+// cfg.Root() can't redirect this to a peer agent's clone, while preserving the
+// pre-PR "no worktree.parent_dir → bare repo (CWD-relative)" semantic.
 func resolveRepoDir(cfg *config.Config, repo string) string {
-	if cfg.Worktree == nil {
+	if cfg.Worktree == nil || cfg.Worktree.ParentDir == "" {
 		return repo
 	}
-	parentDir := cfg.AgentRoot()
+	parentDir := cfg.RepoParent()
 	if parentDir == "" {
 		return repo
 	}

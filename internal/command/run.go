@@ -2889,8 +2889,8 @@ func cleanupWorktree(cfg *config.Config, itemID string) {
 	Finish(s, cfg, itemID, FinishOpts{})
 
 	// Pull main on all repos so next item starts from latest.
-	// I-778: AgentRoot() resolves per-agent root via .as/agent-workspace.yaml.
-	parentDir := cfg.AgentRoot()
+	// I-778: RepoParent() resolves per-agent repo parent via .as/agent-workspace.yaml.
+	parentDir := cfg.RepoParent()
 	for _, repo := range cfg.Worktree.Repos {
 		repoDir := repo
 		if cfg.Worktree.RepoMap != nil {
@@ -3997,10 +3997,10 @@ func resolveGHRepoFromShortName(repoShort string, worktreeDir string, cfg *confi
 		}
 	}
 	// Try parent dir + repo name (common worktree layout).
-	// I-778: AgentRoot() resolves per-agent root via .as/agent-workspace.yaml.
+	// I-778: RepoParent() resolves per-agent repo parent via .as/agent-workspace.yaml.
 	parentDir := cfg.Root()
-	if cfg.Worktree != nil {
-		parentDir = cfg.AgentRoot()
+	if cfg.Worktree != nil && cfg.Worktree.ParentDir != "" {
+		parentDir = cfg.RepoParent()
 	}
 	repoDir := filepath.Join(parentDir, repoShort)
 	if fi, err := os.Stat(repoDir); err == nil && fi.IsDir() {
@@ -4414,8 +4414,8 @@ func ensureHooksPath(cfg *config.Config) {
 		return
 	}
 
-	// I-778: AgentRoot() resolves per-agent root via .as/agent-workspace.yaml.
-	parentDir := cfg.AgentRoot()
+	// I-778: RepoParent() resolves per-agent repo parent via .as/agent-workspace.yaml.
+	parentDir := cfg.RepoParent()
 
 	for _, repoShort := range wt.Repos {
 		repoDir := wt.RepoMap[repoShort]

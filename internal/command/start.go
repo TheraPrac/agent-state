@@ -549,10 +549,12 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	// distinct (workspace is symlinked across agents per I-418).
 	baseDir := cfg.WorktreeBase()
 	workDir := filepath.Join(baseDir, id)
-	// I-778: AgentRoot() anchors to .as/agent-workspace.yaml under the
-	// invocation site, recovering the correct per-agent root even when
-	// cfg.Root() was discovered via an ST_ROOT env leak from a peer.
-	parentDir := cfg.AgentRoot()
+	// I-778: RepoParent() honors worktree.parent_dir overrides (absolute
+	// or relative) and otherwise resolves to AgentRoot — which anchors
+	// to .as/agent-workspace.yaml under the invocation site, recovering
+	// the correct per-agent root even when cfg.Root() was discovered
+	// via an ST_ROOT env leak from a peer.
+	parentDir := cfg.RepoParent()
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", fmt.Errorf("creating worktree dir: %w", err)

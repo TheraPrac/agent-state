@@ -384,7 +384,7 @@ func branchExistsAnywhere(cfg *config.Config, branch string) bool {
 	if cfg == nil || cfg.Worktree == nil || len(cfg.Worktree.Repos) == 0 {
 		return true // conservative — no config to check against
 	}
-	parentDir := cfg.AgentRoot() // I-778: agent-aware parent resolution
+	parentDir := cfg.RepoParent() // I-778: agent-aware repo parent resolution
 	checkedAny := false
 	for _, repoShort := range cfg.Worktree.Repos {
 		repoDir := cfg.Worktree.RepoMap[repoShort]
