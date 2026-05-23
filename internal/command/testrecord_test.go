@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -1374,6 +1376,13 @@ func TestCachePathsForRuntimeRollbackPreservesWarmCache(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected MkdirAll(goCache) failure, got nil")
 	}
+	// Pin the failure path — round-3 review: a future early-return validation
+	// could short-circuit BEFORE either MkdirAll runs, silently moving this
+	// test off the rollback path. The blocker is a file at the goCache leaf,
+	// so MkdirAll fails with "not a directory" or ENOTDIR.
+	if !strings.Contains(err.Error(), "not a directory") && !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("err = %v, want ENOTDIR-shaped failure (so we know the goCache MkdirAll is the failing step)", err)
+	}
 	// The warm cache marker MUST survive — rollback should not have fired.
 	if _, statErr := os.Stat(warmFile); statErr != nil {
 		t.Errorf("rollback wiped pre-existing warm cache: %v (this is the round-2 review regression)", statErr)
@@ -1399,6 +1408,9 @@ func TestCachePathsForRuntimeRollbackRemovesFreshCreate(t *testing.T) {
 	_, _, err := cachePathsForRuntime(root, agentID)
 	if err == nil {
 		t.Fatalf("expected MkdirAll(goCache) failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") && !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("err = %v, want ENOTDIR-shaped failure", err)
 	}
 	// Fresh-created golangciLintCache should be gone.
 	if _, statErr := os.Stat(glPath); statErr == nil {

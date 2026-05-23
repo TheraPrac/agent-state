@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -926,14 +927,19 @@ func isCacheContendedSuite(suite string) bool {
 // structurally isolated from peer agents — no shared flock, no contention.
 //
 // Rollback (round-2 review): on second-MkdirAll failure we only RemoveAll
-// the first directory when the first MkdirAll actually CREATED it
-// (Stat-before reports IsNotExist). Otherwise a pre-existing warm cache —
-// the 100s of MB golangci-lint built up across prior runs — would be wiped
-// whenever a transient disk/permission error hit goCache.
+// the first directory when our pre-check said it didn't exist as a
+// directory. `dirExists` (from spawn.go) returns false on any Stat
+// failure — including EACCES — which is the safe default: when we can't
+// confirm a directory was already there, we treat it as fresh and
+// rollback. A pre-existing warm cache (100s of MB built up across prior
+// runs) is preserved because Stat would have succeeded. Rollback errors
+// are logged but not propagated — a partial leftover is recoverable on
+// the next call but worth surfacing for diagnostics.
 //
-// Note (gitignore): callers are expected to ensure <root>/.as/cache/ is
-// gitignored at the workspace level. The companion `.as/cache/` line lands
-// in the same review round on the theraprac-workspace side.
+// Note (gitignore): callers ensure <root>/.as/cache/ is gitignored at the
+// workspace level. The companion `.as/cache/` line lives in
+// theraprac-workspace/.gitignore (added in the I-802 review-round-2 sweep
+// — verify with `grep '\.as/cache/' theraprac-workspace/.gitignore`).
 func cachePathsForRuntime(root, agentID string) (golangciLintCache, goCache string, err error) {
 	if root == "" || agentID == "" {
 		return "", "", fmt.Errorf("cachePathsForRuntime: root and agentID required")
@@ -948,7 +954,11 @@ func cachePathsForRuntime(root, agentID string) (golangciLintCache, goCache stri
 		// Only roll back when WE just created golangciLintCache — never
 		// destroy a pre-existing warm cache on a transient goCache error.
 		if !glPreexisted {
-			_ = os.RemoveAll(golangciLintCache)
+			if rmErr := os.RemoveAll(golangciLintCache); rmErr != nil {
+				fmt.Fprintf(os.Stderr,
+					"I-802 warning: failed to roll back fresh cache dir %s after goCache MkdirAll error: %v\n",
+					golangciLintCache, rmErr)
+			}
 		}
 		return "", "", err
 	}
@@ -961,10 +971,12 @@ func cachePathsForRuntime(root, agentID string) (golangciLintCache, goCache stri
 // not a transient to retry around).
 //
 // Round-2 review fixes:
-//   - Anchor `lock` with `[^-A-Za-z0-9_]|$` (NOT `\b` — `\b` matches between
+//   - Anchor `lock` with `[^-\pL\pN_]|$` (NOT `\b` — `\b` matches between
 //     a word char and a non-word char, and `-` is non-word, so `\b` would
 //     still match in "lock-free" / "lockable" via the `able` form). We want:
-//     no `-` and no letter/digit/underscore right after `lock`.
+//     no `-` and no Unicode letter/digit/underscore right after `lock`.
+//     `\pL` and `\pN` cover any-script letters/digits so a localized error
+//     doesn't accidentally re-open the false-positive window.
 //   - Removed the dead `cannot to acquire` branch — grammatically wrong,
 //     real tools say "cannot acquire". Split into two clauses so the
 //     transitive ("failed/unable to acquire") and intransitive ("cannot
@@ -982,9 +994,9 @@ func cachePathsForRuntime(root, agentID string) (golangciLintCache, goCache stri
 // Extend by appending a tested phrase, never by widening with `.*`.
 var cacheLockErrorPattern = regexp.MustCompile(
 	`(?i)(is being used by another process` +
-		`|(failed|unable) to acquire (file )?lock([^-A-Za-z0-9_]|$)` +
-		`|cannot acquire (file )?lock([^-A-Za-z0-9_]|$)` +
-		`|cache directory is locked([^-A-Za-z0-9_]|$))`,
+		`|(failed|unable) to acquire (file )?lock([^-\pL\pN_]|$)` +
+		`|cannot acquire (file )?lock([^-\pL\pN_]|$)` +
+		`|cache directory is locked([^-\pL\pN_]|$))`,
 )
 
 // looksLikeCacheLockError reports whether the suite output matches one of
@@ -1024,10 +1036,20 @@ func runWithLockAwareRetry(suite string, injected bool, runFn func() ([]byte, in
 	if exitCode == 0 || !isCacheContendedSuite(suite) || !looksLikeCacheLockError(output) {
 		return lockAwareRetryResult{Output: output, ExitCode: exitCode, RunErr: runErr, Retried: false}
 	}
-	// Note: round-2 review dropped a runErr-warning block here. The retry
-	// gate requires exitCode != 0, so any non-nil runErr at this point is
-	// just *exec.ExitError wrapping the failing status — not the
-	// "exit 0 but failed to start" condition that warranted a special log.
+	// Round-3 review: surface a first-attempt runErr ONLY when it's not
+	// *exec.ExitError. exec.ExitError just wraps a non-zero status which
+	// is already reflected in exitCode; any OTHER error type (chdir
+	// failure, binary-not-found, injected non-exec err from a test) is
+	// information the operator would otherwise lose when the retry path
+	// concatenates outputs.
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) {
+			fmt.Fprintf(os.Stderr,
+				"I-802: %s first attempt returned non-ExitError runErr alongside lock-shaped output: %v\n",
+				suite, runErr)
+		}
+	}
 	if !injected {
 		jitter := time.Duration(5000+rand.Intn(10001)) * time.Millisecond
 		fmt.Fprintf(os.Stderr, "I-802: %s hit cache-lock signature; retrying after %s\n", suite, jitter)
