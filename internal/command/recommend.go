@@ -29,6 +29,7 @@ type RecommendOpts struct {
 	Top   int    // max rows to print; <=0 ⇒ 10
 	Scope string // "all" (default) | "sprint" (active-sprint members only)
 	Queue bool   // candidate set = the DISPATCH view (queue + EligibleForDispatch)
+	Brief bool   // one-line render: "<ID> p<N>  <title> — <rationale>"
 }
 
 // recommendJSON is the STABLE machine contract (documented for the T-348
@@ -72,7 +73,7 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 	cands := recommendCandidates(s, cfg, g, opts, sprints)
 	leverage, names := unblockLeverage(g, cands)
 
-	recs := coordinator.Recommend(cands, leverage, sprints, time.Now())
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), time.Now())
 	enrichUnblockDetail(recs, names)
 
 	if len(recs) > top {
@@ -102,6 +103,11 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 
 	if len(recs) == 0 {
 		fmt.Fprintln(w, "No recommendable items (none workable in scope).")
+		return 0
+	}
+	if opts.Brief {
+		r := recs[0]
+		fmt.Fprintf(w, "%-8s p%d  %s — %s\n", r.Item.ID, r.Priority, r.Item.Title, r.Rationale())
 		return 0
 	}
 	for _, r := range recs {
@@ -195,6 +201,24 @@ func enrichUnblockDetail(recs []coordinator.Recommendation, names map[string][]s
 			}
 		}
 	}
+}
+
+// loadGoalWeights sums active-goal weights per item ID. Resilient: an empty
+// or missing goal corpus yields an empty map (zero contribution), matching
+// the loadSprintInfo precedent — recommend must never fail because of I/O.
+func loadGoalWeights(s *store.Store) map[string]float64 {
+	out := map[string]float64{}
+	goals := s.List(store.TypeFilter("goal"))
+	for _, g := range goals {
+		if g.Status != "active" || g.Weight == nil {
+			continue
+		}
+		w := float64(*g.Weight)
+		for _, itemID := range g.Goals {
+			out[itemID] += w
+		}
+	}
+	return out
 }
 
 // loadSprintInfo builds sprintID → SprintInfo. Resilient: a missing /

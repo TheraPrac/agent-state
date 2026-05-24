@@ -1200,8 +1200,8 @@ verdict drifts toward what the operator actually accepts.`,
 		Short: "Rank workable items with an inspectable \"why this next\" rationale (T-369)",
 		Long: "Score the workable items and print them ranked, each with a\n" +
 			"decomposed rationale (priority · unblock leverage · sprint\n" +
-			"completion · age). Priority dominates by construction; the\n" +
-			"other factors only order within a priority band.\n\n" +
+			"completion · goal weight · age). Priority dominates by construction;\n" +
+			"the other factors only order within a priority band.\n\n" +
 			"Default candidate set is the PLANNING view (ready + unblocked\n" +
 			"+ unassigned). --queue switches to the DISPATCH view (queue +\n" +
 			"EligibleForDispatch) — exactly what `st coordinate` selects,\n" +
@@ -1214,8 +1214,9 @@ verdict drifts toward what the operator actually accepts.`,
 			top, _ := cmd.Flags().GetInt("top")
 			scope, _ := cmd.Flags().GetString("scope")
 			queue, _ := cmd.Flags().GetBool("queue")
+			brief, _ := cmd.Flags().GetBool("brief")
 			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{
-				JSON: jsonOut, Top: top, Scope: scope, Queue: queue,
+				JSON: jsonOut, Top: top, Scope: scope, Queue: queue, Brief: brief,
 			})
 		},
 	}
@@ -1226,7 +1227,23 @@ verdict drifts toward what the operator actually accepts.`,
 		"candidate scope: all | sprint (members of an active sprint only)")
 	recommendCmd.Flags().Bool("queue", false,
 		"score the DISPATCH view (queue + EligibleForDispatch) — what `st coordinate` sees")
+	recommendCmd.Flags().Bool("brief", false,
+		"one-line render: <ID> p<N>  <title> — <rationale> (used by `st next`)")
 	root.AddCommand(recommendCmd)
+
+	nextCmd := &cobra.Command{
+		Use:   "next",
+		Short: "Print the single top-ranked workable item (one-line brief form, T-411)",
+		Long: "Alias for `st recommend --top 1 --brief`: scores the PLANNING view\n" +
+			"and prints the top pick as one line — ID, priority, title, and rationale.\n" +
+			"Goal weight, unblock leverage, sprint pressure, and age all contribute;\n" +
+			"priority dominates by construction.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{Top: 1, Brief: true})
+		},
+	}
+	root.AddCommand(nextCmd)
 
 	finishCmd := &cobra.Command{
 		Use:   "finish [id]",

@@ -168,7 +168,7 @@ func dispatchRationale(s *store.Store, cfg *config.Config, g *deps.Graph, picked
 	sprints := loadSprintInfo(cfg, g)
 	cands := recommendCandidates(s, cfg, g, RecommendOpts{Queue: true}, sprints)
 	lev, names := unblockLeverage(g, cands)
-	recs := coordinator.Recommend(cands, lev, sprints, time.Now())
+	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), time.Now())
 	enrichUnblockDetail(recs, names)
 	if len(recs) == 0 {
 		return fallback // unreachable in practice (picked is eligible) — degrade safely
