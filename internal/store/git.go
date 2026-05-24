@@ -219,12 +219,12 @@ var ErrI807MainBranchGate = errors.New("I-807: main-branch dirty-non-state gate"
 func gateGitOutput(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	scrubbed := make([]string, 0, len(os.Environ()))
-	for _, kv := range os.Environ() {
-		switch {
-		case strings.HasPrefix(kv, "GIT_DIR="),
-			strings.HasPrefix(kv, "GIT_WORK_TREE="),
-			strings.HasPrefix(kv, "GIT_INDEX_FILE="):
+	env := os.Environ()
+	scrubbed := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_DIR=") ||
+			strings.HasPrefix(kv, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(kv, "GIT_INDEX_FILE=") {
 			continue
 		}
 		scrubbed = append(scrubbed, kv)
@@ -265,12 +265,19 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 // branch is ever renamed, all of these need to update together.
 //
 // Fail-opens (returns nil) when:
-//   - branch detection itself fails (fresh clone with unborn HEAD, errors)
+//   - symbolic-ref fails (corrupt HEAD, missing .git, etc.) AND the
+//     detached-HEAD-at-origin/main fallback also can't resolve
 //   - branch is not `main` AND detached HEAD does not resolve to origin/main
 //   - flat-layout fixture (itemsPrefix == "") — no items-vs-non-items
 //     distinction to enforce; the gate only protects nested layouts
 //   - ST_SYNC_ALLOW_MAIN=1 is set AND the gate would otherwise have fired
 //     (audit-stderr emitted with the offender list so the bypass is named)
+//
+// Note on unborn HEAD: a freshly-init'd repo with HEAD symbolic to
+// refs/heads/main but no commits yet WILL trip the gate (symbolic-ref
+// succeeds, onMain becomes true). This is intentional: the first commit
+// is exactly the case where mis-routing a non-state push to main is
+// hardest to recover from.
 //
 // Inspects: (a) `git status --porcelain` for tracked-modified / staged
 // changes in the working tree, AND (b) `git log origin/main..HEAD

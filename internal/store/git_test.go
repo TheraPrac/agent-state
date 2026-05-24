@@ -30,10 +30,26 @@ func initGitRepo(t *testing.T, dir string) {
 	git := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
+		// Scrub GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE from inherited
+		// env so a developer running `go test` from a shell that has
+		// those vars exported doesn't accidentally route git at the
+		// wrong repo. Mirrors the production-side gateGitOutput helper
+		// and the gitRun test helper.
+		env := os.Environ()
+		filtered := make([]string, 0, len(env)+2)
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "GIT_DIR=") ||
+				strings.HasPrefix(kv, "GIT_WORK_TREE=") ||
+				strings.HasPrefix(kv, "GIT_INDEX_FILE=") {
+				continue
+			}
+			filtered = append(filtered, kv)
+		}
+		filtered = append(filtered,
 			"GIT_AUTHOR_DATE=2026-03-25T10:00:00-06:00",
 			"GIT_COMMITTER_DATE=2026-03-25T10:00:00-06:00",
 		)
+		cmd.Env = filtered
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -1337,6 +1353,7 @@ func TestGitSync_OverrideAuditNamesOffenders(t *testing.T) {
 	}
 	defer func() {
 		os.Stderr = origStderr
+		w.Close() // idempotent if the explicit mid-test w.Close() already ran
 		r.Close()
 	}()
 	os.Stderr = w
@@ -1377,6 +1394,7 @@ func TestGitSync_OverrideSilentWhenGateWouldNotFire(t *testing.T) {
 	}
 	defer func() {
 		os.Stderr = origStderr
+		w.Close() // idempotent if the explicit mid-test w.Close() already ran
 		r.Close()
 	}()
 	os.Stderr = w
@@ -1419,6 +1437,7 @@ func TestGitSync_OverrideSilentOnFeatureBranchWithDirtyTree(t *testing.T) {
 	}
 	defer func() {
 		os.Stderr = origStderr
+		w.Close() // idempotent if the explicit mid-test w.Close() already ran
 		r.Close()
 	}()
 	os.Stderr = w
