@@ -596,7 +596,7 @@ func TestUpdateLongFormFieldReplaces(t *testing.T) {
 func TestSyncNoGit(t *testing.T) {
 	s, _ := setupTestEnv(t)
 	// No git repo in temp dir — should handle gracefully
-	code := Sync(s, "test sync")
+	code := Sync(s, "test sync", false)
 	// Will fail because no git repo, but shouldn't panic
 	_ = code
 }
@@ -919,7 +919,7 @@ func TestDepTreeDefaultDepth(t *testing.T) {
 
 func TestSyncDefaultMessage(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Sync(s, "")
+	code := Sync(s, "", false)
 	_ = code // no git repo, just verify no crash
 }
 

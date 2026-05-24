@@ -2651,9 +2651,11 @@ Kinds:
 			if len(args) > 0 {
 				msg = args[0]
 			}
-			exitCode = command.Sync(appStore, msg)
+			allowNonState, _ := cmd.Flags().GetBool("allow-non-state")
+			exitCode = command.Sync(appStore, msg, allowNonState)
 		},
 	}
+	syncCmd.Flags().Bool("allow-non-state", false, "bypass the non-state gate for this sync (ST_SYNC_ALLOW_NON_STATE=1 equivalent)")
 	root.AddCommand(syncCmd)
 
 	indexCmd := &cobra.Command{

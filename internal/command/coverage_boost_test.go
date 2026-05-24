@@ -875,7 +875,7 @@ func TestFinishNotFoundV2(t *testing.T) {
 
 func TestSyncInTestDir(t *testing.T) {
 	s, _ := setupTestEnv(t)
-	code := Sync(s, "test sync message")
+	code := Sync(s, "test sync message", false)
 	// Will fail (no git) — just exercises the code path
 	_ = code
 }

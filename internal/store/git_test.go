@@ -1089,15 +1089,10 @@ func TestGitSync_AllowsPushOnMain_WithEnvOverride(t *testing.T) {
 	}
 }
 
-func TestGitSync_AllowsPushOnFeatureBranch_WhenNonStateDirty(t *testing.T) {
+func TestGitSync_RefusesPushOnFeatureBranch_WhenNonStateFileDirty(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
 
-	// Switch off main: the gate must fail-open and let the sync proceed.
-	cmd := exec.Command("git", "checkout", "-b", "fix/I-807-test-feature")
-	cmd.Dir = workspace
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git checkout -b: %v\n%s", err, out)
-	}
+	gitRun(t, workspace, "checkout", "-b", "fix/I-765-test")
 
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho modified-on-feature\n"), 0755)
@@ -1107,8 +1102,94 @@ func TestGitSync_AllowsPushOnFeatureBranch_WhenNonStateDirty(t *testing.T) {
 	item.Doc.SetField("status", "active")
 	s.write(item)
 
-	if err := s.GitSync("agent-b: update T-001 (feature branch)"); err != nil {
-		t.Fatalf("GitSync should succeed on a non-main branch: %v", err)
+	err := s.GitSync("agent-b: update T-001 (feature branch, non-state dirty)")
+	if err == nil {
+		t.Fatal("GitSync must refuse when non-state is dirty on a feature branch (I-765)")
+	}
+	if !errors.Is(err, ErrI807MainBranchGate) {
+		t.Errorf("expected ErrI807MainBranchGate sentinel; got: %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "claude-config/hooks/foo.sh") {
+		t.Errorf("error must name the offending file; got: %q", msg)
+	}
+	if !strings.Contains(msg, "fix/I-765-test") {
+		t.Errorf("error must name the branch; got: %q", msg)
+	}
+	if !strings.Contains(msg, "ST_SYNC_ALLOW_NON_STATE") {
+		t.Errorf("error must mention ST_SYNC_ALLOW_NON_STATE; got: %q", msg)
+	}
+}
+
+func TestGitSync_AllowsPushOnFeatureBranch_WithNonStateOverride(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	gitRun(t, workspace, "checkout", "-b", "fix/I-765-override-test")
+
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho override-on-feature\n"), 0755)
+
+	t.Setenv("ST_SYNC_ALLOW_NON_STATE", "1")
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (feature branch, override set)"); err != nil {
+		t.Fatalf("GitSync must succeed with ST_SYNC_ALLOW_NON_STATE=1 on feature branch: %v", err)
+	}
+}
+
+func TestGitSync_AllowsPushOnMain_WithNonStateOverride(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho override-on-main\n"), 0755)
+
+	t.Setenv("ST_SYNC_ALLOW_NON_STATE", "1")
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (main, ST_SYNC_ALLOW_NON_STATE=1)"); err != nil {
+		t.Fatalf("GitSync must succeed with ST_SYNC_ALLOW_NON_STATE=1 on main: %v", err)
+	}
+}
+
+func TestGitSync_AllowsPushOnFeatureBranch_WhenOnlyStateDirty(t *testing.T) {
+	_, asDir := setupI807Workspace(t, false)
+
+	// No non-state dirty files; only the agent-state item mutation below.
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (feature branch, state-only dirty)"); err != nil {
+		t.Fatalf("GitSync must succeed on feature branch when only state is dirty: %v", err)
+	}
+}
+
+func TestGitSync_AllowsPushOnFeatureBranch_WhenOnlyUntrackedNonState(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, false)
+
+	gitRun(t, workspace, "checkout", "-b", "fix/I-765-untracked-test")
+
+	// Drop an UNTRACKED non-state file — gate must skip ?? entries (I-442).
+	nonStateDir := filepath.Join(workspace, "claude-config", "hooks")
+	os.MkdirAll(nonStateDir, 0755)
+	os.WriteFile(filepath.Join(nonStateDir, "new.sh"), []byte("#!/bin/sh\necho untracked\n"), 0755)
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (feature branch, untracked non-state)"); err != nil {
+		t.Fatalf("GitSync must skip ?? entries on feature branch (I-442): %v", err)
 	}
 }
 
@@ -1419,15 +1500,15 @@ func TestGitSync_OverrideSilentWhenGateWouldNotFire(t *testing.T) {
 	}
 }
 
-// I-807 review #2: the override stays SILENT on a feature branch
-// (branch != "main"), even with dirty non-state files. Without this
-// guarantee, an operator who exports ST_SYNC_ALLOW_MAIN persistently
-// would see the audit line spam every GitSync from feature branches.
-func TestGitSync_OverrideSilentOnFeatureBranchWithDirtyTree(t *testing.T) {
+// I-765: ST_SYNC_ALLOW_MAIN=1 is main-only in scope. On a feature branch
+// with dirty non-state, the gate still fires (refuses) even when
+// ST_SYNC_ALLOW_MAIN=1 is set. Only ST_SYNC_ALLOW_NON_STATE=1 bypasses
+// on non-main branches.
+func TestGitSync_RefusesPushOnFeatureBranch_WhenAllowMainOverrideSet(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
-	gitRun(t, workspace, "checkout", "-b", "fix/I-807-noise-test")
+	gitRun(t, workspace, "checkout", "-b", "fix/I-765-allow-main-scope-test")
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
-		[]byte("#!/bin/sh\necho feature-noise\n"), 0755)
+		[]byte("#!/bin/sh\necho feature-with-allow-main\n"), 0755)
 
 	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
 
@@ -1438,7 +1519,7 @@ func TestGitSync_OverrideSilentOnFeatureBranchWithDirtyTree(t *testing.T) {
 	}
 	defer func() {
 		os.Stderr = origStderr
-		w.Close() // idempotent if the explicit mid-test w.Close() already ran
+		w.Close()
 		r.Close()
 	}()
 	os.Stderr = w
@@ -1447,18 +1528,23 @@ func TestGitSync_OverrideSilentOnFeatureBranchWithDirtyTree(t *testing.T) {
 	item, _ := s.Get("T-001")
 	item.Doc.SetField("status", "active")
 	s.write(item)
-	err := s.GitSync("agent-b: update T-001 (override + dirty + feature)")
+	err := s.GitSync("agent-b: update T-001 (ST_SYNC_ALLOW_MAIN + dirty + feature)")
 
 	w.Close()
 	os.Stderr = origStderr
 	captured, _ := io.ReadAll(r)
-	msg := string(captured)
+	auditMsg := string(captured)
 
-	if err != nil {
-		t.Fatalf("feature-branch sync with dirty non-state should succeed: %v", err)
+	// Gate must refuse: ST_SYNC_ALLOW_MAIN=1 has no effect on feature branches.
+	if err == nil {
+		t.Fatal("gate must refuse on feature branch even with ST_SYNC_ALLOW_MAIN=1")
 	}
-	if strings.Contains(msg, "ST_SYNC_ALLOW_MAIN=1") {
-		t.Errorf("audit must NOT spam on feature branch (gate inactive there); got: %q", msg)
+	if !errors.Is(err, ErrI807MainBranchGate) {
+		t.Errorf("expected ErrI807MainBranchGate sentinel; got: %v", err)
+	}
+	// Audit stderr must NOT fire (main-only var was not active).
+	if strings.Contains(auditMsg, "bypassing gate") {
+		t.Errorf("audit stderr must NOT fire when ST_SYNC_ALLOW_MAIN=1 is inactive on feature branch; got: %q", auditMsg)
 	}
 }
 
@@ -1552,8 +1638,10 @@ func TestGitSync_RefusesPushOnDetachedHEADAtOriginMain(t *testing.T) {
 	}
 }
 
-// I-807 review #1: detached HEAD AWAY from origin/main fails open.
-func TestGitSync_AllowsPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
+// I-765: detached HEAD AWAY from origin/main is refused by the non-state gate.
+// Under I-807 (main-only) the gate failed-open here; under I-765 (all branches)
+// the gate runs on detached HEAD too since pushWithRetry still targets main.
+func TestGitSync_RefusesPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
 
 	// Wire up upstream so origin/main exists.
@@ -1579,8 +1667,12 @@ func TestGitSync_AllowsPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
 	item.Doc.SetField("status", "active")
 	s.write(item)
 
-	if err := s.GitSync("agent-b: update T-001 (detached HEAD away from main)"); err != nil {
-		t.Fatalf("detached HEAD that is NOT on origin/main should fail-open: %v", err)
+	err := s.GitSync("agent-b: update T-001 (detached HEAD away from main)")
+	if err == nil {
+		t.Fatal("gate must refuse on detached HEAD away from origin/main when non-state is dirty (I-765)")
+	}
+	if !errors.Is(err, ErrI807MainBranchGate) {
+		t.Errorf("expected ErrI807MainBranchGate sentinel; got: %v", err)
 	}
 }
 
@@ -1655,7 +1747,7 @@ func TestCheckMainBranchGate_CaseDivergentToplevel_I835(t *testing.T) {
 
 	// With the I-835 fix (strings.ToLower on both inputs to filepath.Rel),
 	// the gate must fail-open: nil error means only state files are dirty.
-	if err := checkMainBranchGate(divergentItems); err != nil {
+	if err := checkNonStateGate(divergentItems); err != nil {
 		t.Errorf("I-835 regression: gate returned non-nil for state-only dirty set with case-divergent path: %v", err)
 	}
 }

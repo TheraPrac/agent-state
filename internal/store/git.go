@@ -202,9 +202,11 @@ func restoreLockedItems(snapshots map[string][]byte) {
 // The working tree's index is never touched; rebase conflicts cannot
 // arise.
 
-// ErrI807MainBranchGate is the sentinel for the I-807 gate refusal so
+// ErrI807MainBranchGate is the sentinel for the I-807/I-765 gate refusal so
 // upstream callers can detect it programmatically via errors.Is rather
-// than by string matching on the human-readable message.
+// than by string matching on the human-readable message. I-765 broadened
+// the gate from main-only to all branches; the sentinel is kept for
+// back-compat with existing errors.Is call sites.
 var ErrI807MainBranchGate = errors.New("I-807: main-branch dirty-non-state gate")
 
 // gateGitOutput runs `git <args>` in dir with `GIT_DIR`, `GIT_WORK_TREE`,
@@ -253,26 +255,21 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 	return false
 }
 
-// checkMainBranchGate is the I-807 defense-in-depth gate. It fails closed
-// when the workspace HEAD is the literal branch `main` (or is a detached
-// HEAD pointing at the same SHA as `refs/remotes/origin/main`) AND any
-// tracked / staged / committed-but-unpushed mutation outside the
-// agent-state allowlist (`<itemsPrefix>`, `.as/`) is about to be pushed
-// to origin/main. Prevents the silent-branch-flip + auto-push pattern
-// observed in commit 9edc8732b.
-//
-// Hardcoded to `main`: the rest of git.go (pushWithRetry, verifyPushLanded,
-// replayCommitOnFetchedMain) also hardcodes `main`. If the repo's default
-// branch is ever renamed, all of these need to update together.
+// checkNonStateGate is the I-807/I-765 defense-in-depth gate. It fails
+// closed when any tracked / staged / committed-but-unpushed mutation outside
+// the agent-state allowlist (`<itemsPrefix>`, `.as/`) is present, on ANY
+// branch. I-807 introduced the gate for main only; I-765 broadened it to all
+// branches to prevent non-state files from being auto-pushed via st sync
+// regardless of which branch is checked out.
 //
 // Fail-opens (returns nil) when:
 //   - symbolic-ref fails (corrupt HEAD, missing .git, etc.) AND the
 //     detached-HEAD-at-origin/main fallback also can't resolve
-//   - branch is not `main` AND detached HEAD does not resolve to origin/main
 //   - flat-layout fixture (itemsPrefix == "") — no items-vs-non-items
 //     distinction to enforce; the gate only protects nested layouts
-//   - ST_SYNC_ALLOW_MAIN=1 is set AND the gate would otherwise have fired
-//     (audit-stderr emitted with the offender list so the bypass is named)
+//   - ST_SYNC_ALLOW_NON_STATE=1 is set (any branch) OR ST_SYNC_ALLOW_MAIN=1
+//     is set (accepted on any branch for back-compat); audit-stderr is
+//     emitted with the offender list so the bypass is named
 //
 // Note on unborn HEAD: a freshly-init'd repo with HEAD symbolic to
 // refs/heads/main but no commits yet WILL trip the gate (symbolic-ref
@@ -293,10 +290,13 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 // the old AND new path of a rename so a rename FROM non-state INTO
 // agent-state still flags the (deletion-side) non-state mutation.
 //
-// Pairs structurally with I-765 (broader gate, all branches, same code
-// path — additive).
-func checkMainBranchGate(root string) error {
-	overrideSet := os.Getenv("ST_SYNC_ALLOW_MAIN") == "1"
+// I-765 broadened this gate from main-only to all branches.
+func checkNonStateGate(root string) error {
+	allowMain := os.Getenv("ST_SYNC_ALLOW_MAIN") == "1"
+	allowNonState := os.Getenv("ST_SYNC_ALLOW_NON_STATE") == "1"
+	// ST_SYNC_ALLOW_MAIN is main-only (back-compat with I-807 docs).
+	// ST_SYNC_ALLOW_NON_STATE bypasses on any branch.
+	// overrideSet is resolved after onMain is determined below.
 
 	// Use `symbolic-ref -q HEAD` (not `--abbrev-ref`) to distinguish a
 	// branch literally named `HEAD` from a truly-detached HEAD.
@@ -305,8 +305,11 @@ func checkMainBranchGate(root string) error {
 	symRefOut, symRefErr := gateGitOutput(root, "symbolic-ref", "-q", "HEAD")
 	detached := symRefErr != nil
 	onMain := false
+	currentBranch := "HEAD (detached)"
 	if !detached {
-		onMain = strings.TrimSpace(symRefOut) == "refs/heads/main"
+		ref := strings.TrimSpace(symRefOut)
+		onMain = ref == "refs/heads/main"
+		currentBranch = strings.TrimPrefix(ref, "refs/heads/")
 	} else {
 		// Detached HEAD: if the detached commit is the same as
 		// refs/remotes/origin/main, treat it as on-main for push-
@@ -318,12 +321,14 @@ func checkMainBranchGate(root string) error {
 			o := strings.TrimSpace(originSHA)
 			if h != "" && h == o {
 				onMain = true
+				currentBranch = "main (detached)"
 			}
 		}
 	}
-	if !onMain {
-		return nil
-	}
+	// I-765: gate runs on every branch, not just main. The early return
+	// `if !onMain { return nil }` has been removed.
+	// ST_SYNC_ALLOW_MAIN is main-only; ST_SYNC_ALLOW_NON_STATE works everywhere.
+	overrideSet := allowNonState || (allowMain && onMain)
 
 	// Resolve git toplevel so porcelain paths come back relative to the
 	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
@@ -458,18 +463,28 @@ func checkMainBranchGate(root string) error {
 	// text already carries it, so `err.Error()` reads
 	// `I-807: main-branch dirty-non-state gate\nrefusing to commit...`
 	// without a doubled prefix line.
-	fmt.Fprintf(&b, "refusing to commit + push %d non-agent-state file(s) on branch \"main\":\n", len(offenders))
+	fmt.Fprintf(&b, "refusing to commit + push %d non-agent-state file(s) on branch %q:\n", len(offenders), currentBranch)
 	for _, p := range offenders {
 		fmt.Fprintf(&b, "  - %s\n", p)
 	}
 	fmt.Fprintf(&b, "Computed state prefix: %q\n", itemsPrefix)
-	b.WriteString("\nBranch is main — this would bypass PR review.\n")
-	b.WriteString("Recovery: open a feature branch (git checkout -b fix/<id>-<slug>), commit these files there, push, and open a PR.\n")
-	b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_MAIN=1\n")
+	if onMain {
+		b.WriteString("\nBranch is main — this would bypass PR review.\n")
+		b.WriteString("Recovery: open a feature branch (git checkout -b fix/<id>-<slug>), commit these files there, push, and open a PR.\n")
+		b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_NON_STATE=1 (or ST_SYNC_ALLOW_MAIN=1)\n")
+	} else {
+		fmt.Fprintf(&b, "\nBranch %q — non-state edits would auto-sync without PR review.\n", currentBranch)
+		b.WriteString("Recovery: commit these files through the normal PR flow (git add, git commit, gh pr create).\n")
+		b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_NON_STATE=1\n")
+	}
 	wrapped := fmt.Errorf("%w\n%s", ErrI807MainBranchGate, b.String())
 
 	if overrideSet {
-		fmt.Fprintf(os.Stderr, "[I-807] ST_SYNC_ALLOW_MAIN=1 — bypassing gate, would have refused:\n")
+		overrideVar := "ST_SYNC_ALLOW_NON_STATE=1"
+		if allowMain && !allowNonState {
+			overrideVar = "ST_SYNC_ALLOW_MAIN=1"
+		}
+		fmt.Fprintf(os.Stderr, "[I-765] %s — bypassing gate, would have refused:\n", overrideVar)
 		for _, p := range offenders {
 			fmt.Fprintf(os.Stderr, "  - %s\n", p)
 		}
@@ -486,7 +501,7 @@ var flatLayoutAuditedOnce sync.Once
 
 func flatLayoutAuditOnce() {
 	flatLayoutAuditedOnce.Do(func() {
-		fmt.Fprintln(os.Stderr, "[I-807] flat-layout workspace — main-branch gate is inactive (items root == git toplevel; no non-state surface to enforce)")
+		fmt.Fprintln(os.Stderr, "[I-807/I-765] flat-layout workspace — non-state gate is inactive (items root == git toplevel; no non-state surface to enforce)")
 	})
 }
 
@@ -515,11 +530,10 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		return err
 	}
 
-	// I-807: fail closed if the workspace HEAD is `main` AND the dirty
-	// working tree contains any non-agent-state file. Prevents the
-	// silent-branch-flip + auto-push pattern from commit 9edc8732b.
-	// Pairs with I-765's broader gate (additive in the same helper).
-	if err := checkMainBranchGate(root); err != nil {
+	// I-807/I-765: fail closed if the dirty working tree contains any
+	// non-agent-state file, on any branch. I-807 introduced the gate for
+	// main; I-765 broadened it to all branches.
+	if err := checkNonStateGate(root); err != nil {
 		return err
 	}
 

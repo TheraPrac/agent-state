@@ -7,9 +7,14 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-func Sync(s *store.Store, message string) int {
+func Sync(s *store.Store, message string, allowNonState bool) int {
 	if message == "" {
 		message = "as: sync agent-state"
+	}
+
+	if allowNonState {
+		os.Setenv("ST_SYNC_ALLOW_NON_STATE", "1")
+		defer os.Unsetenv("ST_SYNC_ALLOW_NON_STATE")
 	}
 
 	if err := s.GitSync(message); err != nil {
