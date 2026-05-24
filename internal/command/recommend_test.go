@@ -2,8 +2,14 @@ package command
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // Default (PLANNING) view = g.Ready(): T-001 (queued, unblocked,
@@ -122,4 +128,73 @@ func TestRecommend_SprintScopeNoRegistry(t *testing.T) {
 	if !strings.Contains(out, "No recommendable items") {
 		t.Fatalf("no active sprint ⇒ no candidates, got:\n%s", out)
 	}
+}
+
+// Active goal weight is applied and appears in the rationale.
+func TestRecommend_GoalWeightAppliedFromActiveGoals(t *testing.T) {
+	s, cfg := setupTestEnvWithGoal(t, true)
+	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{}) })
+	if !strings.Contains(out, "goal-weight") {
+		t.Fatalf("active goal weight must appear in rationale\n%s", out)
+	}
+}
+
+// Inactive (non-active) goal contributes zero weight.
+func TestRecommend_InactiveGoalContributesZero(t *testing.T) {
+	s, cfg := setupTestEnvWithGoal(t, false)
+	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{}) })
+	if strings.Contains(out, "goal-weight") {
+		t.Fatalf("inactive goal must not appear in rationale\n%s", out)
+	}
+}
+
+// --brief renders a single one-line output.
+func TestRecommend_BriefFormat(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{Brief: true, Top: 1}) })
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("--brief must produce exactly one line, got %d:\n%s", len(lines), out)
+	}
+	if !strings.Contains(out, " — ") {
+		t.Fatalf("--brief line must contain ' — ' separator\n%s", out)
+	}
+}
+
+// No goals corpus (no goal items in store) ⇒ resilient, exits 0.
+func TestRecommend_NoGoalsCorpusResilient(t *testing.T) {
+	s, cfg := setupTestEnv(t) // baseline env has no goals
+	var rc int
+	out := captureStdout(t, func() { rc = Recommend(s, cfg, RecommendOpts{}) })
+	if rc != 0 {
+		t.Fatalf("must not error without goals corpus, rc=%d\n%s", rc, out)
+	}
+	if strings.Contains(out, "goal-weight") {
+		t.Fatalf("no goals ⇒ no goal-weight in rationale\n%s", out)
+	}
+}
+
+// setupTestEnvWithGoal extends the base env with a goal item whose status is
+// either "active" (active=true) or "done" (active=false), linked to T-001.
+func setupTestEnvWithGoal(t *testing.T, active bool) (*store.Store, *config.Config) {
+	t.Helper()
+	_, cfg := setupTestEnv(t)
+
+	status := "done"
+	if active {
+		status = "active"
+	}
+	weight := 40
+	goalContent := "id: G-TEST\ntype: goal\nstatus: " + status + "\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\ntitle: Test goal\nweight: " + strconv.Itoa(weight) + "\ngoals:\n- T-001\n"
+
+	root := cfg.Root()
+	os.MkdirAll(filepath.Join(root, "goals"), 0755)
+	os.WriteFile(filepath.Join(root, "goals", "G-TEST-test-goal.md"), []byte(goalContent), 0644)
+
+	// Reload store to pick up the new goal file.
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New after goal seed: %v", err)
+	}
+	return s2, cfg
 }

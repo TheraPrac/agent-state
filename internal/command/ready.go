@@ -2,8 +2,10 @@ package command
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/coordinator"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -18,18 +20,22 @@ type ReadyOpts struct {
 
 func Ready(s *store.Store, cfg *config.Config, opts ReadyOpts) int {
 	g := deps.Build(s.All(), cfg)
-	items := g.Ready()
+	cands := g.Ready()
+	leverage, names := unblockLeverage(g, cands)
+	sprints := loadSprintInfo(cfg, g)
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), time.Now())
+	enrichUnblockDetail(recs, names)
 
-	// Apply additional filters
-	var filtered []*model.Item
-	for _, item := range items {
-		if opts.Type != "" && item.Type != opts.Type {
+	// Apply type/tag filters on the ranked slice, then apply limit.
+	var filtered []coordinator.Recommendation
+	for _, r := range recs {
+		if opts.Type != "" && r.Item.Type != opts.Type {
 			continue
 		}
-		if opts.Tag != "" && !hasTag(item, opts.Tag) {
+		if opts.Tag != "" && !hasTag(r.Item, opts.Tag) {
 			continue
 		}
-		filtered = append(filtered, item)
+		filtered = append(filtered, r)
 	}
 
 	if opts.Limit > 0 && len(filtered) > opts.Limit {
@@ -41,12 +47,8 @@ func Ready(s *store.Store, cfg *config.Config, opts ReadyOpts) int {
 		return 0
 	}
 
-	for _, item := range filtered {
-		p := 2
-		if item.Priority != nil {
-			p = *item.Priority
-		}
-		fmt.Printf("%-8s p%d  %s\n", item.ID, p, item.Title)
+	for _, r := range filtered {
+		fmt.Printf("%-8s p%d  %s\n", r.Item.ID, r.Priority, r.Item.Title)
 	}
 
 	return 0

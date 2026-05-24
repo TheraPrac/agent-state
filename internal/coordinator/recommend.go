@@ -63,11 +63,15 @@ func (r Recommendation) Rationale() string {
 // work) is the strongest coordinator signal, then sprint-closure pressure,
 // then a bounded age tiebreak against starvation.
 const (
-	unblockWeight = 10.0 // per non-terminal item this one unblocks
-	sprintWeight  = 5.0  // × completion fraction of its ACTIVE sprint (≤ 5)
-	agePerDay     = 0.05 // per day since Created, capped → ≤ 1.5
-	ageCapDays    = 30.0
-	maxRationaleIDs = 3 // how many unblocked-item IDs to name before "+k"
+	unblockWeight   = 10.0 // per non-terminal item this one unblocks
+	sprintWeight    = 5.0  // × completion fraction of its ACTIVE sprint (≤ 5)
+	agePerDay       = 0.05 // per day since Created, capped → ≤ 1.5
+	ageCapDays      = 30.0
+	goalWeightFactor = 0.5 // per weight-point contributed by item's active goals; per-item
+	//                         accumulation is uncapped (an item in multiple goals sums their
+	//                         weights). The comment "max +50" assumed single-goal membership
+	//                         — see loadGoalWeights for the actual bound.
+	maxRationaleIDs = 3    // how many unblocked-item IDs to name before "+k"
 )
 
 func resolvePriority(item *model.Item) int {
@@ -79,11 +83,15 @@ func resolvePriority(item *model.Item) int {
 
 // Recommend ranks cands. leverage[id] is the number of NON-terminal items
 // id unblocks (computed by the shell from the dep graph). sprints maps an
-// item's Sprint id to its SprintInfo. now anchors the age factor (passed
-// in, not time.Now(), so tests are deterministic). The returned slice is
-// stably ordered: priority asc, then composite score desc, then ID asc.
+// item's Sprint id to its SprintInfo. goalWeights[id] is the sum of active
+// Goal.weight values for every goal the item belongs to (built by the shell
+// from item.Goals; nil or missing key → zero contribution). now anchors the
+// age factor (passed in, not time.Now(), so tests are deterministic). The
+// returned slice is stably ordered: priority asc, then composite score desc,
+// then ID asc.
 func Recommend(cands []*model.Item, leverage map[string]int,
-	sprints map[string]SprintInfo, now time.Time) []Recommendation {
+	sprints map[string]SprintInfo, goalWeights map[string]float64,
+	now time.Time) []Recommendation {
 
 	recs := make([]Recommendation, 0, len(cands))
 	for _, it := range cands {
@@ -123,6 +131,16 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 					Detail: fmt.Sprintf("sprint %s %d%%", it.Sprint, int(frac*100+0.5)),
 				})
 			}
+		}
+
+		// Goal weight — only when the item belongs to at least one active goal.
+		if w := goalWeights[it.ID]; w > 0 {
+			pts := goalWeightFactor * w
+			score += pts
+			factors = append(factors, Factor{
+				Name: "goal", Points: pts,
+				Detail: fmt.Sprintf("goal-weight %.0f", w),
+			})
 		}
 
 		// Age — bounded anti-starvation tiebreak, always shown.
