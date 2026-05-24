@@ -70,9 +70,11 @@ type PlanApproveOpts struct {
 
 // PlanApprove marks an item's plan as approved. Sets PlanApproved=true,
 // PlanApprovedAt=now, PlanApprovedBy=cfg.AgentID() (or "user" if empty).
-// Refuses re-approval — the operator must `st plan reset` first if a
-// previously-approved plan needs re-validation. Writes a changelog entry
-// so the approval is auditable.
+// Idempotent on re-approval (I-832): a second call on an already-approved
+// item emits a "no-op (idempotent re-run)" notice, calls autoSync
+// defensively, and returns 0 without touching audit fields. To force
+// re-validation, call PlanReset first. Writes a changelog entry on the
+// first approval so the approval is auditable.
 //
 // I-178 Phase A: this is the as-side primitive that the
 // `plan-before-code-guard.sh` hook (Phase B, separate per-agent install)
@@ -86,10 +88,17 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	}
 
 	if item.PlanApproved {
+		// I-832: idempotent re-run — a retry after a silent autoSync failure
+		// must not exit 1 ("already approved"), which would close the agent
+		// into an infinite retry loop. Emit a no-op notice, call autoSync
+		// defensively (gives a stuck-uncommitted approval a second chance to
+		// land in git), and return 0. Audit fields are deliberately NOT
+		// re-written — the original approver/timestamp belong to the first call.
 		fmt.Fprintf(os.Stderr,
-			"%s plan is already approved (by %s at %s) — run `st plan reset %s` first if it needs re-validation\n",
-			id, fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"), id)
-		return 1
+			"%s plan is already approved (by %s at %s) — no-op (idempotent re-run)\n",
+			id, fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
+		autoSync(s, fmt.Sprintf("st plan approve: %s (idempotent re-run)", id))
+		return 0
 	}
 
 	// I-589: SBAR substance is hard-blocked by default on every

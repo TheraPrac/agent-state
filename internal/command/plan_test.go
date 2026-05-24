@@ -50,16 +50,48 @@ func TestPlanApproveHappyPath(t *testing.T) {
 	}
 }
 
-// I-178: re-approving an already-approved plan refuses (caller must
-// reset first), so the audit timestamp can't be silently overwritten.
-func TestPlanApproveRefusesIfAlreadyApproved(t *testing.T) {
+// I-832: re-approving an already-approved plan is idempotent — exits 0,
+// preserves the original audit fields, and does not append a second
+// changelog entry. This prevents the agent retry loop that occurred when
+// autoSync silently failed and the next `st plan approve` call exited 1.
+func TestPlanApproveIsIdempotentWhenAlreadyApproved(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "")
 	s, cfg := setupTestEnv(t)
 	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
 		t.Fatalf("first approve: %d", code)
 	}
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 1 {
-		t.Errorf("second approve should fail; got %d", code)
+	firstItem, _ := s.Get("T-001")
+	firstBy := firstItem.PlanApprovedBy
+	firstAt := firstItem.PlanApprovedAt
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Errorf("second approve (idempotent re-run) should return 0; got %d", code)
+	}
+
+	// Audit fields must be unchanged — the second call must not overwrite
+	// the original approver/timestamp.
+	secondItem, _ := s.Get("T-001")
+	if secondItem.PlanApprovedBy != firstBy {
+		t.Errorf("PlanApprovedBy changed on idempotent re-run: %q → %q", firstBy, secondItem.PlanApprovedBy)
+	}
+	if secondItem.PlanApprovedAt != firstAt {
+		t.Errorf("PlanApprovedAt changed on idempotent re-run: %q → %q", firstAt, secondItem.PlanApprovedAt)
+	}
+
+	// Exactly one plan_approve changelog entry — the idempotent re-run
+	// must not append a duplicate.
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatalf("read changelog: %v", err)
+	}
+	var count int
+	for _, e := range entries {
+		if e.Op == "plan_approve" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 plan_approve changelog entry; got %d", count)
 	}
 }
 
