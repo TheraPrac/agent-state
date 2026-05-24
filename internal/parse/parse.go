@@ -54,6 +54,10 @@ func File(path string) (*model.Item, error) {
 		inListOfMaps   bool // true when parsing list of objects (testing_evidence.runs)
 		listOfMaps     []map[string]string
 		currentMapItem map[string]string
+		// must_do parsing state (T-409)
+		inMustDo            bool
+		mustDoBuckets       map[string][]string
+		currentMustDoBucket string
 	)
 
 	for scanner.Scan() {
@@ -144,6 +148,11 @@ func File(path string) (*model.Item, error) {
 
 		// Handle markdown body separator (---)
 		if trimmed == "---" {
+			if inMustDo {
+				item.MustDo = mustDoBuckets
+				inMustDo = false
+				mustDoBuckets = nil
+			}
 			// Everything after this is markdown body — store remaining lines as-is
 			doc.Lines = append(doc.Lines, line)
 			for scanner.Scan() {
@@ -203,6 +212,19 @@ func File(path string) (*model.Item, error) {
 				continue
 			}
 
+			// must_do list item (T-409) — stored in bucket, not currentList.
+			if inMustDo {
+				id := unquote(listContent)
+				mustDoBuckets[currentMustDoBucket] = append(mustDoBuckets[currentMustDoBucket], id)
+				if currentMustDoBucket != "" {
+					line.BlockKey = currentMustDoBucket
+				} else {
+					line.BlockKey = "must_do"
+				}
+				doc.Lines = append(doc.Lines, line)
+				continue
+			}
+
 			// Regular list item — strip balanced wrapping quotes only.
 			listContent = unquote(listContent)
 			currentList = append(currentList, listContent)
@@ -251,9 +273,25 @@ func File(path string) (*model.Item, error) {
 					inListOfMaps = false
 					listOfMaps = nil
 				}
+				// Flush must_do state when transitioning to a new top-level key (T-409).
+				if inMustDo {
+					item.MustDo = mustDoBuckets
+					inMustDo = false
+					mustDoBuckets = nil
+					currentMustDoBucket = ""
+				}
 
 				currentKey = key
 				nestKey = ""
+
+				// Enter must_do mode: top-level `must_do:` with no value (T-409).
+				if key == "must_do" {
+					inMustDo = true
+					mustDoBuckets = make(map[string][]string)
+					currentMustDoBucket = ""
+					doc.Lines = append(doc.Lines, line)
+					continue
+				}
 
 				// Check for multiline block indicator
 				if val == "|" || val == ">" || val == "|+" || val == "|-" {
@@ -292,6 +330,14 @@ func File(path string) (*model.Item, error) {
 					storeScalar(item, key, val)
 				}
 			} else {
+				// must_do bucket header: indent-2 key under must_do (T-409).
+				if inMustDo && line.Indent == 2 {
+					currentMustDoBucket = key
+					line.BlockKey = "must_do"
+					doc.Lines = append(doc.Lines, line)
+					continue
+				}
+
 				// Nested key:value
 				if nestKey == "" {
 					nestKey = currentKey
@@ -331,6 +377,9 @@ func File(path string) (*model.Item, error) {
 			listOfMaps = append(listOfMaps, currentMapItem)
 		}
 		storeListOfMaps(item, currentKey, nestKey, listOfMaps)
+	}
+	if inMustDo && len(mustDoBuckets) > 0 {
+		item.MustDo = mustDoBuckets
 	}
 
 	if err := scanner.Err(); err != nil {

@@ -231,7 +231,7 @@ func TestGoalListShowsArchivedGoals(t *testing.T) {
 	}
 }
 
-func TestGoalShowRendersWeightAndSuccessCriterion(t *testing.T) {
+func TestGoalShowRendersWeight(t *testing.T) {
 	_, _, cfg := newGoalEnv(t)
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s := reloadStoreGoal(t, cfg)
@@ -242,8 +242,5 @@ func TestGoalShowRendersWeightAndSuccessCriterion(t *testing.T) {
 
 	if !strings.Contains(out, "weight: 40") {
 		t.Errorf("show output missing 'weight: 40':\n%s", out)
-	}
-	if !strings.Contains(out, "success_criterion:") {
-		t.Errorf("show output missing 'success_criterion:' field:\n%s", out)
 	}
 }

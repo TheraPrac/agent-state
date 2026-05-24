@@ -130,7 +130,9 @@ func showDefaultTo(w io.Writer, s *store.Store, cfg *config.Config, id string, i
 		if item.Weight != nil {
 			fmt.Fprintf(w, "  weight: %d\n", *item.Weight)
 		}
-		fmt.Fprintf(w, "  success_criterion: %s\n", item.SuccessCriterion)
+		if len(item.MustDo) > 0 {
+			fmt.Fprintf(w, "  must_do: %s\n", mustDoSummary(item.MustDo, s))
+		}
 	}
 	if stage, ok := item.Delivery["stage"]; ok {
 		if str, ok := stage.(string); ok && str != "" {
