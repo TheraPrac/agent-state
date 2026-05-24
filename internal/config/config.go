@@ -950,12 +950,27 @@ func Defaults() *Config {
 					"archived": "archive",
 				},
 			},
+			"goal": {
+				IDPrefix:         "G",
+				Statuses:         []string{"draft", "active", "met", "dropped", "archived"},
+				StartStatus:      "draft",
+				ActiveStatus:     "active",
+				TerminalStatuses: []string{"met", "dropped", "archived"},
+				DirectoryMap: map[string]string{
+					"draft":    "goals",
+					"active":   "goals",
+					"met":      "archive",
+					"dropped":  "archive",
+					"archived": "archive",
+				},
+			},
 		},
 		IDPatterns: map[string]string{
 			"task":      "T-{seq}",
 			"issue":     "I-{seq}",
 			"idea":      "D-{seq}",
 			"promotion": "P-{seq}",
+			"goal":      "G-{seq}",
 		},
 		Fields: FieldsConfig{
 			Required: []string{"id", "type", "status", "title", "created", "last_touched"},

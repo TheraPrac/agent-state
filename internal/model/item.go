@@ -43,6 +43,8 @@ type Item struct {
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
+	Weight          *int   // goal type only: strategic weight 1-100; active goals must sum to ≤100
+	SuccessCriterion string // goal type only: placeholder for brick 3 must_do set
 	PlanApprovedAt string // RFC3339 timestamp; set by `st plan approve` (I-178)
 	PlanApprovedBy string // operator or agent ID that approved the plan (I-178)
 
@@ -219,6 +221,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"claimed_by": true, "claimed_at": true,
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
+	"weight": true, "success_criterion": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,
 	"related_issues": true, "acceptance_criteria": true,

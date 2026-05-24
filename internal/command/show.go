@@ -82,91 +82,117 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	// Full output — field keys match the YAML field names (lowercase, single
 	// space) so that ACs written as `st show I-XXX | grep 'status: resolved'`
 	// work against both the raw file and the pretty output.
-	fmt.Printf("%s — %s\n", item.ID, item.Title)
-	fmt.Printf("  type: %s\n", item.Type)
-	fmt.Printf("  status: %s\n", item.Status)
+	showDefaultTo(os.Stdout, s, cfg, id, item)
+	renderTimeTracking(os.Stdout, item)
+	return 0
+}
+
+// showTo renders the default item view to w (for tests). It handles only the
+// non-brief, non-raw, non-field, non-full path.
+func showTo(w io.Writer, s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
+	item, ok := s.Get(id)
+	if !ok {
+		return 1
+	}
+	showDefaultTo(w, s, cfg, id, item)
+	renderTimeTracking(w, item)
+	return 0
+}
+
+// showDefaultTo renders the default item view to w. Called by Show (to os.Stdout)
+// and by tests (to a bytes.Buffer).
+func showDefaultTo(w io.Writer, s *store.Store, cfg *config.Config, id string, item *modelItemRef) {
+	fmt.Fprintf(w, "%s — %s\n", item.ID, item.Title)
+	fmt.Fprintf(w, "  type: %s\n", item.Type)
+	fmt.Fprintf(w, "  status: %s\n", item.Status)
 	if cfg != nil && store.IsLocked(cfg, id) {
-		fmt.Printf("  lock: \033[33mlocked\033[0m (protected from git pull)\n")
+		fmt.Fprintf(w, "  lock: \033[33mlocked\033[0m (protected from git pull)\n")
 	}
 	if item.AssignedTo != "" {
-		fmt.Printf("  assigned_to: %s\n", item.AssignedTo)
+		fmt.Fprintf(w, "  assigned_to: %s\n", item.AssignedTo)
 		if item.Doc != nil {
 			if v, ok := item.Doc.GetNestedField("assigned_to_meta.parent_id"); ok && v != "" {
-				fmt.Printf("  assigned_to_parent: %s\n", v)
+				fmt.Fprintf(w, "  assigned_to_parent: %s\n", v)
 			}
 			if v, ok := item.Doc.GetNestedField("assigned_to_meta.root_id"); ok && v != "" {
-				fmt.Printf("  assigned_to_root: %s\n", v)
+				fmt.Fprintf(w, "  assigned_to_root: %s\n", v)
 			}
 			if v, ok := item.Doc.GetNestedField("assigned_to_meta.role"); ok && v != "" {
-				fmt.Printf("  assigned_to_role: %s\n", v)
+				fmt.Fprintf(w, "  assigned_to_role: %s\n", v)
 			}
 		}
 	}
 	// I-406: severity is dead; priority is the unified urgency signal.
 	if item.Priority != nil {
-		fmt.Printf("  priority: p%d\n", *item.Priority)
+		fmt.Fprintf(w, "  priority: p%d\n", *item.Priority)
+	}
+	if item.Type == "goal" {
+		if item.Weight != nil {
+			fmt.Fprintf(w, "  weight: %d\n", *item.Weight)
+		}
+		fmt.Fprintf(w, "  success_criterion: %s\n", item.SuccessCriterion)
 	}
 	if stage, ok := item.Delivery["stage"]; ok {
 		if str, ok := stage.(string); ok && str != "" {
-			fmt.Printf("  stage: %s\n", str)
+			fmt.Fprintf(w, "  stage: %s\n", str)
 		}
 	}
 	if len(item.DependsOn) > 0 {
-		fmt.Printf("  depends_on: %v\n", item.DependsOn)
+		fmt.Fprintf(w, "  depends_on: %v\n", item.DependsOn)
 	}
 	if len(item.Blocks) > 0 {
-		fmt.Printf("  blocks: %v\n", item.Blocks)
+		fmt.Fprintf(w, "  blocks: %v\n", item.Blocks)
 	}
 	if len(item.Tags) > 0 {
-		fmt.Printf("  tags: %v\n", item.Tags)
+		fmt.Fprintf(w, "  tags: %v\n", item.Tags)
 	}
 	// I-487: SBAR is the canonical content shape — render it when any
 	// of the four fields is populated. Fall back to legacy summary
 	// rendering for unmigrated items so nothing goes dark during the
 	// transition window.
 	if !item.SBAR.IsEmpty() {
-		fmt.Println("  sbar:")
-		renderSBARField("situation", item.SBAR.Situation)
-		renderSBARField("background", item.SBAR.Background)
-		renderSBARField("assessment", item.SBAR.Assessment)
-		renderSBARField("recommendation", item.SBAR.Recommendation)
+		fmt.Fprintln(w, "  sbar:")
+		renderSBARFieldTo(w, "situation", item.SBAR.Situation)
+		renderSBARFieldTo(w, "background", item.SBAR.Background)
+		renderSBARFieldTo(w, "assessment", item.SBAR.Assessment)
+		renderSBARFieldTo(w, "recommendation", item.SBAR.Recommendation)
 	} else if item.Summary != "" {
-		fmt.Printf("  summary:\n    %s\n", item.Summary)
+		fmt.Fprintf(w, "  summary:\n    %s\n", item.Summary)
 	}
 	if len(item.AcceptanceCriteria) > 0 {
-		fmt.Println("  acceptance_criteria:")
+		fmt.Fprintln(w, "  acceptance_criteria:")
 		for _, ac := range item.AcceptanceCriteria {
-			fmt.Printf("    - %s\n", ac)
+			fmt.Fprintf(w, "    - %s\n", ac)
 		}
 	}
 	if len(item.NextActions) > 0 {
-		fmt.Println("  next_actions:")
+		fmt.Fprintln(w, "  next_actions:")
 		for _, na := range item.NextActions {
-			fmt.Printf("    - %s\n", na)
+			fmt.Fprintf(w, "    - %s\n", na)
 		}
 	}
-
-	renderTimeTracking(os.Stdout, item)
-
-	return 0
 }
 
-// renderSBARField prints one labeled SBAR section to stdout. Empty
-// fields render as `<field>: (empty)` so the gap is visible — that's
-// the I-487 contract: every item is supposed to populate all four.
+// renderSBARField prints one labeled SBAR section to stdout.
 func renderSBARField(label, value string) {
+	renderSBARFieldTo(os.Stdout, label, value)
+}
+
+// renderSBARFieldTo renders one SBAR section to w. Empty fields render as
+// `<field>: (empty)` so the gap is visible — the I-487 contract.
+func renderSBARFieldTo(w io.Writer, label, value string) {
 	if value == "" {
-		fmt.Printf("    %s: (empty)\n", label)
+		fmt.Fprintf(w, "    %s: (empty)\n", label)
 		return
 	}
 	lines := splitLines(value)
 	if len(lines) == 1 {
-		fmt.Printf("    %s: %s\n", label, lines[0])
+		fmt.Fprintf(w, "    %s: %s\n", label, lines[0])
 		return
 	}
-	fmt.Printf("    %s:\n", label)
+	fmt.Fprintf(w, "    %s:\n", label)
 	for _, l := range lines {
-		fmt.Printf("      %s\n", l)
+		fmt.Fprintf(w, "      %s\n", l)
 	}
 }
 

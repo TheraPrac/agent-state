@@ -461,6 +461,14 @@ func storeScalar(item *model.Item, key, val string) {
 		item.PlanApprovedBy = val
 	case "parallel_group":
 		// Legacy field — store but don't surface
+	case "weight":
+		if val != "" {
+			if n, err := strconv.Atoi(val); err == nil {
+				item.Weight = &n
+			}
+		}
+	case "success_criterion":
+		item.SuccessCriterion = val
 	}
 }
 
