@@ -143,6 +143,67 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	showCmd.Flags().Bool("all", false, "with --full: expand the machine sections too (default: collapsed)")
 	root.AddCommand(showCmd)
 
+	modelRecCmd := &cobra.Command{
+		Use:   "model-rec [<id>]",
+		Short: "Recommend a model tier (haiku|sonnet|opus) for an item",
+		Long: "Recommend a model tier for the given item via a one-shot Haiku call.\n" +
+			"With no argument, returns the default fallback (sonnet). Output:\n" +
+			"  tier:<haiku|sonnet|opus>|reason:<short text>\n" +
+			"Results cache to .as/runs/model-rec-cache.json keyed by item modtime.\n" +
+			"Setting `model_tier: <tier>` on an item bypasses the recommender.\n" +
+			"On any failure (engine missing, API down, parse error) the command\n" +
+			"falls back to sonnet and exits 0 — the recommender is advisory.",
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			itemID := ""
+			if len(args) == 1 {
+				itemID = args[0]
+			}
+			noCache, _ := cmd.Flags().GetBool("no-cache")
+			exitCode = command.ModelRec(appStore, appCfg, command.ModelRecOpts{
+				ItemID:  itemID,
+				Engine:  command.DefaultRunEngine(),
+				NoCache: noCache,
+			}, cmd.OutOrStdout())
+		},
+	}
+	modelRecCmd.Flags().Bool("no-cache", false, "skip the cache (force a fresh recommender call)")
+	root.AddCommand(modelRecCmd)
+
+	costCmd := &cobra.Command{
+		Use:   "cost",
+		Short: "Per-item synthetic cost estimate based on logged token usage",
+		Long: "Roll up the synthetic API cost estimate per item from accumulated\n" +
+			"time_tracking.real_tokens × current pricing rates. Default scope is\n" +
+			"open items only. Flags --since, --item, --agent, --all narrow or\n" +
+			"widen scope. Output is informational — on Max plan there is no\n" +
+			"per-call billing to compare against.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			sinceStr, _ := cmd.Flags().GetString("since")
+			itemID, _ := cmd.Flags().GetString("item")
+			agent, _ := cmd.Flags().GetString("agent")
+			all, _ := cmd.Flags().GetBool("all")
+
+			opts := command.CostOpts{ItemID: itemID, Agent: agent, All: all}
+			if sinceStr != "" {
+				t, err := time.Parse("2006-01-02", sinceStr)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "cost: --since must be YYYY-MM-DD: %v\n", err)
+					exitCode = 2
+					return
+				}
+				opts.Since = t
+			}
+			exitCode = command.Cost(appStore, appCfg, opts, cmd.OutOrStdout())
+		},
+	}
+	costCmd.Flags().String("since", "", "filter items with last_touched ≥ this date (YYYY-MM-DD)")
+	costCmd.Flags().String("item", "", "limit to a single item ID")
+	costCmd.Flags().String("agent", "", "limit to items assigned to this agent (e.g. agent-g)")
+	costCmd.Flags().Bool("all", false, "include archived items (default: open only)")
+	root.AddCommand(costCmd)
+
 	tuiCmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Layout-A orchestration TUI (live by default; --once for static, T-372)",
