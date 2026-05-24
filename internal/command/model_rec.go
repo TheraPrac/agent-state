@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -158,6 +158,13 @@ func callRecommender(item *model.Item, cfg *config.Config, engine RunEngine) (Mo
 	if parsed.IsError {
 		return ModelRecResult{}, fmt.Errorf("claude reported error: %v", parsed.Errors)
 	}
+	// Match classify_model.go: a non-empty subtype that isn't "success" is
+	// a model-side failure (e.g. error_during_execution) even when IsError
+	// is false. Without this guard, those failures fall through to
+	// parseRecVerdict("") and we lose the actual diagnostic.
+	if parsed.Subtype != "" && parsed.Subtype != "success" {
+		return ModelRecResult{}, fmt.Errorf("claude returned subtype %q: %v", parsed.Subtype, parsed.Errors)
+	}
 
 	return parseRecVerdict(parsed.Result)
 }
@@ -204,28 +211,90 @@ func buildRecPrompt(item *model.Item) string {
 }
 
 // parseRecVerdict extracts the {tier, reason} JSON from Claude's stdout.
-// Claude may wrap it in code fences or add prose — try to find the first
-// JSON object containing "tier".
-var jsonObjRe = regexp.MustCompile(`(?s)\{[^{}]*"tier"[^{}]*\}`)
-
+// Claude may wrap it in code fences or add prose. Walks the string finding
+// balanced top-level `{...}` objects and json.Unmarshal-tries each until one
+// has a valid tier. Replaces a naive `[^{}]*` regex that failed on nested
+// objects or strings containing `}`.
 func parseRecVerdict(s string) (ModelRecResult, error) {
-	match := jsonObjRe.FindString(s)
-	if match == "" {
-		return ModelRecResult{}, fmt.Errorf("no JSON {tier:...} found in output: %s", truncateOutput(s))
+	for _, candidate := range extractBalancedObjects(s) {
+		var res ModelRecResult
+		if err := json.Unmarshal([]byte(candidate), &res); err != nil {
+			continue
+		}
+		res.Tier = strings.ToLower(strings.TrimSpace(res.Tier))
+		if _, valid := validTiers[res.Tier]; !valid {
+			continue
+		}
+		res.Reason = strings.TrimSpace(res.Reason)
+		if res.Reason == "" {
+			res.Reason = defaultReason
+		}
+		return res, nil
 	}
-	var res ModelRecResult
-	if err := json.Unmarshal([]byte(match), &res); err != nil {
-		return ModelRecResult{}, fmt.Errorf("parse JSON: %w (got %q)", err, match)
+	// If we walked everything and nothing parsed to a valid verdict, surface
+	// a parse error so the caller falls back to sonnet.
+	return ModelRecResult{}, fmt.Errorf("no valid {tier:...} JSON in output: %s", truncateOutput(s))
+}
+
+// extractBalancedObjects returns every balanced top-level {…} substring in s,
+// ignoring braces inside JSON strings (with backslash-escape awareness). This
+// is intentionally non-recursive into nested objects — the verdict we want is
+// shaped {"tier":"...","reason":"..."}, so nested objects we encounter (e.g.
+// {"verdict":{"tier":...}}) get returned as the OUTER object and the inner
+// object as a separate substring on the next pass through the string. Either
+// candidate is given to json.Unmarshal in parseRecVerdict; the one that hits
+// ModelRecResult cleanly wins.
+func extractBalancedObjects(s string) []string {
+	var out []string
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		end := findBalancedClose(s, i)
+		if end < 0 {
+			break // unbalanced — bail
+		}
+		out = append(out, s[i:end+1])
+		// Don't advance past the open brace's matching close — we still want
+		// to discover nested {...} objects on the next loop iteration.
 	}
-	res.Tier = strings.ToLower(strings.TrimSpace(res.Tier))
-	if _, valid := validTiers[res.Tier]; !valid {
-		return ModelRecResult{}, fmt.Errorf("invalid tier %q (want haiku|sonnet|opus)", res.Tier)
+	return out
+}
+
+// findBalancedClose returns the index of the } matching the { at start, or -1
+// if not found. Treats `"..."` as opaque (including escaped quotes).
+func findBalancedClose(s string, start int) int {
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
 	}
-	res.Reason = strings.TrimSpace(res.Reason)
-	if res.Reason == "" {
-		res.Reason = defaultReason
-	}
-	return res, nil
+	return -1
 }
 
 // --- cache helpers ---
@@ -273,11 +342,11 @@ func writeCache(path, itemID string, mtime int64, res ModelRecResult) {
 	if path == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	// Read-modify-write so concurrent calls for different items don't clobber.
-	// Failure is non-fatal: cache is an optimization, not correctness.
+	// Read existing cache (failures fall through to empty — non-fatal).
 	var f cacheFile
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &f)
@@ -290,7 +359,33 @@ func writeCache(path, itemID string, mtime int64, res ModelRecResult) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, data, 0o644)
+	// Atomic publish: write to a unique sibling tmp file, then rename onto
+	// the canonical path. rename(2) is atomic on POSIX same-filesystem.
+	// Without this, two concurrent writers race on os.WriteFile (which is
+	// truncate + write, NOT atomic) and the loser silently corrupts the file
+	// to a partial JSON — the next reader's json.Unmarshal then discards the
+	// whole cache. Cross-process safety is best-effort: with concurrent
+	// writers, the last rename still wins, which means we may drop the
+	// other's new entry. That's an acceptable degradation — cache miss is
+	// recoverable; cache corruption is not.
+	tmp, err := os.CreateTemp(dir, ".model-rec-cache-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return
+	}
 }
 
 // --- small helpers ---
@@ -363,10 +458,18 @@ func countListField(item *model.Item, field string) int {
 	return n
 }
 
+// truncateForPrompt caps prompt input length while staying valid UTF-8.
+// Byte-slicing a multi-byte rune in half produces invalid UTF-8 which can
+// confuse Haiku's tokenizer or break downstream JSON encoders.
 func truncateForPrompt(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	// Walk back from max to the last full rune boundary.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

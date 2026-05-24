@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -109,6 +110,10 @@ func includeItem(item *model.Item, opts CostOpts) bool {
 	return true
 }
 
+// truncateRow caps a display column width to n bytes while staying valid
+// UTF-8. Item titles routinely contain em-dashes (3 bytes) and other
+// multi-byte runes — a naive byte cut mid-codepoint produces invalid UTF-8
+// (terminal junk, JSON encoder panics).
 func truncateRow(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -116,5 +121,9 @@ func truncateRow(s string, n int) string {
 	if n <= 1 {
 		return s[:n]
 	}
-	return s[:n-1] + "…"
+	cut := n - 1
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

@@ -175,12 +175,18 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		Short: "Per-item synthetic cost estimate based on logged token usage",
 		Long: "Roll up the synthetic API cost estimate per item from accumulated\n" +
 			"time_tracking.real_tokens × current pricing rates. Default scope is\n" +
-			"open items only. Flags --since, --item, --agent, --all narrow or\n" +
-			"widen scope. Output is informational — on Max plan there is no\n" +
-			"per-call billing to compare against.",
+			"open items only. Flags --touched-since, --item, --agent, --all\n" +
+			"narrow or widen scope. Output is informational — on Max plan there\n" +
+			"is no per-call billing to compare against.\n\n" +
+			"Note: --touched-since filters by item.last_touched, which ticks on\n" +
+			"ANY field write (status change, queue reorder, sync) — not strictly\n" +
+			"on token-logging events. An item that did its expensive work weeks\n" +
+			"ago but had its status changed today WILL appear in --touched-since\n" +
+			"today with its full historical cost. True 'spend since X' rollup\n" +
+			"requires per-turn timestamps; not built yet.",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			sinceStr, _ := cmd.Flags().GetString("since")
+			sinceStr, _ := cmd.Flags().GetString("touched-since")
 			itemID, _ := cmd.Flags().GetString("item")
 			agent, _ := cmd.Flags().GetString("agent")
 			all, _ := cmd.Flags().GetBool("all")
@@ -189,7 +195,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			if sinceStr != "" {
 				t, err := time.Parse("2006-01-02", sinceStr)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "cost: --since must be YYYY-MM-DD: %v\n", err)
+					fmt.Fprintf(os.Stderr, "cost: --touched-since must be YYYY-MM-DD: %v\n", err)
 					exitCode = 2
 					return
 				}
@@ -198,7 +204,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			exitCode = command.Cost(appStore, appCfg, opts, cmd.OutOrStdout())
 		},
 	}
-	costCmd.Flags().String("since", "", "filter items with last_touched ≥ this date (YYYY-MM-DD)")
+	costCmd.Flags().String("touched-since", "", "filter items with last_touched ≥ this date (YYYY-MM-DD); see note about semantic in --help")
 	costCmd.Flags().String("item", "", "limit to a single item ID")
 	costCmd.Flags().String("agent", "", "limit to items assigned to this agent (e.g. agent-g)")
 	costCmd.Flags().Bool("all", false, "include archived items (default: open only)")

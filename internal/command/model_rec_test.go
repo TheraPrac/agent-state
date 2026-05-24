@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -355,6 +356,16 @@ func TestParseRecVerdict(t *testing.T) {
 			wantTier: "haiku",
 		},
 		{
+			name:     "reason contains a } character (balanced parser must not truncate)",
+			input:    `{"tier":"opus","reason":"closing brace } in body"}`,
+			wantTier: "opus",
+		},
+		{
+			name:     "outer envelope wraps verdict in nested object",
+			input:    `{"verdict":{"tier":"haiku","reason":"trivial"}}`,
+			wantTier: "haiku",
+		},
+		{
 			name:    "no JSON",
 			input:   "I think this should be haiku.",
 			wantErr: true,
@@ -362,6 +373,11 @@ func TestParseRecVerdict(t *testing.T) {
 		{
 			name:    "invalid tier",
 			input:   `{"tier":"giga","reason":"???"}`,
+			wantErr: true,
+		},
+		{
+			name:    "missing tier key entirely",
+			input:   `{"reason":"forgot to include tier"}`,
 			wantErr: true,
 		},
 	}
@@ -381,5 +397,63 @@ func TestParseRecVerdict(t *testing.T) {
 				t.Errorf("tier = %q, want %q", res.Tier, tc.wantTier)
 			}
 		})
+	}
+}
+
+func TestTruncateForPrompt_UTF8Safe(t *testing.T) {
+	// em-dash is 3 bytes (0xe2 0x80 0x94). Byte-slicing at a non-rune
+	// boundary produces invalid UTF-8 — the function must walk back.
+	cases := []struct {
+		name string
+		in   string
+		max  int
+	}{
+		{"emdash boundary cut", "fix item — investigate further", 11},
+		{"emdash boundary cut 2", "fix item — investigate further", 10},
+		{"smart quotes", "‘fix this — now’", 8},
+		{"all ASCII unchanged", "this is plain ascii input", 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateForPrompt(tc.in, tc.max)
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateForPrompt(%q, %d) = %q is NOT valid UTF-8 (bytes=%x)", tc.in, tc.max, got, []byte(got))
+			}
+		})
+	}
+}
+
+func TestWriteCache_AtomicRenameNoCorruption(t *testing.T) {
+	// Atomic-publish path: even if a hypothetical kill happens between
+	// CreateTemp and Rename, the canonical cache file is never observed in a
+	// partially-written state. The test asserts: after a write, the file is
+	// valid JSON and contains the expected entry.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-rec-cache.json")
+
+	writeCache(path, "I-100", 1234567890, ModelRecResult{Tier: "haiku", Reason: "first"})
+	writeCache(path, "I-101", 1234567891, ModelRecResult{Tier: "opus", Reason: "second"})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var f cacheFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, data)
+	}
+	if e, ok := f.Entries["I-100"]; !ok || e.Result.Tier != "haiku" {
+		t.Errorf("I-100 missing or wrong: %+v", e)
+	}
+	if e, ok := f.Entries["I-101"]; !ok || e.Result.Tier != "opus" {
+		t.Errorf("I-101 missing or wrong: %+v", e)
+	}
+
+	// Tmp files should NOT linger after success.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".model-rec-cache-") && strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("orphan tmp file: %s", e.Name())
+		}
 	}
 }
