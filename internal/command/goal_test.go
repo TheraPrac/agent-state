@@ -181,6 +181,14 @@ func TestGoalDropRequiresClosedVocabReason(t *testing.T) {
 	if rc := GoalDrop(s3, cfg3, "G-001", "superseded"); rc == 0 {
 		t.Error("GoalDrop on already-dropped goal should fail")
 	}
+
+	// Draft goal must fail — drop requires active.
+	_, _, cfg4 := newGoalEnv(t)
+	seedGoalFile(t, cfg4, "G-001", "draft", 40)
+	s4 := reloadStoreGoal(t, cfg4)
+	if rc := GoalDrop(s4, cfg4, "G-001", "superseded"); rc == 0 {
+		t.Error("GoalDrop on draft goal should fail (must be active)")
+	}
 }
 
 func TestGoalListGroupsByLifecycleWithSum(t *testing.T) {
@@ -202,6 +210,24 @@ func TestGoalListGroupsByLifecycleWithSum(t *testing.T) {
 	}
 	if !strings.Contains(out, "100 / 100") {
 		t.Errorf("output missing active weight sum 100/100:\n%s", out)
+	}
+}
+
+func TestGoalListShowsArchivedGoals(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	seedGoalFile(t, cfg, "G-002", "archived", 30)
+	s := reloadStoreGoal(t, cfg)
+
+	var buf bytes.Buffer
+	goalListTo(&buf, s, cfg)
+	out := buf.String()
+
+	if !strings.Contains(out, "ARCHIVED") {
+		t.Errorf("archived goals not shown in list output:\n%s", out)
+	}
+	if !strings.Contains(out, "G-002") {
+		t.Errorf("G-002 (archived) missing from list output:\n%s", out)
 	}
 }
 

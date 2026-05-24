@@ -63,8 +63,8 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) in
 	)
 	for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
 		lines = append(lines,
-			model.Line{Raw: "  " + key + ": |-"},
-			model.Line{Raw: "    " + model.SBARPlaceholders[key]},
+			model.Line{Raw: "  " + key + ": |-", Key: key, Indent: 2, BlockKey: "sbar"},
+			model.Line{Raw: "    " + model.SBARPlaceholders[key], IsBlock: true, BlockKey: key, Indent: 4},
 		)
 	}
 	doc.Lines = lines
@@ -111,31 +111,31 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 
-	// Compute current active weight sum (excluding this goal).
-	activeSum := 0
-	for _, it := range s.All() {
-		if it.Type == "goal" && it.Status == "active" && it.ID != id && it.Weight != nil {
-			activeSum += *it.Weight
-		}
-	}
-
-	thisWeight := 0
-	if goal.Weight != nil {
-		thisWeight = *goal.Weight
-	}
-	if activeSum+thisWeight > 100 {
-		fmt.Fprintf(os.Stderr,
-			"goal activate: active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first\n",
-			activeSum+thisWeight, activeSum, thisWeight)
-		return 1
-	}
-
+	// Weight check and status update are combined in the Mutate closure so
+	// they are atomic within a single process. Multi-process TOCTOU is
+	// theoretical for this CLI tool (sequential single-agent usage); a
+	// coordinating lock file would be needed for full protection.
+	var finalSum int
 	if err := s.Mutate(id, func(it *model.Item) error {
+		sum := 0
+		for _, g := range s.All() {
+			if g.Type == "goal" && g.Status == "active" && g.ID != id && g.Weight != nil {
+				sum += *g.Weight
+			}
+		}
+		w := 0
+		if it.Weight != nil {
+			w = *it.Weight
+		}
+		if sum+w > 100 {
+			return fmt.Errorf("active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first", sum+w, sum, w)
+		}
+		finalSum = sum + w
 		it.Status = "active"
 		it.Doc.SetField("status", "active")
 		return nil
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "activating %s: %v\n", id, err)
+		fmt.Fprintf(os.Stderr, "goal activate: %s: %v\n", id, err)
 		return 1
 	}
 	if err := s.Move(id); err != nil {
@@ -143,7 +143,7 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 
-	fmt.Printf("%s activated (active weight: %d/100)\n", id, activeSum+thisWeight)
+	fmt.Printf("%s activated (active weight: %d/100)\n", id, finalSum)
 	return 0
 }
 
@@ -205,16 +205,9 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 		fmt.Fprintf(os.Stderr, "%s is not a goal\n", id)
 		return 1
 	}
-	tc, ok := cfg.Types["goal"]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "goal type not registered\n")
+	if goal.Status != "active" {
+		fmt.Fprintf(os.Stderr, "goal drop: %s is %s (must be active)\n", id, goal.Status)
 		return 1
-	}
-	for _, t := range tc.TerminalStatuses {
-		if goal.Status == t {
-			fmt.Fprintf(os.Stderr, "goal drop: %s is already terminal (%s)\n", id, goal.Status)
-			return 1
-		}
 	}
 
 	if err := s.Mutate(id, func(it *model.Item) error {
@@ -249,10 +242,11 @@ func goalListTo(w io.Writer, s *store.Store, cfg *config.Config) int {
 	}
 
 	buckets := map[string][]*model.Item{
-		"draft":   {},
-		"active":  {},
-		"met":     {},
-		"dropped": {},
+		"draft":    {},
+		"active":   {},
+		"met":      {},
+		"dropped":  {},
+		"archived": {},
 	}
 	for _, g := range all {
 		if _, ok := buckets[g.Status]; ok {
@@ -260,7 +254,7 @@ func goalListTo(w io.Writer, s *store.Store, cfg *config.Config) int {
 		}
 	}
 
-	order := []string{"active", "draft", "met", "dropped"}
+	order := []string{"active", "draft", "met", "dropped", "archived"}
 	for _, status := range order {
 		goals := buckets[status]
 		if len(goals) == 0 {
