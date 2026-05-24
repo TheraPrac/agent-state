@@ -175,3 +175,42 @@ func TestContainsWord_WordBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateACs_BareWorkspacePathRejected(t *testing.T) {
+	// cmd: ACs that reference workspace-relative paths without
+	// $ST_WORKSPACE_ROOT must be rejected — they silently fail when UAT
+	// runs from a worktree base instead of the main workspace root.
+	bad := []string{
+		"cmd: test -f agent-state/goals/G-001-alpha-go-live.md",
+		"cmd: ls agent-state/tasks/",
+		"cmd: test -f theraprac-workspace/agent-state/goals/G-004.md",
+		"cmd: grep -q G-001 agent-state/index.md",
+	}
+	for _, ac := range bad {
+		t.Run(ac, func(t *testing.T) {
+			findings := ValidateACs([]string{ac})
+			if len(findings) == 0 {
+				t.Errorf("expected portability finding for %q; got none", ac)
+			} else if !strings.Contains(findings[0].Reason, "non-portable") {
+				t.Errorf("expected non-portable reason for %q; got %q", ac, findings[0].Reason)
+			}
+		})
+	}
+}
+
+func TestValidateACs_PortableWorkspacePathAccepted(t *testing.T) {
+	// cmd: ACs that use $ST_WORKSPACE_ROOT must be accepted.
+	good := []string{
+		"cmd: test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001-alpha-go-live.md",
+		"cmd: ls $ST_WORKSPACE_ROOT/agent-state/tasks/",
+		"cmd: grep -q G-001 $ST_WORKSPACE_ROOT/agent-state/index.md",
+	}
+	for _, ac := range good {
+		t.Run(ac, func(t *testing.T) {
+			findings := ValidateACs([]string{ac})
+			if len(findings) > 0 {
+				t.Errorf("expected no findings for portable AC %q; got: %v", ac, findings)
+			}
+		})
+	}
+}

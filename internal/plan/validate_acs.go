@@ -34,6 +34,8 @@ func (f ACFinding) String() string {
 // quality. Returns nil when every AC is verifiable. I-511.
 func ValidateACs(acs []string) []ACFinding {
 	var findings []ACFinding
+
+	// Pass 1: verifiability — each AC must have a recognizable proof method.
 	for i, ac := range acs {
 		trimmed := strings.TrimSpace(ac)
 		if trimmed == "" {
@@ -53,7 +55,47 @@ func ValidateACs(acs []string) []ACFinding {
 			Reason: "not verifiable — prefix with `cmd:` (e.g. `cmd: go test ./internal/foo/...`), name the test that proves it (e.g. `TestFoo passes`), or include a measurable threshold (e.g. `< 50ms`, `returns 200`)",
 		})
 	}
+
+	// Pass 2: portability — cmd: ACs must not contain bare workspace-relative
+	// paths. "agent-state/" and "theraprac-workspace/" only resolve from the
+	// main workspace root; they silently fail when UAT runs from a worktree
+	// base. The UAT runner injects $ST_WORKSPACE_ROOT (absolute) so authors
+	// can write portable file checks that work in any run context.
+	for i, ac := range acs {
+		trimmed := strings.TrimSpace(ac)
+		if !strings.HasPrefix(strings.ToLower(trimmed), "cmd:") {
+			continue
+		}
+		if hasBareWorkspacePath(trimmed[4:]) {
+			findings = append(findings, ACFinding{
+				Index:  i + 1,
+				AC:     trimmed,
+				Reason: `non-portable workspace path — replace "agent-state/" or "theraprac-workspace/" with "$ST_WORKSPACE_ROOT/agent-state/" or "$ST_WORKSPACE_ROOT/theraprac-workspace/" so the check resolves from any run context`,
+			})
+		}
+	}
+
 	return findings
+}
+
+// bareWorkspacePathPatterns are substrings whose presence in a cmd: AC
+// (without $ST_WORKSPACE_ROOT) indicates a non-portable workspace-relative
+// path that silently breaks in worktree UAT runs.
+var bareWorkspacePathPatterns = []string{
+	"agent-state/",
+	"theraprac-workspace/",
+}
+
+func hasBareWorkspacePath(cmd string) bool {
+	if strings.Contains(cmd, "$ST_WORKSPACE_ROOT") {
+		return false
+	}
+	for _, p := range bareWorkspacePathPatterns {
+		if strings.Contains(cmd, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // suiteNames are the TheraPrac Tier-1/Tier-2 suite identifiers + a few
