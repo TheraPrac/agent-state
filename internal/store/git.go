@@ -340,19 +340,25 @@ func checkMainBranchGate(root string) error {
 	// canonical and raw forms and emits a `../../private/var/...`
 	// traversal that mis-classifies every path as non-state. Use the
 	// raw forms on either side's failure (or fail-open).
+	// I-835: also lowercase both inputs before Rel. On macOS APFS
+	// (case-insensitive, case-preserving), EvalSymlinks can return
+	// different casings for the two paths — e.g. /Users/x/Dev/...
+	// vs /Users/x/dev/... — making Rel emit a ../../... traversal
+	// path. Lowercasing both is a no-op on correctly-cased paths and
+	// on case-sensitive filesystems.
 	canonRoot, errRoot := filepath.EvalSymlinks(root)
 	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
 	if errRoot != nil || errTop != nil {
 		canonRoot = root
 		canonToplevel = toplevel
 	}
-	itemsRel, err := filepath.Rel(canonToplevel, canonRoot)
+	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
 	if err != nil {
 		return nil // fail-open
 	}
 	itemsPrefix := ""
 	if itemsRel != "." {
-		itemsPrefix = filepath.ToSlash(itemsRel) + "/"
+		itemsPrefix = strings.ToLower(filepath.ToSlash(itemsRel)) + "/"
 	}
 
 	// Flat layout has no items-vs-non-items distinction to enforce.

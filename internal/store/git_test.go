@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1617,6 +1618,45 @@ func TestIsManagedStatePath_CaseInsensitivePrefix_I834(t *testing.T) {
 				t.Errorf("isManagedStatePath(%q, %q) = %v, want %v", tc.path, tc.itemsPrefix, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCheckMainBranchGate_CaseDivergentToplevel_I835 verifies that the
+// I-807 gate correctly fail-opens (returns nil) when only agent-state
+// files are dirty, even when the items-root path and the git toplevel
+// path have different casings for the same components (the I-835 bug).
+//
+// On macOS APFS (case-insensitive, case-preserving), filepath.EvalSymlinks
+// preserves whatever casing was given — so if the store's root path came
+// from a lowercase PWD but git rev-parse returns the stored uppercase path,
+// the pre-fix filepath.Rel call produces a ../../... traversal path that
+// mis-classifies every agent-state file as a non-state offender.
+func TestCheckMainBranchGate_CaseDivergentToplevel_I835(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("I-835: APFS case-insensitive path divergence only manifests on macOS")
+	}
+	workspace, _ := setupI807Workspace(t, false)
+
+	// Dirty an agent-state file so the gate has changes to inspect.
+	taskFile := filepath.Join(workspace, "agent-state", "tasks", "T-001-first-task.md")
+	if err := os.WriteFile(taskFile, []byte("id: T-001\ntype: task\nstatus: active\n"), 0644); err != nil {
+		t.Fatalf("write task: %v", err)
+	}
+
+	// Derive a case-divergent items path by lowercasing every component of
+	// the workspace. On macOS APFS the filesystem accepts mixed casing, so
+	// os.Lstat succeeds. This simulates the production scenario where ST_ROOT
+	// comes from a lowercase PWD while git rev-parse returns the stored
+	// uppercase path, making filepath.Rel emit a traversal path.
+	divergentItems := filepath.Join(strings.ToLower(workspace), "agent-state")
+	if _, err := os.Lstat(divergentItems); err != nil {
+		t.Skipf("filesystem does not support case-insensitive access (%v) — APFS required", err)
+	}
+
+	// With the I-835 fix (strings.ToLower on both inputs to filepath.Rel),
+	// the gate must fail-open: nil error means only state files are dirty.
+	if err := checkMainBranchGate(divergentItems); err != nil {
+		t.Errorf("I-835 regression: gate returned non-nil for state-only dirty set with case-divergent path: %v", err)
 	}
 }
 
