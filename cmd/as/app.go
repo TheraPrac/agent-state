@@ -307,13 +307,15 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			statusF, _ := cmd.Flags().GetString("status")
 			tagF, _ := cmd.Flags().GetString("tag")
 			assignedF, _ := cmd.Flags().GetString("assigned")
-			exitCode = command.List(appStore, appCfg, command.ListOpts{Type: typeF, Status: statusF, Tag: tagF, Assigned: assignedF})
+			goalF, _ := cmd.Flags().GetString("goal")
+			exitCode = command.List(appStore, appCfg, command.ListOpts{Type: typeF, Status: statusF, Tag: tagF, Assigned: assignedF, Goal: goalF})
 		},
 	}
 	listCmd.Flags().StringP("type", "T", "", "filter by type (task, issue, idea)")
 	listCmd.Flags().StringP("status", "s", "", "filter by status")
 	listCmd.Flags().String("tag", "", "filter by tag")
 	listCmd.Flags().String("assigned", "", "filter by assigned agent")
+	listCmd.Flags().String("goal", "", "filter by goal ID (items whose goals: field contains this ID)")
 	root.AddCommand(listCmd)
 
 	createCmd := &cobra.Command{
@@ -327,8 +329,10 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			tag, _ := cmd.Flags().GetString("tag")
 			depends, _ := cmd.Flags().GetString("depends")
 			sprint, _ := cmd.Flags().GetString("sprint")
+			goals, _ := cmd.Flags().GetStringSlice("goals")
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
+				Goals: goals,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
 				// (tests, migrations) leave Engine zero and skip the review.
@@ -344,6 +348,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	createCmd.Flags().String("tag", "", "initial tag")
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")
+	createCmd.Flags().StringSlice("goals", nil, "goal IDs to associate on creation (comma-separated)")
 	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 
@@ -1791,7 +1796,36 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 		},
 	})
 	goalCmd.AddCommand(mustDoCmd)
+	goalCmd.AddCommand(&cobra.Command{
+		Use:   "validate-consistency",
+		Short: "Check that Goal.must_do and item.goals fields are in sync",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalConsistencyCheck(appStore, appCfg)
+		},
+	})
 	root.AddCommand(goalCmd)
+
+	// T-410: item goals subcommands — item goals add/remove
+	itemGoalsCmd := &cobra.Command{Use: "goals", Short: "Manage item goal membership"}
+	itemGoalsCmd.AddCommand(&cobra.Command{
+		Use:   "add <item-id> <goal-id...>",
+		Short: "Add goal IDs to an item's goals list",
+		Args:  cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ItemGoalsAdd(appStore, appCfg, args[0], args[1:])
+		},
+	})
+	itemGoalsCmd.AddCommand(&cobra.Command{
+		Use:   "remove <item-id> <goal-id...>",
+		Short: "Remove goal IDs from an item's goals list",
+		Args:  cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ItemGoalsRemove(appStore, appCfg, args[0], args[1:])
+		},
+	})
+	itemCmd := &cobra.Command{Use: "item", Short: "Manage item metadata"}
+	itemCmd.AddCommand(itemGoalsCmd)
+	root.AddCommand(itemCmd)
 
 	// T-378 (I-712): strategic-work-stream arc tagging. Any name an
 	// operator uses IS the arc — no registry, no predefined list.

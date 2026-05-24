@@ -23,7 +23,8 @@ type CreateOpts struct {
 	Severity string // DEPRECATED — see I-406. Reject at CLI entry.
 	Tag      string
 	Depends  string
-	Sprint   string // optional: assign to sprint on creation
+	Sprint   string   // optional: assign to sprint on creation
+	Goals    []string // optional: goal IDs to associate on creation
 	// T-382: Editor field removed. Agents drive creation via
 	// `st create <type> <title>` with subsequent stdin-based
 	// `st update sbar --stdin` heredocs; the editor surface was
@@ -61,6 +62,19 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	if opts.Priority < 0 || opts.Priority > 4 {
 		fmt.Fprintf(os.Stderr, "create: priority must be 0-4 (got %d)\n", opts.Priority)
 		return 2
+	}
+
+	// Validate goal IDs: each must exist and have type="goal".
+	for _, gid := range opts.Goals {
+		g, exists := s.Get(gid)
+		if !exists {
+			fmt.Fprintf(os.Stderr, "create: goal not found: %s\n", gid)
+			return 1
+		}
+		if g.Type != "goal" {
+			fmt.Fprintf(os.Stderr, "create: %s is not a goal (type=%s)\n", gid, g.Type)
+			return 1
+		}
 	}
 
 	id, err := s.NextID(itemType)
@@ -105,6 +119,15 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	if opts.Tag != "" {
 		lines = append(lines, model.Line{Raw: fmt.Sprintf("tags: [%s]", opts.Tag)})
 	}
+
+	// Goals
+	if len(opts.Goals) > 0 {
+		lines = append(lines, model.Line{Raw: "goals:", Key: "goals"})
+		for _, gid := range opts.Goals {
+			lines = append(lines, model.Line{Raw: "- " + gid, IsList: true})
+		}
+	}
+
 	lines = append(lines, model.Line{Raw: ""})
 
 	// Dependencies
@@ -175,6 +198,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	}
 	if opts.Tag != "" {
 		item.Tags = []string{opts.Tag}
+	}
+	if len(opts.Goals) > 0 {
+		item.Goals = opts.Goals
 	}
 
 	item.WorkTracking = make(map[string]interface{})

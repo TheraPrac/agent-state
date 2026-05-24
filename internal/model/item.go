@@ -61,6 +61,7 @@ type Item struct {
 	Invariants         []string
 	DocChanges         []string
 	LinkedPlans        []string
+	Goals              []string
 
 	// Nested structures (kept as raw key-value for flexibility)
 	WorkTracking    map[string]interface{}
@@ -228,7 +229,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"related_issues": true, "acceptance_criteria": true,
 	"next_actions": true, "resolution": true, "invariants": true,
 	"doc_changes": true, "sessions": true, "linked_plans": true,
-	"tests_written": true,
+	"tests_written": true, "goals": true,
 	// storeListOfMaps / storeNestedScalar top-level parents
 	"testing_evidence": true, "work_tracking": true, "delivery": true,
 	"time_tracking": true, "manifest": true, "sbar": true,

@@ -209,7 +209,7 @@ func TestCanonicalTopLevelKeys_MatchesParser(t *testing.T) {
 		"related_issues": true, "acceptance_criteria": true,
 		"next_actions": true, "resolution": true, "invariants": true,
 		"doc_changes": true, "sessions": true, "linked_plans": true,
-		"tests_written": true,
+		"tests_written": true, "goals": true,
 		// storeListOfMaps / storeNestedScalar top-level parents
 		"testing_evidence": true, "work_tracking": true, "delivery": true,
 		"time_tracking": true, "manifest": true, "sbar": true,

@@ -62,7 +62,7 @@ var listFields = map[string]bool{
 	"acceptance_criteria": true, "depends_on": true, "blocks": true,
 	"related_issues": true, "next_actions": true, "resolution": true,
 	"invariants": true, "doc_changes": true, "linked_plans": true,
-	"tags": true, "sessions": true,
+	"tags": true, "sessions": true, "goals": true,
 }
 
 // listItemRaw formats v as a canonical YAML list-item line ("- v", or
@@ -295,6 +295,43 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 			fmt.Fprintf(os.Stderr,
 				"Each AC must start with `cmd:` (e.g., `cmd: go test ./...`), name a test (e.g., `TestFoo passes`), or include a measurable threshold (e.g., `< 50ms`, `returns 200`).\n")
 			return 2
+		}
+	}
+
+	// Validate goals field: each ID must exist and must be type="goal".
+	if field == "goals" {
+		var goalIDs []string
+		for _, raw := range strings.Split(value, "\n") {
+			raw = strings.TrimSpace(raw)
+			if strings.HasPrefix(raw, "- ") {
+				raw = strings.TrimSpace(raw[2:])
+			}
+			if raw == "" || raw == "-" {
+				continue
+			}
+			goalIDs = append(goalIDs, raw)
+		}
+		// Also handle comma-separated single-line input.
+		if len(goalIDs) == 1 && strings.Contains(goalIDs[0], ",") {
+			var expanded []string
+			for _, part := range strings.Split(goalIDs[0], ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					expanded = append(expanded, part)
+				}
+			}
+			goalIDs = expanded
+		}
+		for _, gid := range goalIDs {
+			g, exists := s.Get(gid)
+			if !exists {
+				fmt.Fprintf(os.Stderr, "update %s goals: goal not found: %s\n", id, gid)
+				return 2
+			}
+			if g.Type != "goal" {
+				fmt.Fprintf(os.Stderr, "update %s goals: %s is not a goal (type=%s)\n", id, gid, g.Type)
+				return 2
+			}
 		}
 	}
 

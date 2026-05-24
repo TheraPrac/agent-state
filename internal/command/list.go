@@ -15,6 +15,7 @@ type ListOpts struct {
 	Status   string
 	Tag      string
 	Assigned string
+	Goal     string
 }
 
 func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
@@ -31,9 +32,12 @@ func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
 	if opts.Assigned != "" {
 		filters = append(filters, store.AssignedFilter(opts.Assigned))
 	}
+	if opts.Goal != "" {
+		filters = append(filters, store.GoalFilter(opts.Goal))
+	}
 
 	// Default: show non-terminal items
-	if opts.Type == "" && opts.Status == "" && opts.Tag == "" && opts.Assigned == "" {
+	if opts.Type == "" && opts.Status == "" && opts.Tag == "" && opts.Assigned == "" && opts.Goal == "" {
 		filters = append(filters, store.NonTerminalFilter(cfg))
 	}
 

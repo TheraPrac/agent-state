@@ -293,6 +293,18 @@ func TagFilter(tag string) Filter {
 	}
 }
 
+// GoalFilter returns items whose Goals slice contains the given goalID.
+func GoalFilter(goalID string) Filter {
+	return func(item *model.Item) bool {
+		for _, g := range item.Goals {
+			if g == goalID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // AssignedFilter returns items assigned to a specific agent.
 func AssignedFilter(agent string) Filter {
 	return func(item *model.Item) bool { return item.AssignedTo == agent }
