@@ -70,9 +70,11 @@ type PlanApproveOpts struct {
 
 // PlanApprove marks an item's plan as approved. Sets PlanApproved=true,
 // PlanApprovedAt=now, PlanApprovedBy=cfg.AgentID() (or "user" if empty).
-// Refuses re-approval — the operator must `st plan reset` first if a
-// previously-approved plan needs re-validation. Writes a changelog entry
-// so the approval is auditable.
+// Idempotent on re-approval (I-832): a second call on an already-approved
+// item emits a "no-op (idempotent re-run)" notice, calls autoSync
+// defensively, and returns 0 without touching audit fields. To force
+// re-validation, call PlanReset first. Writes a changelog entry on the
+// first approval so the approval is auditable.
 //
 // I-178 Phase A: this is the as-side primitive that the
 // `plan-before-code-guard.sh` hook (Phase B, separate per-agent install)
