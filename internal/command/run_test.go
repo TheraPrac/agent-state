@@ -1492,14 +1492,15 @@ worktree:
 	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	uatDir := filepath.Join(root, "worktrees", "T-001")
 
+	pfx := "ST_WORKSPACE_ROOT='" + root + "' "
 	tests := []struct {
 		input string
 		want  string
 	}{
-		{"cd ../theraprac-web && npx vitest run test.ts", "cd theraprac-web && npx vitest run test.ts"},
-		{"cd ../theraprac-api && make test-unit", "cd theraprac-api && make test-unit"},
-		{"grep -q 'foo' ../theraprac-web/src/lib/hooks.ts", "grep -q 'foo' theraprac-web/src/lib/hooks.ts"},
-		{"echo no repo path", "echo no repo path"},
+		{"cd ../theraprac-web && npx vitest run test.ts", pfx + "cd theraprac-web && npx vitest run test.ts"},
+		{"cd ../theraprac-api && make test-unit", pfx + "cd theraprac-api && make test-unit"},
+		{"grep -q 'foo' ../theraprac-web/src/lib/hooks.ts", pfx + "grep -q 'foo' theraprac-web/src/lib/hooks.ts"},
+		{"echo no repo path", pfx + "echo no repo path"},
 	}
 	for _, tt := range tests {
 		got := rewriteACPaths(cfg, "T-001", uatDir, tt.input)
@@ -1510,10 +1511,26 @@ worktree:
 }
 
 func TestRewriteACPathsNoWorktree(t *testing.T) {
+	// &config.Config{} has empty root — no ST_WORKSPACE_ROOT prefix, no path rewrite.
 	cfg := &config.Config{}
 	got := rewriteACPaths(cfg, "T-001", "/tmp", "cd ../theraprac-web && test")
 	if got != "cd ../theraprac-web && test" {
 		t.Errorf("should not rewrite without worktree config, got %q", got)
+	}
+}
+
+func TestRewriteACPathsInjectsWorkspaceRoot(t *testing.T) {
+	// ST_WORKSPACE_ROOT must be injected in non-worktree context too,
+	// so file-existence ACs work from both main workspace and worktree runs.
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".as"), 0755)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+
+	got := rewriteACPaths(cfg, "T-001", root, "test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001.md")
+	want := "ST_WORKSPACE_ROOT='" + root + "' test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001.md"
+	if got != want {
+		t.Errorf("ST_WORKSPACE_ROOT not injected.\n got:  %q\n want: %q", got, want)
 	}
 }
 

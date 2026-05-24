@@ -5818,7 +5818,16 @@ func inferReposFromItem(cfg *config.Config, item *model.Item) []string {
 // rewriteACPaths rewrites ../repo-name paths in acceptance criteria commands
 // to use the worktree path. From the worktree base (worktrees/T-095/),
 // repos are direct subdirectories (theraprac-web/), not siblings (../theraprac-web).
+// It also injects ST_WORKSPACE_ROOT so ACs can reference workspace-relative
+// files portably regardless of whether UAT runs from a worktree or project root.
 func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
+	// Inject ST_WORKSPACE_ROOT unconditionally so ACs can write
+	// `test -f $ST_WORKSPACE_ROOT/agent-state/...` and have it resolve
+	// correctly in both worktree and main-workspace run contexts.
+	if wsRoot := cfg.Root(); wsRoot != "" {
+		cmd = "ST_WORKSPACE_ROOT='" + wsRoot + "' " + cmd
+	}
+
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
 		return cmd
 	}
