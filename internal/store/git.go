@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -200,6 +201,286 @@ func restoreLockedItems(snapshots map[string][]byte) {
 // fetched main via plumbing (commit-tree + update-ref), and push again.
 // The working tree's index is never touched; rebase conflicts cannot
 // arise.
+
+// ErrI807MainBranchGate is the sentinel for the I-807 gate refusal so
+// upstream callers can detect it programmatically via errors.Is rather
+// than by string matching on the human-readable message.
+var ErrI807MainBranchGate = errors.New("I-807: main-branch dirty-non-state gate")
+
+// gateGitOutput runs `git <args>` in dir with `GIT_DIR`, `GIT_WORK_TREE`,
+// and `GIT_INDEX_FILE` scrubbed from the environment. The gate's git
+// introspection (rev-parse, status --porcelain -z, log -z) MUST read
+// the workspace's real state, not whatever index/dir an outer process
+// happens to have exported (e.g. an interrupted plumbing-replay debug
+// session, an embedded library use, an IDE wrapper). A leaked GIT_*
+// env can route status/log at the wrong repo and cause the gate to
+// fail-open on a truly-dirty workspace OR fail-closed against phantom
+// offenders from the leaked index.
+func gateGitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	env := os.Environ()
+	scrubbed := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_DIR=") ||
+			strings.HasPrefix(kv, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(kv, "GIT_INDEX_FILE=") {
+			continue
+		}
+		scrubbed = append(scrubbed, kv)
+	}
+	cmd.Env = scrubbed
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), err
+}
+
+// isManagedStatePath returns true when the toplevel-relative path lives
+// inside the agent-state allowlist: the configured items prefix (e.g.
+// `agent-state/`) or `.as/`. The lock file (`<itemsPrefix>.st-git.lock`)
+// is also allowlisted defense-in-depth (it should also be `??`, which
+// the caller filters earlier).
+func isManagedStatePath(path, itemsPrefix string) bool {
+	if strings.HasPrefix(path, ".as/") {
+		return true
+	}
+	if itemsPrefix != "" && strings.HasPrefix(path, itemsPrefix) {
+		return true
+	}
+	return false
+}
+
+// checkMainBranchGate is the I-807 defense-in-depth gate. It fails closed
+// when the workspace HEAD is the literal branch `main` (or is a detached
+// HEAD pointing at the same SHA as `refs/remotes/origin/main`) AND any
+// tracked / staged / committed-but-unpushed mutation outside the
+// agent-state allowlist (`<itemsPrefix>`, `.as/`) is about to be pushed
+// to origin/main. Prevents the silent-branch-flip + auto-push pattern
+// observed in commit 9edc8732b.
+//
+// Hardcoded to `main`: the rest of git.go (pushWithRetry, verifyPushLanded,
+// replayCommitOnFetchedMain) also hardcodes `main`. If the repo's default
+// branch is ever renamed, all of these need to update together.
+//
+// Fail-opens (returns nil) when:
+//   - symbolic-ref fails (corrupt HEAD, missing .git, etc.) AND the
+//     detached-HEAD-at-origin/main fallback also can't resolve
+//   - branch is not `main` AND detached HEAD does not resolve to origin/main
+//   - flat-layout fixture (itemsPrefix == "") — no items-vs-non-items
+//     distinction to enforce; the gate only protects nested layouts
+//   - ST_SYNC_ALLOW_MAIN=1 is set AND the gate would otherwise have fired
+//     (audit-stderr emitted with the offender list so the bypass is named)
+//
+// Note on unborn HEAD: a freshly-init'd repo with HEAD symbolic to
+// refs/heads/main but no commits yet WILL trip the gate (symbolic-ref
+// succeeds, onMain becomes true). This is intentional: the first commit
+// is exactly the case where mis-routing a non-state push to main is
+// hardest to recover from.
+//
+// Inspects: (a) `git status --porcelain` for tracked-modified / staged
+// changes in the working tree, AND (b) `git log origin/main..HEAD
+// --name-only` for non-state paths in already-committed-locally-but-
+// unpushed commits (the "stranded local commit" path that working-tree
+// inspection alone misses).
+//
+// Skips `??` (pure-untracked) porcelain entries to preserve I-442's
+// peer-WIP protection. Restricts rename / copy detection to entries whose
+// XY status code begins with `R` or `C` (not a path-text substring search)
+// to avoid mangling filenames that happen to contain ` -> `. Gates BOTH
+// the old AND new path of a rename so a rename FROM non-state INTO
+// agent-state still flags the (deletion-side) non-state mutation.
+//
+// Pairs structurally with I-765 (broader gate, all branches, same code
+// path — additive).
+func checkMainBranchGate(root string) error {
+	overrideSet := os.Getenv("ST_SYNC_ALLOW_MAIN") == "1"
+
+	// Use `symbolic-ref -q HEAD` (not `--abbrev-ref`) to distinguish a
+	// branch literally named `HEAD` from a truly-detached HEAD.
+	// symbolic-ref returns refs/heads/<branch> on a branch; non-zero +
+	// empty stdout on detached HEAD.
+	symRefOut, symRefErr := gateGitOutput(root, "symbolic-ref", "-q", "HEAD")
+	detached := symRefErr != nil
+	onMain := false
+	if !detached {
+		onMain = strings.TrimSpace(symRefOut) == "refs/heads/main"
+	} else {
+		// Detached HEAD: if the detached commit is the same as
+		// refs/remotes/origin/main, treat it as on-main for push-
+		// protection purposes (pushWithRetry can still target main).
+		headSHA, herr := gateGitOutput(root, "rev-parse", "HEAD")
+		originSHA, oerr := gateGitOutput(root, "rev-parse", "refs/remotes/origin/main")
+		if herr == nil && oerr == nil {
+			h := strings.TrimSpace(headSHA)
+			o := strings.TrimSpace(originSHA)
+			if h != "" && h == o {
+				onMain = true
+			}
+		}
+	}
+	if !onMain {
+		return nil
+	}
+
+	// Resolve git toplevel so porcelain paths come back relative to the
+	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
+	// not relative to ItemDir which would emit `../claude-config/...`.
+	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil // fail-open
+	}
+	toplevel := strings.TrimSpace(toplevelOut)
+
+	// Compute the items-root prefix relative to the git toplevel.
+	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
+	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
+	// canonical and raw forms and emits a `../../private/var/...`
+	// traversal that mis-classifies every path as non-state. Use the
+	// raw forms on either side's failure (or fail-open).
+	canonRoot, errRoot := filepath.EvalSymlinks(root)
+	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
+	if errRoot != nil || errTop != nil {
+		canonRoot = root
+		canonToplevel = toplevel
+	}
+	itemsRel, err := filepath.Rel(canonToplevel, canonRoot)
+	if err != nil {
+		return nil // fail-open
+	}
+	itemsPrefix := ""
+	if itemsRel != "." {
+		itemsPrefix = filepath.ToSlash(itemsRel) + "/"
+	}
+
+	// Flat layout has no items-vs-non-items distinction to enforce.
+	// Surface this once per process so an operator inheriting flat
+	// config doesn't silently assume the gate is active.
+	if itemsPrefix == "" {
+		flatLayoutAuditOnce()
+		return nil
+	}
+
+	// Status porcelain with -z (NUL-terminated, raw bytes, no quoting).
+	// Default porcelain v1 quotes any path containing a space or non-
+	// ASCII byte — the surrounding `"..."` defeats HasPrefix allowlist
+	// checks. -z is the canonical fix. Rename / copy entries arrive as
+	// two NUL-terminated tokens: `<XY> <new-path>\0<old-path>\0`.
+	statusOut, err := gateGitOutput(toplevel, "status", "--porcelain", "-z")
+	if err != nil {
+		return nil // fail-open
+	}
+
+	var offenders []string
+	// Cross-scan dedup: track all reported paths (basename-stripped of
+	// annotation suffixes) so the same file never appears twice when
+	// it's both working-tree-dirty AND mentioned in a stranded commit.
+	seen := make(map[string]bool)
+	tokens := strings.Split(statusOut, "\x00")
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		if len(tok) < 4 {
+			continue
+		}
+		code := tok[:2]
+		path := tok[3:]
+		// Skip pure-untracked (`git add -u` won't stage them; flagging
+		// would regress I-442's peer-WIP protection).
+		if code == "??" {
+			continue
+		}
+		// Rename / copy: -z format puts the OLD path in the next token
+		// (no XY prefix). XY[0] is the truth-of-rename. Per
+		// git-status(1) porcelain v1: R/C only appear in X (index),
+		// never in Y — so checking code[0] catches `R `, `RM`, `RD`,
+		// `C `, `CM`, etc. without any path-text substring search.
+		if code[0] == 'R' || code[0] == 'C' {
+			newPath := path
+			oldPath := ""
+			if i+1 < len(tokens) {
+				oldPath = tokens[i+1]
+				i++ // consume the old-path token
+			}
+			if !isManagedStatePath(newPath, itemsPrefix) && !seen[newPath] {
+				offenders = append(offenders, newPath+" (rename target)")
+				seen[newPath] = true
+			}
+			if oldPath != "" && !isManagedStatePath(oldPath, itemsPrefix) && !seen[oldPath] {
+				offenders = append(offenders, oldPath+" (rename source)")
+				seen[oldPath] = true
+			}
+			continue
+		}
+		if isManagedStatePath(path, itemsPrefix) {
+			continue
+		}
+		if seen[path] {
+			continue
+		}
+		offenders = append(offenders, path)
+		seen[path] = true
+	}
+
+	// Also scan for non-state files in locally-committed-but-unpushed
+	// commits. The working-tree inspection above misses commits that
+	// were created before this gate landed (or by a parallel session)
+	// and that pushWithRetry would otherwise batch-push to origin/main.
+	// Use -z + NUL parsing so the same quoting concern doesn't bite.
+	logOut, logErr := gateGitOutput(toplevel, "log", "-z", "--name-only", "--pretty=format:", "refs/remotes/origin/main..HEAD")
+	if logErr == nil {
+		for _, p := range strings.Split(logOut, "\x00") {
+			p = strings.TrimSpace(p)
+			if p == "" || seen[p] {
+				continue
+			}
+			if isManagedStatePath(p, itemsPrefix) {
+				continue
+			}
+			seen[p] = true
+			offenders = append(offenders, p+" (already committed locally)")
+		}
+	}
+
+	if len(offenders) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	// Body header drops the "I-807:" prefix — the sentinel's wrapped
+	// text already carries it, so `err.Error()` reads
+	// `I-807: main-branch dirty-non-state gate\nrefusing to commit...`
+	// without a doubled prefix line.
+	fmt.Fprintf(&b, "refusing to commit + push %d non-agent-state file(s) on branch \"main\":\n", len(offenders))
+	for _, p := range offenders {
+		fmt.Fprintf(&b, "  - %s\n", p)
+	}
+	b.WriteString("\nBranch is main — this would bypass PR review.\n")
+	b.WriteString("Recovery: open a feature branch (git checkout -b fix/<id>-<slug>), commit these files there, push, and open a PR.\n")
+	b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_MAIN=1\n")
+	wrapped := fmt.Errorf("%w\n%s", ErrI807MainBranchGate, b.String())
+
+	if overrideSet {
+		fmt.Fprintf(os.Stderr, "[I-807] ST_SYNC_ALLOW_MAIN=1 — bypassing gate, would have refused:\n")
+		for _, p := range offenders {
+			fmt.Fprintf(os.Stderr, "  - %s\n", p)
+		}
+		return nil
+	}
+	return wrapped
+}
+
+// flatLayoutAuditedOnce ensures the flat-layout audit-stderr fires at
+// most once per process so the operator sees the gate-inactive notice
+// without spamming every GitSync call.
+var flatLayoutAuditedOnce sync.Once
+
+func flatLayoutAuditOnce() {
+	flatLayoutAuditedOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "[I-807] flat-layout workspace — main-branch gate is inactive (items root == git toplevel; no non-state surface to enforce)")
+	})
+}
+
 func (s *Store) GitSync(message string, newPaths ...string) error {
 	if s.cfg.Git == nil || !s.cfg.Git.AutoCommit {
 		return nil
@@ -222,6 +503,14 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	// already wrote to disk; we still emit the recovery hint and stop
 	// here so we don't compound the corrupt state.
 	if err := PreFlightGitState(root); err != nil {
+		return err
+	}
+
+	// I-807: fail closed if the workspace HEAD is `main` AND the dirty
+	// working tree contains any non-agent-state file. Prevents the
+	// silent-branch-flip + auto-push pattern from commit 9edc8732b.
+	// Pairs with I-765's broader gate (additive in the same helper).
+	if err := checkMainBranchGate(root); err != nil {
 		return err
 	}
 
@@ -665,14 +954,14 @@ const refreshFetchTimeout = 10 * time.Second
 //     pull cannot overwrite them, mirroring GitPull's protection.
 //  3. `git fetch origin` with a timeout — fetch failure → RefreshOffline.
 //  4. Inspect ahead/behind counts:
-//       - ahead > 0 AND behind > 0: RefreshDiverged (true divergence;
-//         caller must `git pull --rebase` or equivalent recovery).
-//       - ahead > 0 AND behind == 0: RefreshAhead with AheadCount
-//         (I-430: unpushed local commits, recoverable via `st sync`).
-//       - behind == 0: RefreshUpToDate (silent success).
-//       - behind > 0 with uncommitted blockers: RefreshBlocked.
-//       - behind > 0 otherwise: `git pull --ff-only`. Success →
-//         RefreshPulled (PulledCount = behind). Failure → RefreshBlocked.
+//     - ahead > 0 AND behind > 0: RefreshDiverged (true divergence;
+//     caller must `git pull --rebase` or equivalent recovery).
+//     - ahead > 0 AND behind == 0: RefreshAhead with AheadCount
+//     (I-430: unpushed local commits, recoverable via `st sync`).
+//     - behind == 0: RefreshUpToDate (silent success).
+//     - behind > 0 with uncommitted blockers: RefreshBlocked.
+//     - behind > 0 otherwise: `git pull --ff-only`. Success →
+//     RefreshPulled (PulledCount = behind). Failure → RefreshBlocked.
 //  5. Restore locked-item snapshots.
 //
 // Never auto-stashes, auto-rebases, or pushes. Operator intervention
