@@ -57,7 +57,7 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) in
 		model.Line{Raw: titleLine, Key: "title", Value: title},
 		model.Line{Raw: ""},
 		model.Line{Raw: fmt.Sprintf("weight: %d", weight), Key: "weight", Value: fmt.Sprintf("%d", weight)},
-		model.Line{Raw: "success_criterion: ", Key: "success_criterion", Value: ""},
+		model.Line{Raw: "must_do:", Key: "must_do"},
 		model.Line{Raw: ""},
 		model.Line{Raw: "sbar:", Key: "sbar"},
 	)

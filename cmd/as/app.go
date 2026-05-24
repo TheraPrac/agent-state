@@ -1757,6 +1757,40 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 			exitCode = command.GoalList(appStore, appCfg)
 		},
 	})
+
+	// T-409: must_do subcommands.
+	mustDoCmd := &cobra.Command{
+		Use:   "must-do",
+		Short: "Manage the structural must_do item-ID set for a goal",
+	}
+	mustDoAddCmd := &cobra.Command{
+		Use:   "add <goal-id> <item-id...>",
+		Short: "Add items to a goal's must_do set",
+		Args:  cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			bucket, _ := cmd.Flags().GetString("bucket")
+			exitCode = command.GoalMustDoAdd(appStore, appCfg, args[0], bucket, args[1:])
+		},
+	}
+	mustDoAddCmd.Flags().String("bucket", "", "bucket name (default: uncategorized)")
+	mustDoCmd.AddCommand(mustDoAddCmd)
+	mustDoCmd.AddCommand(&cobra.Command{
+		Use:   "remove <goal-id> <item-id...>",
+		Short: "Remove items from a goal's must_do set",
+		Args:  cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalMustDoRemove(appStore, appCfg, args[0], args[1:])
+		},
+	})
+	mustDoCmd.AddCommand(&cobra.Command{
+		Use:   "list <goal-id>",
+		Short: "List must_do items with per-item status",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalMustDoList(appStore, appCfg, args[0])
+		},
+	})
+	goalCmd.AddCommand(mustDoCmd)
 	root.AddCommand(goalCmd)
 
 	// T-378 (I-712): strategic-work-stream arc tagging. Any name an
