@@ -1696,6 +1696,69 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 	})
 	root.AddCommand(epicCmd)
 
+	// T-407: Goal as first-class st type.
+	goalCmd := &cobra.Command{
+		Use:   "goal",
+		Short: "Manage strategic goals",
+	}
+	goalCreateCmd := &cobra.Command{
+		Use:   "create <title>",
+		Short: "Create a new goal in draft status",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			weight, _ := cmd.Flags().GetInt("weight")
+			exitCode = command.GoalCreate(appStore, appCfg, args[0], weight)
+		},
+	}
+	goalCreateCmd.Flags().Int("weight", 0, "strategic weight 1-100 (active goals must sum to ≤100)")
+	_ = goalCreateCmd.MarkFlagRequired("weight")
+	goalCmd.AddCommand(goalCreateCmd)
+	goalCmd.AddCommand(&cobra.Command{
+		Use:   "activate <goal-id>",
+		Short: "Transition a goal from draft to active",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalActivate(appStore, appCfg, args[0])
+		},
+	})
+	goalCmd.AddCommand(&cobra.Command{
+		Use:   "mark-met <goal-id>",
+		Short: "Transition a goal from active to met (terminal)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalMarkMet(appStore, appCfg, args[0])
+		},
+	})
+	goalDropCmd := &cobra.Command{
+		Use:   "drop <goal-id>",
+		Short: "Transition a goal to dropped (terminal) with an enumerated reason",
+		Long: `Drop a goal and record why it was abandoned. Valid reasons:
+  superseded       — a newer goal supersedes this one
+  premise-invalid  — the original premise no longer holds
+  out-of-strategy  — outside current strategic direction
+  duplicate        — covered by another goal
+  unactionable     — cannot be driven to completion
+
+Note: "aged" is not a valid reason — goals are dropped by deliberate decision, not by time.`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.GoalDrop(appStore, appCfg, args[0], reason)
+		},
+	}
+	goalDropCmd.Flags().String("reason", "", "drop reason (superseded|premise-invalid|out-of-strategy|duplicate|unactionable)")
+	_ = goalDropCmd.MarkFlagRequired("reason")
+	goalCmd.AddCommand(goalDropCmd)
+	goalCmd.AddCommand(&cobra.Command{
+		Use:     "list",
+		Short:   "List all goals grouped by lifecycle",
+		Aliases: []string{"ls"},
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.GoalList(appStore, appCfg)
+		},
+	})
+	root.AddCommand(goalCmd)
+
 	// T-378 (I-712): strategic-work-stream arc tagging. Any name an
 	// operator uses IS the arc — no registry, no predefined list.
 	arcCmd := &cobra.Command{
