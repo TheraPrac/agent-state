@@ -207,6 +207,36 @@ func restoreLockedItems(snapshots map[string][]byte) {
 // than by string matching on the human-readable message.
 var ErrI807MainBranchGate = errors.New("I-807: main-branch dirty-non-state gate")
 
+// gateGitOutput runs `git <args>` in dir with `GIT_DIR`, `GIT_WORK_TREE`,
+// and `GIT_INDEX_FILE` scrubbed from the environment. The gate's git
+// introspection (rev-parse, status --porcelain -z, log -z) MUST read
+// the workspace's real state, not whatever index/dir an outer process
+// happens to have exported (e.g. an interrupted plumbing-replay debug
+// session, an embedded library use, an IDE wrapper). A leaked GIT_*
+// env can route status/log at the wrong repo and cause the gate to
+// fail-open on a truly-dirty workspace OR fail-closed against phantom
+// offenders from the leaked index.
+func gateGitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	scrubbed := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		switch {
+		case strings.HasPrefix(kv, "GIT_DIR="),
+			strings.HasPrefix(kv, "GIT_WORK_TREE="),
+			strings.HasPrefix(kv, "GIT_INDEX_FILE="):
+			continue
+		}
+		scrubbed = append(scrubbed, kv)
+	}
+	cmd.Env = scrubbed
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), err
+}
+
 // isManagedStatePath returns true when the toplevel-relative path lives
 // inside the agent-state allowlist: the configured items prefix (e.g.
 // `agent-state/`) or `.as/`. The lock file (`<itemsPrefix>.st-git.lock`)
@@ -260,21 +290,25 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 func checkMainBranchGate(root string) error {
 	overrideSet := os.Getenv("ST_SYNC_ALLOW_MAIN") == "1"
 
-	branchOut, err := gitOutput(root, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return nil // fail-open: don't gate when we can't tell which branch
-	}
-	branch := strings.TrimSpace(branchOut)
-	onMain := branch == "main"
-	if !onMain {
-		// Detached HEAD reports `HEAD` from --abbrev-ref. If the detached
-		// commit is the same as origin/main, treat it as on-main for the
-		// purpose of push protection (pushWithRetry can still target
-		// refs/heads/main via push.default / a permissive refspec).
-		if branch == "HEAD" {
-			headSHA, herr := gitOutput(root, "rev-parse", "HEAD")
-			originSHA, oerr := gitOutput(root, "rev-parse", "refs/remotes/origin/main")
-			if herr == nil && oerr == nil && strings.TrimSpace(headSHA) == strings.TrimSpace(originSHA) {
+	// Use `symbolic-ref -q HEAD` (not `--abbrev-ref`) to distinguish a
+	// branch literally named `HEAD` from a truly-detached HEAD.
+	// symbolic-ref returns refs/heads/<branch> on a branch; non-zero +
+	// empty stdout on detached HEAD.
+	symRefOut, symRefErr := gateGitOutput(root, "symbolic-ref", "-q", "HEAD")
+	detached := symRefErr != nil
+	onMain := false
+	if !detached {
+		onMain = strings.TrimSpace(symRefOut) == "refs/heads/main"
+	} else {
+		// Detached HEAD: if the detached commit is the same as
+		// refs/remotes/origin/main, treat it as on-main for push-
+		// protection purposes (pushWithRetry can still target main).
+		headSHA, herr := gateGitOutput(root, "rev-parse", "HEAD")
+		originSHA, oerr := gateGitOutput(root, "rev-parse", "refs/remotes/origin/main")
+		if herr == nil && oerr == nil {
+			h := strings.TrimSpace(headSHA)
+			o := strings.TrimSpace(originSHA)
+			if h != "" && h == o {
 				onMain = true
 			}
 		}
@@ -286,7 +320,7 @@ func checkMainBranchGate(root string) error {
 	// Resolve git toplevel so porcelain paths come back relative to the
 	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
 	// not relative to ItemDir which would emit `../claude-config/...`.
-	toplevelOut, err := gitOutput(root, "rev-parse", "--show-toplevel")
+	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil // fail-open
 	}
@@ -326,12 +360,16 @@ func checkMainBranchGate(root string) error {
 	// ASCII byte — the surrounding `"..."` defeats HasPrefix allowlist
 	// checks. -z is the canonical fix. Rename / copy entries arrive as
 	// two NUL-terminated tokens: `<XY> <new-path>\0<old-path>\0`.
-	statusOut, err := gitOutput(toplevel, "status", "--porcelain", "-z")
+	statusOut, err := gateGitOutput(toplevel, "status", "--porcelain", "-z")
 	if err != nil {
 		return nil // fail-open
 	}
 
 	var offenders []string
+	// Cross-scan dedup: track all reported paths (basename-stripped of
+	// annotation suffixes) so the same file never appears twice when
+	// it's both working-tree-dirty AND mentioned in a stranded commit.
+	seen := make(map[string]bool)
 	tokens := strings.Split(statusOut, "\x00")
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -346,9 +384,10 @@ func checkMainBranchGate(root string) error {
 			continue
 		}
 		// Rename / copy: -z format puts the OLD path in the next token
-		// (no XY prefix). XY[0] is the truth-of-rename, NOT a path-text
-		// substring search (which would mangle filenames containing
-		// literal ` -> `).
+		// (no XY prefix). XY[0] is the truth-of-rename. Per
+		// git-status(1) porcelain v1: R/C only appear in X (index),
+		// never in Y — so checking code[0] catches `R `, `RM`, `RD`,
+		// `C `, `CM`, etc. without any path-text substring search.
 		if code[0] == 'R' || code[0] == 'C' {
 			newPath := path
 			oldPath := ""
@@ -356,18 +395,24 @@ func checkMainBranchGate(root string) error {
 				oldPath = tokens[i+1]
 				i++ // consume the old-path token
 			}
-			if !isManagedStatePath(newPath, itemsPrefix) {
+			if !isManagedStatePath(newPath, itemsPrefix) && !seen[newPath] {
 				offenders = append(offenders, newPath+" (rename target)")
+				seen[newPath] = true
 			}
-			if oldPath != "" && !isManagedStatePath(oldPath, itemsPrefix) {
+			if oldPath != "" && !isManagedStatePath(oldPath, itemsPrefix) && !seen[oldPath] {
 				offenders = append(offenders, oldPath+" (rename source)")
+				seen[oldPath] = true
 			}
 			continue
 		}
 		if isManagedStatePath(path, itemsPrefix) {
 			continue
 		}
+		if seen[path] {
+			continue
+		}
 		offenders = append(offenders, path)
+		seen[path] = true
 	}
 
 	// Also scan for non-state files in locally-committed-but-unpushed
@@ -375,9 +420,8 @@ func checkMainBranchGate(root string) error {
 	// were created before this gate landed (or by a parallel session)
 	// and that pushWithRetry would otherwise batch-push to origin/main.
 	// Use -z + NUL parsing so the same quoting concern doesn't bite.
-	logOut, logErr := gitOutput(toplevel, "log", "-z", "--name-only", "--pretty=format:", "refs/remotes/origin/main..HEAD")
+	logOut, logErr := gateGitOutput(toplevel, "log", "-z", "--name-only", "--pretty=format:", "refs/remotes/origin/main..HEAD")
 	if logErr == nil {
-		seen := make(map[string]bool)
 		for _, p := range strings.Split(logOut, "\x00") {
 			p = strings.TrimSpace(p)
 			if p == "" || seen[p] {
@@ -396,7 +440,11 @@ func checkMainBranchGate(root string) error {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "I-807: refusing to commit + push %d non-agent-state file(s) on branch \"main\":\n", len(offenders))
+	// Body header drops the "I-807:" prefix — the sentinel's wrapped
+	// text already carries it, so `err.Error()` reads
+	// `I-807: main-branch dirty-non-state gate\nrefusing to commit...`
+	// without a doubled prefix line.
+	fmt.Fprintf(&b, "refusing to commit + push %d non-agent-state file(s) on branch \"main\":\n", len(offenders))
 	for _, p := range offenders {
 		fmt.Fprintf(&b, "  - %s\n", p)
 	}

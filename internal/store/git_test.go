@@ -1129,11 +1129,12 @@ func TestGitSync_AllowsPushOnMain_WhenOnlyUntrackedNonState(t *testing.T) {
 
 // ---- I-807 review-driven additions (PR #163 review round 1) ----
 
-// I-807 review #1: quoted-path mis-classification. Without
-// `core.quotePath=false`, porcelain emits filenames containing spaces
-// or non-ASCII as `"path with space.md"` (leading double-quote). The
-// gate's HasPrefix allowlist check would then fail on legitimate
-// state files and refuse the sync. Pinned with `-c core.quotePath=false`.
+// I-807 review #1: quoted-path mis-classification. Porcelain v1
+// (without -z) emits filenames containing spaces or non-ASCII as
+// `"path with space.md"` — surrounding double-quotes that defeat the
+// HasPrefix allowlist check. (`core.quotePath=false` does NOT help;
+// it only controls non-ASCII quoting, not space quoting.) Pinned
+// with `git status --porcelain -z` (NUL-terminated, raw bytes).
 func TestGitSync_AllowsPushOnMain_StateFileWithSpaceInName(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, false)
 
@@ -1326,9 +1327,18 @@ func TestGitSync_OverrideAuditNamesOffenders(t *testing.T) {
 
 	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
 
-	// Capture stderr via a pipe.
+	// Capture stderr via a pipe. defer restores even if an intermediate
+	// t.Fatalf fires between the swap and the explicit close, so the
+	// test runner's own stderr stays unaffected.
 	origStderr := os.Stderr
-	r, w, _ := os.Pipe()
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatalf("os.Pipe: %v", perr)
+	}
+	defer func() {
+		os.Stderr = origStderr
+		r.Close()
+	}()
 	os.Stderr = w
 
 	s := loadI807Store(t, asDir)
@@ -1361,7 +1371,14 @@ func TestGitSync_OverrideSilentWhenGateWouldNotFire(t *testing.T) {
 	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
 
 	origStderr := os.Stderr
-	r, w, _ := os.Pipe()
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatalf("os.Pipe: %v", perr)
+	}
+	defer func() {
+		os.Stderr = origStderr
+		r.Close()
+	}()
 	os.Stderr = w
 
 	s := loadI807Store(t, asDir)
@@ -1380,6 +1397,84 @@ func TestGitSync_OverrideSilentWhenGateWouldNotFire(t *testing.T) {
 	}
 	if strings.Contains(msg, "ST_SYNC_ALLOW_MAIN=1") {
 		t.Errorf("audit stderr must NOT fire when gate would not have refused; got: %q", msg)
+	}
+}
+
+// I-807 review #2: the override stays SILENT on a feature branch
+// (branch != "main"), even with dirty non-state files. Without this
+// guarantee, an operator who exports ST_SYNC_ALLOW_MAIN persistently
+// would see the audit line spam every GitSync from feature branches.
+func TestGitSync_OverrideSilentOnFeatureBranchWithDirtyTree(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+	gitRun(t, workspace, "checkout", "-b", "fix/I-807-noise-test")
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho feature-noise\n"), 0755)
+
+	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
+
+	origStderr := os.Stderr
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatalf("os.Pipe: %v", perr)
+	}
+	defer func() {
+		os.Stderr = origStderr
+		r.Close()
+	}()
+	os.Stderr = w
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+	err := s.GitSync("agent-b: update T-001 (override + dirty + feature)")
+
+	w.Close()
+	os.Stderr = origStderr
+	captured, _ := io.ReadAll(r)
+	msg := string(captured)
+
+	if err != nil {
+		t.Fatalf("feature-branch sync with dirty non-state should succeed: %v", err)
+	}
+	if strings.Contains(msg, "ST_SYNC_ALLOW_MAIN=1") {
+		t.Errorf("audit must NOT spam on feature branch (gate inactive there); got: %q", msg)
+	}
+}
+
+// I-807 review #2: a rename WITHIN agent-state (canonical st close
+// pattern: issues/<id>.md -> archive/<id>.md) must NOT be flagged.
+// Both-paths-must-be-allowlisted is correct only if within-state
+// renames produce zero offenders.
+func TestGitSync_AllowsPushOnMain_WithinStateRename(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, false)
+
+	// Pre-commit an item file in issues/ so we can rename it.
+	srcPath := filepath.Join(workspace, "agent-state", "issues", "I-200-existing.md")
+	os.WriteFile(srcPath, []byte(`id: I-200
+type: issue
+status: open
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: Existing
+`), 0644)
+	gitRun(t, workspace, "add", "agent-state/issues/I-200-existing.md")
+	gitRun(t, workspace, "commit", "-m", "add I-200")
+
+	// Now rename within agent-state (issues/ -> archive/). Both paths
+	// start with itemsPrefix; offenders must be empty.
+	gitRun(t, workspace, "mv",
+		"agent-state/issues/I-200-existing.md",
+		"agent-state/archive/I-200-existing.md")
+
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-b: update T-001 (within-state rename)"); err != nil {
+		t.Fatalf("within-state rename must pass — both paths in allowlist: %v", err)
 	}
 }
 
@@ -1471,14 +1566,30 @@ func TestGitSync_AllowsPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
 
 // gitRun is a test helper that runs `git <args>` in dir and t.Fatals
 // on failure with the combined output for diagnostics.
+//
+// Scrubs GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE from the inherited env
+// so a developer running `go test` from a shell that has those vars
+// exported (e.g., from an interrupted plumbing-replay debug session)
+// doesn't accidentally route git at the wrong repo. Mirrors the
+// production-side gateGitOutput helper.
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GIT_DIR=") ||
+			strings.HasPrefix(kv, "GIT_WORK_TREE=") ||
+			strings.HasPrefix(kv, "GIT_INDEX_FILE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
 		"GIT_AUTHOR_DATE=2026-03-25T10:00:00-06:00",
 		"GIT_COMMITTER_DATE=2026-03-25T10:00:00-06:00",
 	)
+	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
