@@ -105,7 +105,7 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 		fmt.Fprintln(w, "No recommendable items (none workable in scope).")
 		return 0
 	}
-	if opts.Brief {
+	if opts.Brief && !opts.JSON {
 		r := recs[0]
 		fmt.Fprintf(w, "%-8s p%d  %s — %s\n", r.Item.ID, r.Priority, r.Item.Title, r.Rationale())
 		return 0
@@ -161,23 +161,26 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	return cands
 }
 
-// unblockLeverage counts, for each candidate, how many NON-resolved items
-// it unblocks (g.IsResolved ⇒ terminal or merged+), and records their IDs
-// for the rationale. Freeing downstream work is the strongest in-band
-// coordinator signal. The ID lists are SORTED: g.BlocksItems derives from
-// a map iteration in deps.Build, so without this the rationale (and the
-// --json contract a TUI consumes) would reorder run-to-run — a feature
-// whose whole value is reproducible, inspectable dispatch cannot ship
-// non-deterministic output.
+// unblockLeverage counts, for each candidate, how many downstream items it
+// unblocks that are still waiting to start (not resolved and not already active).
+// Active items are excluded: they are already in-flight and completing the
+// upstream dep does not free them — the work is already running. Only
+// genuinely blocked, not-yet-started items represent real future work the
+// candidate would free. ID lists are SORTED for deterministic rationale output.
 func unblockLeverage(g *deps.Graph, cands []*model.Item) (map[string]int, map[string][]string) {
 	lev := make(map[string]int, len(cands))
 	names := make(map[string][]string, len(cands))
 	for _, it := range cands {
 		for _, downID := range g.BlocksItems(it.ID) {
-			if !g.IsResolved(downID) {
-				lev[it.ID]++
-				names[it.ID] = append(names[it.ID], downID)
+			down, ok := g.Items[downID]
+			if !ok {
+				continue
 			}
+			if g.IsResolved(downID) || down.Status == "active" {
+				continue
+			}
+			lev[it.ID]++
+			names[it.ID] = append(names[it.ID], downID)
 		}
 		sort.Strings(names[it.ID])
 	}

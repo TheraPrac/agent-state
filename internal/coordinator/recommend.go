@@ -67,7 +67,10 @@ const (
 	sprintWeight    = 5.0  // × completion fraction of its ACTIVE sprint (≤ 5)
 	agePerDay       = 0.05 // per day since Created, capped → ≤ 1.5
 	ageCapDays      = 30.0
-	goalWeightFactor = 0.5 // per weight-point contributed by item's active goals (max +50)
+	goalWeightFactor = 0.5 // per weight-point contributed by item's active goals; per-item
+	//                         accumulation is uncapped (an item in multiple goals sums their
+	//                         weights). The comment "max +50" assumed single-goal membership
+	//                         — see loadGoalWeights for the actual bound.
 	maxRationaleIDs = 3    // how many unblocked-item IDs to name before "+k"
 )
 

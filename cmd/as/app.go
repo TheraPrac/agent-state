@@ -2856,6 +2856,7 @@ var commandGroupAssignments = map[string]string{
 	"resume":    "querying",
 	"log":       "querying",
 	"recommend": "querying",
+	"next":      "querying",
 	"artifact":  "querying",
 	"watch":     "querying",
 	"tui":       "querying",
