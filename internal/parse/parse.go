@@ -284,8 +284,10 @@ func File(path string) (*model.Item, error) {
 				currentKey = key
 				nestKey = ""
 
-				// Enter must_do mode: top-level `must_do:` with no value (T-409).
-				if key == "must_do" {
+				// Enter must_do mode: top-level `must_do:` with no inline value (T-409).
+				// A non-empty val (e.g. "must_do: migrated") is treated as a plain
+				// scalar and falls through to storeScalar, preserving the value.
+				if key == "must_do" && val == "" {
 					inMustDo = true
 					mustDoBuckets = make(map[string][]string)
 					currentMustDoBucket = ""

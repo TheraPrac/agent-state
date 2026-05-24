@@ -26,20 +26,23 @@ func GoalMustDoAdd(s *store.Store, cfg *config.Config, goalID, bucket string, it
 		return 1
 	}
 
-	// Validate all itemIDs exist and are not already in must_do.
+	// Validate all itemIDs exist, are not already in must_do, and are not
+	// duplicated within the request slice itself.
+	seen := make(map[string]bool, len(itemIDs))
 	for _, id := range itemIDs {
 		if _, exists := s.Get(id); !exists {
 			fmt.Fprintf(os.Stderr, "must-do add: item %s not found\n", id)
 			return 1
 		}
-		if bucketOf(goal.MustDo, id) != "" {
-			// bucketOf returns "" if not found, non-empty string if found
-			// (non-empty means it IS in must_do)
-		}
 		if _, b := findInMustDo(goal.MustDo, id); b {
 			fmt.Fprintf(os.Stderr, "must-do add: %s is already in must_do of %s\n", id, goalID)
 			return 1
 		}
+		if seen[id] {
+			fmt.Fprintf(os.Stderr, "must-do add: %s appears more than once in the request\n", id)
+			return 1
+		}
+		seen[id] = true
 	}
 
 	if err := s.Mutate(goalID, func(it *model.Item) error {
@@ -87,11 +90,17 @@ func GoalMustDoRemove(s *store.Store, cfg *config.Config, goalID string, itemIDs
 		return 1
 	}
 
+	seenRemove := make(map[string]bool, len(itemIDs))
 	for _, id := range itemIDs {
 		if _, found := findInMustDo(goal.MustDo, id); !found {
 			fmt.Fprintf(os.Stderr, "must-do remove: %s not in must_do of %s\n", id, goalID)
 			return 1
 		}
+		if seenRemove[id] {
+			fmt.Fprintf(os.Stderr, "must-do remove: %s appears more than once in the request\n", id)
+			return 1
+		}
+		seenRemove[id] = true
 	}
 
 	if err := s.Mutate(goalID, func(it *model.Item) error {
@@ -201,13 +210,6 @@ func findInMustDo(mustDo map[string][]string, id string) (string, bool) {
 	return "", false
 }
 
-// bucketOf returns the bucket name containing id, or "" if not found.
-// Distinct from findInMustDo: an uncategorized item is stored under "" key.
-func bucketOf(mustDo map[string][]string, id string) string {
-	bucket, _ := findInMustDo(mustDo, id)
-	return bucket
-}
-
 // removeFromMustDo removes all occurrences of id from every bucket.
 func removeFromMustDo(mustDo map[string][]string, id string) {
 	for bucket, ids := range mustDo {
@@ -258,6 +260,7 @@ func mustDoSummary(mustDo map[string][]string, s *store.Store) string {
 	totalDone, totalAll := 0, 0
 	var parts []string
 
+	onlyUncategorized := len(bucketKeys) == 1 && bucketKeys[0] == ""
 	for _, bucket := range bucketKeys {
 		ids := mustDo[bucket]
 		done := 0
@@ -270,13 +273,15 @@ func mustDoSummary(mustDo map[string][]string, s *store.Store) string {
 		totalAll += len(ids)
 		label := bucket
 		if label == "" {
-			label = "other"
+			label = "(uncategorized)"
 		}
 		parts = append(parts, fmt.Sprintf("%s:%d/%d", label, done, len(ids)))
 	}
 
 	summary := fmt.Sprintf("%d/%d done", totalDone, totalAll)
-	if len(parts) > 1 || (len(parts) == 1 && !strings.HasPrefix(parts[0], "other:")) {
+	// Suppress per-bucket breakdown when there is only a single uncategorized
+	// bucket — the total line already carries all the information.
+	if !onlyUncategorized {
 		summary += " (" + strings.Join(parts, " ") + ")"
 	}
 	return summary
