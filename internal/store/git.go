@@ -243,10 +243,11 @@ func gateGitOutput(dir string, args ...string) (string, error) {
 // is also allowlisted defense-in-depth (it should also be `??`, which
 // the caller filters earlier).
 func isManagedStatePath(path, itemsPrefix string) bool {
-	if strings.HasPrefix(path, ".as/") {
+	p := strings.ToLower(path)
+	if strings.HasPrefix(p, ".as/") {
 		return true
 	}
-	if itemsPrefix != "" && strings.HasPrefix(path, itemsPrefix) {
+	if itemsPrefix != "" && strings.HasPrefix(p, strings.ToLower(itemsPrefix)) {
 		return true
 	}
 	return false
@@ -455,6 +456,7 @@ func checkMainBranchGate(root string) error {
 	for _, p := range offenders {
 		fmt.Fprintf(&b, "  - %s\n", p)
 	}
+	fmt.Fprintf(&b, "Computed state prefix: %q\n", itemsPrefix)
 	b.WriteString("\nBranch is main — this would bypass PR review.\n")
 	b.WriteString("Recovery: open a feature branch (git checkout -b fix/<id>-<slug>), commit these files there, push, and open a PR.\n")
 	b.WriteString("Operator override (one-off bypass): ST_SYNC_ALLOW_MAIN=1\n")
@@ -465,6 +467,7 @@ func checkMainBranchGate(root string) error {
 		for _, p := range offenders {
 			fmt.Fprintf(os.Stderr, "  - %s\n", p)
 		}
+		fmt.Fprintf(os.Stderr, "Computed state prefix: %q\n", itemsPrefix)
 		return nil
 	}
 	return wrapped

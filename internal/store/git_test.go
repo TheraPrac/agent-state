@@ -1583,6 +1583,43 @@ func TestGitSync_AllowsPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
 	}
 }
 
+// TestIsManagedStatePath_CaseInsensitivePrefix_I834 verifies that
+// isManagedStatePath performs case-insensitive prefix matching so the
+// I-807 gate does not mis-classify agent-state files as offenders when
+// EvalSymlinks resolves the workspace root to a different case than
+// what git status reports (macOS APFS: case-insensitive, case-preserving).
+func TestIsManagedStatePath_CaseInsensitivePrefix_I834(t *testing.T) {
+	cases := []struct {
+		name        string
+		path        string
+		itemsPrefix string
+		want        bool
+	}{
+		// Identical casing — baseline
+		{"identical casing", "agent-state/issues/I-834.md", "agent-state/", true},
+		// Mixed-case path, lowercase prefix
+		{"mixed-case path", "Agent-State/issues/I-834.md", "agent-state/", true},
+		// Lowercase path, mixed-case prefix (EvalSymlinks returns different case)
+		{"mixed-case prefix", "agent-state/issues/I-834.md", "Agent-State/", true},
+		// Nested workspace shape (theraprac-workspace prefix with casing divergence)
+		{"nested workspace mixed", "Theraprac-Workspace/agent-state/issues/I-1.md", "theraprac-workspace/agent-state/", true},
+		// .AS/ uppercase variant
+		{".AS/ uppercase", ".AS/config.yaml", "", true},
+		// Non-state file must still be rejected
+		{"non-state file", "claude-config/hooks/foo.sh", "agent-state/", false},
+		// Empty itemsPrefix + non-.as path — no items prefix means no match
+		{"empty prefix non-as", "claude-config/settings.json", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isManagedStatePath(tc.path, tc.itemsPrefix)
+			if got != tc.want {
+				t.Errorf("isManagedStatePath(%q, %q) = %v, want %v", tc.path, tc.itemsPrefix, got, tc.want)
+			}
+		})
+	}
+}
+
 // gitRun is a test helper that runs `git <args>` in dir and t.Fatals
 // on failure with the combined output for diagnostics.
 //
