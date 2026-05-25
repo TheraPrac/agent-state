@@ -310,6 +310,37 @@ func AssignedFilter(agent string) Filter {
 	return func(item *model.Item) bool { return item.AssignedTo == agent }
 }
 
+// PriorityFilter returns items matching a priority value or comma-separated list (e.g. "0", "0,1").
+func PriorityFilter(priority string) Filter {
+	return func(item *model.Item) bool {
+		if item.Priority == nil {
+			return false
+		}
+		p := strconv.Itoa(*item.Priority)
+		for _, v := range strings.Split(priority, ",") {
+			if strings.TrimSpace(v) == p {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// SprintFilter returns items belonging to a specific sprint.
+func SprintFilter(sprintID string) Filter {
+	return func(item *model.Item) bool { return item.Sprint == sprintID }
+}
+
+// EpicFilter returns items belonging to a specific epic.
+func EpicFilter(epicID string) Filter {
+	return func(item *model.Item) bool { return item.Epic == epicID }
+}
+
+// ArcFilter returns items tagged with a specific arc.
+func ArcFilter(arc string) Filter {
+	return func(item *model.Item) bool { return item.Arc == arc }
+}
+
 // NonTerminalFilter returns items not in terminal statuses.
 func NonTerminalFilter(cfg *config.Config) Filter {
 	return func(item *model.Item) bool {
