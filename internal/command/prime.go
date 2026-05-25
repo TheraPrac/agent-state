@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/coordinator"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
@@ -440,48 +441,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 		b.WriteString("\n")
 	}
 
-	// Work queue — filter out sprint-assigned items
-	queueEntries := LoadQueue(cfg)
-	var filteredQueue []QueueEntry
-	for _, e := range queueEntries {
-		item, ok := s.Get(e.ID)
-		if ok && item.Sprint != "" {
-			continue // skip sprint-assigned items in queue
-		}
-		filteredQueue = append(filteredQueue, e)
-	}
-	if len(filteredQueue) > 0 {
-		b.WriteString("## Queue\n")
-		limit := 5
-		if opts.Compact {
-			limit = 3
-		}
-		shown := filteredQueue
-		if len(shown) > limit {
-			shown = shown[:limit]
-		}
-		for i, e := range shown {
-			item, ok := s.Get(e.ID)
-			title := "(not found)"
-			marker := ""
-			if ok {
-				title = truncate(item.Title, 45)
-				if item.Status == "active" {
-					marker = " ← ACTIVE"
-				}
-			}
-			if !e.Approved {
-				marker += " (pending approval)"
-			}
-			b.WriteString(fmt.Sprintf("  %d. %-8s %s%s\n", i+1, e.ID, title, marker))
-		}
-		if len(filteredQueue) > limit {
-			b.WriteString(fmt.Sprintf("  ... +%d more\n", len(filteredQueue)-limit))
-		}
-		b.WriteString("\n")
-	}
-
-	// Next action directive — stack beats queue beats other active
+	// Next action directive — stack beats goal-weighted recommend
 	activeID := ""
 	// 1. Top of stack (interrupted work takes priority)
 	if len(stackEntries) > 0 {
@@ -490,16 +450,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 			activeID = top.ID
 		}
 	}
-	// 2. Queue item if no stack
-	if activeID == "" {
-		for _, e := range filteredQueue {
-			if item, ok := s.Get(e.ID); ok && item.Status == "active" {
-				activeID = e.ID
-				break
-			}
-		}
-	}
-	// 3. Any active item as fallback
+	// 2. Any active item as fallback
 	if activeID == "" && len(data.Active) > 0 {
 		activeID = data.Active[0].ID
 	}
@@ -512,19 +463,18 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 			b.WriteString(fmt.Sprintf("  → %s\n", action))
 			b.WriteString("\n")
 		}
-	} else if activeID == "" && len(filteredQueue) > 0 {
-		// No active work — suggest starting the first queue item
-		nextID := ""
-		for _, e := range filteredQueue {
-			if e.Approved {
-				nextID = e.ID
-				break
-			}
-		}
-		if nextID != "" {
+	} else {
+		// No active work — use goal-weighted recommender to suggest next item
+		g := deps.Build(s.All(), cfg)
+		sprints := loadSprintInfo(cfg, g)
+		cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
+		leverage, _ := unblockLeverage(g, cands)
+		recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), time.Now())
+		if len(recs) > 0 {
+			next := recs[0]
 			b.WriteString("## Next Action\n")
-			b.WriteString(fmt.Sprintf("  No active work. Next in queue: %s\n", nextID))
-			b.WriteString(fmt.Sprintf("  → st start %s\n", nextID))
+			b.WriteString(fmt.Sprintf("  No active work. Next: %s — %s\n", next.Item.ID, next.Item.Title))
+			b.WriteString(fmt.Sprintf("  → st start %s\n", next.Item.ID))
 			b.WriteString("\n")
 		}
 	}
