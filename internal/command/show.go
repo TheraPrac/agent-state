@@ -105,6 +105,9 @@ func showDefaultTo(w io.Writer, s *store.Store, cfg *config.Config, id string, i
 	fmt.Fprintf(w, "%s — %s\n", item.ID, item.Title)
 	fmt.Fprintf(w, "  type: %s\n", item.Type)
 	fmt.Fprintf(w, "  status: %s\n", item.Status)
+	if item.DroppedReason != "" {
+		fmt.Fprintf(w, "  dropped_reason: %s\n", item.DroppedReason)
+	}
 	if cfg != nil && store.IsLocked(cfg, id) {
 		fmt.Fprintf(w, "  lock: \033[33mlocked\033[0m (protected from git pull)\n")
 	}

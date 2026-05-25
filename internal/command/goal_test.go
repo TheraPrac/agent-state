@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -157,7 +158,7 @@ func TestGoalDropRequiresClosedVocabReason(t *testing.T) {
 	}
 
 	// Each valid reason must succeed.
-	for _, reason := range validDropReasons {
+	for _, reason := range model.ValidDropReasons {
 		_, _, cfg2 := newGoalEnv(t)
 		seedGoalFile(t, cfg2, "G-001", "active", 40)
 		s2 := reloadStoreGoal(t, cfg2)

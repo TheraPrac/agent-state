@@ -13,13 +13,6 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-var validDropReasons = []string{
-	"superseded",
-	"premise-invalid",
-	"out-of-strategy",
-	"duplicate",
-	"unactionable",
-}
 
 // GoalCreate creates a new goal with the given title and weight.
 func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) int {
@@ -182,17 +175,10 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string) int {
 
 // GoalDrop transitions a goal to dropped with an enumerated reason.
 func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
-	validReason := false
-	for _, r := range validDropReasons {
-		if r == reason {
-			validReason = true
-			break
-		}
-	}
-	if !validReason {
+	if !model.IsValidDropReason(reason) {
 		fmt.Fprintf(os.Stderr,
 			"goal drop: --reason %q not valid; must be one of: %s\n",
-			reason, strings.Join(validDropReasons, ", "))
+			reason, model.ValidDropReasonsJoined())
 		return 2
 	}
 

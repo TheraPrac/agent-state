@@ -520,6 +520,8 @@ func storeScalar(item *model.Item, key, val string) {
 		}
 	case "success_criterion":
 		item.SuccessCriterion = val
+	case "dropped_reason":
+		item.DroppedReason = val
 	}
 }
 

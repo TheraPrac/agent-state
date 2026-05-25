@@ -101,6 +101,14 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 			return 2
 		}
 	}
+	// Closed vocab gate for abandoned items (T-414). "declined" has different
+	// semantics (idea triage rejection) and is intentionally exempt.
+	if resolution == "abandoned" && !model.IsValidDropReason(opts.Reason) {
+		fmt.Fprintf(os.Stderr,
+			"close: --reason %q not valid for abandoned; must be one of: %s\n",
+			opts.Reason, model.ValidDropReasonsJoined())
+		return 2
+	}
 
 	// Gate enforcement — skip for abandon/declined since those bypass gates
 	// by design. (wontfix is rejected earlier per I-433.)
@@ -156,6 +164,12 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		item.Status = resolution
 		item.Doc.SetField("completed", nowStr)
 		item.Doc.SetField("last_touched", nowStr)
+
+		// T-414: write dropped_reason for abandoned items.
+		if resolution == "abandoned" && opts.Reason != "" {
+			item.DroppedReason = opts.Reason
+			item.Doc.SetField("dropped_reason", opts.Reason)
+		}
 
 		// I-447: closing the item is the terminal lifecycle position.
 		// Always set (not advance) so abandon paths surface as "closed"

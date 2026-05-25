@@ -43,6 +43,7 @@ type Item struct {
 	ClaimedBy      string // session UUID that has claimed this item
 	ClaimedAt      string // RFC3339 timestamp of when claimed
 	PlanApproved   bool   // design/plan gate passed
+	DroppedReason    string // reason from ValidDropReasons; required when status==abandoned (T-414)
 	Weight           *int              // goal type only: strategic weight 1-100; active goals must sum to ≤100
 	SuccessCriterion string            // goal type only: kept for backward compat; structural set is MustDo (T-409)
 	MustDo           map[string][]string // goal type only: bucket→item-IDs structural must_do set (T-409)
@@ -224,6 +225,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
 	"weight": true, "success_criterion": true, "must_do": true,
+	"dropped_reason": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,
 	"related_issues": true, "acceptance_criteria": true,
