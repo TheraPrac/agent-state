@@ -19,12 +19,12 @@ func TestGoalItemHasWeightAndSuccessCriterion(t *testing.T) {
 		Status:           "active",
 		Title:            "Alpha Go-Live",
 		Weight:           &w,
-		SuccessCriterion: "all must_do items complete",
+		SuccessCriterion: "all items complete",
 	}
 	if *it.Weight != 40 {
 		t.Errorf("Weight = %d, want 40", *it.Weight)
 	}
-	if it.SuccessCriterion != "all must_do items complete" {
+	if it.SuccessCriterion != "all items complete" {
 		t.Errorf("SuccessCriterion = %q", it.SuccessCriterion)
 	}
 }

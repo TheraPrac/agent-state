@@ -14,7 +14,7 @@ completed: null
 title: Alpha Go-Live
 
 weight: 40
-success_criterion: all alpha-1 must_do items complete
+success_criterion: all alpha-1 items complete
 
 sbar:
   situation: |-
@@ -24,7 +24,7 @@ sbar:
   assessment: |-
     High confidence this is the right top goal.
   recommendation: |-
-    Drive all must_do items to done.
+    Drive all items to done.
 `
 	path := writeTempFile(t, content)
 	item, err := File(path)
@@ -41,7 +41,7 @@ sbar:
 	if *item.Weight != 40 {
 		t.Errorf("Weight = %d, want 40", *item.Weight)
 	}
-	if item.SuccessCriterion != "all alpha-1 must_do items complete" {
+	if item.SuccessCriterion != "all alpha-1 items complete" {
 		t.Errorf("SuccessCriterion = %q", item.SuccessCriterion)
 	}
 
@@ -53,7 +53,7 @@ sbar:
 	if val, ok := item.Doc.GetField("weight"); !ok || val != "40" {
 		t.Errorf("Doc.GetField(weight) = %q ok=%v, want 40 true (raw:\n%s)", val, ok, raw)
 	}
-	if val, _ := item.Doc.GetField("success_criterion"); val != "all alpha-1 must_do items complete" {
+	if val, _ := item.Doc.GetField("success_criterion"); val != "all alpha-1 items complete" {
 		t.Errorf("Doc.GetField(success_criterion) = %q", val)
 	}
 }

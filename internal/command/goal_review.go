@@ -21,8 +21,8 @@ type GoalReviewOpts struct {
 	Out   io.Writer // output sink; defaults to os.Stdout
 }
 
-// GoalOrphans returns IDs of queued items that are not in any active goal's
-// must_do (IsGoalReachable=false). Queue order is preserved. Items missing
+// GoalOrphans returns IDs of queued items that are not goal-reachable
+// (IsGoalReachable=false). Queue order is preserved. Items missing
 // from the store are excluded — they are surfaced by `st queue show`.
 func GoalOrphans(s *store.Store, cfg *config.Config) []string {
 	var orphans []string
@@ -64,21 +64,41 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 		return 0
 	}
 
-	// --- Active-goal health table ---
+	// --- Active-goal health table derived from item.Goals ---
+	activeGoalSet := make(map[string]bool)
+	for _, g := range s.List(store.TypeFilter("goal")) {
+		if g.Status == "active" {
+			activeGoalSet[g.ID] = true
+		}
+	}
+
+	// Tally done/total for each active goal by scanning all non-terminal items.
+	type tally struct{ done, total int }
+	tallies := make(map[string]*tally)
+	for id := range activeGoalSet {
+		tallies[id] = &tally{}
+	}
+	for _, it := range s.List() {
+		for _, gid := range it.Goals {
+			if tallies[gid] == nil {
+				continue
+			}
+			tallies[gid].total++
+			if isTerminalStatus(it.Status) {
+				tallies[gid].done++
+			}
+		}
+	}
+
 	var activeGoals []*goalHealthRow
 	for _, g := range s.List(store.TypeFilter("goal")) {
 		if g.Status != "active" {
 			continue
 		}
-		total := 0
-		done := 0
-		for _, ids := range g.MustDo {
-			for _, id := range ids {
-				total++
-				if item, ok := s.Get(id); ok && isTerminalStatus(item.Status) {
-					done++
-				}
-			}
+		t_ := tallies[g.ID]
+		total, done := 0, 0
+		if t_ != nil {
+			total, done = t_.total, t_.done
 		}
 		pct := 0
 		if total > 0 {
@@ -111,7 +131,7 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 			if row.total > 0 && row.pct == 100 {
 				annotation = "  ▶ candidate for st goal mark-met"
 			}
-			fmt.Fprintf(w, "  %-6s  wt=%-3d  must_do %d/%d (%d%%)  %s%s\n",
+			fmt.Fprintf(w, "  %-6s  wt=%-3d  members %d/%d (%d%%)  %s%s\n",
 				row.id, row.weight, row.done, row.total, row.pct, row.title, annotation)
 		}
 		fmt.Fprintln(w)
@@ -122,31 +142,16 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 		return 0
 	}
 
-	fmt.Fprintf(w, "%d orphan queue item(s) not in any active goal's must_do:\n", len(orphans))
+	fmt.Fprintf(w, "%d orphan queue item(s) not linked to any active goal:\n", len(orphans))
 
-	// Build the numbered menu of (goal, bucket) choices from active goals.
+	// Build the numbered menu of active-goal choices.
 	type menuEntry struct {
 		goalID string
-		bucket string
 		label  string
 	}
 	var menu []menuEntry
 	for _, row := range activeGoals {
-		g, ok := s.Get(row.id)
-		if !ok {
-			continue
-		}
-		if len(g.MustDo) == 0 {
-			continue
-		}
-		buckets := sortedBucketKeys(g.MustDo)
-		for _, b := range buckets {
-			label := row.id
-			if b != "" {
-				label += "/" + b
-			}
-			menu = append(menu, menuEntry{goalID: row.id, bucket: b, label: label})
-		}
+		menu = append(menu, menuEntry{goalID: row.id, label: row.id})
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -159,7 +164,7 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 		fmt.Fprintf(w, "\n  %s — %s\n", orphanID, title)
 
 		if len(menu) == 0 {
-			fmt.Fprintln(w, "  (no active goals with must_do buckets — use `st goal must-do add` to populate first)")
+			fmt.Fprintln(w, "  (no active goals — create one with `st goal create` first)")
 			fmt.Fprintln(w, "  [s=skip]")
 		} else {
 			for i, m := range menu {
@@ -187,7 +192,7 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 				continue
 			}
 			pick := menu[n-1]
-			if rc := GoalMustDoAdd(s, cfg, pick.goalID, pick.bucket, []string{orphanID}); rc != 0 {
+			if rc := ItemGoalsAdd(s, cfg, orphanID, []string{pick.goalID}); rc != 0 {
 				fmt.Fprintf(w, "  Failed to add %s to %s.\n", orphanID, pick.label)
 			}
 		}
@@ -203,4 +208,15 @@ type goalHealthRow struct {
 	total  int
 	done   int
 	pct    int
+}
+
+// isTerminalStatus returns true for done/closed lifecycle statuses.
+// "done" is the unified terminal status (I-433); "completed"/"resolved" are
+// legacy aliases still in use on older items.
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "done", "completed", "resolved", "abandoned", "wontfix", "closed", "met", "dropped":
+		return true
+	}
+	return false
 }

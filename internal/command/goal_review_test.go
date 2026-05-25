@@ -16,7 +16,7 @@ func TestGoalOrphans_EmptyQueueReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestGoalOrphans_QueuedItemNotInAnyMustDoIsOrphan(t *testing.T) {
+func TestGoalOrphans_QueuedItemNotInAnyGoalIsOrphan(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 
 	_, s, cfg := newGoalEnv(t)
@@ -34,15 +34,15 @@ func TestGoalOrphans_QueuedItemNotInAnyMustDoIsOrphan(t *testing.T) {
 	}
 }
 
-func TestGoalOrphans_QueuedItemInActiveMustDoNotOrphan(t *testing.T) {
+func TestGoalOrphans_QueuedItemInActiveGoalNotOrphan(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 
 	_, s, cfg := newGoalEnv(t)
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -55,15 +55,15 @@ func TestGoalOrphans_QueuedItemInActiveMustDoNotOrphan(t *testing.T) {
 	}
 }
 
-func TestGoalOrphans_QueuedItemInDraftGoalMustDoIsOrphan(t *testing.T) {
+func TestGoalOrphans_QueuedItemInDraftGoalIsOrphan(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 
 	_, s, cfg := newGoalEnv(t)
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "draft", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -169,17 +169,17 @@ func TestGoalReview_ShowsActiveGoalHealthTable(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
 	var out bytes.Buffer
 	rc := GoalReview(s, cfg, GoalReviewOpts{
-		List: false,
+		List:  false,
 		Count: false,
-		Out:  &out,
-		In:   strings.NewReader("q\n"),
+		Out:   &out,
+		In:    strings.NewReader("q\n"),
 	})
 	if rc != 0 {
 		t.Fatalf("GoalReview rc=%d", rc)
@@ -198,8 +198,8 @@ func TestGoalReview_FlagsFullyDoneGoalAsMarkMetCandidate(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "done")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -218,39 +218,33 @@ func TestGoalReview_InteractiveSkipLeavesOrphanAlone(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{}); rc == 0 {
-		// The goal needs at least one existing bucket — seed another item first.
-	}
-	// Seed the goal bucket by adding a different item then removing isn't straightforward;
-	// instead we don't add any items so menu is empty, just test skip path.
+
 	if err := SaveQueue(cfg, []QueueEntry{{ID: "T-001", Approved: true, AddedBy: "user"}}); err != nil {
 		t.Fatalf("SaveQueue: %v", err)
 	}
 
 	var out bytes.Buffer
-	// No menu entries (G-001 has empty must_do), so "s" path is just scanner read.
 	GoalReview(s, cfg, GoalReviewOpts{Out: &out, In: strings.NewReader("s\n")})
 
-	// T-001 must not have been added to any goal's must_do.
-	g, _ := s.Get("G-001")
-	if _, found := findInMustDo(g.MustDo, "T-001"); found {
-		t.Error("skip should leave T-001 out of must_do")
+	// T-001 must not have been added to any goal.
+	item, _ := s.Get("T-001")
+	if item != nil && len(item.Goals) > 0 {
+		t.Error("skip should leave T-001 with no goals")
 	}
 }
 
-func TestGoalReview_InteractiveAddOrphanToGoalBucket(t *testing.T) {
+func TestGoalReview_InteractiveAddOrphanToGoal(t *testing.T) {
 	_, s, cfg := newGoalEnv(t)
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedTaskInGoalEnv(t, cfg, "T-002", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	// Seed G-001 with T-002 so it has a bucket "b1" in its must_do.
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-002"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	// Make T-002 goal-reachable so only T-001 is an orphan.
+	if rc := ItemGoalsAdd(s, cfg, "T-002", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
-	// Only T-001 is an orphan (T-002 is goal-reachable).
 	if err := SaveQueue(cfg, []QueueEntry{
 		{ID: "T-001", Approved: true, AddedBy: "user"},
 		{ID: "T-002", Approved: false, AddedBy: "agent-a"},
@@ -259,16 +253,16 @@ func TestGoalReview_InteractiveAddOrphanToGoalBucket(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	// Menu entry 1 = G-001/b1. Input "1" picks it.
+	// Menu entry 1 = G-001. Input "1" picks it.
 	rc := GoalReview(s, cfg, GoalReviewOpts{Out: &out, In: strings.NewReader("1\n")})
 	if rc != 0 {
 		t.Fatalf("GoalReview rc=%d; output:\n%s", rc, out.String())
 	}
 
 	s = reloadStoreGoal(t, cfg)
-	g, _ := s.Get("G-001")
-	if _, found := findInMustDo(g.MustDo, "T-001"); !found {
-		t.Error("T-001 should have been added to G-001/b1 must_do")
+	item, _ := s.Get("T-001")
+	if item == nil || len(item.Goals) == 0 || item.Goals[0] != "G-001" {
+		t.Errorf("T-001 should have Goals=[G-001] after interactive add, got %v", item.Goals)
 	}
 }
 
@@ -278,13 +272,6 @@ func TestGoalReview_InteractiveQuitStopsLoop(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-002", "queued")
 	seedTaskInGoalEnv(t, cfg, "T-003", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
-	s = reloadStoreGoal(t, cfg)
-	// Seed a bucket so the menu is non-empty.
-	seedTaskInGoalEnv(t, cfg, "T-010", "queued")
-	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-010"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
-	}
 	s = reloadStoreGoal(t, cfg)
 
 	if err := SaveQueue(cfg, []QueueEntry{

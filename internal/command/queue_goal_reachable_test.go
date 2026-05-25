@@ -15,40 +15,39 @@ func TestIsGoalReachable_NotAGoalMember(t *testing.T) {
 	s = reloadStoreGoal(t, cfg)
 
 	if IsGoalReachable(s, cfg, "T-001") {
-		t.Error("T-001 not in any goal must_do — should return false")
+		t.Error("T-001 not in any goal via item.Goals — should return false")
 	}
 }
 
-func TestIsGoalReachable_InActiveGoalMustDo(t *testing.T) {
+func TestIsGoalReachable_InActiveGoalViaItemGoals(t *testing.T) {
 	_, s, cfg := newGoalEnv(t)
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
 
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "clinical", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
 	if !IsGoalReachable(s, cfg, "T-001") {
-		t.Error("T-001 in active goal must_do — should return true")
+		t.Error("T-001 with item.Goals=[G-001] (active) — should return true")
 	}
 }
 
-func TestIsGoalReachable_InInactiveGoalMustDoReturnsFalse(t *testing.T) {
+func TestIsGoalReachable_InInactiveGoalReturnsFalse(t *testing.T) {
 	_, s, cfg := newGoalEnv(t)
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
-	// Seed a draft goal (not active).
 	seedGoalFile(t, cfg, "G-001", "draft", 40)
 	s = reloadStoreGoal(t, cfg)
 
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "clinical", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
 	if IsGoalReachable(s, cfg, "T-001") {
-		t.Error("T-001 only in draft goal must_do — should return false")
+		t.Error("T-001 only linked to draft goal — should return false")
 	}
 }
 
@@ -71,8 +70,8 @@ func TestIsQueuePending_GoalReachableShortCircuits(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -110,8 +109,8 @@ func TestPendingApprovalCount_ExcludesGoalReachable(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-002", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -134,8 +133,8 @@ func TestQueueAdd_GoalReachableAutoApproved(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -159,8 +158,8 @@ func TestSprintAdd_GoalReachableEntryAutoApproved(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -190,8 +189,8 @@ func TestStartAllowsGoalReachablePending(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -213,8 +212,8 @@ func TestStackPushAllowsGoalReachablePending(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -241,8 +240,11 @@ func TestQueueAutoApprove_FlipsAllGoalReachable(t *testing.T) {
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
 	// T-001 and T-002 are goal-reachable; T-003 is not.
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001", "T-002"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd T-001 rc=%d", rc)
+	}
+	if rc := ItemGoalsAdd(s, cfg, "T-002", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd T-002 rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -330,8 +332,8 @@ func TestQueueAutoApprove_PrintsOrphanBannerWhenOrphansExist(t *testing.T) {
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
 	// T-001 is goal-reachable; T-002 is an orphan.
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 
@@ -371,8 +373,8 @@ func TestQueueAutoApprove_NoOrphanBannerWhenZeroOrphans(t *testing.T) {
 	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
 	seedGoalFile(t, cfg, "G-001", "active", 40)
 	s = reloadStoreGoal(t, cfg)
-	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
-		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
 	}
 	s = reloadStoreGoal(t, cfg)
 

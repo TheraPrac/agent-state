@@ -109,18 +109,25 @@ func PendingApprovalCount(s *store.Store, cfg *config.Config) int {
 	return n
 }
 
-// IsGoalReachable reports whether id appears in any active goal's must_do
-// map. When true, the item's operator-intent is already structurally
-// encoded — the per-item queue approval gate is redundant (T-412).
+// IsGoalReachable reports whether id is listed in item.Goals for any active
+// goal. When true, the item's operator-intent is already structurally
+// encoded — the per-item queue approval gate is redundant (T-412, T-416).
 func IsGoalReachable(s *store.Store, cfg *config.Config, id string) bool {
 	if s == nil || id == "" {
 		return false
 	}
+	item, ok := s.Get(id)
+	if !ok || len(item.Goals) == 0 {
+		return false
+	}
+	activeGoals := make(map[string]bool)
 	for _, g := range s.List(store.TypeFilter("goal")) {
-		if g.Status != "active" {
-			continue
+		if g.Status == "active" {
+			activeGoals[g.ID] = true
 		}
-		if _, ok := findInMustDo(g.MustDo, id); ok {
+	}
+	for _, goalID := range item.Goals {
+		if activeGoals[goalID] {
 			return true
 		}
 	}

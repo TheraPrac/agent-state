@@ -133,8 +133,21 @@ func showDefaultTo(w io.Writer, s *store.Store, cfg *config.Config, id string, i
 		if item.Weight != nil {
 			fmt.Fprintf(w, "  weight: %d\n", *item.Weight)
 		}
-		if len(item.MustDo) > 0 {
-			fmt.Fprintf(w, "  must_do: %s\n", mustDoSummary(item.MustDo, s))
+		// Count members via item.Goals (T-416).
+		total, done := 0, 0
+		for _, it := range s.List() {
+			for _, gid := range it.Goals {
+				if gid == item.ID {
+					total++
+					if isTerminalStatus(it.Status) {
+						done++
+					}
+					break
+				}
+			}
+		}
+		if total > 0 {
+			fmt.Fprintf(w, "  members: %d/%d done\n", done, total)
 		} else if item.SuccessCriterion != "" {
 			fmt.Fprintf(w, "  success_criterion: %s\n", item.SuccessCriterion)
 		}

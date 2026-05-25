@@ -86,6 +86,38 @@ sbar:
 	}
 }
 
+// seedTaskInGoalEnv writes a minimal task fixture into the tasks dir of a goal env.
+func seedTaskInGoalEnv(t *testing.T, cfg *config.Config, id, status string) {
+	t.Helper()
+	dir := "tasks"
+	if status == "done" || status == "completed" || status == "abandoned" || status == "resolved" {
+		dir = "archive"
+	}
+	content := fmt.Sprintf(`id: %s
+type: task
+status: %s
+created: 2026-05-24T10:00:00-06:00
+last_touched: 2026-05-24T10:00:00-06:00
+
+title: Task %s
+
+sbar:
+  situation: |-
+    Fixture task.
+  background: |-
+    Test.
+  assessment: |-
+    Test.
+  recommendation: |-
+    Test.
+`, id, status, id)
+	slug := strings.ToLower(strings.ReplaceAll(id, "-", "")) + "-task"
+	path := filepath.Join(cfg.ItemDir(), dir, id+"-"+slug+".md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("seedTaskInGoalEnv: %v", err)
+	}
+}
+
 func TestGoalCreateValidatesWeight(t *testing.T) {
 	cases := []struct {
 		weight int

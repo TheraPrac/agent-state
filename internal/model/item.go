@@ -45,8 +45,7 @@ type Item struct {
 	PlanApproved   bool   // design/plan gate passed
 	DroppedReason    string // reason from ValidDropReasons; required when status==abandoned (T-414)
 	Weight           *int              // goal type only: strategic weight 1-100; active goals must sum to ≤100
-	SuccessCriterion string            // goal type only: kept for backward compat; structural set is MustDo (T-409)
-	MustDo           map[string][]string // goal type only: bucket→item-IDs structural must_do set (T-409)
+	SuccessCriterion string // goal type only
 	PlanApprovedAt   string // RFC3339 timestamp; set by `st plan approve` (I-178)
 	PlanApprovedBy string // operator or agent ID that approved the plan (I-178)
 
@@ -224,7 +223,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"claimed_by": true, "claimed_at": true,
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
-	"weight": true, "success_criterion": true, "must_do": true,
+	"weight": true, "success_criterion": true,
 	"dropped_reason": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,
@@ -892,127 +891,6 @@ func (d *ParsedDocument) SetList(key string, items []string) bool {
 	copy(tail, d.Lines[end:])
 	d.Lines = append(d.Lines[:keyIdx+1], append(newLines, tail...)...)
 	return true
-}
-
-// SetMustDo replaces (or inserts) the `must_do:` block in the document.
-// buckets maps bucket name → item-ID list. The empty-string key "" means
-// uncategorized (flat-list form). Bucket keys are emitted alphabetically
-// with "" first. If only "" is populated the flat form is used (no bucket
-// headers); otherwise the nested map-of-lists form is used.
-// An empty/nil buckets map removes the must_do block entirely.
-func (d *ParsedDocument) SetMustDo(buckets map[string][]string) {
-	// Find and remove existing must_do block.
-	startIdx := -1
-	for i, line := range d.Lines {
-		if line.Key == "must_do" && line.Indent == 0 {
-			startIdx = i
-			break
-		}
-	}
-	endIdx := startIdx + 1
-	if startIdx >= 0 {
-		for endIdx < len(d.Lines) {
-			l := d.Lines[endIdx]
-			if l.Indent == 0 && !l.IsEmpty {
-				break
-			}
-			endIdx++
-		}
-	}
-
-	// Build new lines.
-	newLines := buildMustDoLines(buckets)
-
-	if startIdx < 0 {
-		if len(newLines) == 0 {
-			return // nothing to insert
-		}
-		// Insert before body separator or at end.
-		insertIdx := d.BodySeparatorIndex()
-		if insertIdx >= 0 {
-			tail := append([]Line{}, d.Lines[insertIdx:]...)
-			d.Lines = append(d.Lines[:insertIdx], append(newLines, tail...)...)
-		} else {
-			d.Lines = append(d.Lines, newLines...)
-		}
-		return
-	}
-
-	// Replace existing block.
-	tail := append([]Line{}, d.Lines[endIdx:]...)
-	d.Lines = append(d.Lines[:startIdx], append(newLines, tail...)...)
-}
-
-// buildMustDoLines renders a must_do bucket map to a slice of document lines.
-// Empty/nil map → empty slice (removes the block).
-func buildMustDoLines(buckets map[string][]string) []Line {
-	if len(buckets) == 0 {
-		return nil
-	}
-
-	// Determine whether any named bucket has items.
-	hasNamed := false
-	for k, ids := range buckets {
-		if k != "" && len(ids) > 0 {
-			hasNamed = true
-			break
-		}
-	}
-
-	out := []Line{{Raw: "must_do:", Key: "must_do"}}
-
-	if !hasNamed {
-		// Flat form: "" bucket items at indent 2.
-		for _, id := range buckets[""] {
-			out = append(out, Line{Raw: "- " + id, IsList: true, BlockKey: "must_do"})
-		}
-		out = append(out, Line{Raw: "", IsEmpty: true})
-		return out
-	}
-
-	// Nested form: sorted bucket headers with items at indent 4.
-	bucketKeys := make([]string, 0, len(buckets))
-	for k := range buckets {
-		if len(buckets[k]) > 0 {
-			bucketKeys = append(bucketKeys, k)
-		}
-	}
-	// "" first, then alphabetical.
-	sortedKeys := make([]string, 0, len(bucketKeys))
-	if _, ok := buckets[""]; ok && len(buckets[""]) > 0 {
-		sortedKeys = append(sortedKeys, "")
-	}
-	for _, k := range bucketKeys {
-		if k != "" {
-			sortedKeys = append(sortedKeys, k)
-		}
-	}
-	// Sort the named keys alphabetically.
-	for i := 1; i < len(sortedKeys); i++ {
-		for j := i; j > 0 && sortedKeys[j] < sortedKeys[j-1]; j-- {
-			sortedKeys[j], sortedKeys[j-1] = sortedKeys[j-1], sortedKeys[j]
-		}
-	}
-
-	for _, k := range sortedKeys {
-		ids := buckets[k]
-		if len(ids) == 0 {
-			continue
-		}
-		if k == "" {
-			// Uncategorized items under a "other:" or inline — use blank header.
-			for _, id := range ids {
-				out = append(out, Line{Raw: "  - " + id, IsList: true, Indent: 2, BlockKey: "must_do"})
-			}
-		} else {
-			out = append(out, Line{Raw: "  " + k + ":", Key: k, Indent: 2, BlockKey: "must_do"})
-			for _, id := range ids {
-				out = append(out, Line{Raw: "    - " + id, IsList: true, Indent: 4, BlockKey: k})
-			}
-		}
-	}
-	out = append(out, Line{Raw: "", IsEmpty: true})
-	return out
 }
 
 // BodySeparatorIndex returns the index of the first "---" line (body separator),

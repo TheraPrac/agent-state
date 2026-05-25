@@ -45,7 +45,11 @@ func ItemGoalsAdd(s *store.Store, cfg *config.Config, itemID string, goalIDs []s
 	if err := s.Mutate(itemID, func(it *model.Item) error {
 		it.Goals = append(it.Goals, goalIDs...)
 		if it.Doc != nil {
-			it.Doc.ReplaceList("goals", it.Goals)
+			formatted := make([]string, len(it.Goals))
+			for i, g := range it.Goals {
+				formatted[i] = "- " + g
+			}
+			it.Doc.ReplaceList("goals", formatted)
 		}
 		return nil
 	}); err != nil {
@@ -98,7 +102,11 @@ func ItemGoalsRemove(s *store.Store, cfg *config.Config, itemID string, goalIDs 
 			it.Goals = removeStringFromSlice(it.Goals, goalID)
 		}
 		if it.Doc != nil {
-			it.Doc.ReplaceList("goals", it.Goals)
+			formatted := make([]string, len(it.Goals))
+			for i, g := range it.Goals {
+				formatted[i] = "- " + g
+			}
+			it.Doc.ReplaceList("goals", formatted)
 		}
 		return nil
 	}); err != nil {
