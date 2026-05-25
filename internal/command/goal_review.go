@@ -87,6 +87,7 @@ func goalReviewTo(w io.Writer, r io.Reader, s *store.Store, cfg *config.Config, 
 			if isTerminalStatus(it.Status) {
 				tallies[gid].done++
 			}
+			break
 		}
 	}
 

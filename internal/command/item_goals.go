@@ -29,6 +29,10 @@ func ItemGoalsAdd(s *store.Store, cfg *config.Config, itemID string, goalIDs []s
 			fmt.Fprintf(os.Stderr, "goals add: %s is not a goal (type=%s)\n", goalID, goal.Type)
 			return 1
 		}
+		if goalID == itemID {
+			fmt.Fprintf(os.Stderr, "goals add: %s cannot be added to its own goals list\n", goalID)
+			return 1
+		}
 		for _, existing := range item.Goals {
 			if existing == goalID {
 				fmt.Fprintf(os.Stderr, "goals add: %s already in goals of %s\n", goalID, itemID)
