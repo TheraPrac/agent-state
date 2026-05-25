@@ -1820,6 +1820,22 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 			exitCode = command.GoalConsistencyCheck(appStore, appCfg)
 		},
 	})
+	// T-413: goal review — active-goal health + orphan queue reconciliation.
+	goalReviewCmd := &cobra.Command{
+		Use:   "review",
+		Short: "Show active-goal health and reconcile orphan queue items",
+		Run: func(cmd *cobra.Command, args []string) {
+			countF, _ := cmd.Flags().GetBool("count")
+			listF, _ := cmd.Flags().GetBool("list")
+			exitCode = command.GoalReview(appStore, appCfg, command.GoalReviewOpts{
+				Count: countF,
+				List:  listF,
+			})
+		},
+	}
+	goalReviewCmd.Flags().Bool("count", false, "print orphan count only and exit 0")
+	goalReviewCmd.Flags().Bool("list", false, "print one orphan ID per line and exit 0")
+	goalCmd.AddCommand(goalReviewCmd)
 	root.AddCommand(goalCmd)
 
 	// T-410: item goals subcommands — item goals add/remove

@@ -41,6 +41,29 @@ func TestRecommendBriefFlagWired(t *testing.T) {
 	}
 }
 
+// TestGoalReviewCommandWired verifies `st goal review` is registered as a
+// subcommand of `st goal` with --count and --list flags (T-413).
+func TestGoalReviewCommandWired(t *testing.T) {
+	app := newApp(t.TempDir())
+	for _, cmd := range app.Commands() {
+		if cmd.Name() == "goal" {
+			for _, sub := range cmd.Commands() {
+				if sub.Name() == "review" {
+					if sub.Flags().Lookup("count") == nil {
+						t.Fatal("st goal review must have --count flag")
+					}
+					if sub.Flags().Lookup("list") == nil {
+						t.Fatal("st goal review must have --list flag")
+					}
+					return
+				}
+			}
+			t.Fatal("st goal review subcommand must be registered under st goal")
+		}
+	}
+	t.Fatal("st goal command must be registered on the root cobra command")
+}
+
 // TestQueueAutoApproveCommandWired verifies `st queue auto-approve` is
 // registered as a subcommand of `st queue` (T-412).
 func TestQueueAutoApproveCommandWired(t *testing.T) {

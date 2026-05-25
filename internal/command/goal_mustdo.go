@@ -242,9 +242,11 @@ func sortedBucketKeys(mustDo map[string][]string) []string {
 }
 
 // isTerminalStatus returns true for done/closed lifecycle statuses.
+// "done" is the unified terminal status (I-433); "completed"/"resolved" are
+// legacy aliases still in use on older items.
 func isTerminalStatus(status string) bool {
 	switch status {
-	case "completed", "resolved", "abandoned", "wontfix", "closed", "met", "dropped":
+	case "done", "completed", "resolved", "abandoned", "wontfix", "closed", "met", "dropped":
 		return true
 	}
 	return false

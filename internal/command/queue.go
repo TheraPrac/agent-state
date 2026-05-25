@@ -560,6 +560,9 @@ func QueueAutoApprove(s *store.Store, cfg *config.Config) int {
 	}
 	fmt.Printf("Auto-approved %d item(s): %s\n", len(flipped), strings.Join(flipped, ", "))
 	autoSync(s, fmt.Sprintf("st queue auto-approve: %d item(s)", len(flipped)))
+	if orphans := GoalOrphans(s, cfg); len(orphans) > 0 {
+		fmt.Printf("⚠ %d orphan queue item(s) not in any active goal — run `st goal review` to reconcile\n", len(orphans))
+	}
 	return 0
 }
 

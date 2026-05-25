@@ -319,6 +319,89 @@ func TestQueueAutoApprove_EmptyQueueIsNoOp(t *testing.T) {
 	}
 }
 
+// --- QueueAutoApprove orphan banner (T-413) ---
+
+func TestQueueAutoApprove_PrintsOrphanBannerWhenOrphansExist(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+
+	_, s, cfg := newGoalEnv(t)
+	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
+	seedTaskInGoalEnv(t, cfg, "T-002", "queued")
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s = reloadStoreGoal(t, cfg)
+	// T-001 is goal-reachable; T-002 is an orphan.
+	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
+		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	}
+	s = reloadStoreGoal(t, cfg)
+
+	if err := SaveQueue(cfg, []QueueEntry{
+		{ID: "T-001", Approved: false, AddedBy: "agent-a"},
+		{ID: "T-002", Approved: true, AddedBy: "user"},
+	}); err != nil {
+		t.Fatalf("SaveQueue: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	rc := QueueAutoApprove(s, cfg)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 1024)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+
+	if rc != 0 {
+		t.Fatalf("QueueAutoApprove rc=%d, want 0", rc)
+	}
+	if !strings.Contains(out, "orphan") {
+		t.Errorf("expected orphan banner in output, got %q", out)
+	}
+	if !strings.Contains(out, "st goal review") {
+		t.Errorf("expected 'st goal review' pointer in orphan banner, got %q", out)
+	}
+}
+
+func TestQueueAutoApprove_NoOrphanBannerWhenZeroOrphans(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+
+	_, s, cfg := newGoalEnv(t)
+	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s = reloadStoreGoal(t, cfg)
+	if rc := GoalMustDoAdd(s, cfg, "G-001", "b1", []string{"T-001"}); rc != 0 {
+		t.Fatalf("GoalMustDoAdd rc=%d", rc)
+	}
+	s = reloadStoreGoal(t, cfg)
+
+	// Only one entry; it is goal-reachable so it will be flipped and no orphan remains.
+	if err := SaveQueue(cfg, []QueueEntry{
+		{ID: "T-001", Approved: false, AddedBy: "agent-a"},
+	}); err != nil {
+		t.Fatalf("SaveQueue: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	rc := QueueAutoApprove(s, cfg)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 1024)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+
+	if rc != 0 {
+		t.Fatalf("QueueAutoApprove rc=%d, want 0", rc)
+	}
+	if strings.Contains(out, "orphan") {
+		t.Errorf("no orphan banner expected when zero orphans, got %q", out)
+	}
+}
+
 func TestQueueAutoApprove_NoPendingItemsIsNoOp(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
