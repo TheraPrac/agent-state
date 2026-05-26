@@ -896,3 +896,39 @@ func TestSessionLogLeavesCleanWorkingTree(t *testing.T) {
 		t.Error("tracked files dirty after SessionLog — GitSync must commit all modifications")
 	}
 }
+
+func TestSessionLogSubagentStepDoesNotSync(t *testing.T) {
+	// Subagent-step payloads must NOT trigger GitSync — they fire rapidly in
+	// fan-out scenarios and would cause git lock contention across concurrent
+	// agents. The metric lands on disk; the next interactive-step GitSync
+	// commits it.
+	env := testutil.NewGitEnv(t)
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	root := env.Cfg.Root()
+
+	if err := SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}}); err != nil {
+		t.Fatalf("SaveStack: %v", err)
+	}
+	exec.Command("git", "-C", root, "add", "-A").Run()
+	exec.Command("git", "-C", root, "commit", "-m", "setup").Run()
+
+	shaBefore, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+
+	p := SessionLogPayload{
+		Step:            "subagent",
+		SessionID:       "subagent-sid",
+		Model:           "claude-sonnet-4-6",
+		ProcessMs:       3000,
+		RegInputTokens:  50,
+		RegOutputTokens: 20,
+	}
+	if rc := SessionLog(env.S, env.Cfg, p); rc != 0 {
+		t.Fatalf("SessionLog rc=%d", rc)
+	}
+
+	shaAfter, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if strings.TrimSpace(string(shaBefore)) != strings.TrimSpace(string(shaAfter)) {
+		t.Errorf("subagent-step SessionLog must not create a new commit: before=%s after=%s",
+			strings.TrimSpace(string(shaBefore)), strings.TrimSpace(string(shaAfter)))
+	}
+}

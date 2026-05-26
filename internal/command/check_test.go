@@ -79,3 +79,27 @@ func TestCheckQuietDoesNotSync(t *testing.T) {
 			strings.TrimSpace(string(shaBefore)), strings.TrimSpace(string(shaAfter)))
 	}
 }
+
+func TestCheckNoMutationDoesNotSync(t *testing.T) {
+	// After all fixes have been applied, a second non-quiet Check must not
+	// produce a new commit. The guard `fixed > 0 || dupFixed > 0` must
+	// short-circuit GitSync when nothing was mutated.
+	env := testutil.NewGitEnv(t)
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	root := env.Cfg.Root()
+
+	// First pass: apply all pending fixes and commit them.
+	Check(env.S, env.Cfg, false, false)
+	env.Reload(t)
+
+	shaBefore, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+
+	// Second pass on the already-fixed workspace: no mutations → no new commit.
+	Check(env.S, env.Cfg, false, false)
+
+	shaAfter, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if strings.TrimSpace(string(shaBefore)) != strings.TrimSpace(string(shaAfter)) {
+		t.Errorf("already-fixed Check must not create a new commit: before=%s after=%s",
+			strings.TrimSpace(string(shaBefore)), strings.TrimSpace(string(shaAfter)))
+	}
+}
