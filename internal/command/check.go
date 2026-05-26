@@ -32,6 +32,7 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		// instead of silently rewriting the working tree. Only same-
 		// basename duplicates are auto-fixed; ID-collisions warn but
 		// require human triage.
+		var dupFixed int
 		for _, d := range validate.DuplicateIDs(cfg.ItemDir(), cfg) {
 			removed, err := s.RemoveStaleDuplicates(d.ID)
 			if err != nil {
@@ -39,7 +40,13 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 				continue
 			}
 			for _, p := range removed {
+				dupFixed++
 				fmt.Printf("  fixed: removed duplicate %s\n", p)
+			}
+		}
+		if fixed > 0 || dupFixed > 0 {
+			if err := s.GitSync("st check --fix"); err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: check: git sync failed: %v\n", err)
 			}
 		}
 	}
