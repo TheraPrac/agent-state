@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -172,6 +173,89 @@ func TestRecommend_NoGoalsCorpusResilient(t *testing.T) {
 	if strings.Contains(out, "goal-weight") {
 		t.Fatalf("no goals ⇒ no goal-weight in rationale\n%s", out)
 	}
+}
+
+// TestRecommend_GoalFocusFiltersCandidates verifies that an agent with a
+// focus_goal set only sees items linked to that goal.
+func TestRecommend_GoalFocusFiltersCandidates(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-tt")
+
+	// Seed an active goal and link T-001 to it.
+	if err := os.MkdirAll(filepath.Join(cfg.Root(), "goals"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	seedGoalFile(t, cfg, "G-FOCUS", "active", 40)
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	// Link T-001 to G-FOCUS via ItemGoalsAdd so it.Goals is populated.
+	if rc := ItemGoalsAdd(s2, cfg, "T-001", []string{"G-FOCUS"}); rc != 0 {
+		t.Fatalf("ItemGoalsAdd rc=%d", rc)
+	}
+	s3, _ := store.New(cfg)
+
+	// Set agent focus to G-FOCUS.
+	if err := setGoalFocusForTest(cfg, "agent-tt", "G-FOCUS"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		Recommend(s3, cfg, RecommendOpts{})
+	})
+	// T-001 is in G-FOCUS — must appear.
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("T-001 (in focus goal) must appear: %s", out)
+	}
+}
+
+// TestRecommend_NoGoalFocusUnchanged verifies that without a focus the full
+// candidate set is returned (baseline regression).
+func TestRecommend_NoGoalFocusUnchanged(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-tt")
+	// No focus set — expect normal output.
+	out := captureStdout(t, func() {
+		Recommend(s, cfg, RecommendOpts{})
+	})
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("without focus T-001 must appear in global ranking: %s", out)
+	}
+}
+
+// TestRecommend_GoalFocusAutoClearsTerminalGoal verifies that a focus on a
+// terminal (met) goal is auto-cleared and the global candidate set is used.
+func TestRecommend_GoalFocusAutoClearsTerminalGoal(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-tt")
+
+	// Seed a goal that is met (terminal).
+	if err := os.MkdirAll(filepath.Join(cfg.Root(), "goals"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Note: seedGoalFile puts met goals in archive/ — the store still loads them.
+	seedGoalFile(t, cfg, "G-MET", "met", 40)
+	s2, _ := store.New(cfg)
+
+	if err := setGoalFocusForTest(cfg, "agent-tt", "G-MET"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recommend must not error and must return global results (auto-cleared stale focus).
+	var rc int
+	out := captureStdout(t, func() { rc = Recommend(s2, cfg, RecommendOpts{}) })
+	if rc != 0 {
+		t.Fatalf("Recommend with terminal focus rc=%d\n%s", rc, out)
+	}
+	// T-001 must surface (global ranking restored).
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("after auto-clear of terminal focus, T-001 must appear: %s", out)
+	}
+}
+
+func setGoalFocusForTest(cfg *config.Config, agentID, goalID string) error {
+	return agent.SetGoalFocus(cfg, agentID, goalID)
 }
 
 // setupTestEnvWithGoal extends the base env with a goal item whose status is

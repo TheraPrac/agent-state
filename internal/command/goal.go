@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -169,6 +170,11 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string) int {
 	}
 
 	fmt.Printf("%s marked met\n", id)
+	if cleared, err := agent.ClearGoalFocusForAllAgents(cfg, id); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clearing goal focus: %v\n", err)
+	} else if len(cleared) > 0 {
+		fmt.Printf("cleared goal focus for: %s\n", strings.Join(cleared, ", "))
+	}
 	return 0
 }
 
@@ -210,6 +216,11 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 	}
 
 	fmt.Printf("%s dropped (%s)\n", id, reason)
+	if cleared, err := agent.ClearGoalFocusForAllAgents(cfg, id); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clearing goal focus: %v\n", err)
+	} else if len(cleared) > 0 {
+		fmt.Printf("cleared goal focus for: %s\n", strings.Join(cleared, ", "))
+	}
 	return 0
 }
 

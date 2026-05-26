@@ -45,6 +45,11 @@ type Registration struct {
 	// from different main commits — the "did agent-a forget to make
 	// install after the merge?" check.
 	Commit string `yaml:"commit,omitempty"`
+	// GoalFocus pins the agent to a specific active goal so st next /
+	// st recommend only surface candidates linked to that goal. Set via
+	// `st agent goal set <id>`, cleared via `st agent goal clear` or
+	// automatically when the focused goal reaches a terminal state.
+	GoalFocus string `yaml:"goal_focus,omitempty"`
 }
 
 // Options carry the inputs Register needs that aren't on the Config.
@@ -292,9 +297,12 @@ func RegisterSelf(cfg *config.Config, opts SelfOptions) (*Registration, error) {
 		return nil, fmt.Errorf("agent.RegisterSelf: mkdir %s: %w", dir, err)
 	}
 	started := time.Now().Format(time.RFC3339)
-	if prev, err := LoadRegistration(cfg, opts.AgentID); err == nil && prev != nil &&
-		prev.SessionID != "" && prev.SessionID == opts.SessionID && prev.Started != "" {
-		started = prev.Started // same session resumed → continuous uptime
+	goalFocus := ""
+	if prev, err := LoadRegistration(cfg, opts.AgentID); err == nil && prev != nil {
+		if prev.SessionID != "" && prev.SessionID == opts.SessionID && prev.Started != "" {
+			started = prev.Started // same session resumed → continuous uptime
+		}
+		goalFocus = prev.GoalFocus // always preserve focus across sessions/compactions
 	}
 	reg := &Registration{
 		AgentID:   opts.AgentID,
@@ -304,6 +312,7 @@ func RegisterSelf(cfg *config.Config, opts SelfOptions) (*Registration, error) {
 		SessionID: opts.SessionID,
 		Role:      opts.Role,
 		Commit:    buildinfo.Commit,
+		GoalFocus: goalFocus,
 	}
 	path := filepath.Join(dir, opts.AgentID+".yaml")
 	if err := writeRegistration(path, reg); err != nil {
@@ -355,7 +364,87 @@ func writeRegistration(path string, reg *Registration) error {
 	if reg.Commit != "" {
 		fmt.Fprintf(&b, "commit: %s\n", reg.Commit)
 	}
+	if reg.GoalFocus != "" {
+		fmt.Fprintf(&b, "goal_focus: %s\n", reg.GoalFocus)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// SetGoalFocus writes goal_focus to the agent's registration file.
+// If no registration file exists yet (e.g. pre-hook), a minimal stub is
+// written so the field survives until the next SessionStart fires RegisterSelf.
+func SetGoalFocus(cfg *config.Config, agentID, goalID string) error {
+	reg, err := LoadRegistration(cfg, agentID)
+	if err != nil {
+		return fmt.Errorf("agent.SetGoalFocus: load %s: %w", agentID, err)
+	}
+	if reg == nil {
+		reg = &Registration{
+			AgentID: agentID,
+			Root:    agentID,
+			PID:     os.Getpid(),
+			Started: time.Now().Format(time.RFC3339),
+		}
+	}
+	reg.GoalFocus = goalID
+	path := filepath.Join(cfg.AgentsDir(), agentID+".yaml")
+	if err := os.MkdirAll(cfg.AgentsDir(), 0755); err != nil {
+		return fmt.Errorf("agent.SetGoalFocus: mkdir: %w", err)
+	}
+	return writeRegistration(path, reg)
+}
+
+// ClearGoalFocus removes the goal_focus field from the agent's registration.
+// No-op when the file is absent.
+func ClearGoalFocus(cfg *config.Config, agentID string) error {
+	reg, err := LoadRegistration(cfg, agentID)
+	if err != nil {
+		return fmt.Errorf("agent.ClearGoalFocus: load %s: %w", agentID, err)
+	}
+	if reg == nil || reg.GoalFocus == "" {
+		return nil
+	}
+	reg.GoalFocus = ""
+	path := filepath.Join(cfg.AgentsDir(), agentID+".yaml")
+	return writeRegistration(path, reg)
+}
+
+// GetGoalFocus returns the goal_focus for the agent, or "" when unset or
+// the registration file is absent.
+func GetGoalFocus(cfg *config.Config, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	reg, err := LoadRegistration(cfg, agentID)
+	if err != nil || reg == nil {
+		return ""
+	}
+	return reg.GoalFocus
+}
+
+// ClearGoalFocusForAllAgents clears goal_focus on every registration that
+// matches goalID. Returns the agent ids cleared and any error that stopped
+// the sweep early (errors on individual files are logged to stderr and the
+// sweep continues). Safe to call when no registrations exist.
+func ClearGoalFocusForAllAgents(cfg *config.Config, goalID string) ([]string, error) {
+	regs, err := ListRegistrations(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("agent.ClearGoalFocusForAllAgents: list: %w", err)
+	}
+	var cleared []string
+	for _, reg := range regs {
+		if reg.GoalFocus != goalID {
+			continue
+		}
+		reg.GoalFocus = ""
+		path := filepath.Join(cfg.AgentsDir(), reg.AgentID+".yaml")
+		if werr := writeRegistration(path, reg); werr != nil {
+			fmt.Fprintf(os.Stderr, "agent: clear goal_focus for %s: %v\n", reg.AgentID, werr)
+			continue
+		}
+		cleared = append(cleared, reg.AgentID)
+	}
+	return cleared, nil
 }
 
 func parseRegistration(body []byte) (*Registration, error) {
@@ -397,6 +486,8 @@ func parseRegistration(body []byte) (*Registration, error) {
 			reg.SpawnedBySession = val
 		case "commit":
 			reg.Commit = val
+		case "goal_focus":
+			reg.GoalFocus = val
 		}
 	}
 	if reg.AgentID == "" {

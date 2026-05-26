@@ -779,6 +779,78 @@ Side effects: none — pure read of resolved config.`,
 	agentIdentityCmd.AddCommand(agentIdentityShowCmd)
 	agentCmd.AddCommand(agentIdentityCmd)
 
+	agentGoalCmd := &cobra.Command{
+		Use:   "goal",
+		Short: "Manage per-agent goal focus for st next / st recommend",
+		Long: `Pin this agent to a specific active goal so that st next and
+st recommend only surface candidates linked to that goal.
+
+Focus persists across sessions and compactions until explicitly cleared
+or until the focused goal reaches a terminal state (met or dropped), at
+which point it is auto-cleared.`,
+		Example: `  # Show the current focus
+  st agent goal show
+
+  # Pin to an active goal
+  st agent goal set G-001
+
+  # Remove the focus and restore global ranking
+  st agent goal clear`,
+	}
+	agentGoalSetCmd := &cobra.Command{
+		Use:   "set <goal-id>",
+		Short: "Set the goal focus for this agent (must be an active goal)",
+		Long: `Pin this agent's work queue to a single active goal.
+
+After calling st agent goal set, st next and st recommend will only surface
+candidates whose goals field includes the specified goal id. The focus persists
+across sessions and compactions until cleared or until the goal reaches a
+terminal state (met or dropped).
+
+The goal must be type:goal with status:active. Draft, met, and dropped goals
+are rejected.`,
+		Example: `  # Focus this agent on the alpha go-live goal
+  st agent goal set G-001
+
+  # Confirm the focus was recorded
+  st agent goal show`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalSet(appStore, appCfg, args[0])
+		},
+	}
+	agentGoalClearCmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Clear the goal focus, restoring global ranking in st next / st recommend",
+		Long: `Remove the per-agent goal focus so that st next and st recommend return
+to the full global priority-ranked candidate set.
+
+This is the inverse of st agent goal set. Use it when the operator reassigns
+the agent to a different goal or to unrestricted work.`,
+		Example: `  # Return to full global ranking
+  st agent goal clear`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalClear(appCfg)
+		},
+	}
+	agentGoalShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print the current goal focus for this agent",
+		Long: `Print the goal id and title this agent is currently focused on, or
+"(none)" if no focus has been set.
+
+Use this to confirm the focus before starting a new session or after a resume.`,
+		Example: `  # Check what goal this agent is focused on
+  st agent goal show`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalShow(appStore, appCfg)
+		},
+	}
+	agentGoalCmd.AddCommand(agentGoalSetCmd, agentGoalClearCmd, agentGoalShowCmd)
+	agentCmd.AddCommand(agentGoalCmd)
+
 	agentWorkspaceCmd := &cobra.Command{
 		Use:   "workspace",
 		Short: "Create, inspect, and remove local agent workspaces",
@@ -1238,8 +1310,9 @@ verdict drifts toward what the operator actually accepts.`,
 			scope, _ := cmd.Flags().GetString("scope")
 			queue, _ := cmd.Flags().GetBool("queue")
 			brief, _ := cmd.Flags().GetBool("brief")
+			goal, _ := cmd.Flags().GetString("goal")
 			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{
-				JSON: jsonOut, Top: top, Scope: scope, Queue: queue, Brief: brief,
+				JSON: jsonOut, Top: top, Scope: scope, Queue: queue, Brief: brief, Goal: goal,
 			})
 		},
 	}
@@ -1252,6 +1325,8 @@ verdict drifts toward what the operator actually accepts.`,
 		"score the DISPATCH view (queue + EligibleForDispatch) — what `st coordinate` sees")
 	recommendCmd.Flags().Bool("brief", false,
 		"one-line render: <ID> p<N>  <title> — <rationale> (used by `st next`)")
+	recommendCmd.Flags().String("goal", "",
+		"filter to items in this goal (overrides agent focus_goal)")
 	root.AddCommand(recommendCmd)
 
 	nextCmd := &cobra.Command{
@@ -1260,7 +1335,7 @@ verdict drifts toward what the operator actually accepts.`,
 		Long: "Alias for `st recommend --top 1 --brief`: scores the PLANNING view\n" +
 			"and prints the top pick as one line — ID, priority, title, and rationale.\n" +
 			"Goal weight, unblock leverage, sprint pressure, and age all contribute;\n" +
-			"priority dominates by construction.",
+			"priority dominates by construction. Respects the agent's focus_goal when set.",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{Top: 1, Brief: true})
