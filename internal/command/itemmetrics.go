@@ -193,13 +193,11 @@ func (m ItemMetrics) HasMetrics() bool {
 // FormatLine produces the inline single-line representation used by
 // st status's per-item rows and the PIPELINE section. Format:
 //
-//	"<wall> | $<cost> | <±LOC> | <in>/<out> tok [(+<cache> cache)] | [<model>]"
+//	"<wall> | $<cost> | <±LOC> | <in>/<out> tok | [<model>]"
 //
 // Only non-zero fields appear; the line is empty when HasMetrics() is false.
 // LOC and tokens are independent — both render when both are present.
-// The cache annotation appears after the tok segment when either cache
-// bucket is non-zero. The model tag is the last segment when last_model
-// was recorded for this item.
+// The model tag is the last segment when last_model was recorded for this item.
 func (m ItemMetrics) FormatLine() string {
 	if !m.HasMetrics() {
 		return ""
@@ -217,15 +215,8 @@ func (m ItemMetrics) FormatLine() string {
 		parts = append(parts, formatLOC(m.NetLOC))
 	}
 	if m.InputTokens > 0 || m.OutputTokens > 0 {
-		seg := fmt.Sprintf("%s/%s tok",
-			formatTokens(m.InputTokens), formatTokens(m.OutputTokens))
-		// Cache annotation clarifies the breakdown — cache is already included
-		// in InputTokens, not additional. "NNK cached" means "of those NNM
-		// input tokens, NNK were served from cache."
-		if cache := m.CacheReadTokens + m.CacheWriteTokens; cache > 0 {
-			seg += fmt.Sprintf(" (%s cached)", formatTokens(cache))
-		}
-		parts = append(parts, seg)
+		parts = append(parts, fmt.Sprintf("%s/%s tok",
+			formatTokens(m.InputTokens), formatTokens(m.OutputTokens)))
 	}
 	if m.Model != "" {
 		parts = append(parts, "["+shortModelLabel(m.Model)+"]")

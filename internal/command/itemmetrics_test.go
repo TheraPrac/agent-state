@@ -332,7 +332,8 @@ func TestFormatLineIncludesModelLabel(t *testing.T) {
 	}
 }
 
-func TestFormatLineIncludesCacheAnnotation(t *testing.T) {
+func TestFormatLineOmitsCacheAnnotation(t *testing.T) {
+	// Cache breakdown is available on the struct but not rendered in FormatLine.
 	m := ItemMetrics{
 		Wall:             time.Minute,
 		InputTokens:      50000,
@@ -341,14 +342,11 @@ func TestFormatLineIncludesCacheAnnotation(t *testing.T) {
 		CacheWriteTokens: 2000,
 	}
 	got := m.FormatLine()
-	if !strings.Contains(got, "cached") {
-		t.Errorf("FormatLine = %q, missing cache annotation", got)
+	if strings.Contains(got, "cache") {
+		t.Errorf("FormatLine = %q, unexpected cache annotation", got)
 	}
-	// With zero cache, no annotation
-	m2 := ItemMetrics{Wall: time.Minute, InputTokens: 50000, OutputTokens: 5000}
-	got2 := m2.FormatLine()
-	if strings.Contains(got2, "cache") {
-		t.Errorf("FormatLine = %q, should not have cache annotation when cache is zero", got2)
+	if !strings.Contains(got, "tok") {
+		t.Errorf("FormatLine = %q, missing tok segment", got)
 	}
 }
 
