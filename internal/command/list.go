@@ -16,6 +16,10 @@ type ListOpts struct {
 	Tag      string
 	Assigned string
 	Goal     string
+	Priority string // single value or comma-separated, e.g. "0" or "0,1"
+	Sprint   string
+	Epic     string
+	Arc      string
 }
 
 func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
@@ -35,9 +39,22 @@ func List(s *store.Store, cfg *config.Config, opts ListOpts) int {
 	if opts.Goal != "" {
 		filters = append(filters, store.GoalFilter(opts.Goal))
 	}
+	if opts.Priority != "" {
+		filters = append(filters, store.PriorityFilter(opts.Priority))
+	}
+	if opts.Sprint != "" {
+		filters = append(filters, store.SprintFilter(opts.Sprint))
+	}
+	if opts.Epic != "" {
+		filters = append(filters, store.EpicFilter(opts.Epic))
+	}
+	if opts.Arc != "" {
+		filters = append(filters, store.ArcFilter(opts.Arc))
+	}
 
 	// Default: show non-terminal items
-	if opts.Type == "" && opts.Status == "" && opts.Tag == "" && opts.Assigned == "" && opts.Goal == "" {
+	if opts.Type == "" && opts.Status == "" && opts.Tag == "" && opts.Assigned == "" &&
+		opts.Goal == "" && opts.Priority == "" && opts.Sprint == "" && opts.Epic == "" && opts.Arc == "" {
 		filters = append(filters, store.NonTerminalFilter(cfg))
 	}
 

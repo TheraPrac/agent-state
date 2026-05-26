@@ -113,6 +113,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		&cobra.Group{ID: "epics-sprints-notes", Title: "Epics, Sprints, Notes"},
 		&cobra.Group{ID: "arcs", Title: "Arcs"},
 		&cobra.Group{ID: "agents", Title: "Agents"},
+		&cobra.Group{ID: "autonomy", Title: "Autonomy & Execution"},
 		&cobra.Group{ID: "maintenance", Title: "Maintenance"},
 	)
 
@@ -212,7 +213,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 
 	tuiCmd := &cobra.Command{
 		Use:   "tui",
-		Short: "Layout-A orchestration TUI (live by default; --once for static, T-372)",
+		Short: "Layout-A orchestration TUI (live by default; --once for static snapshot)",
 		Long: "Open the Layout-A frame: top agent strip, focused composite\n" +
 			"item pane (st show --full), planning queue (st recommend),\n" +
 			"bottom alerts band. Default is LIVE — fsnotify-driven\n" +
@@ -238,7 +239,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 
 	artifactCmd := &cobra.Command{
 		Use:   "artifact <id> <kind>",
-		Short: "Introspect one facet of an item (TUI build-order layer 1, T-370)",
+		Short: "Introspect one facet of an item (plan, AC, testing, PR, deps, history, etc.)",
 		Long: "Expose each of an item's ~12 artifact facets through one\n" +
 			"uniform, stdout-able command (TUI-design §4). <kind> is one\n" +
 			"of: item, plan, ac, history, testing, pr, uat, commits, deps,\n" +
@@ -300,15 +301,31 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 
 	listCmd := &cobra.Command{
 		Use:     "list",
-		Short:   "List items with optional filters",
+		Short:   "List items with optional filters (use 'goal list' to list goals)",
 		Aliases: []string{"ls"},
+		Long: `List tasks, issues, and ideas with optional filters. Default shows all non-terminal items.
+
+Filters stack (AND logic). For richer queries — sort by cost/time/LOC, filter by
+multiple comma-separated priorities, or filter by agent — use:
+  st status --filter key:value   (keys: type, status, tag, assigned, priority, epic, sprint)
+  st status --sort field[,asc|desc]
+
+To list goals with weights use:
+  st goal list`,
 		Run: func(cmd *cobra.Command, args []string) {
 			typeF, _ := cmd.Flags().GetString("type")
 			statusF, _ := cmd.Flags().GetString("status")
 			tagF, _ := cmd.Flags().GetString("tag")
 			assignedF, _ := cmd.Flags().GetString("assigned")
 			goalF, _ := cmd.Flags().GetString("goal")
-			exitCode = command.List(appStore, appCfg, command.ListOpts{Type: typeF, Status: statusF, Tag: tagF, Assigned: assignedF, Goal: goalF})
+			priorityF, _ := cmd.Flags().GetString("priority")
+			sprintF, _ := cmd.Flags().GetString("sprint")
+			epicF, _ := cmd.Flags().GetString("epic")
+			arcF, _ := cmd.Flags().GetString("arc")
+			exitCode = command.List(appStore, appCfg, command.ListOpts{
+				Type: typeF, Status: statusF, Tag: tagF, Assigned: assignedF, Goal: goalF,
+				Priority: priorityF, Sprint: sprintF, Epic: epicF, Arc: arcF,
+			})
 		},
 	}
 	listCmd.Flags().StringP("type", "T", "", "filter by type (task, issue, idea)")
@@ -316,6 +333,10 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	listCmd.Flags().String("tag", "", "filter by tag")
 	listCmd.Flags().String("assigned", "", "filter by assigned agent")
 	listCmd.Flags().String("goal", "", "filter by goal ID (items whose goals: field contains this ID)")
+	listCmd.Flags().StringP("priority", "p", "", "filter by priority: single value or comma-list (e.g. 0, 0,1)")
+	listCmd.Flags().String("sprint", "", "filter by sprint ID")
+	listCmd.Flags().String("epic", "", "filter by epic ID")
+	listCmd.Flags().String("arc", "", "filter by arc name")
 	root.AddCommand(listCmd)
 
 	createCmd := &cobra.Command{
@@ -668,12 +689,14 @@ listed (shown as '—'); a registration whose PID is dead shows 'stale'.`,
 		return c
 	}
 	agentCmd.AddCommand(newAgentPSCmd("ps", "agent ps"))
-	// Top-level `st agents` alias for the "global view" muscle-memory.
-	root.AddCommand(newAgentPSCmd("agents", "agents"))
+	// Top-level `st agents` — alias for `st agent ps` for muscle-memory convenience.
+	agentsAlias := newAgentPSCmd("agents", "agents")
+	agentsAlias.Short = "Agent fleet process table — alias for 'agent ps'"
+	root.AddCommand(agentsAlias)
 
 	agentRegisterCmd := &cobra.Command{
 		Use:   "register",
-		Short: "Record this workspace agent's live session (T-357 producer)",
+		Short: "Record this workspace agent's live session (invoked by SessionStart hook)",
 		Long: `Record this workspace agent's live Claude session in
 .as/agents/<id>.yaml so the registration-derived columns (UPTIME,
 authoritative SESSION, PID liveness) populate in 'st agent ps' and
@@ -755,6 +778,78 @@ Side effects: none — pure read of resolved config.`,
 	}
 	agentIdentityCmd.AddCommand(agentIdentityShowCmd)
 	agentCmd.AddCommand(agentIdentityCmd)
+
+	agentGoalCmd := &cobra.Command{
+		Use:   "goal",
+		Short: "Manage per-agent goal focus for st next / st recommend",
+		Long: `Pin this agent to a specific active goal so that st next and
+st recommend only surface candidates linked to that goal.
+
+Focus persists across sessions and compactions until explicitly cleared
+or until the focused goal reaches a terminal state (met or dropped), at
+which point it is auto-cleared.`,
+		Example: `  # Show the current focus
+  st agent goal show
+
+  # Pin to an active goal
+  st agent goal set G-001
+
+  # Remove the focus and restore global ranking
+  st agent goal clear`,
+	}
+	agentGoalSetCmd := &cobra.Command{
+		Use:   "set <goal-id>",
+		Short: "Set the goal focus for this agent (must be an active goal)",
+		Long: `Pin this agent's work queue to a single active goal.
+
+After calling st agent goal set, st next and st recommend will only surface
+candidates whose goals field includes the specified goal id. The focus persists
+across sessions and compactions until cleared or until the goal reaches a
+terminal state (met or dropped).
+
+The goal must be type:goal with status:active. Draft, met, and dropped goals
+are rejected.`,
+		Example: `  # Focus this agent on the alpha go-live goal
+  st agent goal set G-001
+
+  # Confirm the focus was recorded
+  st agent goal show`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalSet(appStore, appCfg, args[0])
+		},
+	}
+	agentGoalClearCmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Clear the goal focus, restoring global ranking in st next / st recommend",
+		Long: `Remove the per-agent goal focus so that st next and st recommend return
+to the full global priority-ranked candidate set.
+
+This is the inverse of st agent goal set. Use it when the operator reassigns
+the agent to a different goal or to unrestricted work.`,
+		Example: `  # Return to full global ranking
+  st agent goal clear`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalClear(appCfg)
+		},
+	}
+	agentGoalShowCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Print the current goal focus for this agent",
+		Long: `Print the goal id and title this agent is currently focused on, or
+"(none)" if no focus has been set.
+
+Use this to confirm the focus before starting a new session or after a resume.`,
+		Example: `  # Check what goal this agent is focused on
+  st agent goal show`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.AgentGoalShow(appStore, appCfg)
+		},
+	}
+	agentGoalCmd.AddCommand(agentGoalSetCmd, agentGoalClearCmd, agentGoalShowCmd)
+	agentCmd.AddCommand(agentGoalCmd)
 
 	agentWorkspaceCmd := &cobra.Command{
 		Use:   "workspace",
@@ -942,7 +1037,7 @@ in-flight, run 'st release' against the active items first.
 
 	spawnCmd := &cobra.Command{
 		Use:   "spawn <item>",
-		Short: "Launch a budget-capped reasoning worker on an item (T-360)",
+		Short: "Launch a budget-capped Claude worker on an item",
 		Long: "Launch a detached, budget-capped, JSONL-observable reasoning\n" +
 			"worker (`claude -p`, resolved binary) that drives <item> through\n" +
 			"the full CLAUDE.md delivery loop. The per-item budget is read from\n" +
@@ -1002,7 +1097,7 @@ in-flight, run 'st release' against the active items first.
 	// (concurrent fan-out is T-364).
 	coordinateCmd := &cobra.Command{
 		Use:   "coordinate",
-		Short: "Run the Shape-3 coordinator loop (T-363)",
+		Short: "Pick the next queue item, spawn a budget-capped worker, and supervise it",
 		Long: "Pick the next approved/unblocked queue item, spawn ONE\n" +
 			"budget-capped reasoning worker (via `st spawn`), supervise it\n" +
 			"through the observability substrate (registry PID / session\n" +
@@ -1197,7 +1292,7 @@ verdict drifts toward what the operator actually accepts.`,
 
 	recommendCmd := &cobra.Command{
 		Use:   "recommend",
-		Short: "Rank workable items with an inspectable \"why this next\" rationale (T-369)",
+		Short: "Rank workable items with an inspectable 'why this next' rationale",
 		Long: "Score the workable items and print them ranked, each with a\n" +
 			"decomposed rationale (priority · unblock leverage · sprint\n" +
 			"completion · goal weight · age). Priority dominates by construction;\n" +
@@ -1215,8 +1310,9 @@ verdict drifts toward what the operator actually accepts.`,
 			scope, _ := cmd.Flags().GetString("scope")
 			queue, _ := cmd.Flags().GetBool("queue")
 			brief, _ := cmd.Flags().GetBool("brief")
+			goal, _ := cmd.Flags().GetString("goal")
 			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{
-				JSON: jsonOut, Top: top, Scope: scope, Queue: queue, Brief: brief,
+				JSON: jsonOut, Top: top, Scope: scope, Queue: queue, Brief: brief, Goal: goal,
 			})
 		},
 	}
@@ -1229,15 +1325,17 @@ verdict drifts toward what the operator actually accepts.`,
 		"score the DISPATCH view (queue + EligibleForDispatch) — what `st coordinate` sees")
 	recommendCmd.Flags().Bool("brief", false,
 		"one-line render: <ID> p<N>  <title> — <rationale> (used by `st next`)")
+	recommendCmd.Flags().String("goal", "",
+		"filter to items in this goal (overrides agent focus_goal)")
 	root.AddCommand(recommendCmd)
 
 	nextCmd := &cobra.Command{
 		Use:   "next",
-		Short: "Print the single top-ranked workable item (one-line brief form, T-411)",
+		Short: "Print the single top-ranked workable item (alias: recommend --top 1 --brief)",
 		Long: "Alias for `st recommend --top 1 --brief`: scores the PLANNING view\n" +
 			"and prints the top pick as one line — ID, priority, title, and rationale.\n" +
 			"Goal weight, unblock leverage, sprint pressure, and age all contribute;\n" +
-			"priority dominates by construction.",
+			"priority dominates by construction. Respects the agent's focus_goal when set.",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{Top: 1, Brief: true})
@@ -1510,7 +1608,7 @@ verdict drifts toward what the operator actually accepts.`,
 	depGraphCmd.Flags().Bool("json", false, "output as JSON")
 	depAddCmd := &cobra.Command{
 		Use:   "add <id> <dep-id>",
-		Short: "Add a dependency (id depends on dep-id)",
+		Short: "Add a dependency: <id> will be blocked by <dep-id>",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.DepAdd(appStore, appCfg, args[0], args[1])
@@ -1518,7 +1616,7 @@ verdict drifts toward what the operator actually accepts.`,
 	}
 	depRmCmd := &cobra.Command{
 		Use:   "rm <id> <dep-id>",
-		Short: "Remove a dependency",
+		Short: "Remove a dependency between two items",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.DepRm(appStore, appCfg, args[0], args[1])
@@ -1555,7 +1653,7 @@ verdict drifts toward what the operator actually accepts.`,
 	// st resume [<id>] — I-679 cross-session execution & decision replay.
 	resumeCmd := &cobra.Command{
 		Use:   "resume [id]",
-		Short: "Regenerate the paste-able session-resume prompt live from the changelog (I-679)",
+		Short: "Regenerate the session-resume prompt from the live changelog",
 		Long: "Rebuilds a fresh session's starting context for a long-running item\n" +
 			"from the LIVE changelog — typed decision/exec/transition replay, the\n" +
 			"plan, declarative state, and a self-attestation banner that loudly\n" +
@@ -1737,7 +1835,7 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 	goalCmd.AddCommand(goalCreateCmd)
 	goalCmd.AddCommand(&cobra.Command{
 		Use:   "activate <goal-id>",
-		Short: "Transition a goal from draft to active",
+		Short: "Transition a goal from draft to active (enforces ≤100 weight sum)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.GoalActivate(appStore, appCfg, args[0])
@@ -1753,7 +1851,7 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 	})
 	goalDropCmd := &cobra.Command{
 		Use:   "drop <goal-id>",
-		Short: "Transition a goal to dropped (terminal) with an enumerated reason",
+		Short: "Transition a goal to dropped (terminal); requires --reason",
 		Long: `Drop a goal and record why it was abandoned. Valid reasons:
   superseded       — a newer goal supersedes this one
   premise-invalid  — the original premise no longer holds
@@ -1873,7 +1971,7 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 	}
 	sprintCreateCmd := &cobra.Command{
 		Use:   "create <epic-id> <title>",
-		Short: "Create a sprint under an epic",
+		Short: "Create a sprint under <epic-id>",
 		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			desc, _ := cmd.Flags().GetString("description")
@@ -2184,8 +2282,9 @@ lets you pick one, validates the plan, and starts execution.`,
 	}
 
 	prepCmd := &cobra.Command{
-		Use:   "prep [sprint|item]",
-		Short: "Generate implementation plans for unplanned items — DEPRECATED, use `st plan prep`",
+		Use:    "prep [sprint|item]",
+		Hidden: true, // DEPRECATED — use `st plan prep`; alias will be removed after next release
+		Short:  "DEPRECATED — use `st plan prep`",
 		Long: `Prep launches Claude Code to explore the codebase and create structured
 implementation plans for each unplanned item.
 
@@ -2319,14 +2418,16 @@ rates. I-180.`,
 	queueCmd.Commands()[0].Flags().String("reason", "", "why this item is in the queue")
 	queueShowCmd := &cobra.Command{
 		Use:     "show",
-		Short:   "Display the ordered work queue",
+		Short:   "[DEPRECATED for work ordering — use st next] Goal-weighted priority list (st recommend alias); --raw for queue internals",
 		Aliases: []string{"ls"},
 		Run: func(cmd *cobra.Command, args []string) {
 			all, _ := cmd.Flags().GetBool("all")
-			exitCode = command.QueueShow(appStore, appCfg, command.QueueShowOpts{AgentAll: all})
+			raw, _ := cmd.Flags().GetBool("raw")
+			exitCode = command.QueueShow(appStore, appCfg, command.QueueShowOpts{AgentAll: all, Raw: raw})
 		},
 	}
-	queueShowCmd.Flags().Bool("all", false, "show global queue without agent-scoped visual treatment")
+	queueShowCmd.Flags().Bool("all", false, "show global queue without agent-scoped visual treatment (only effective with --raw)")
+	queueShowCmd.Flags().Bool("raw", false, "show raw positional queue internals (for add/rm/approve inspection, not work ordering)")
 	queueCmd.AddCommand(queueShowCmd)
 	queueNextCmd := &cobra.Command{
 		Use:   "next",
@@ -2414,11 +2515,11 @@ rates. I-180.`,
 	// the same `plan` verb for discoverability.
 	planCmd := &cobra.Command{
 		Use:   "plan",
-		Short: "Manage per-item plan approvals (I-178 plan-before-code gate)",
+		Short: "Manage per-item plan approvals (plan-before-code gate; hook-enforced)",
 	}
 	planApproveCmd := &cobra.Command{
 		Use:   "approve <id>",
-		Short: "Mark an item's plan as approved (sets the I-178 gate to allow code edits)",
+		Short: "Mark an item's plan as approved to allow code edits",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			strict, _ := cmd.Flags().GetBool("strict")
@@ -2435,7 +2536,7 @@ rates. I-180.`,
 	planApproveCmd.Flags().Bool("bypass-review", false, "skip the I-710 plan-review sub-agent (operator escape hatch when the sub-agent is broken or the plan has been manually reviewed) — I-752")
 	planResetCmd := &cobra.Command{
 		Use:   "reset <id>",
-		Short: "Revert a previously-approved plan (closes the I-178 gate; needs re-approval)",
+		Short: "Revoke plan approval; same plan body, needs re-approval",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.PlanReset(appStore, appCfg, args[0])
@@ -2443,7 +2544,7 @@ rates. I-180.`,
 	}
 	planInvalidateCmd := &cobra.Command{
 		Use:   "invalidate <id>",
-		Short: "Discard a plan body so it can be re-authored from scratch (I-767)",
+		Short: "Discard a plan body so it can be re-authored from scratch",
 		Long: `Plan invalidate deletes the .plans/<id>.md sidecar (and its
 .report.md), clears the item's approval stamp, and drops the
 dangling sidecar path from linked_plans. The item becomes
@@ -2816,13 +2917,19 @@ var commandGroupAssignments = map[string]string{
 	"update": "state-mgmt",
 	"check":  "state-mgmt",
 	"tag":    "state-mgmt",
+	"item":   "state-mgmt",
 
 	// Workflow
-	"start":   "workflow",
-	"close":   "workflow",
-	"finish":  "workflow",
-	"release": "workflow",
-	"commit":  "workflow",
+	"start":        "workflow",
+	"close":        "workflow",
+	"finish":       "workflow",
+	"release":      "workflow",
+	"commit":       "workflow",
+	"plan":         "workflow",
+	"revert":       "workflow",
+	"split":        "workflow",
+	"unlock":       "workflow",
+	"infer-stage":  "workflow",
 
 	// Testing & Evidence
 	"test": "testing",
@@ -2835,17 +2942,21 @@ var commandGroupAssignments = map[string]string{
 	"smoke":        "uat-pipeline",
 
 	// Querying
-	"status":    "querying",
-	"stats":     "querying",
-	"ready":     "querying",
-	"prime":     "querying",
-	"resume":    "querying",
-	"log":       "querying",
-	"recommend": "querying",
-	"next":      "querying",
-	"artifact":  "querying",
-	"watch":     "querying",
-	"tui":       "querying",
+	"status":     "querying",
+	"stats":      "querying",
+	"ready":      "querying",
+	"prime":      "querying",
+	"resume":     "querying",
+	"log":        "querying",
+	"recommend":  "querying",
+	"next":       "querying",
+	"artifact":   "querying",
+	"watch":      "querying",
+	"tui":        "querying",
+	"cost":       "querying",
+	"model-rec":  "querying",
+	"files":      "querying",
+	"transcript": "querying",
 
 	// Dependencies
 	"dep": "deps",
@@ -2854,6 +2965,7 @@ var commandGroupAssignments = map[string]string{
 	"epic":   "epics-sprints-notes",
 	"sprint": "epics-sprints-notes",
 	"note":   "epics-sprints-notes",
+	"goal":   "epics-sprints-notes",
 
 	// Arcs
 	"arc": "arcs",
@@ -2863,11 +2975,22 @@ var commandGroupAssignments = map[string]string{
 	"agents": "agents",
 	"mail":   "agents",
 
+	// Autonomy & Execution
+	"classify":   "autonomy",
+	"decide":     "autonomy",
+	"red":        "autonomy",
+	"coordinate": "autonomy",
+	"run":        "autonomy",
+	"advance":    "autonomy",
+	"spawn":      "autonomy",
+
 	// Maintenance
 	"index":     "maintenance",
 	"migrate":   "maintenance",
 	"reconcile": "maintenance",
 	"sync":      "maintenance",
+	"cache":     "maintenance",
+	"session":   "maintenance",
 }
 
 // allLookLikePairs reports whether every argument is of the form

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -275,5 +276,47 @@ func TestGoalShowRendersWeight(t *testing.T) {
 
 	if !strings.Contains(out, "weight: 40") {
 		t.Errorf("show output missing 'weight: 40':\n%s", out)
+	}
+}
+
+func TestGoalMarkMet_ClearsAgentGoalFocus(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s := reloadStoreGoal(t, cfg)
+
+	if err := agent.SetGoalFocus(cfg, "agent-x", "G-001"); err != nil {
+		t.Fatalf("SetGoalFocus: %v", err)
+	}
+	if got := agent.GetGoalFocus(cfg, "agent-x"); got != "G-001" {
+		t.Fatalf("precondition: focus=%q, want G-001", got)
+	}
+
+	if rc := GoalMarkMet(s, cfg, "G-001"); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	if got := agent.GetGoalFocus(cfg, "agent-x"); got != "" {
+		t.Errorf("focus not cleared after mark-met: %q", got)
+	}
+}
+
+func TestGoalDrop_ClearsAgentGoalFocus(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s := reloadStoreGoal(t, cfg)
+
+	if err := agent.SetGoalFocus(cfg, "agent-x", "G-001"); err != nil {
+		t.Fatalf("SetGoalFocus: %v", err)
+	}
+	if got := agent.GetGoalFocus(cfg, "agent-x"); got != "G-001" {
+		t.Fatalf("precondition: focus=%q, want G-001", got)
+	}
+
+	if rc := GoalDrop(s, cfg, "G-001", model.ValidDropReasons[0]); rc != 0 {
+		t.Fatalf("GoalDrop rc=%d", rc)
+	}
+
+	if got := agent.GetGoalFocus(cfg, "agent-x"); got != "" {
+		t.Errorf("focus not cleared after drop: %q", got)
 	}
 }

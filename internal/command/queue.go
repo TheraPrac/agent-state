@@ -204,11 +204,36 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 // rows visually distinguish current-agent / unassigned / peer items.
 // AgentAll suppresses the visual treatment so the operator sees the
 // raw global queue.
+//
+// I-838: Raw exposes the legacy positional queue (for debugging/approval
+// workflows). Default behaviour is now aliased to `st recommend` — the
+// goal-weighted authoritative work-ordering surface.
 type QueueShowOpts struct {
 	AgentAll bool
+	Raw      bool
 }
 
+// QueueShow renders the work priority list.
+//
+// Default (Raw=false): aliased to st recommend — shows goal-weighted
+// candidates so `st queue show` produces the authoritative priority
+// order instead of the stale positional queue.
+//
+// Raw=true: legacy positional queue (useful for st queue add/rm/approve
+// inspection, not for deciding what to work on).
 func QueueShow(s *store.Store, cfg *config.Config, opts QueueShowOpts) int {
+	if !opts.Raw {
+		fmt.Printf("%s⚠  DEPRECATED as a work-ordering surface%s — aliased to %sst recommend%s (use %sst next%s for single top item).\n",
+			cYellow, cReset, cBold, cReset, cBold, cReset)
+		fmt.Printf("   For raw queue internals (add/rm/approve inspection): %sst queue show --raw%s\n\n",
+			cDim, cReset)
+		return recommendTo(os.Stdout, s, cfg, RecommendOpts{})
+	}
+
+	// Raw mode: legacy positional queue view.
+	fmt.Printf("%s⚠  Raw queue internals%s — not goal-weighted. For work ordering: %sst next%s\n\n",
+		cYellow, cReset, cBold, cReset)
+
 	entries := LoadQueue(cfg)
 	if len(entries) == 0 {
 		fmt.Println("Queue is empty")

@@ -221,8 +221,9 @@ func TestQueueShow_VisualClassesApplyInsideAgent(t *testing.T) {
 		t.Fatalf("QueueAdd T-003: %d", rc)
 	}
 
+	// Raw=true: legacy queue view where agent-scoped visual treatment renders.
 	out := captureStdout(t, func() {
-		QueueShow(s, cfg, QueueShowOpts{})
+		QueueShow(s, cfg, QueueShowOpts{Raw: true})
 	})
 	// Scoping headline should be present.
 	if !strings.Contains(out, "agent-c") {
@@ -235,7 +236,7 @@ func TestQueueShow_VisualClassesApplyInsideAgent(t *testing.T) {
 
 	// --all suppresses the visual treatment.
 	allOut := captureStdout(t, func() {
-		QueueShow(s, cfg, QueueShowOpts{AgentAll: true})
+		QueueShow(s, cfg, QueueShowOpts{Raw: true, AgentAll: true})
 	})
 	if strings.Contains(allOut, "[agent-a]") {
 		t.Errorf("--all should suppress peer annotation; got:\n%s", allOut)

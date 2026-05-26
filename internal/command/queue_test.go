@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -759,5 +760,42 @@ func TestQueuePruneKeepsMissingItems(t *testing.T) {
 	}
 	if !foundGhost {
 		t.Error("prune should have kept the ghost entry T-999 (store miss ≠ terminal)")
+	}
+}
+
+// TestQueueShowDeprecationBanner verifies that the default (non-raw) QueueShow
+// output contains the deprecation notice and directs users to st next.
+func TestQueueShowDeprecationBanner(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	QueueAdd(s, cfg, "T-001", QueueOpts{})
+
+	// Capture stdout.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	code := QueueShow(s, cfg, QueueShowOpts{}) // default: Raw=false
+
+	w.Close()
+	os.Stdout = origStdout
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read captured output: %v", err)
+	}
+	out := buf.String()
+
+	if code != 0 {
+		t.Errorf("QueueShow returned %d, want 0", code)
+	}
+	if !strings.Contains(strings.ToUpper(out), "DEPRECATED") {
+		t.Errorf("output missing DEPRECATED notice; got:\n%s", out)
+	}
+	if !strings.Contains(out, "st next") {
+		t.Errorf("output missing 'st next' reference; got:\n%s", out)
 	}
 }

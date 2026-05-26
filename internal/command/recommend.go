@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/agent"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/coordinator"
 	"github.com/jfinlinson/agent-state/internal/deps"
@@ -30,6 +31,7 @@ type RecommendOpts struct {
 	Scope string // "all" (default) | "sprint" (active-sprint members only)
 	Queue bool   // candidate set = the DISPATCH view (queue + EligibleForDispatch)
 	Brief bool   // one-line render: "<ID> p<N>  <title> — <rationale>"
+	Goal  string // explicit goal filter (overrides agent focus_goal when set)
 }
 
 // recommendJSON is the STABLE machine contract (documented for the T-348
@@ -124,8 +126,10 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 //   - default ⇒ the PLANNING view: g.Ready() (unblocked + start-status +
 //     unassigned) — the established "what's workable" primitive.
 //
-// --scope sprint further restricts to members of an ACTIVE sprint, using
-// the already-loaded sprints map (no second registry read).
+// --scope sprint further restricts to members of an ACTIVE sprint.
+// --goal (or the calling agent's focus_goal when no explicit flag is set)
+// restricts to items linked to that goal; if the focused goal is terminal
+// or missing, the focus is auto-cleared and the global set is used instead.
 func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	opts RecommendOpts, sprints map[string]coordinator.SprintInfo) []*model.Item {
 
@@ -158,6 +162,37 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 		}
 		cands = filtered
 	}
+
+	// Goal filter: explicit --goal flag takes precedence; fall back to the
+	// calling agent's focus_goal. If the focused goal is terminal or missing,
+	// auto-clear it and skip the filter (defensive — handles the window
+	// between GoalMarkMet/GoalDrop and the agent noticing).
+	goalID := opts.Goal
+	if goalID == "" {
+		goalID = agent.GetGoalFocus(cfg, cfg.Identity().ID)
+	}
+	if goalID != "" {
+		goal, ok := s.Get(goalID)
+		if !ok || goal.Type != "goal" || goal.Status != "active" {
+			// Goal is gone or terminal — auto-clear so the agent isn't
+			// silently stuck with an empty result set.
+			if opts.Goal == "" { // only auto-clear when it came from focus, not --goal
+				_ = agent.ClearGoalFocus(cfg, cfg.Identity().ID)
+			}
+		} else {
+			filtered := cands[:0]
+			for _, it := range cands {
+				for _, gid := range it.Goals {
+					if gid == goalID {
+						filtered = append(filtered, it)
+						break
+					}
+				}
+			}
+			cands = filtered
+		}
+	}
+
 	return cands
 }
 

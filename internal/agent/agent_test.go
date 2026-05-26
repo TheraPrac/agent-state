@@ -391,3 +391,129 @@ func TestRegisterSelf_StartedReset(t *testing.T) {
 		t.Errorf("new session not recorded: %q", g.SessionID)
 	}
 }
+
+func TestRegistration_GoalFocusRoundTrip(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	// Write a registration with GoalFocus set, then read it back.
+	path := filepath.Join(cfg.AgentsDir(), "agent-a.yaml")
+	if err := os.MkdirAll(cfg.AgentsDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := &Registration{AgentID: "agent-a", Root: "agent-a", PID: 1, Started: "2026-01-01T00:00:00Z", GoalFocus: "G-001"}
+	if err := writeRegistration(path, reg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadRegistration(cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("LoadRegistration: %v", err)
+	}
+	if got.GoalFocus != "G-001" {
+		t.Errorf("GoalFocus = %q, want G-001", got.GoalFocus)
+	}
+
+	// Empty GoalFocus must not write the key at all.
+	reg.GoalFocus = ""
+	if err := writeRegistration(path, reg); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), "goal_focus") {
+		t.Errorf("empty GoalFocus must not be written: %s", body)
+	}
+}
+
+func TestRegisterSelf_PreservesGoalFocus(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	// Prime a registration with a goal focus.
+	if err := SetGoalFocus(cfg, "agent-a", "G-002"); err != nil {
+		t.Fatal(err)
+	}
+
+	// RegisterSelf for a NEW session must still carry the focus forward.
+	if _, err := RegisterSelf(cfg, SelfOptions{AgentID: "agent-a", PID: 99, SessionID: "new-session"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := LoadRegistration(cfg, "agent-a")
+	if got.GoalFocus != "G-002" {
+		t.Errorf("RegisterSelf must preserve GoalFocus across sessions; got %q", got.GoalFocus)
+	}
+}
+
+func TestSetClearGetGoalFocus(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	if got := GetGoalFocus(cfg, "agent-a"); got != "" {
+		t.Errorf("GetGoalFocus before set = %q, want empty", got)
+	}
+
+	if err := SetGoalFocus(cfg, "agent-a", "G-003"); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetGoalFocus(cfg, "agent-a"); got != "G-003" {
+		t.Errorf("GetGoalFocus after set = %q, want G-003", got)
+	}
+
+	if err := ClearGoalFocus(cfg, "agent-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetGoalFocus(cfg, "agent-a"); got != "" {
+		t.Errorf("GetGoalFocus after clear = %q, want empty", got)
+	}
+
+	// Clear is idempotent when already empty.
+	if err := ClearGoalFocus(cfg, "agent-a"); err != nil {
+		t.Errorf("double clear returned error: %v", err)
+	}
+}
+
+func TestSetGoalFocus_AutoCreatesRegistration(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	// No registration exists yet.
+	if _, err := LoadRegistration(cfg, "agent-x"); err != nil || func() bool { r, _ := LoadRegistration(cfg, "agent-x"); return r != nil }() {
+		t.Skip("registration already exists, skip stub-create test")
+	}
+
+	if err := SetGoalFocus(cfg, "agent-x", "G-001"); err != nil {
+		t.Fatalf("SetGoalFocus with no prior file: %v", err)
+	}
+	got, err := LoadRegistration(cfg, "agent-x")
+	if err != nil || got == nil {
+		t.Fatalf("registration not created: %v / %v", got, err)
+	}
+	if got.GoalFocus != "G-001" {
+		t.Errorf("GoalFocus = %q, want G-001", got.GoalFocus)
+	}
+}
+
+func TestClearGoalFocusForAllAgents(t *testing.T) {
+	cfg := setupAgentTestCfg(t)
+
+	for _, id := range []string{"agent-a", "agent-b", "agent-c"} {
+		if err := SetGoalFocus(cfg, id, "G-001"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// agent-d focused on a different goal — must not be touched.
+	if err := SetGoalFocus(cfg, "agent-d", "G-002"); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := ClearGoalFocusForAllAgents(cfg, "G-001")
+	if err != nil {
+		t.Fatalf("ClearGoalFocusForAllAgents: %v", err)
+	}
+	if len(cleared) != 3 {
+		t.Errorf("cleared %d agents, want 3: %v", len(cleared), cleared)
+	}
+	for _, id := range []string{"agent-a", "agent-b", "agent-c"} {
+		if got := GetGoalFocus(cfg, id); got != "" {
+			t.Errorf("%s still has focus %q after sweep", id, got)
+		}
+	}
+	if got := GetGoalFocus(cfg, "agent-d"); got != "G-002" {
+		t.Errorf("agent-d focus changed from G-002 to %q", got)
+	}
+}
