@@ -120,7 +120,7 @@ func loadEmpiricalBaselines(items []*model.Item, b *Boundary) {
 // aiTurnsCostBySession walks item.Doc.Lines for time_tracking.ai_turns entries
 // and returns a map of session-id → total cost across all turns in that session.
 // Entries with absent, malformed, or non-positive cost are skipped individually;
-// sessions with a net cost ≤ 0 after summing are also excluded.
+// sessions whose turns are all skipped are absent from the returned map.
 func aiTurnsCostBySession(item *model.Item) map[string]float64 {
 	if item == nil || item.Doc == nil {
 		return nil
@@ -174,12 +174,17 @@ func aiTurnsCostBySession(item *model.Item) map[string]float64 {
 }
 
 // empExtractField pulls the value of a "key:value" token from an ai_turns
-// line. Value runs to the next space or end of string. Duplicates
-// command.extractField to avoid a circular import (command imports coordinator,
-// so coordinator cannot import command).
+// line. Value runs to the next space or end of string. The match must be at
+// position 0 or immediately after a space so that a key string appearing
+// inside a value (e.g. "session:" inside a response ID) is not extracted.
+// Duplicates command.extractField to avoid a circular import (command imports
+// coordinator, so coordinator cannot import command).
 func empExtractField(line, key string) string {
 	idx := strings.Index(line, key)
 	if idx < 0 {
+		return ""
+	}
+	if idx > 0 && line[idx-1] != ' ' {
 		return ""
 	}
 	rest := line[idx+len(key):]
