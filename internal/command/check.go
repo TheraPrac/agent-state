@@ -42,6 +42,9 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 				fmt.Printf("  fixed: removed duplicate %s\n", p)
 			}
 		}
+		if err := s.GitSync("st check --fix"); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: check: git sync failed: %v\n", err)
+		}
 	}
 
 	var issues int

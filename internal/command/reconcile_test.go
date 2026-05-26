@@ -2,6 +2,7 @@ package command
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -625,5 +626,161 @@ func TestReconcileNoGHSkipsPRPhases(t *testing.T) {
 	code := Reconcile(s, cfg, opts)
 	if code != 0 {
 		t.Errorf("reconcile should succeed even without gh, got exit %d", code)
+	}
+}
+
+// setupGitEnvForReconcile creates a test env with a git repo and returns
+// a helper that runs git commands in that directory.
+func setupGitEnvForReconcile(t *testing.T) (*store.Store, *config.Config, func(...string)) {
+	t.Helper()
+	s, cfg := setupTestEnv(t)
+	root := cfg.Root()
+
+	// Set T-003 to queued so reconcileStaleActive does not release it and
+	// consume the commit that should be credited to "st reconcile:".
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.Status = "queued"
+		it.Doc.SetField("status", "queued")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_DATE=2026-03-25T10:00:00-06:00",
+			"GIT_COMMITTER_DATE=2026-03-25T10:00:00-06:00",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	os.WriteFile(filepath.Join(root, ".gitignore"), []byte("**/.st-git.lock\n"), 0644)
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	run("add", "-A")
+	run("commit", "-m", "initial")
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	return s, cfg, run
+}
+
+// trackedDirty returns true when the working tree has uncommitted modifications
+// to already-tracked files. Untracked files (lines beginning with "??") are
+// ignored — they represent newly-created files that a GitSync with "add -u"
+// correctly skips per I-442's canonical-clone bleed protection.
+func trackedDirty(t *testing.T, dir string) bool {
+	t.Helper()
+	out, _ := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" || strings.HasPrefix(line, "??") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func TestReconcileGitSyncsAfterUpdates(t *testing.T) {
+	s, cfg, gitRun := setupGitEnvForReconcile(t)
+	root := cfg.Root()
+
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-reconcile-git")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
+	// Commit setup state so Reconcile's GitSync creates a new commit on top.
+	gitRun("add", "-A")
+	gitRun("commit", "-m", "setup T-001")
+
+	opts := ReconcileOpts{
+		BranchCheck: func(_ *config.Config, _ string) bool { return true },
+		ToolCheck:   func(name string) bool { return false },
+	}
+	if rc := Reconcile(s, cfg, opts); rc != 0 {
+		t.Fatalf("Reconcile rc=%d", rc)
+	}
+
+	out, err := exec.Command("git", "-C", root, "log", "-1", "--format=%s").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "st reconcile:") {
+		t.Errorf("HEAD commit = %q, want 'st reconcile:'", strings.TrimSpace(string(out)))
+	}
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after Reconcile — GitSync must commit all modifications")
+	}
+}
+
+func TestReconcileDryRunDoesNotSync(t *testing.T) {
+	s, cfg, gitRun := setupGitEnvForReconcile(t)
+	root := cfg.Root()
+
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-dryrun-git")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
+	gitRun("add", "-A")
+	gitRun("commit", "-m", "setup T-001")
+
+	// Record the HEAD sha before the dry-run.
+	shaBeforeOut, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	shaBefore := strings.TrimSpace(string(shaBeforeOut))
+
+	opts := ReconcileOpts{
+		DryRun:      true,
+		BranchCheck: func(_ *config.Config, _ string) bool { return true },
+		ToolCheck:   func(name string) bool { return false },
+	}
+	if rc := Reconcile(s, cfg, opts); rc != 0 {
+		t.Fatalf("Reconcile (dry-run) rc=%d", rc)
+	}
+
+	shaAfterOut, _ := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	shaAfter := strings.TrimSpace(string(shaAfterOut))
+	if shaBefore != shaAfter {
+		t.Errorf("dry-run must not create a new commit: before=%s after=%s", shaBefore, shaAfter)
+	}
+}
+
+func TestReconcileLeavesCleanWorkingTree(t *testing.T) {
+	s, cfg, gitRun := setupGitEnvForReconcile(t)
+	root := cfg.Root()
+
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-clean-tree")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
+	gitRun("add", "-A")
+	gitRun("commit", "-m", "setup T-001")
+
+	opts := ReconcileOpts{
+		BranchCheck: func(_ *config.Config, _ string) bool { return true },
+		ToolCheck:   func(name string) bool { return false },
+	}
+	Reconcile(s, cfg, opts)
+
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after Reconcile — GitSync must commit all modifications")
 	}
 }

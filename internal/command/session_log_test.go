@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/testutil"
 )
@@ -17,14 +19,14 @@ func TestSessionLog_BasicAccrual(t *testing.T) {
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
 
 	p := SessionLogPayload{
-		SessionID:       "sess-1",
-		Model:           "claude-opus-4-7",
-		ProcessMs:       42_000,
-		AIMs:            38_000,
-		RegInputTokens:  1000,
-		RegOutputTokens: 500,
-		CacheReadInputTokens:   10_000,
-		CacheCreation5mInputTokens:  200,
+		SessionID:                  "sess-1",
+		Model:                      "claude-opus-4-7",
+		ProcessMs:                  42_000,
+		AIMs:                       38_000,
+		RegInputTokens:             1000,
+		RegOutputTokens:            500,
+		CacheReadInputTokens:       10_000,
+		CacheCreation5mInputTokens: 200,
 	}
 	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
 		t.Fatalf("SessionLog exit=%d", code)
@@ -433,7 +435,7 @@ func TestSessionLog_1hCacheTierAccruedAndPriced(t *testing.T) {
 	// 100k 5m + 50k 1h = 100,000 * 6.25/M + 50,000 * 10/M = 0.625 + 0.5 = 1.125
 	p := SessionLogPayload{
 		SessionID: "s", Model: "claude-opus-4-7",
-		CacheCreation5mInputTokens:   100_000, // 5m
+		CacheCreation5mInputTokens: 100_000, // 5m
 		CacheCreation1hInputTokens: 50_000,  // 1h
 	}
 	if code := SessionLog(env.S, env.Cfg, p); code != 0 {
@@ -694,12 +696,12 @@ func TestSessionLog_DropsDuplicateSubagentTurnsWithin60s(t *testing.T) {
 	SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}})
 
 	tuple := SessionLogPayload{
-		Step:             "subagent",
-		Role:             "general-purpose",
-		Model:            "claude-opus-4-7",
-		RegInputTokens:   45676,
-		RegOutputTokens:  1050962,
-		CacheReadInputTokens:    601116722,
+		Step:                       "subagent",
+		Role:                       "general-purpose",
+		Model:                      "claude-opus-4-7",
+		RegInputTokens:             45676,
+		RegOutputTokens:            1050962,
+		CacheReadInputTokens:       601116722,
 		CacheCreation1hInputTokens: 5849169,
 		// I-569 step 10 soft cap: 601M cache_read on a 0ms turn would be
 		// rejected as physically impossible. Set ProcessMs above the
@@ -826,4 +828,71 @@ func abs(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+func TestSessionLogGitSyncsAfterMutate(t *testing.T) {
+	env := testutil.NewGitEnv(t)
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	root := env.Cfg.Root()
+
+	// Push T-003 onto the stack so SessionLog resolves it as the target item.
+	if err := SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}}); err != nil {
+		t.Fatalf("SaveStack: %v", err)
+	}
+	// Commit stack file so the next GitSync creates a distinguishable new commit.
+	gitRun := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitRun("add", "-A")
+	gitRun("commit", "-m", "push T-003 stack")
+
+	p := SessionLogPayload{
+		SessionID:       "test-sid-001",
+		Model:           "claude-sonnet-4-6",
+		ProcessMs:       5000,
+		AIMs:            3000,
+		RegInputTokens:  100,
+		RegOutputTokens: 50,
+	}
+	if rc := SessionLog(env.S, env.Cfg, p); rc != 0 {
+		t.Fatalf("SessionLog rc=%d", rc)
+	}
+
+	out, err := exec.Command("git", "-C", root, "log", "-1", "--format=%s").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "as session log: T-003") {
+		t.Errorf("HEAD commit = %q, want 'as session log: T-003'", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestSessionLogLeavesCleanWorkingTree(t *testing.T) {
+	env := testutil.NewGitEnv(t)
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	root := env.Cfg.Root()
+
+	if err := SaveStack(env.Cfg, []StackEntry{{ID: "T-003"}}); err != nil {
+		t.Fatalf("SaveStack: %v", err)
+	}
+	exec.Command("git", "-C", root, "add", "-A").Run()
+	exec.Command("git", "-C", root, "commit", "-m", "push T-003 stack").Run()
+
+	p := SessionLogPayload{
+		SessionID:       "test-sid-002",
+		Model:           "claude-sonnet-4-6",
+		ProcessMs:       5000,
+		AIMs:            3000,
+		RegInputTokens:  200,
+		RegOutputTokens: 80,
+	}
+	SessionLog(env.S, env.Cfg, p)
+
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after SessionLog — GitSync must commit all modifications")
+	}
 }

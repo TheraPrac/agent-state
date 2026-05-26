@@ -38,7 +38,7 @@ type SessionLogPayload struct {
 	// (stop-metrics.sh) emit these keys; older producers sending the
 	// pre-step-9 names silently lose tokens — single PR, no shim per
 	// the plan.
-	CacheReadInputTokens   int    `json:"cache_read_input_tokens"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens"`
 	// CacheCreation5mInputTokens is the 5-minute cache write bucket (1.25x input rate).
 	// Existing producers that don't split by tier should send their total
 	// here; it's treated as all-5m and priced at 1.25x.
@@ -48,13 +48,13 @@ type SessionLogPayload struct {
 	// ephemeral_5m/1h_input_tokens), populate this field; pricing applies
 	// the 2x rate. Zero is safe — older producers still work.
 	CacheCreation1hInputTokens int     `json:"cache_creation_1h_input_tokens,omitempty"`
-	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
-	TotalTokens      int     `json:"total_tokens,omitempty"`
-	CostUSD          float64 `json:"cost_usd,omitempty"` // if 0, computed from tokens × pricing
-	CostSource       string  `json:"cost_source,omitempty"`
-	Turn             int     `json:"turn,omitempty"`    // ordinal within session; informational
-	ItemID           string  `json:"item_id,omitempty"` // if empty, resolved from stack top
-	Step             string  `json:"step,omitempty"`    // default "interactive"
+	ReasoningTokens            int     `json:"reasoning_tokens,omitempty"`
+	TotalTokens                int     `json:"total_tokens,omitempty"`
+	CostUSD                    float64 `json:"cost_usd,omitempty"` // if 0, computed from tokens × pricing
+	CostSource                 string  `json:"cost_source,omitempty"`
+	Turn                       int     `json:"turn,omitempty"`    // ordinal within session; informational
+	ItemID                     string  `json:"item_id,omitempty"` // if empty, resolved from stack top
+	Step                       string  `json:"step,omitempty"`    // default "interactive"
 
 	// ProjectDir is the producer's CLAUDE_PROJECT_DIR. I-569 step 6's
 	// reconcile-tokens needs this to derive the correct
@@ -348,6 +348,9 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "session log: writing %s: %v\n", itemID, err)
 		return 1
+	}
+	if err := s.GitSync(fmt.Sprintf("as session log: %s", itemID)); err != nil {
+		fmt.Fprintf(os.Stderr, "session log: git sync %s: %v\n", itemID, err)
 	}
 	return 0
 }
