@@ -341,7 +341,7 @@ func TestFormatLineIncludesCacheAnnotation(t *testing.T) {
 		CacheWriteTokens: 2000,
 	}
 	got := m.FormatLine()
-	if !strings.Contains(got, "cache") {
+	if !strings.Contains(got, "cached") {
 		t.Errorf("FormatLine = %q, missing cache annotation", got)
 	}
 	// With zero cache, no annotation

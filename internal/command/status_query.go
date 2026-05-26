@@ -296,6 +296,9 @@ type statusJSONMetrics struct {
 	CostUSD             float64 `json:"cost_usd"`
 	InputTokens         int     `json:"input_tokens"`
 	OutputTokens        int     `json:"output_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	CacheWriteTokens    int     `json:"cache_write_tokens"`
+	Model               string  `json:"model,omitempty"`
 	NetLOC              int     `json:"net_loc"`
 }
 
@@ -356,6 +359,9 @@ func statusJSON(s storeForQuery, cfg *config.Config, filters []filterSpec, ss so
 				CostUSD:            m.CostUSD,
 				InputTokens:        m.InputTokens,
 				OutputTokens:       m.OutputTokens,
+				CacheReadTokens:    m.CacheReadTokens,
+				CacheWriteTokens:   m.CacheWriteTokens,
+				Model:              m.Model,
 				NetLOC:             m.NetLOC,
 			},
 		}

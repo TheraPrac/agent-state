@@ -150,12 +150,17 @@ func ExtractItemMetrics(item *model.Item, manifestDir string, now time.Time, isD
 		if m.CacheReadTokens == 0 {
 			m.CacheReadTokens = readIntField(item, "time_tracking", "cache_in_tokens")
 		}
-		m.CacheWriteTokens = intField(item.TimeTracking, "cache_out_tokens") +
-			intField(item.TimeTracking, "cache_out_1h_tokens")
-		if m.CacheWriteTokens == 0 {
-			m.CacheWriteTokens = readIntField(item, "time_tracking", "cache_out_tokens") +
-				readIntField(item, "time_tracking", "cache_out_1h_tokens")
+		// Each write sub-bucket is looked up independently so a partial typed
+		// map (5m present, 1h absent) still accumulates both contributions.
+		write5m := intField(item.TimeTracking, "cache_out_tokens")
+		if write5m == 0 {
+			write5m = readIntField(item, "time_tracking", "cache_out_tokens")
 		}
+		write1h := intField(item.TimeTracking, "cache_out_1h_tokens")
+		if write1h == 0 {
+			write1h = readIntField(item, "time_tracking", "cache_out_1h_tokens")
+		}
+		m.CacheWriteTokens = write5m + write1h
 	}
 
 	// Model — typed map preferred; no doc-walker needed (last_model is always a string scalar)
@@ -214,8 +219,11 @@ func (m ItemMetrics) FormatLine() string {
 	if m.InputTokens > 0 || m.OutputTokens > 0 {
 		seg := fmt.Sprintf("%s/%s tok",
 			formatTokens(m.InputTokens), formatTokens(m.OutputTokens))
+		// Cache annotation clarifies the breakdown — cache is already included
+		// in InputTokens, not additional. "NNK cached" means "of those NNM
+		// input tokens, NNK were served from cache."
 		if cache := m.CacheReadTokens + m.CacheWriteTokens; cache > 0 {
-			seg += fmt.Sprintf(" (+%s cache)", formatTokens(cache))
+			seg += fmt.Sprintf(" (%s cached)", formatTokens(cache))
 		}
 		parts = append(parts, seg)
 	}
