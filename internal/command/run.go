@@ -5821,11 +5821,16 @@ func inferReposFromItem(cfg *config.Config, item *model.Item) []string {
 // It also injects ST_WORKSPACE_ROOT so ACs can reference workspace-relative
 // files portably regardless of whether UAT runs from a worktree or project root.
 func rewriteACPaths(cfg *config.Config, itemID, uatDir, cmd string) string {
-	// Inject ST_WORKSPACE_ROOT unconditionally so ACs can write
-	// `test -f $ST_WORKSPACE_ROOT/agent-state/...` and have it resolve
-	// correctly in both worktree and main-workspace run contexts.
+	// Inject ST_WORKSPACE_ROOT using export + semicolon so that $ST_WORKSPACE_ROOT
+	// expands correctly in the *same* command. A POSIX inline assignment
+	// (VAR=val cmd) only sets the variable in the child process's environment;
+	// the outer sh performs word expansion of `$VAR` tokens BEFORE executing the
+	// child, so `ST_WORKSPACE_ROOT='/p' bash "$ST_WORKSPACE_ROOT/..."` always
+	// expands to an empty path. `export VAR; cmd` runs the export first, writing
+	// the variable into the shell's own namespace, so subsequent word expansion
+	// resolves correctly.
 	if wsRoot := cfg.Root(); wsRoot != "" {
-		cmd = "ST_WORKSPACE_ROOT='" + wsRoot + "' " + cmd
+		cmd = "export ST_WORKSPACE_ROOT='" + wsRoot + "'; " + cmd
 	}
 
 	if cfg.Worktree == nil || !cfg.Worktree.Enabled {

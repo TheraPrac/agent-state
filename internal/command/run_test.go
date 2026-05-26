@@ -1492,7 +1492,7 @@ worktree:
 	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	uatDir := filepath.Join(root, "worktrees", "T-001")
 
-	pfx := "ST_WORKSPACE_ROOT='" + root + "' "
+	pfx := "export ST_WORKSPACE_ROOT='" + root + "'; "
 	tests := []struct {
 		input string
 		want  string
@@ -1528,9 +1528,46 @@ func TestRewriteACPathsInjectsWorkspaceRoot(t *testing.T) {
 	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 
 	got := rewriteACPaths(cfg, "T-001", root, "test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001.md")
-	want := "ST_WORKSPACE_ROOT='" + root + "' test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001.md"
+	want := "export ST_WORKSPACE_ROOT='" + root + "'; test -f $ST_WORKSPACE_ROOT/agent-state/goals/G-001.md"
 	if got != want {
 		t.Errorf("ST_WORKSPACE_ROOT not injected.\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// TestRewriteACPathsExportsWorkspaceRootForSameCmd proves that $ST_WORKSPACE_ROOT
+// expands correctly when the AC references the variable directly in the same command
+// (the inline-assignment form made this fail because the outer sh expands $VAR tokens
+// before the assignment takes effect).
+func TestRewriteACPathsExportsWorkspaceRootForSameCmd(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, ".as"), 0755)
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	cfg, _ := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
+
+	// Simulate a shell where ST_WORKSPACE_ROOT is not already set (reproduces the bug).
+	t.Setenv("ST_WORKSPACE_ROOT", "")
+	os.Unsetenv("ST_WORKSPACE_ROOT")
+
+	// AC body that references $ST_WORKSPACE_ROOT directly — the I-836 failure pattern.
+	rewritten := rewriteACPaths(cfg, "T-001", root, `echo "$ST_WORKSPACE_ROOT/agent-state"`)
+
+	// Regression guard: must NOT use the old inline-assignment form.
+	if strings.HasPrefix(rewritten, "ST_WORKSPACE_ROOT='") {
+		t.Errorf("rewritten command uses inline assignment (bug): %q", rewritten)
+	}
+
+	// Execute through the same sh -c path as production and assert the path expands.
+	out, code, err := runCmdInDir("", rewritten)
+	if err != nil {
+		t.Fatalf("runCmdInDir error: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("command exited %d, output: %q", code, out)
+	}
+	got := strings.TrimSpace(string(out))
+	want := root + "/agent-state"
+	if got != want {
+		t.Errorf("$ST_WORKSPACE_ROOT expanded incorrectly.\n got:  %q\n want: %q", got, want)
 	}
 }
 
