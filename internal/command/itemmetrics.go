@@ -18,14 +18,26 @@ import (
 // turn_count, by_provider_model, files_changed_count, etc. — and stays
 // independent on purpose.) Fields stay zero when the underlying data is
 // absent; callers use HasMetrics to decide whether to render anything.
+//
+// InputTokens / OutputTokens semantics are unchanged (total input incl.
+// cache / total output) so FormatColumns and Add aggregates are byte-stable
+// for existing callers. CacheReadTokens / CacheWriteTokens give the
+// per-bucket breakdown when the I-569 real_tokens blob is present; they
+// fall back to legacy cache_in/out_tokens fields. Model is the abbreviated
+// display label derived from time_tracking.last_model; it is not carried
+// by Add() (aggregates have no single model) and not plumbed into
+// FormatColumns (RunStatus column layout stays byte-identical).
 type ItemMetrics struct {
-	Wall         time.Duration
-	ProcessTime  time.Duration
-	AITime       time.Duration
-	CostUSD      float64
-	InputTokens  int
-	OutputTokens int
-	NetLOC       int
+	Wall             time.Duration
+	ProcessTime      time.Duration
+	AITime           time.Duration
+	CostUSD          float64
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	Model            string
+	NetLOC           int
 }
 
 // ExtractItemMetrics reads time_tracking + the PR manifest and returns a
@@ -120,6 +132,37 @@ func ExtractItemMetrics(item *model.Item, manifestDir string, now time.Time, isD
 		m.OutputTokens = intField(item.TimeTracking, "output_tokens")
 	}
 
+	// Cache token buckets — prefer canonical I-569 real_tokens blob; fall
+	// back to legacy cache_in_tokens / cache_out_tokens / cache_out_1h_tokens.
+	// readRealTokens reads from item.Doc; also try the typed TimeTracking map
+	// directly (populated on item load and used by test fixtures without Doc).
+	rt := readRealTokens(item)
+	if rt == (realTokens{}) {
+		if blob := stringField(item.TimeTracking, "real_tokens"); blob != "" {
+			rt = parseRealTokensBlob(blob)
+		}
+	}
+	if rt != (realTokens{}) {
+		m.CacheReadTokens = rt.CacheRead
+		m.CacheWriteTokens = rt.CacheCreation5m + rt.CacheCreation1h
+	} else {
+		m.CacheReadTokens = intField(item.TimeTracking, "cache_in_tokens")
+		if m.CacheReadTokens == 0 {
+			m.CacheReadTokens = readIntField(item, "time_tracking", "cache_in_tokens")
+		}
+		m.CacheWriteTokens = intField(item.TimeTracking, "cache_out_tokens") +
+			intField(item.TimeTracking, "cache_out_1h_tokens")
+		if m.CacheWriteTokens == 0 {
+			m.CacheWriteTokens = readIntField(item, "time_tracking", "cache_out_tokens") +
+				readIntField(item, "time_tracking", "cache_out_1h_tokens")
+		}
+	}
+
+	// Model — typed map preferred; no doc-walker needed (last_model is always a string scalar)
+	if tt := item.TimeTracking; tt != nil {
+		m.Model = stringField(tt, "last_model")
+	}
+
 	// Net LOC from PR manifest
 	if manifestDir != "" {
 		if mf, err := manifest.Load(manifestDir, item.ID); err == nil {
@@ -134,25 +177,29 @@ func ExtractItemMetrics(item *model.Item, manifestDir string, now time.Time, isD
 
 // HasMetrics reports whether at least one tracked field is non-zero.
 // Callers use it to skip the metric line on items that haven't accrued
-// any tracked work yet.
+// any tracked work yet. Model alone does not trigger this — a model label
+// without any spend or LOC is not a useful metric line.
 func (m ItemMetrics) HasMetrics() bool {
 	return m.Wall > 0 || m.ProcessTime > 0 || m.AITime > 0 ||
-		m.CostUSD > 0 || m.InputTokens > 0 || m.OutputTokens > 0 || m.NetLOC != 0
+		m.CostUSD > 0 || m.InputTokens > 0 || m.OutputTokens > 0 ||
+		m.CacheReadTokens > 0 || m.CacheWriteTokens > 0 || m.NetLOC != 0
 }
 
 // FormatLine produces the inline single-line representation used by
 // st status's per-item rows and the PIPELINE section. Format:
 //
-//	"<wall> | $<cost> | <files-or-tokens> <±LOC>"
+//	"<wall> | $<cost> | <±LOC> | <in>/<out> tok [(+<cache> cache)] | [<model>]"
 //
 // Only non-zero fields appear; the line is empty when HasMetrics() is false.
-// LOC is shown when NetLOC != 0; tokens are shown when LOC is absent and
-// either token bucket is non-zero.
+// LOC and tokens are independent — both render when both are present.
+// The cache annotation appears after the tok segment when either cache
+// bucket is non-zero. The model tag is the last segment when last_model
+// was recorded for this item.
 func (m ItemMetrics) FormatLine() string {
 	if !m.HasMetrics() {
 		return ""
 	}
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if m.Wall > 0 {
 		parts = append(parts, formatDuration(m.Wall))
 	} else if m.AITime > 0 {
@@ -161,12 +208,19 @@ func (m ItemMetrics) FormatLine() string {
 	if m.CostUSD > 0 {
 		parts = append(parts, fmt.Sprintf("$%.2f", m.CostUSD))
 	}
-	switch {
-	case m.NetLOC != 0:
+	if m.NetLOC != 0 {
 		parts = append(parts, formatLOC(m.NetLOC))
-	case m.InputTokens > 0 || m.OutputTokens > 0:
-		parts = append(parts, fmt.Sprintf("%s/%s tok",
-			formatTokens(m.InputTokens), formatTokens(m.OutputTokens)))
+	}
+	if m.InputTokens > 0 || m.OutputTokens > 0 {
+		seg := fmt.Sprintf("%s/%s tok",
+			formatTokens(m.InputTokens), formatTokens(m.OutputTokens))
+		if cache := m.CacheReadTokens + m.CacheWriteTokens; cache > 0 {
+			seg += fmt.Sprintf(" (+%s cache)", formatTokens(cache))
+		}
+		parts = append(parts, seg)
+	}
+	if m.Model != "" {
+		parts = append(parts, "["+shortModelLabel(m.Model)+"]")
 	}
 	return strings.Join(parts, " | ")
 }
@@ -211,16 +265,19 @@ func (m ItemMetrics) FormatColumns() MetricColumns {
 }
 
 // Add merges other into m and returns the sum. Used by RunStatus to
-// accumulate sprint and epic totals from per-item metrics.
+// accumulate sprint and epic totals from per-item metrics. Model is
+// intentionally omitted — aggregates have no single model.
 func (m ItemMetrics) Add(other ItemMetrics) ItemMetrics {
 	return ItemMetrics{
-		Wall:         m.Wall + other.Wall,
-		ProcessTime:  m.ProcessTime + other.ProcessTime,
-		AITime:       m.AITime + other.AITime,
-		CostUSD:      m.CostUSD + other.CostUSD,
-		InputTokens:  m.InputTokens + other.InputTokens,
-		OutputTokens: m.OutputTokens + other.OutputTokens,
-		NetLOC:       m.NetLOC + other.NetLOC,
+		Wall:             m.Wall + other.Wall,
+		ProcessTime:      m.ProcessTime + other.ProcessTime,
+		AITime:           m.AITime + other.AITime,
+		CostUSD:          m.CostUSD + other.CostUSD,
+		InputTokens:      m.InputTokens + other.InputTokens,
+		OutputTokens:     m.OutputTokens + other.OutputTokens,
+		CacheReadTokens:  m.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens: m.CacheWriteTokens + other.CacheWriteTokens,
+		NetLOC:           m.NetLOC + other.NetLOC,
 	}
 }
 
@@ -302,4 +359,50 @@ func intField(tt map[string]interface{}, key string) int {
 		return i
 	}
 	return 0
+}
+
+// shortModelLabel converts a full model ID to a compact display tag for
+// FormatLine. Examples: "claude-sonnet-4-6" → "sonnet-4.6",
+// "claude-haiku-4-5-20251001" → "haiku-4.5", "claude-opus-4" → "opus-4".
+// Non-claude models render verbatim. Empty input returns empty string.
+func shortModelLabel(model string) string {
+	if model == "" {
+		return ""
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	// strip trailing -YYYYMMDD date suffix (same logic as pricing.normalize)
+	if len(m) > 9 {
+		tail := m[len(m)-9:]
+		if tail[0] == '-' && isAllDigitChars(tail[1:]) {
+			m = m[:len(m)-9]
+		}
+	}
+	m = strings.TrimPrefix(m, "claude-")
+	// convert trailing -N-N version to -N.N for readability
+	parts := strings.Split(m, "-")
+	if len(parts) >= 3 {
+		last := parts[len(parts)-1]
+		prev := parts[len(parts)-2]
+		if isAllDigitChars(last) && isAllDigitChars(prev) {
+			parts[len(parts)-2] = prev + "." + last
+			parts = parts[:len(parts)-1]
+		}
+	}
+	result := strings.Join(parts, "-")
+	if len(result) > 20 {
+		return result[:17] + "..."
+	}
+	return result
+}
+
+func isAllDigitChars(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
