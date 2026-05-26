@@ -776,6 +776,7 @@ func TestQueueShowDeprecationBanner(t *testing.T) {
 	}
 	origStdout := os.Stdout
 	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
 
 	code := QueueShow(s, cfg, QueueShowOpts{}) // default: Raw=false
 

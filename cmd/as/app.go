@@ -2351,7 +2351,7 @@ rates. I-180.`,
 			exitCode = command.QueueShow(appStore, appCfg, command.QueueShowOpts{AgentAll: all, Raw: raw})
 		},
 	}
-	queueShowCmd.Flags().Bool("all", false, "show global queue without agent-scoped visual treatment")
+	queueShowCmd.Flags().Bool("all", false, "show global queue without agent-scoped visual treatment (only effective with --raw)")
 	queueShowCmd.Flags().Bool("raw", false, "show raw positional queue internals (for add/rm/approve inspection, not work ordering)")
 	queueCmd.AddCommand(queueShowCmd)
 	queueNextCmd := &cobra.Command{
