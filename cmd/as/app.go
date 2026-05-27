@@ -153,7 +153,11 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			"Results cache to .as/runs/model-rec-cache.json keyed by item modtime.\n" +
 			"Setting `model_tier: <tier>` on an item bypasses the recommender.\n" +
 			"On any failure (engine missing, API down, parse error) the command\n" +
-			"falls back to sonnet and exits 0 — the recommender is advisory.",
+			"falls back to sonnet and exits 0 — the recommender is advisory.\n\n" +
+			"--persist writes the recommendation as model_tier_rec on the item\n" +
+			"so future model-rec and st start calls resolve the tier without an\n" +
+			"API call. Useful for backfilling queued items created before prep.\n" +
+			"Operator override (model_tier field) is never overwritten.",
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			itemID := ""
@@ -161,6 +165,16 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 				itemID = args[0]
 			}
 			noCache, _ := cmd.Flags().GetBool("no-cache")
+			persist, _ := cmd.Flags().GetBool("persist")
+			if persist {
+				if itemID == "" {
+					fmt.Fprintln(os.Stderr, "model-rec --persist: item ID required")
+					exitCode = 1
+					return
+				}
+				exitCode = command.ModelRecPersist(appStore, appCfg, itemID, command.DefaultRunEngine(), noCache, cmd.OutOrStdout())
+				return
+			}
 			exitCode = command.ModelRec(appStore, appCfg, command.ModelRecOpts{
 				ItemID:  itemID,
 				Engine:  command.DefaultRunEngine(),
@@ -169,6 +183,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		},
 	}
 	modelRecCmd.Flags().Bool("no-cache", false, "skip the cache (force a fresh recommender call)")
+	modelRecCmd.Flags().Bool("persist", false, "write recommendation as model_tier_rec on the item (backfill)")
 	root.AddCommand(modelRecCmd)
 
 	costCmd := &cobra.Command{

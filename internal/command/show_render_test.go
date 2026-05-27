@@ -194,3 +194,52 @@ func TestFormatAITurnLine_Emits1hBucketWhenNonZero(t *testing.T) {
 		t.Errorf("should omit cache_out_1h when zero, got: %s", lineNo1h)
 	}
 }
+
+func TestShow_RendersModelTierRec(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-850
+type: issue
+title: Item with rec stamped
+status: queued
+model_tier_rec: sonnet
+`
+	writeItemFile(t, root, "issues", "I-850", body)
+	s, cfg := loadStore(t, root)
+
+	item, ok := s.Get("I-850")
+	if !ok {
+		t.Fatal("I-850 not found")
+	}
+
+	var buf bytes.Buffer
+	showDefaultTo(&buf, s, cfg, "I-850", item)
+	out := buf.String()
+
+	if !strings.Contains(out, "model_tier_rec: sonnet") {
+		t.Errorf("showDefaultTo missing model_tier_rec line; got:\n%s", out)
+	}
+}
+
+func TestShow_NoModelTierRecSilent(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-851
+type: issue
+title: Item without rec
+status: queued
+`
+	writeItemFile(t, root, "issues", "I-851", body)
+	s, cfg := loadStore(t, root)
+
+	item, ok := s.Get("I-851")
+	if !ok {
+		t.Fatal("I-851 not found")
+	}
+
+	var buf bytes.Buffer
+	showDefaultTo(&buf, s, cfg, "I-851", item)
+	out := buf.String()
+
+	if strings.Contains(out, "model_tier_rec") {
+		t.Errorf("showDefaultTo should not render model_tier_rec when unset; got:\n%s", out)
+	}
+}

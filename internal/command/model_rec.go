@@ -146,6 +146,45 @@ func readItemTierRec(item *model.Item) string {
 	return strings.ToLower(strings.TrimSpace(val))
 }
 
+// ModelRecPersist is the --persist entry point: runs the recommender for id,
+// writes the result as model_tier_rec on the item, and prints the outcome to
+// out. Returns 1 on error (item not found, Mutate failure). Sonnet fallback
+// from the recommender is not an error. Operator override (model_tier) is
+// preserved — only model_tier_rec is written.
+//
+// Unlike stampModelRec (which silently drops errors so plan approval is never
+// blocked), this function propagates write failures to the caller — an
+// operator-driven backfill must not silently misreport success.
+func ModelRecPersist(s *store.Store, cfg *config.Config, id string, engine RunEngine, noCache bool, out io.Writer) int {
+	if _, ok := s.Get(id); !ok {
+		fmt.Fprintf(os.Stderr, "model-rec --persist: item %s not found\n", id)
+		return 1
+	}
+	var buf strings.Builder
+	ModelRec(s, cfg, ModelRecOpts{ItemID: id, Engine: engine, NoCache: noCache}, &buf)
+	line := strings.TrimSpace(buf.String())
+	parts := strings.SplitN(line, "|", 2)
+	if len(parts) != 2 {
+		fmt.Fprintf(os.Stderr, "model-rec --persist: unexpected recommender output %q\n", line)
+		return 1
+	}
+	tier := strings.TrimPrefix(parts[0], "tier:")
+	if _, valid := validTiers[tier]; !valid {
+		fmt.Fprintf(os.Stderr, "model-rec --persist: invalid tier %q in recommender output\n", tier)
+		return 1
+	}
+	if err := s.Mutate(id, func(it *model.Item) error {
+		it.Doc.SetField("model_tier_rec", tier)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "model-rec --persist: write failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "[%s] model recommendation: %s\n", id, line)
+	fmt.Fprintf(out, "persisted model_tier_rec=%s on %s\n", tier, id)
+	return 0
+}
+
 // stampModelRec calls the recommender for id and writes the result as
 // model_tier_rec on the item so `st start` model checks resolve without
 // a Haiku API call. Called from plan prep/approve paths. Non-blocking —
