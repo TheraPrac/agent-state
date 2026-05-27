@@ -172,7 +172,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 					exitCode = 1
 					return
 				}
-				exitCode = command.ModelRecPersist(appStore, appCfg, itemID, command.DefaultRunEngine(), cmd.OutOrStdout())
+				exitCode = command.ModelRecPersist(appStore, appCfg, itemID, command.DefaultRunEngine(), noCache, cmd.OutOrStdout())
 				return
 			}
 			exitCode = command.ModelRec(appStore, appCfg, command.ModelRecOpts{

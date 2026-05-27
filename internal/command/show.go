@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -170,10 +169,8 @@ func showDefaultTo(w io.Writer, s *store.Store, cfg *config.Config, id string, i
 	if len(item.Goals) > 0 {
 		fmt.Fprintf(w, "  goals: %v\n", item.Goals)
 	}
-	if item.Doc != nil {
-		if rec, ok := item.Doc.GetField("model_tier_rec"); ok && rec != "" {
-			fmt.Fprintf(w, "  model_tier_rec: %s\n", strings.TrimSpace(rec))
-		}
+	if rec := readItemTierRec(item); rec != "" {
+		fmt.Fprintf(w, "  model_tier_rec: %s\n", rec)
 	}
 	// I-487: SBAR is the canonical content shape — render it when any
 	// of the four fields is populated. Fall back to legacy summary

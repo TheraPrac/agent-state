@@ -478,7 +478,7 @@ sbar:
 	}
 
 	var out bytes.Buffer
-	code := ModelRecPersist(s, cfg, "I-800", engine, &out)
+	code := ModelRecPersist(s, cfg, "I-800", engine, false, &out)
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)
 	}
@@ -503,7 +503,7 @@ func TestModelRecPersist_MissingItemReturnsOne(t *testing.T) {
 	s, cfg := loadStore(t, root)
 
 	var out bytes.Buffer
-	code := ModelRecPersist(s, cfg, "I-999", RunEngine{}, &out)
+	code := ModelRecPersist(s, cfg, "I-999", RunEngine{}, false, &out)
 	if code != 1 {
 		t.Errorf("exit = %d, want 1 for missing item", code)
 	}
@@ -522,18 +522,12 @@ sbar:
 	writeItemFile(t, root, "issues", "I-801", body)
 	s, cfg := loadStore(t, root)
 
-	// The engine returns haiku but operator override is opus — model_tier must
-	// not be changed; model_tier_rec gets stamped as haiku (the recommender
-	// result), and decideTier will still return opus via the override path.
-	envelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"haiku\",\"reason\":\"trivial\"}"}`
-	engine := RunEngine{
-		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
-			return []byte(envelope), 0, nil
-		},
-	}
-
+	// model_tier=opus is an operator override; decideTier short-circuits at the
+	// override check before calling the engine. ModelRecPersist will write
+	// model_tier_rec=opus (the override-echoed tier). model_tier itself must not
+	// change. decideTier still returns opus via the override path.
 	var out bytes.Buffer
-	code := ModelRecPersist(s, cfg, "I-801", engine, &out)
+	code := ModelRecPersist(s, cfg, "I-801", RunEngine{}, true, &out)
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)
 	}
@@ -541,10 +535,16 @@ sbar:
 	s2, _ := loadStore(t, root)
 	item, _ := s2.Get("I-801")
 
-	// model_tier (operator) must be unchanged.
+	// model_tier (operator field) must be unchanged.
 	override, _ := item.Doc.GetField("model_tier")
 	if strings.TrimSpace(override) != "opus" {
 		t.Errorf("model_tier changed: got %q, want opus", override)
+	}
+
+	// model_tier_rec reflects the override-echoed tier.
+	rec, _ := item.Doc.GetField("model_tier_rec")
+	if strings.TrimSpace(rec) != "opus" {
+		t.Errorf("model_tier_rec = %q, want opus", rec)
 	}
 
 	// decideTier should still return opus via operator override.
@@ -552,5 +552,52 @@ sbar:
 	ModelRec(s2, cfg, ModelRecOpts{ItemID: "I-801", NoCache: true}, &recOut)
 	if !strings.HasPrefix(recOut.String(), "tier:opus|") {
 		t.Errorf("decideTier should return opus via override, got %q", recOut.String())
+	}
+}
+
+func TestModelRecPersist_NoCacheThreaded(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-802
+type: issue
+title: Cache bypass test
+status: queued
+`
+	writeItemFile(t, root, "issues", "I-802", body)
+	s, cfg := loadStore(t, root)
+
+	// Seed cache with a stale opus entry. With noCache=true, the engine must
+	// be called despite the cache hit.
+	cacheDir := t.TempDir()
+	itemPath, _ := s.Path("I-802")
+	mtime := fileMTime(itemPath)
+	pre := cacheFile{Entries: map[string]cacheEntry{
+		"I-802": {ItemID: "I-802", MTime: mtime, Result: ModelRecResult{Tier: "opus", Reason: "stale"}},
+	}}
+	data, _ := json.MarshalIndent(pre, "", "  ")
+	if err := os.WriteFile(filepath.Join(cacheDir, "model-rec-cache.json"), data, 0o644); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	engineCalled := false
+	envelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"haiku\",\"reason\":\"fresh\"}"}`
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			engineCalled = true
+			return []byte(envelope), 0, nil
+		},
+	}
+
+	// Override cfg CacheDir is not directly injectable via ModelRecPersist;
+	// use NoCache=true which bypasses cache read+write entirely.
+	var out bytes.Buffer
+	code := ModelRecPersist(s, cfg, "I-802", engine, true, &out)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	if !engineCalled {
+		t.Error("engine not called — noCache=true should bypass the cache")
+	}
+	if !strings.Contains(out.String(), "model_tier_rec=haiku") {
+		t.Errorf("expected haiku from fresh call, got: %q", out.String())
 	}
 }
