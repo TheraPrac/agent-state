@@ -512,6 +512,17 @@ func TestNormalizeModifyPath(t *testing.T) {
 		{"description fully inside one backtick span",
 			"`internal/foo.go — desc`",
 			"internal/foo.go"},
+		// I-777 follow-up: "path (description with `code spans`)" — backtick
+		// extraction would wrongly pick up the code span in the parens.
+		{"path with paren description containing backtick",
+			"theraprac-api/Makefile (add `lint-rls-test-discipline` target; add it as dependency of `lint`)",
+			"theraprac-api/Makefile"},
+		{"path with paren description, no backtick in paren",
+			"theraprac-api/docs/BACKEND_STANDARDS.md (EXPAND §12.3 with the rule — not just a one-liner)",
+			"theraprac-api/docs/BACKEND_STANDARDS.md"},
+		{"workflow path with paren description containing backtick",
+			"theraprac-api/.github/workflows/test.yml (add explicit step in `contract-lint` job)",
+			"theraprac-api/.github/workflows/test.yml"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

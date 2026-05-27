@@ -167,6 +167,17 @@ func normalizeModifyPath(raw string) string {
 	if s == "" {
 		return ""
 	}
+	// If the leading token (before the first space/paren/backtick) looks like
+	// a file path (contains "/"), use it directly. This handles the common
+	// authoring shape "path/to/file (description with `code spans`)" where the
+	// backtick extraction below would otherwise pick up the code span inside
+	// the parens instead of the actual path.
+	if firstDelim := strings.IndexAny(s, " \t(`"); firstDelim > 0 {
+		candidate := s[:firstDelim]
+		if strings.Contains(candidate, "/") {
+			return strings.Trim(candidate, "` \t")
+		}
+	}
 	// First backtick span anywhere — covers leading "`path` — desc"
 	// and prose-then-path "see `path`" shapes uniformly.
 	if i := strings.IndexByte(s, '`'); i >= 0 {
