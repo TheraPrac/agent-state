@@ -203,6 +203,13 @@ func reconcileActiveStageDrift(s *store.Store, cfg *config.Config, opts Reconcil
 			continue
 		}
 
+		// Skip items already at or past the furthest stage Phase 0 can reach
+		// (merged=4). No prFetch call can produce an advancement for them.
+		current, _ := getNestedField(item, "delivery", "stage")
+		if stageIndex(current) >= stageIndex("merged") {
+			continue
+		}
+
 		prState, prURLs := opts.prFetch()(cfg, branch)
 
 		var target string
@@ -215,7 +222,6 @@ func reconcileActiveStageDrift(s *store.Store, cfg *config.Config, opts Reconcil
 			continue
 		}
 
-		current, _ := getNestedField(item, "delivery", "stage")
 		if stageIndex(target) <= stageIndex(current) {
 			continue
 		}

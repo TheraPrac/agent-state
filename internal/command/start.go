@@ -551,12 +551,12 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	// I-876: refuse fresh worktree creation when an open PR already exists for
 	// this branch — a parallel session has shipped this work. The agent should
 	// use `st resume` to attach to the existing branch, not re-implement from
-	// scratch. Degrades gracefully when gh is unavailable.
+	// scratch. Degrades gracefully when gh is unavailable (guard skipped).
 	prFetch := opts.PRFetch
-	if prFetch == nil {
+	if prFetch == nil && toolAvailable("gh") {
 		prFetch = getPRState
 	}
-	if opts.PRFetch != nil || toolAvailable("gh") {
+	if prFetch != nil {
 		if prState, prURLs := prFetch(cfg, branch); prState == "OPEN" {
 			url := ""
 			if len(prURLs) > 0 {

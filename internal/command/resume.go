@@ -17,6 +17,9 @@ import (
 // ResumeOpts controls `st resume` / `st prime --resume` (I-679).
 type ResumeOpts struct {
 	ID string // explicit item; empty ⇒ stack top, then first active
+	// PRFetch is an injectable GitHub PR-state function for testing the
+	// I-876 remote-state section without requiring gh on PATH. nil = use getPRState.
+	PRFetch func(*config.Config, string) (string, []string)
 }
 
 // remoteState holds the pre-computed GitHub state for the item's branch,
@@ -85,9 +88,15 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 	audit := auditExecTape(cfg, item, entries, sessionID)
 
 	// I-876: pre-compute GitHub remote state so renderResume stays pure/testable.
+	prFetch := opts.PRFetch
+	if prFetch == nil && toolAvailable("gh") {
+		prFetch = getPRState
+	}
 	var rs remoteState
-	if branch := nestedString(item.WorkTracking, "branch"); branch != "" && toolAvailable("gh") {
-		rs.prState, rs.prURLs = getPRState(cfg, branch)
+	if prFetch != nil {
+		if branch := nestedString(item.WorkTracking, "branch"); branch != "" {
+			rs.prState, rs.prURLs = prFetch(cfg, branch)
+		}
 	}
 
 	fmt.Print(renderResume(item, entries, sessionID, planBody, planNote, audit, rs))

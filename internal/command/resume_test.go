@@ -1,10 +1,12 @@
 package command
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 )
 
@@ -365,5 +367,47 @@ func TestResumeNoRemoteStateSectionWhenNoPR(t *testing.T) {
 	out := renderResume(item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
 	if strings.Contains(out, "## Remote state") {
 		t.Errorf("no PR ⇒ Remote state section must not appear:\n%s", out)
+	}
+}
+
+// TestResumeUsesInjectedPRFetch: Resume() must use opts.PRFetch instead of the
+// real getPRState when an injectable is provided — no gh binary required (I-876).
+func TestResumeUsesInjectedPRFetch(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	called := false
+	opts := ResumeOpts{
+		ID: "T-001",
+		PRFetch: func(_ *config.Config, branch string) (string, []string) {
+			called = true
+			return "OPEN", []string{"https://github.com/org/repo/pull/99"}
+		},
+	}
+	// Redirect output — Resume prints to stdout.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	Resume(s, cfg, opts)
+	w.Close()
+	os.Stdout = old
+	outBytes := make([]byte, 8192)
+	n, _ := r.Read(outBytes)
+	out := string(outBytes[:n])
+
+	if !called {
+		t.Error("Resume must call the injected PRFetch, not toolAvailable check")
+	}
+	if !strings.Contains(out, "## Remote state") {
+		t.Errorf("injected PRFetch returning OPEN must produce Remote state section:\n%s", out)
+	}
+	if !strings.Contains(out, "https://github.com/org/repo/pull/99") {
+		t.Errorf("PR URL missing from Remote state section:\n%s", out)
 	}
 }
