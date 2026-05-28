@@ -83,8 +83,8 @@ func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 
 	// Commit + push immediately so the tag change can't be silently
 	// reverted by a subsequent command's pre-run GitPull. Best-effort.
-	if err := s.GitSync(fmt.Sprintf("st tag %s: %s %s", action, id, tag)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after tag failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st tag %s: %s %s", action, id, tag)); err != nil {
+		return 1
 	}
 	return 0
 }

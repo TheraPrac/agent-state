@@ -151,8 +151,8 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 		fmt.Printf("\nreconcile dry run: %d updates detected\n", updates)
 	} else {
 		fmt.Printf("\nreconcile: %d updates applied\n", updates)
-		if err := s.GitSync(fmt.Sprintf("st reconcile: %d updates", updates)); err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: reconcile: git sync failed: %v\n", err)
+		if err := autoSync(s, fmt.Sprintf("st reconcile: %d updates", updates)); err != nil {
+			return 1
 		}
 	}
 

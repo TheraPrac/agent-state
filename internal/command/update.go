@@ -395,10 +395,10 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 
 	// Commit + push the update so it can't be silently reverted by a
 	// subsequent command's pre-run GitPull or lost to a multi-agent race.
-	// Best-effort: a sync failure still returns 0 because the disk state
-	// is correct and a later sync will carry the commit forward.
-	if err := s.GitSync(fmt.Sprintf("st update: %s.%s", id, field)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	// Best-effort for transient errors; gate refusal (I-807) propagates
+	// non-zero so the operator is not misled about persistence (I-821).
+	if err := autoSync(s, fmt.Sprintf("st update: %s.%s", id, field)); err != nil {
+		return 1
 	}
 	return 0
 }
@@ -658,8 +658,8 @@ func commitSBAR(s *store.Store, cfg *config.Config, id string, item *model.Item,
 		NewValue: truncateForChangelog(sbarSeedBuffer(newSBAR)),
 	})
 	fmt.Printf("Updated %s.sbar\n", id)
-	if err := s.GitSync(fmt.Sprintf("st update: %s.sbar", id)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st update: %s.sbar", id)); err != nil {
+		return 1
 	}
 	return 0
 }
@@ -756,8 +756,8 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 		NewValue: truncateForChangelog(value),
 	})
 	fmt.Printf("Updated %s.sbar.background\n", id)
-	if err := s.GitSync(fmt.Sprintf("st update: %s.sbar.background", id)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st update: %s.sbar.background", id)); err != nil {
+		return 1
 	}
 	return 0
 }
@@ -930,8 +930,8 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 		fields[i] = e.field
 	}
 	fmt.Printf("Updated %s: %s\n", id, strings.Join(fields, ", "))
-	if err := s.GitSync(fmt.Sprintf("st update batch: %s (%s)", id, strings.Join(fields, ", "))); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after update failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st update batch: %s (%s)", id, strings.Join(fields, ", "))); err != nil {
+		return 1
 	}
 	return 0
 }

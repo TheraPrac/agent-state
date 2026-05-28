@@ -160,8 +160,8 @@ func Decide(s *store.Store, cfg *config.Config, id string, opts DecideOpts) int 
 
 	fmt.Printf("Decided %s: %s → %s\n", id, opts.Action, newStatus)
 
-	if err := s.GitSync(fmt.Sprintf("st decide %s: %s", id, opts.Action)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after decide failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st decide %s: %s", id, opts.Action)); err != nil {
+		return 1
 	}
 	return 0
 }

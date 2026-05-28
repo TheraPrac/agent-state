@@ -153,7 +153,9 @@ func StackPush(s *store.Store, cfg *config.Config, id string, opts StackPushOpts
 	// redundant. Only sync here when inherit did not (no inherit, skipped,
 	// ambiguous, or SprintAdd failed).
 	if !inherited {
-		autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth))
+		if err := autoSync(s, fmt.Sprintf("st push: %s (depth %d)", id, depth)); err != nil {
+			return 1
+		}
 	}
 	return 0
 }
@@ -204,7 +206,9 @@ func StackPop(s *store.Store, cfg *config.Config) int {
 				title = " — " + item.Title
 			}
 			fmt.Printf("Returning to %s%s\n", top.ID, title)
-			autoSync(s, fmt.Sprintf("st pop: %s (returning to %s)", popped.ID, top.ID))
+			if err := autoSync(s, fmt.Sprintf("st pop: %s (returning to %s)", popped.ID, top.ID)); err != nil {
+				return 1
+			}
 			return 0
 		}
 		fmt.Printf("  %s also resolved — skipping\n", top.ID)
@@ -217,7 +221,9 @@ func StackPop(s *store.Store, cfg *config.Config) int {
 	}
 
 	fmt.Println("Stack is now empty")
-	autoSync(s, fmt.Sprintf("st pop: %s", popped.ID))
+	if err := autoSync(s, fmt.Sprintf("st pop: %s", popped.ID)); err != nil {
+		return 1
+	}
 	return 0
 }
 

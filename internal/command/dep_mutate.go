@@ -70,8 +70,8 @@ func DepAdd(s *store.Store, cfg *config.Config, id, depID string) int {
 	// Commit + push both edge updates atomically so the forward and
 	// inverse edges can't be silently reverted by a subsequent command's
 	// pre-run GitPull. Best-effort.
-	if err := s.GitSync(fmt.Sprintf("st dep add: %s -> %s", id, depID)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after dep add failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st dep add: %s -> %s", id, depID)); err != nil {
+		return 1
 	}
 	return 0
 }
@@ -147,8 +147,8 @@ func DepRm(s *store.Store, cfg *config.Config, id, depID string) int {
 	// Commit + push both edge updates atomically so the forward and
 	// inverse edges can't be silently reverted by a subsequent command's
 	// pre-run GitPull. Best-effort.
-	if err := s.GitSync(fmt.Sprintf("st dep rm: %s -> %s", id, depID)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after dep rm failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st dep rm: %s -> %s", id, depID)); err != nil {
+		return 1
 	}
 	return 0
 }

@@ -127,18 +127,18 @@ type StepResult struct {
 	// reports, and external dashboards / scripts read those keys. The
 	// SessionLogPayload (per-turn wire payload) DID move to the new tags;
 	// the two surfaces diverge intentionally during the transition.
-	InputTokens     int    `json:"input_tokens,omitempty"`
-	OutputTokens    int    `json:"output_tokens,omitempty"`
-	RegInputTokens  int    `json:"reg_input_tokens,omitempty"`
-	CacheReadInputTokens   int    `json:"cache_in_tokens,omitempty"`  // cache reads
-	CacheCreation5mInputTokens  int    `json:"cache_out_tokens,omitempty"` // cache writes
-	ReasoningTokens int    `json:"reasoning_tokens,omitempty"`
-	TotalTokens     int    `json:"total_tokens,omitempty"`
-	Provider        string `json:"provider,omitempty"`
-	ResponseID      string `json:"response_id,omitempty"`
-	CostSource      string `json:"cost_source,omitempty"`
-	Model           string `json:"model,omitempty"`
-	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+	InputTokens                int    `json:"input_tokens,omitempty"`
+	OutputTokens               int    `json:"output_tokens,omitempty"`
+	RegInputTokens             int    `json:"reg_input_tokens,omitempty"`
+	CacheReadInputTokens       int    `json:"cache_in_tokens,omitempty"`  // cache reads
+	CacheCreation5mInputTokens int    `json:"cache_out_tokens,omitempty"` // cache writes
+	ReasoningTokens            int    `json:"reasoning_tokens,omitempty"`
+	TotalTokens                int    `json:"total_tokens,omitempty"`
+	Provider                   string `json:"provider,omitempty"`
+	ResponseID                 string `json:"response_id,omitempty"`
+	CostSource                 string `json:"cost_source,omitempty"`
+	Model                      string `json:"model,omitempty"`
+	ClaudeSessionID            string `json:"claude_session_id,omitempty"`
 }
 
 // ItemResult captures the outcome of running one sprint item.
@@ -1456,9 +1456,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			if updatedItem, ok := syncStore.Get(itemID); ok && cfg.IsTerminalStatus(updatedItem.Type, updatedItem.Status) {
 				msg = fmt.Sprintf("st run: %s closed (%s)", itemID, updatedItem.Status)
 			}
-			if err := syncStore.GitSync(msg); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] warning: sync after run failed: %v\n", itemID, err)
-			}
+			// Deferred sync: can't propagate exit code, but gate refusals still
+			// print the full actionable error via autoSync (I-821).
+			autoSync(syncStore, msg) //nolint:errcheck
 		}
 	}()
 
@@ -1811,22 +1811,22 @@ func recordRunMetrics(cfg *config.Config, itemID string, result ItemResult) {
 			continue
 		}
 		payload := SessionLogPayload{
-			Provider:        sr.Provider,
-			SessionID:       sr.ClaudeSessionID,
-			ResponseID:      sr.ResponseID,
-			Model:           sr.Model,
-			ProcessMs:       sr.Duration.Milliseconds(),
-			AIMs:            sr.AIDurationMs,
-			RegInputTokens:  sr.RegInputTokens,
-			RegOutputTokens: sr.OutputTokens,
-			CacheReadInputTokens:   sr.CacheReadInputTokens,
-			CacheCreation5mInputTokens:  sr.CacheCreation5mInputTokens,
-			ReasoningTokens: sr.ReasoningTokens,
-			TotalTokens:     sr.TotalTokens,
-			CostUSD:         sr.CostUSD,
-			CostSource:      sr.CostSource,
-			ItemID:          itemID,
-			Step:            sr.Step,
+			Provider:                   sr.Provider,
+			SessionID:                  sr.ClaudeSessionID,
+			ResponseID:                 sr.ResponseID,
+			Model:                      sr.Model,
+			ProcessMs:                  sr.Duration.Milliseconds(),
+			AIMs:                       sr.AIDurationMs,
+			RegInputTokens:             sr.RegInputTokens,
+			RegOutputTokens:            sr.OutputTokens,
+			CacheReadInputTokens:       sr.CacheReadInputTokens,
+			CacheCreation5mInputTokens: sr.CacheCreation5mInputTokens,
+			ReasoningTokens:            sr.ReasoningTokens,
+			TotalTokens:                sr.TotalTokens,
+			CostUSD:                    sr.CostUSD,
+			CostSource:                 sr.CostSource,
+			ItemID:                     itemID,
+			Step:                       sr.Step,
 		}
 		SessionLog(localStore, cfg, payload)
 	}

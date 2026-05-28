@@ -362,29 +362,27 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// to run `st sync` or until `st run`'s deferred sync caught it. That
 	// gap allowed silent-revert incidents (e.g. I-164): a subsequent st
 	// command's PersistentPreRunE → GitPull destroyed the uncommitted
-	// move, and "Closed" turned out to be a lie. GitSync is best-effort —
-	// a failure here only warns, because the filesystem mutation already
-	// succeeded and a later sync will carry the commit forward.
+	// move, and "Closed" turned out to be a lie. Best-effort for transient
+	// errors; gate refusal (I-807) propagates non-zero so the operator is
+	// not misled about persistence.
 	// I-442: pass the post-Move path. The Move from issues/→archive/
 	// (or tasks/→archive/) is a rename — git add -u catches the
 	// delete-from-old, but the new path is untracked and needs
 	// explicit staging.
 	newPath, _ := s.Path(id)
-	if err := s.GitSync(fmt.Sprintf("st close: %s (%s)", id, resolution), newPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after close failed: %v\n", err)
-	}
+	syncErr := autoSync(s, fmt.Sprintf("st close: %s (%s)", id, resolution), newPath)
 
-	// Auto-archive sprint and epic when all items are terminal.
+	// Always run post-close cleanup even when sync failed — the item is
+	// already durably on disk, and skipping sprint/epic auto-archive or
+	// worktree cleanup would leave stale state that outlives the gate.
 	autoArchiveSprintAndEpic(s, cfg, item.Sprint)
-
-	// Auto-finish the worktree when one exists. Best-effort: never blocks
-	// the close, never uses --force, prints a one-line retention warning
-	// when uncommitted/unpushed work would be lost. Sibling of the queue
-	// auto-remove and stack auto-pop above.
 	if cleaned, _ := TryAutoFinishWorktree(cfg, id); cleaned {
 		fmt.Printf("  also finished worktree\n")
 	}
 
+	if syncErr != nil {
+		return 1
+	}
 	return 0
 }
 

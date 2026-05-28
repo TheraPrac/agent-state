@@ -46,8 +46,8 @@ func MailSend(s *store.Store, cfg *config.Config, to string, opts MailSendOpts) 
 	// I-442: pass the new mail file path so it's staged. mail.Send
 	// places the file under MailboxDir(to)/<id>.yaml.
 	newPath := filepath.Join(mail.MailboxDir(cfg, to), id+".yaml")
-	if err := s.GitSync(fmt.Sprintf("mail send: %s -> %s (%s)", from, to, opts.Kind), newPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after send failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("mail send: %s -> %s (%s)", from, to, opts.Kind), newPath); err != nil {
+		return 1
 	}
 	return 0
 }
@@ -114,8 +114,8 @@ func MailArchive(s *store.Store, cfg *config.Config, recipient, id string) int {
 	// I-442: rename = delete-old + add-new. git add -u catches the
 	// delete; the new path under archive/ needs explicit staging.
 	newPath := filepath.Join(mail.ArchiveDir(cfg, recipient), id+".yaml")
-	if err := s.GitSync(fmt.Sprintf("mail archive: %s/%s", recipient, id), newPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after archive failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("mail archive: %s/%s", recipient, id), newPath); err != nil {
+		return 1
 	}
 	return 0
 }

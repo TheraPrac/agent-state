@@ -108,6 +108,8 @@ func SprintLeave(s *store.Store, cfg *config.Config) int {
 	}
 
 	fmt.Printf("Left sprint %s\n", oldSprint)
-	autoSync(s, fmt.Sprintf("st sprint leave: %s", oldSprint))
+	if err := autoSync(s, fmt.Sprintf("st sprint leave: %s", oldSprint)); err != nil {
+		return 1
+	}
 	return 0
 }

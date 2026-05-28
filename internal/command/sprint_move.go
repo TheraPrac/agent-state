@@ -29,6 +29,8 @@ func SprintMove(s *store.Store, cfg *config.Config, sprintID string, pos int) in
 		return 1
 	}
 	fmt.Printf("Moved sprint %s to position %d\n", sprintID, pos)
-	autoSync(s, fmt.Sprintf("st sprint move: %s -> %d", sprintID, pos))
+	if err := autoSync(s, fmt.Sprintf("st sprint move: %s -> %d", sprintID, pos)); err != nil {
+		return 1
+	}
 	return 0
 }

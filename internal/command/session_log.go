@@ -353,8 +353,8 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 	// reviewers, pipeline steps) and contend on the shared git lock. The
 	// metric is durably on disk; the next interactive-turn GitSync commits it.
 	if payload.Step != "subagent" {
-		if err := s.GitSync(fmt.Sprintf("as session log: %s", itemID)); err != nil {
-			fmt.Fprintf(os.Stderr, "session log: git sync %s: %v\n", itemID, err)
+		if err := autoSync(s, fmt.Sprintf("as session log: %s", itemID)); err != nil {
+			return 1
 		}
 	}
 	return 0
