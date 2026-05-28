@@ -125,6 +125,9 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 			Op: "test_skipped", Field: "testing_evidence." + suite, NewValue: ev,
 		})
 		fmt.Printf("Skipped %s on %s: %s\n", suite, id, opts.Skip)
+		if err := autoSync(s, fmt.Sprintf("st test skip: %s %s", id, suite)); err != nil {
+			return 1
+		}
 		return 0
 	}
 
@@ -164,6 +167,9 @@ func testRecordOnly(s *store.Store, cfg *config.Config, id, suite, sha string, i
 	})
 
 	fmt.Printf("Recorded %s pass on %s (sha:%s)\n", suite, id, sha)
+	if err := autoSync(s, fmt.Sprintf("st test: %s %s", id, suite)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -335,6 +341,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		})
 
 		fmt.Printf("FAIL %s on %s (exit %d, %dms)\n", suite, id, exitCode, duration.Milliseconds())
+		autoSync(s, fmt.Sprintf("st test fail: %s %s", id, suite)) //nolint:errcheck
 		return 1
 	}
 
@@ -370,6 +377,9 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	})
 
 	fmt.Printf("PASS %s on %s (%dms) evidence:%s\n", suite, id, duration.Milliseconds(), logURI)
+	if err := autoSync(s, fmt.Sprintf("st test: %s %s", id, suite)); err != nil {
+		return 1
+	}
 	return 0
 }
 
