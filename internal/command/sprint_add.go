@@ -102,6 +102,8 @@ func SprintAdd(s *store.Store, cfg *config.Config, sprintID string, itemIDs []st
 	} else {
 		fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
 	}
-	autoSync(s, fmt.Sprintf("st sprint add: %s += %d item(s)", sprintID, len(itemIDs)))
+	if err := autoSync(s, fmt.Sprintf("st sprint add: %s += %d item(s)", sprintID, len(itemIDs))); err != nil {
+		return 1
+	}
 	return 0
 }

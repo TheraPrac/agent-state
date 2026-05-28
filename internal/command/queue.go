@@ -2,6 +2,7 @@ package command
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -135,18 +136,26 @@ func IsGoalReachable(s *store.Store, cfg *config.Config, id string) bool {
 }
 
 // autoSync commits + pushes any working-tree changes left by a state-mutating
-// command (queue/stack/sprint writes that touch .as/* files). Best-effort —
-// failures log to stderr but don't fail the caller. Without this, every
-// st-command write left the working tree dirty until the operator ran
-// `st sync` manually, which the session-stop hook then flagged on every
-// Stop event (I-415).
-func autoSync(s *store.Store, msg string) {
+// command. Two behaviors:
+//   - Gate sentinel (ErrI807MainBranchGate): prints the full actionable error
+//     to stderr and returns the error so the caller can exit non-zero. The gate
+//     is operator-actionable and won't self-resolve — silencing it hides a real
+//     problem (I-821).
+//   - Any other error: prints a "warning:" line and returns nil (best-effort for
+//     transient failures like network blips or git-lock contention that recover
+//     on the next sync).
+func autoSync(s *store.Store, msg string, newPaths ...string) error {
 	if s == nil {
-		return
+		return nil
 	}
-	if err := s.GitSync(msg); err != nil {
+	if err := s.GitSync(msg, newPaths...); err != nil {
+		if errors.Is(err, store.ErrI807MainBranchGate) {
+			fmt.Fprint(os.Stderr, err.Error())
+			return err
+		}
 		fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", err)
 	}
+	return nil
 }
 
 // --- Commands ---
@@ -194,7 +203,9 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 		status = " (pending approval)"
 	}
 	fmt.Printf("Added %s to queue at position %d%s\n", id, len(entries), status)
-	autoSync(s, fmt.Sprintf("st queue add: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st queue add: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -399,7 +410,9 @@ func QueueRm(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 	fmt.Printf("Removed %s from queue\n", id)
-	autoSync(s, fmt.Sprintf("st queue rm: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st queue rm: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -591,7 +604,9 @@ func QueueAutoApprove(s *store.Store, cfg *config.Config) int {
 		return 1
 	}
 	fmt.Printf("Auto-approved %d item(s): %s\n", len(flipped), strings.Join(flipped, ", "))
-	autoSync(s, fmt.Sprintf("st queue auto-approve: %d item(s)", len(flipped)))
+	if err := autoSync(s, fmt.Sprintf("st queue auto-approve: %d item(s)", len(flipped))); err != nil {
+		return 1
+	}
 	if orphans := GoalOrphans(s, cfg); len(orphans) > 0 {
 		fmt.Printf("⚠ %d orphan queue item(s) not in any active goal — run `st goal review` to reconcile\n", len(orphans))
 	}
@@ -639,7 +654,9 @@ func QueuePrune(s *store.Store, cfg *config.Config) int {
 	for _, d := range dropped {
 		fmt.Printf("  - %s\n", d)
 	}
-	autoSync(s, fmt.Sprintf("st queue prune: dropped %d terminal item(s)", len(dropped)))
+	if err := autoSync(s, fmt.Sprintf("st queue prune: dropped %d terminal item(s)", len(dropped))); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -689,7 +706,9 @@ func QueueMove(s *store.Store, cfg *config.Config, id string, position int) int 
 		return 1
 	}
 	fmt.Printf("Moved %s to position %d\n", id, position)
-	autoSync(s, fmt.Sprintf("st queue move: %s -> %d", id, position))
+	if err := autoSync(s, fmt.Sprintf("st queue move: %s -> %d", id, position)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -764,7 +783,9 @@ func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueAppro
 		if opts.BypassPlan && len(planless) > 0 {
 			fmt.Fprintf(os.Stderr, "warning: --bypass-plan overrode the I-491 plan gate for: %s\n", strings.Join(planless, ", "))
 		}
-		autoSync(s, fmt.Sprintf("st queue approve --sprint %s: %d item(s)", opts.Sprint, approved))
+		if err := autoSync(s, fmt.Sprintf("st queue approve --sprint %s: %d item(s)", opts.Sprint, approved)); err != nil {
+			return 1
+		}
 		return 0
 	}
 
@@ -806,7 +827,9 @@ func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueAppro
 		return 1
 	}
 	fmt.Printf("Approved %s\n", id)
-	autoSync(s, fmt.Sprintf("st queue approve: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st queue approve: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 

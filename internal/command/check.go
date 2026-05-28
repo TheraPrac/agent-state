@@ -45,8 +45,8 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 			}
 		}
 		if fixed > 0 || dupFixed > 0 {
-			if err := s.GitSync("st check --fix"); err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: check: git sync failed: %v\n", err)
+			if err := autoSync(s, "st check --fix"); err != nil {
+				return 1
 			}
 		}
 	}

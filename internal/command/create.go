@@ -269,15 +269,14 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 
 	// Commit + push the new item so it can't be silently deleted by a
 	// subsequent command's pre-run GitPull (untracked file) and so other
-	// agents see it immediately. Best-effort: a sync failure still
-	// returns 0; the on-disk file is correct and a later sync will
-	// carry the commit forward.
+	// agents see it immediately. Best-effort for transient errors; gate
+	// refusal (I-807) propagates non-zero (I-821).
 	//
 	// I-442: pass the new item's path so it actually gets staged.
 	// GitSync's `git add -u` only catches tracked changes; new files
 	// require explicit paths.
-	if err := s.GitSync(fmt.Sprintf("st create: %s — %s", id, title), newPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after create failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st create: %s — %s", id, title), newPath); err != nil {
+		return 1
 	}
 
 	// I-588: spawn the Claude sub-agent self-review on task/issue creates.

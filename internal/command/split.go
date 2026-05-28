@@ -286,6 +286,8 @@ func SplitCommand(s *store.Store, cfg *config.Config, id string) int {
 	}
 	fmt.Printf("Split %s into linked items: %s (backend) + %s (frontend, depends_on %s)\n",
 		id, idA, idB, idA)
-	autoSync(s, fmt.Sprintf("st split: %s -> %s + %s", id, idA, idB))
+	if err := autoSync(s, fmt.Sprintf("st split: %s -> %s + %s", id, idA, idB)); err != nil {
+		return 1
+	}
 	return 0
 }

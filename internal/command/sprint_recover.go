@@ -87,7 +87,9 @@ func SprintRecover(s *store.Store, cfg *config.Config, sprintID string) int {
 	}
 
 	if released > 0 || pruned > 0 {
-		autoSync(s, fmt.Sprintf("st sprint recover: %s (released %d, pruned %d)", sprintID, released, pruned))
+		if err := autoSync(s, fmt.Sprintf("st sprint recover: %s (released %d, pruned %d)", sprintID, released, pruned)); err != nil {
+			return 1
+		}
 	}
 	return 0
 }

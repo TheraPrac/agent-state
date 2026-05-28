@@ -79,7 +79,9 @@ func EpicMove(s *store.Store, cfg *config.Config, epicID string, pos int) int {
 		return 1
 	}
 	fmt.Printf("Moved epic %s to priority %d\n", epicID, pos)
-	autoSync(s, fmt.Sprintf("st epic move: %s -> p%d", epicID, pos))
+	if err := autoSync(s, fmt.Sprintf("st epic move: %s -> p%d", epicID, pos)); err != nil {
+		return 1
+	}
 	return 0
 }
 

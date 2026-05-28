@@ -362,16 +362,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// to run `st sync` or until `st run`'s deferred sync caught it. That
 	// gap allowed silent-revert incidents (e.g. I-164): a subsequent st
 	// command's PersistentPreRunE → GitPull destroyed the uncommitted
-	// move, and "Closed" turned out to be a lie. GitSync is best-effort —
-	// a failure here only warns, because the filesystem mutation already
-	// succeeded and a later sync will carry the commit forward.
+	// move, and "Closed" turned out to be a lie. Best-effort for transient
+	// errors; gate refusal (I-807) propagates non-zero so the operator is
+	// not misled about persistence.
 	// I-442: pass the post-Move path. The Move from issues/→archive/
 	// (or tasks/→archive/) is a rename — git add -u catches the
 	// delete-from-old, but the new path is untracked and needs
 	// explicit staging.
 	newPath, _ := s.Path(id)
-	if err := s.GitSync(fmt.Sprintf("st close: %s (%s)", id, resolution), newPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: sync after close failed: %v\n", err)
+	if err := autoSync(s, fmt.Sprintf("st close: %s (%s)", id, resolution), newPath); err != nil {
+		return 1
 	}
 
 	// Auto-archive sprint and epic when all items are terminal.

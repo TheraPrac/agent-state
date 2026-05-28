@@ -564,3 +564,38 @@ func TestPlanInvalidateNotFound(t *testing.T) {
 		t.Errorf("invalidate on missing item should exit 1; got %d", code)
 	}
 }
+
+// I-821: PlanApprove must exit non-zero when the I-807 gate fires, including
+// the I-832 idempotent re-run path (a retry must not silently succeed).
+func TestPlanApproveExitsNonZeroOnGateRefusal(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	workspace, s, cfg := setupGateWorkspace(t)
+
+	// Save a minimal plan sidecar so the missing-sidecar gate passes.
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Test plan for gate refusal test.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("plan.Save: %v", err)
+	}
+
+	// Arm the I-807 gate by dirtying the tracked non-state file.
+	if err := os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho gate-armed\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// First call: must fail because the gate fires after approve writes the item.
+	code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{})
+	if code == 0 {
+		t.Errorf("PlanApprove must return non-zero when the I-807 gate fires; got 0")
+	}
+
+	// I-832 idempotent re-run: even if PlanApproved was set on disk, a retry
+	// while the gate is still firing must also return non-zero.
+	code2 := PlanApprove(s, cfg, "T-001", PlanApproveOpts{})
+	if code2 == 0 {
+		t.Errorf("PlanApprove idempotent re-run must also fail while gate is active; got 0")
+	}
+}

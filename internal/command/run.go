@@ -1456,9 +1456,9 @@ func runSingleItem(s *store.Store, cfg *config.Config, itemID, sprintID string, 
 			if updatedItem, ok := syncStore.Get(itemID); ok && cfg.IsTerminalStatus(updatedItem.Type, updatedItem.Status) {
 				msg = fmt.Sprintf("st run: %s closed (%s)", itemID, updatedItem.Status)
 			}
-			if err := syncStore.GitSync(msg); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] warning: sync after run failed: %v\n", itemID, err)
-			}
+			// Deferred sync: can't propagate exit code, but gate refusals still
+		// print the full actionable error via autoSync (I-821).
+		autoSync(syncStore, msg) //nolint:errcheck
 		}
 	}()
 

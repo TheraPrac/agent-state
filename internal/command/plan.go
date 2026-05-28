@@ -97,7 +97,9 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		fmt.Fprintf(os.Stderr,
 			"%s plan is already approved (by %s at %s) — no-op (idempotent re-run)\n",
 			id, fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
-		autoSync(s, fmt.Sprintf("st plan approve: %s (idempotent re-run)", id))
+		if err := autoSync(s, fmt.Sprintf("st plan approve: %s (idempotent re-run)", id)); err != nil {
+			return 1
+		}
 		return 0
 	}
 
@@ -274,7 +276,9 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	_ = recordStructuredDecision(cfg, id, "plan_approve", planDecision)
 
 	fmt.Printf("Approved plan for %s (by %s at %s)\n", id, approver, approvedAt)
-	autoSync(s, fmt.Sprintf("st plan approve: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st plan approve: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -317,7 +321,9 @@ func PlanReset(s *store.Store, cfg *config.Config, id string) int {
 	})
 
 	fmt.Printf("Reset plan approval for %s (was approved by %s at %s)\n", id, fallback(priorBy, "?"), fallback(priorAt, "?"))
-	autoSync(s, fmt.Sprintf("st plan reset: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st plan reset: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -407,7 +413,9 @@ func PlanInvalidate(s *store.Store, cfg *config.Config, id string) int {
 	})
 
 	fmt.Printf("Invalidated plan for %s — sidecar discarded. Run `st plan prep %s` to author a fresh plan.\n", id, id)
-	autoSync(s, fmt.Sprintf("st plan invalidate: %s", id))
+	if err := autoSync(s, fmt.Sprintf("st plan invalidate: %s", id)); err != nil {
+		return 1
+	}
 	return 0
 }
 
