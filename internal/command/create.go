@@ -275,17 +275,16 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-442: pass the new item's path so it actually gets staged.
 	// GitSync's `git add -u` only catches tracked changes; new files
 	// require explicit paths.
-	if err := autoSync(s, fmt.Sprintf("st create: %s — %s", id, title), newPath); err != nil {
-		return 1
-	}
+	syncErr := autoSync(s, fmt.Sprintf("st create: %s — %s", id, title), newPath)
 
 	// I-588: spawn the Claude sub-agent self-review on task/issue creates.
-	// runItemReview is a no-op for non-task/issue types and when the engine
-	// is nil, so this safely covers in-process callers (tests, migrations)
-	// that don't wire an engine. The review may auto-fix SBAR/title via
-	// `st update` calls and may archive the item if the verdict is Reject.
+	// Always runs even when autoSync returns a gate error — the item is on
+	// disk and still needs review regardless of git-sync outcome (I-821).
 	runItemReview(s, cfg, id, item, opts.Engine)
 
+	if syncErr != nil {
+		return 1
+	}
 	return 0
 }
 

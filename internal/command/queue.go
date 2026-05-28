@@ -150,7 +150,7 @@ func autoSync(s *store.Store, msg string, newPaths ...string) error {
 	}
 	if err := s.GitSync(msg, newPaths...); err != nil {
 		if errors.Is(err, store.ErrI807MainBranchGate) {
-			fmt.Fprint(os.Stderr, err.Error())
+			fmt.Fprint(os.Stderr, err)
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", err)

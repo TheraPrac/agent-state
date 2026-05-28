@@ -370,21 +370,19 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// delete-from-old, but the new path is untracked and needs
 	// explicit staging.
 	newPath, _ := s.Path(id)
-	if err := autoSync(s, fmt.Sprintf("st close: %s (%s)", id, resolution), newPath); err != nil {
-		return 1
-	}
+	syncErr := autoSync(s, fmt.Sprintf("st close: %s (%s)", id, resolution), newPath)
 
-	// Auto-archive sprint and epic when all items are terminal.
+	// Always run post-close cleanup even when sync failed — the item is
+	// already durably on disk, and skipping sprint/epic auto-archive or
+	// worktree cleanup would leave stale state that outlives the gate.
 	autoArchiveSprintAndEpic(s, cfg, item.Sprint)
-
-	// Auto-finish the worktree when one exists. Best-effort: never blocks
-	// the close, never uses --force, prints a one-line retention warning
-	// when uncommitted/unpushed work would be lost. Sibling of the queue
-	// auto-remove and stack auto-pop above.
 	if cleaned, _ := TryAutoFinishWorktree(cfg, id); cleaned {
 		fmt.Printf("  also finished worktree\n")
 	}
 
+	if syncErr != nil {
+		return 1
+	}
 	return 0
 }
 

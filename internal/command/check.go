@@ -18,6 +18,11 @@ import (
 )
 
 func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
+	// syncErr captures an I-807 gate refusal from the fix-path autoSync.
+	// Validation always runs to completion; the gate error propagates at
+	// the final return alongside any schema/duplicate findings (I-821).
+	var syncErr error
+
 	// Auto-fix by default unless quiet mode (read-only for CI/hooks)
 	// --fix flag is now redundant but kept for explicitness
 	if !quiet {
@@ -45,9 +50,7 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 			}
 		}
 		if fixed > 0 || dupFixed > 0 {
-			if err := autoSync(s, "st check --fix"); err != nil {
-				return 1
-			}
+			syncErr = autoSync(s, "st check --fix")
 		}
 	}
 
@@ -203,7 +206,7 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		}
 	}
 
-	if issues > 0 {
+	if issues > 0 || syncErr != nil {
 		return 1
 	}
 	return 0
