@@ -112,6 +112,10 @@ type StartOpts struct {
 	// returns Drift. There is no analogous --ack-stale opt-out;
 	// Stale forces re-prep.
 	AckDrift string
+
+	// PRFetch is an injectable GitHub PR-state function for testing the
+	// I-876 open-PR guard in createWorktrees. nil = use getPRState.
+	PRFetch func(*config.Config, string) (string, []string)
 }
 
 func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
@@ -543,6 +547,29 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 		prefix = "fix"
 	}
 	branch := fmt.Sprintf("%s/%s-%s", prefix, id, opts.Slug)
+
+	// I-876: refuse fresh worktree creation when an open PR already exists for
+	// this branch — a parallel session has shipped this work. The agent should
+	// use `st resume` to attach to the existing branch, not re-implement from
+	// scratch. Degrades gracefully when gh is unavailable.
+	prFetch := opts.PRFetch
+	if prFetch == nil {
+		prFetch = getPRState
+	}
+	if opts.PRFetch != nil || toolAvailable("gh") {
+		if prState, prURLs := prFetch(cfg, branch); prState == "OPEN" {
+			url := ""
+			if len(prURLs) > 0 {
+				url = " — " + prURLs[0]
+			}
+			return "", fmt.Errorf(
+				"branch %q already has an open PR%s\n"+
+					"  a parallel session has already pushed this work;\n"+
+					"  run `st resume %s` to attach to the existing branch instead of re-implementing",
+				branch, url, id,
+			)
+		}
+	}
 
 	// I-407: WorktreeBase resolves to <agent-root>/worktrees, not
 	// <workspace>/worktrees, so each agent's worktrees are physically

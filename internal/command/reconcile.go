@@ -58,11 +58,12 @@ func (o *ReconcileOpts) s3Check() func(string) bool {
 
 // Reconcile syncs delivery stages with GitHub state and performs housekeeping.
 // Phases:
-// 0: coding/committed → pushed (if branch exists on remote)
-// 1: pushed → pr_open/merged (via gh pr list)
-// 2: pr_open → merged (via gh pr view)
-// 3: completed items → archive/ (move files)
-// 4: regenerate index.md
+// 0: active-stage drift sweep — advance active items with open/merged PRs (cross-session catch-up)
+// 1: coding/committed → pushed (if branch exists on remote)
+// 2: pushed → pr_open/merged (via gh pr list)
+// 3: pr_open → merged (via gh pr view)
+// 4: completed items → archive/ (move files)
+// 5: regenerate index.md
 func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	var updates int
 
@@ -73,65 +74,74 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 		fmt.Println("  (gh not available — skipping GitHub phases)")
 	}
 
-	// Phase 0: coding/committed → pushed
-	fmt.Println("Phase 0: Check branch existence")
+	// Phase 0: active-stage drift — sweep active items for open/merged PRs regardless of recorded stage.
+	// Catches items whose branch+PR were created in a parallel session that pushed after this session's
+	// initial git pull. Pure remote gh call; no local repo dependency.
+	if hasGH {
+		fmt.Println("Phase 0: Active-stage drift (cross-session catch-up)")
+		n := reconcileActiveStageDrift(s, cfg, opts)
+		updates += n
+	}
+
+	// Phase 1: coding/committed → pushed
+	fmt.Println("Phase 1: Check branch existence")
 	n := reconcileBranchPush(s, cfg, opts)
 	updates += n
 
-	// Phase 1: pushed → pr_open/merged
+	// Phase 2: pushed → pr_open/merged
 	if hasGH {
-		fmt.Println("Phase 1: Check PR state (pushed → pr_open/merged)")
+		fmt.Println("Phase 2: Check PR state (pushed → pr_open/merged)")
 		n = reconcilePRState(s, cfg, opts)
 		updates += n
 	}
 
-	// Phase 2: pr_open → merged
+	// Phase 3: pr_open → merged
 	if hasGH {
-		fmt.Println("Phase 2: Check merge state (pr_open → merged)")
+		fmt.Println("Phase 3: Check merge state (pr_open → merged)")
 		n = reconcileMergeState(s, cfg, opts)
 		updates += n
 	}
 
-	// Phase 3: merged → deployed_dev (AWS orchestrator check)
+	// Phase 4: merged → deployed_dev (AWS orchestrator check)
 	hasAWS := opts.toolCheck()("aws")
 	if hasAWS {
-		fmt.Println("Phase 3: Check deployment state (merged → deployed_dev)")
+		fmt.Println("Phase 4: Check deployment state (merged → deployed_dev)")
 		n = reconcileDeployState(s, cfg, opts)
 		updates += n
 	} else {
-		fmt.Println("Phase 3: (aws not available — skipping deployment check)")
+		fmt.Println("Phase 4: (aws not available — skipping deployment check)")
 	}
 
-	// Phase 4: Move completed items to archive
-	fmt.Println("Phase 4: Archive completed items")
+	// Phase 5: Move completed items to archive
+	fmt.Println("Phase 5: Archive completed items")
 	n = reconcileArchive(s, cfg, opts)
 	updates += n
 
-	// Phase 5: Drop terminal items from the work queue
-	fmt.Println("Phase 5: Queue cleanup (drop terminal items)")
+	// Phase 6: Drop terminal items from the work queue
+	fmt.Println("Phase 6: Queue cleanup (drop terminal items)")
 	n = reconcileQueueCleanup(s, cfg, opts)
 	updates += n
 
-	// Phase 6: Drop terminal items from the agent stack
-	fmt.Println("Phase 6: Stack cleanup (drop terminal items)")
+	// Phase 7: Drop terminal items from the agent stack
+	fmt.Println("Phase 7: Stack cleanup (drop terminal items)")
 	n = reconcileStackCleanup(s, cfg, opts)
 	updates += n
 
-	// Phase 7: Release stuck-active items with no worktree / open PR / recent touch
-	fmt.Println("Phase 7: Release stale-active items")
+	// Phase 8: Release stuck-active items with no worktree / open PR / recent touch
+	fmt.Println("Phase 8: Release stale-active items")
 	n = reconcileStaleActive(s, cfg, opts)
 	updates += n
 
-	// Phase 8: Sprint-inheritance drift (I-681) — informational only, no
+	// Phase 9: Sprint-inheritance drift (I-681) — informational only, no
 	// mutation. Surfaces follow-ups worked off their in-progress sprint
 	// (the I-676 → T-203 case) so whoever owns the item can `st sprint
 	// add` it. Reconcile must not auto-move items here: membership change
 	// edits the item, which may belong to a peer agent.
-	fmt.Println("Phase 8: Sprint-inheritance drift (informational)")
+	fmt.Println("Phase 9: Sprint-inheritance drift (informational)")
 	reconcileSprintDrift(s, cfg, opts)
 
-	// Phase 9: Regenerate index
-	fmt.Println("Phase 9: Regenerate index")
+	// Phase 10: Regenerate index
+	fmt.Println("Phase 10: Regenerate index")
 	if !opts.DryRun {
 		Index(s, cfg)
 	}
@@ -168,6 +178,66 @@ func reconcileSprintDrift(s *store.Store, cfg *config.Config, opts ReconcileOpts
 	for _, e := range sprintinherit.Drift(s.All(), g, reg, cfg) {
 		fmt.Printf("  warning: %s\n", e)
 	}
+}
+
+// reconcileActiveStageDrift sweeps all active items with a recorded branch and
+// advances stage directly to pr_open or merged based on live GitHub PR state.
+// Unlike reconcileBranchPush, this makes no local git call — it catches items
+// whose branch+PR were opened in a parallel session that synced to remote after
+// this session's last git pull (the I-530 / I-876 failure mode).
+// Only callable when gh is available. Uses forward-only advanceDeliveryStage so
+// it is safe to run on items already at pr_open or beyond — no regression.
+func reconcileActiveStageDrift(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	updates := 0
+	for _, item := range s.List() {
+		tc, ok := cfg.Types[item.Type]
+		if !ok {
+			continue
+		}
+		if item.Status != tc.ActiveStatus {
+			continue
+		}
+
+		branch, _ := getNestedField(item, "work_tracking", "branch")
+		if branch == "" || branch == "null" {
+			continue
+		}
+
+		prState, prURLs := opts.prFetch()(cfg, branch)
+
+		var target string
+		switch prState {
+		case "OPEN":
+			target = "pr_open"
+		case "MERGED":
+			target = "merged"
+		default:
+			continue
+		}
+
+		current, _ := getNestedField(item, "delivery", "stage")
+		if stageIndex(target) <= stageIndex(current) {
+			continue
+		}
+
+		updates++
+		fmt.Printf("  %s: %s → %s (PR %s detected on branch %s)\n", item.ID, current, target, prState, branch)
+		if !opts.DryRun {
+			itemID := item.ID
+			capturedTarget := target
+			capturedURLs := prURLs
+			if err := s.Mutate(itemID, func(item *model.Item) error {
+				advanceDeliveryStage(item, capturedTarget)
+				if len(capturedURLs) > 0 {
+					storePRURLs(item, capturedURLs)
+				}
+				return nil
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "  error writing %s: %v\n", itemID, err)
+			}
+		}
+	}
+	return updates
 }
 
 // reconcileBranchPush checks if items at coding/committed stage have branches

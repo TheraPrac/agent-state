@@ -19,6 +19,13 @@ type ResumeOpts struct {
 	ID string // explicit item; empty ⇒ stack top, then first active
 }
 
+// remoteState holds the pre-computed GitHub state for the item's branch,
+// fetched in Resume() before renderResume so the renderer stays pure/testable.
+type remoteState struct {
+	prState string   // "OPEN", "MERGED", "CLOSED", or "" (no PR found)
+	prURLs  []string // PR URLs if any
+}
+
 // tapeAudit is the self-attestation result. The dangerous failure mode is a
 // record that LOOKS complete but is not, so the audit is rendered FIRST and
 // degrades to a loud, explicit "unverified/gap" rather than a confident
@@ -77,7 +84,13 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 
 	audit := auditExecTape(cfg, item, entries, sessionID)
 
-	fmt.Print(renderResume(item, entries, sessionID, planBody, planNote, audit))
+	// I-876: pre-compute GitHub remote state so renderResume stays pure/testable.
+	var rs remoteState
+	if branch := nestedString(item.WorkTracking, "branch"); branch != "" && toolAvailable("gh") {
+		rs.prState, rs.prURLs = getPRState(cfg, branch)
+	}
+
+	fmt.Print(renderResume(item, entries, sessionID, planBody, planNote, audit, rs))
 	return 0
 }
 
@@ -192,7 +205,7 @@ func priorSessionUnfinalized(entries []changelog.Entry, currentSessionID string)
 // authoritative; non-empty means the plan could not be loaded (missing /
 // unreadable / empty) and the section renders a ⚠️ block instead of silently
 // vanishing (I-690 — operator silent-failure principle).
-func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBody, planNote string, audit tapeAudit) string {
+func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBody, planNote string, audit tapeAudit, rs remoteState) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# RESUME %s — %s\n\n", item.ID, item.Title)
@@ -245,7 +258,27 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 	}
 	b.WriteString("\n")
 
-	// (2b) Next — the single highest-value "what to do" line for a cold
+	// (2b) Remote state — I-876: surfaces live GitHub PR state so a cold session
+	// immediately sees if a parallel agent has already pushed or opened a PR for
+	// this item. Only emitted when a PR was found (no PR = no noise).
+	if rs.prState != "" {
+		b.WriteString("## Remote state\n")
+		switch rs.prState {
+		case "OPEN":
+			b.WriteString("  ⚠️  An OPEN PR exists for this branch — a parallel session may have already shipped this work.\n")
+			b.WriteString("  Verify before writing any new code. Run `gh pr view` or check the URLs below.\n")
+		case "MERGED":
+			b.WriteString("  ✓ Branch PR is MERGED — this work has already been delivered.\n")
+		case "CLOSED":
+			b.WriteString("  PR was CLOSED without merging.\n")
+		}
+		for _, u := range rs.prURLs {
+			fmt.Fprintf(&b, "  %s\n", u)
+		}
+		b.WriteString("\n")
+	}
+
+	// (2d) Next — the single highest-value "what to do" line for a cold
 	// resume (I-690). Placed immediately after State, ahead of the
 	// historical record, because a resuming session needs the forward
 	// directive before the backward narrative.

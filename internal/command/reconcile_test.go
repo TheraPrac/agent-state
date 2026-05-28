@@ -382,12 +382,202 @@ func TestReconcileFullFlow(t *testing.T) {
 		t.Errorf("reconcile exit %d", code)
 	}
 
-	// After full reconcile: coding → pushed → merged (skipping pr_open because PR already merged)
+	// Phase 0 (drift sweep) advances directly to merged since PRFetch returns MERGED.
 	item, _ := s.Get("T-001")
 	stage, _ := getNestedField(item, "delivery", "stage")
-	// Phase 0 advances to pushed, Phase 1 finds merged PR → advances to merged
-	if stage != "pushed" && stage != "merged" {
-		t.Errorf("expected pushed or merged, got %q", stage)
+	if stage != "merged" {
+		t.Errorf("expected merged, got %q", stage)
+	}
+}
+
+// --- reconcileActiveStageDrift tests (I-876) ---
+
+func TestReconcileActiveStageDrift_CodingToPROpen(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "OPEN", []string{"https://github.com/org/repo/pull/1"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 1 {
+		t.Errorf("expected 1 update, got %d", n)
+	}
+	item, _ := s.Get("T-001")
+	stage, _ := getNestedField(item, "delivery", "stage")
+	if stage != "pr_open" {
+		t.Errorf("expected pr_open, got %q", stage)
+	}
+}
+
+func TestReconcileActiveStageDrift_MergedFromCoding(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "MERGED", []string{"https://github.com/org/repo/pull/2"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 1 {
+		t.Errorf("expected 1 update, got %d", n)
+	}
+	item, _ := s.Get("T-001")
+	stage, _ := getNestedField(item, "delivery", "stage")
+	if stage != "merged" {
+		t.Errorf("expected merged, got %q", stage)
+	}
+}
+
+func TestReconcileActiveStageDrift_SkipsItemsWithoutBranch(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "OPEN", []string{"https://github.com/org/repo/pull/1"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 0 {
+		t.Errorf("item without branch should be skipped; got %d updates", n)
+	}
+}
+
+func TestReconcileActiveStageDrift_ForwardOnlyNoRegress(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// Item already at merged — an OPEN PR report must not regress it to pr_open.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "merged")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "OPEN", []string{"https://github.com/org/repo/pull/1"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 0 {
+		t.Errorf("already-merged item must not be advanced by an OPEN PR report; got %d updates", n)
+	}
+	item, _ := s.Get("T-001")
+	stage, _ := getNestedField(item, "delivery", "stage")
+	if stage != "merged" {
+		t.Errorf("stage must remain merged, got %q", stage)
+	}
+}
+
+func TestReconcileActiveStageDrift_DryRunNoMutate(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		DryRun:    true,
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "OPEN", []string{"https://github.com/org/repo/pull/1"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 1 {
+		t.Errorf("dry-run should count the update but not apply it; got %d", n)
+	}
+	item, _ := s.Get("T-001")
+	stage, _ := getNestedField(item, "delivery", "stage")
+	if stage != "coding" {
+		t.Errorf("dry-run must not mutate stage; got %q", stage)
+	}
+}
+
+func TestReconcileActiveStageDrift_SkipsWhenGHUnavailable(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return false }, // gh unavailable
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "OPEN", nil
+		},
+	}
+	// When hasGH=false, the drift phase (Phase 0) must be skipped entirely.
+	// Verify by checking T-001 stage is NOT advanced (drift would have moved it to pr_open).
+	code := Reconcile(s, cfg, opts)
+	if code != 0 {
+		t.Errorf("reconcile exit %d", code)
+	}
+	item, _ := s.Get("T-001")
+	stage, _ := getNestedField(item, "delivery", "stage")
+	if stage == "pr_open" || stage == "merged" {
+		t.Errorf("drift phase must be skipped when gh unavailable; stage advanced to %q", stage)
+	}
+}
+
+func TestReconcileActiveStageDrift_ClosedPRNoAdvance(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.SetNested("delivery", "stage", "coding")
+		it.SetNested("work_tracking", "branch", "feat/T-001-test")
+		it.Doc.SetField("status", "active")
+		it.Status = "active"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := ReconcileOpts{
+		ToolCheck: func(string) bool { return true },
+		PRFetch: func(_ *config.Config, _ string) (string, []string) {
+			return "CLOSED", []string{"https://github.com/org/repo/pull/3"}
+		},
+	}
+	n := reconcileActiveStageDrift(s, cfg, opts)
+	if n != 0 {
+		t.Errorf("CLOSED PR must not advance stage; got %d updates", n)
 	}
 }
 
