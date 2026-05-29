@@ -567,7 +567,8 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			s, _ = store.New(cfg)
 			item, _ = s.Get(itemID)
 			var sr StepResult
-			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", nil, &sr)
+			// I-985: pass the same wall cap as the plan-generation step.
+			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + resolvePrepTimeout().String()}, &sr)
 			// Re-save draft after auto-fix
 			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)

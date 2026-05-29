@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -396,6 +397,53 @@ func TestPlanReviewAutoFixTimeoutPropagated(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected at least one RunClaude invocation with env containing %q; invocations: %v", want, capturedEnvs)
+	}
+}
+
+// TestPlanApproveAutoFixFailureRefusesApproval asserts that when the
+// auto-fix sub-agent fails (engine error), PlanApprove returns 2 and
+// does not approve the plan. This verifies I-985's fix: runAutoFixFromNotes
+// now propagates feedbackSR.Passed and feedbackSR.Error into *sr so the
+// guard in plan_review.go can actually fire.
+func TestPlanApproveAutoFixFailureRefusesApproval(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var callCount int
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: review returns "Accept with notes" to trigger auto-fix.
+				body, _ := json.Marshal(ClaudeResult{
+					Type: "result", Subtype: "success",
+					Result: "RECOMMENDATION: Accept with notes — tighten the approach section",
+				})
+				return body, 0, nil
+			}
+			// Second call: auto-fix sub-agent fails (engine error).
+			return nil, 1, fmt.Errorf("simulated auto-fix engine failure")
+		},
+		PromptUser: func(p string) (string, error) { return "", nil },
+		SelectMenu:  func(p string, opts []menuOption, def int) string { return "1" },
+	}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+			t.Errorf("expected exit 2 when auto-fix engine fails; got %d", code)
+		}
+	})
+	item, _ := s.Get("T-001")
+	if item.PlanApproved {
+		t.Error("PlanApproved should stay false when auto-fix engine fails")
 	}
 }
 

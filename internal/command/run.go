@@ -3133,6 +3133,10 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			reviewPrompt := buildPlanReviewPrompt(itemID, item)
 			reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
 			reviewStep.SetName("plan_review")
+			// I-985: cap the plan-review sub-agent so a stuck tool call in the
+			// run pipeline doesn't hang under the 2h global ceiling.
+			planReviewCap := resolvePlanReviewTimeout()
+			reviewStep.ExtraEnv = []string{"AS_CLAUDE_WALL_TIMEOUT=" + planReviewCap.String()}
 			reviewStart := time.Now()
 			reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
 			reviewDur := time.Since(reviewStart)
@@ -3148,7 +3152,8 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 				notes := extractNotesFromReview(reviewSR.FullOutput)
 				s, _ = store.New(cfg)
 				item, _ = s.Get(itemID)
-				runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, opts, engine, worktreeDir, "", nil, &sr)
+				// I-985: pass the same wall cap as the review step.
+				runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, opts, engine, worktreeDir, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + planReviewCap.String()}, &sr)
 				continue // re-run review
 			}
 
@@ -3228,6 +3233,9 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			reviewPrompt := buildPlanReviewPrompt(itemID, item)
 			reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
 			reviewStep.SetName("design_review")
+			// I-985: same wall cap as the plan-review path.
+			designReviewCap := resolvePlanReviewTimeout()
+			reviewStep.ExtraEnv = []string{"AS_CLAUDE_WALL_TIMEOUT=" + designReviewCap.String()}
 			reviewStart := time.Now()
 			reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, opts, engine, worktreeDir, "", false)
 			reviewDur := time.Since(reviewStart)
@@ -3243,7 +3251,8 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 				notes := extractNotesFromReview(reviewSR.FullOutput)
 				s, _ = store.New(cfg)
 				item, _ = s.Get(itemID)
-				runAutoFixFromNotes(s, cfg, itemID, "", item, "design review", notes, opts, engine, worktreeDir, "", nil, &sr)
+				// I-985: pass the same wall cap as the review step.
+				runAutoFixFromNotes(s, cfg, itemID, "", item, "design review", notes, opts, engine, worktreeDir, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + designReviewCap.String()}, &sr)
 				continue // re-run review
 			}
 
@@ -3439,6 +3448,9 @@ func proposePlan(cfg *config.Config, itemID string, item *model.Item, engine Run
 	if agentID := cfg.AgentID(); agentID != "" {
 		env = append(env, "AS_AGENT_ID="+agentID)
 	}
+	// I-985: cap proposePlan the same way prep.go caps plan-generation.
+	// Without this, a stuck tool call in the propose step hangs for 2h.
+	env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePlanReviewTimeout().String())
 
 	output, exitCode, err := engine.RunClaude(cwd, args, env)
 	if err != nil {
@@ -5702,6 +5714,12 @@ func runAutoFixFromNotes(s *store.Store, cfg *config.Config, itemID, sprintID st
 	feedbackStep.SetName("auto_fix")
 	feedbackStep.ExtraEnv = append(feedbackStep.ExtraEnv, stepEnv...)
 	feedbackSR := executeClaude(s, cfg, itemID, sprintID, feedbackStep, opts, engine, worktreeDir, claudeSessionID, true)
+	// I-985: propagate Passed and Error so callers can detect engine failure.
+	// Without this the guard !fixResult.Passed && fixResult.Error != "" in
+	// plan_review.go is permanently dead — auto-fix failures are swallowed and
+	// the plan-before-code gate is silently bypassed on every failure.
+	sr.Passed = feedbackSR.Passed
+	sr.Error = feedbackSR.Error
 	sr.CostUSD += feedbackSR.CostUSD
 	sr.AIDurationMs += feedbackSR.AIDurationMs
 
