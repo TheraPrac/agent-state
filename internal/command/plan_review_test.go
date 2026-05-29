@@ -495,5 +495,26 @@ func TestPlanApproveAcceptWithNotesExhaustionPersistsNotes(t *testing.T) {
 	if !strings.Contains(content, "rollback strategy") {
 		t.Errorf("plan sidecar missing note body; got:\n%s", content)
 	}
+
+	// Idempotency: running PlanApprove again must NOT produce a second
+	// "## Pending Review Notes" section.
+	fake2 := &fakeClaude{stepResults: []string{
+		"RECOMMENDATION: Accept with notes\n" + noteBody,
+	}}
+	engine2 := RunEngine{
+		RunClaude:  fake2.run,
+		PromptUser: func(prompt string) (string, error) { return "", nil },
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string { return "1" },
+	}
+	suppressOutput(t, func() {
+		PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine2}) //nolint:errcheck
+	})
+	data2, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("reading plan sidecar after second run: %v", err)
+	}
+	if count := strings.Count(string(data2), "## Pending Review Notes"); count != 1 {
+		t.Errorf("expected exactly 1 '## Pending Review Notes' section after second run; got %d\ncontent:\n%s", count, string(data2))
+	}
 }
 
