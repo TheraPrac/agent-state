@@ -553,6 +553,20 @@ func TestPersistAgentWorkspaceConfigWritesRegistryAndLocalConfig(t *testing.T) {
 	}
 }
 
+func TestWriteStRootCreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeStRoot(dir); err != nil {
+		t.Fatalf("writeStRoot: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".st-root"))
+	if err != nil {
+		t.Fatalf("expected .st-root: %v", err)
+	}
+	if string(data) != "theraprac-workspace" {
+		t.Errorf("got %q, want %q", string(data), "theraprac-workspace")
+	}
+}
+
 func fakeAgentScripts(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

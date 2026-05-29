@@ -334,6 +334,7 @@ func printAgentWorkspacePlan(plan agentWorkspacePlan, dryRun, repair bool) {
 	fmt.Printf("  docker_label: theraprac.agent=%s\n", plan.AgentID)
 	fmt.Printf("  registry: %s\n", agentWorkspaceRegistryPath(plan))
 	fmt.Printf("  workspace_config: %s\n", agentWorkspaceLocalConfigPath(plan))
+	fmt.Printf("  st_root: %s -> theraprac-workspace\n", filepath.Join(plan.TargetDir, ".st-root"))
 	fmt.Printf("  postgres container: %s (image %s, host port %d)\n", postgresContainerName(plan.AgentID), postgresImage, plan.Ports.DB)
 	fmt.Printf("  postgres volume:    %s\n", postgresVolumeName(plan.AgentID))
 	fmt.Printf("  mailpit container:  %s (image %s, smtp host port %d, ui host port %d)\n",
@@ -430,6 +431,9 @@ func applyAgentWorkspaceCreate(plan agentWorkspacePlan, repair bool) error {
 	}
 	if err := persistAgentWorkspaceConfig(plan); err != nil {
 		return err
+	}
+	if err := writeStRoot(plan.TargetDir); err != nil {
+		return fmt.Errorf("st-root: %w", err)
 	}
 	if err := linkClaudeContext(plan, repair); err != nil {
 		return fmt.Errorf("claude context: %w", err)
@@ -1002,6 +1006,10 @@ func persistAgentWorkspaceConfig(plan agentWorkspacePlan) error {
 		}
 	}
 	return nil
+}
+
+func writeStRoot(targetDir string) error {
+	return os.WriteFile(filepath.Join(targetDir, ".st-root"), []byte("theraprac-workspace"), 0644)
 }
 
 func agentWorkspaceRegistryPath(plan agentWorkspacePlan) string {
