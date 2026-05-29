@@ -456,6 +456,13 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			p = &plan.Plan{RawText: planText}
 		}
 
+		// I-982: commit any item-file writes the sub-agent made via
+		// `st update` before reloading the store. Non-fatal — a GitSync
+		// failure leaves the workspace dirty but must not abort the plan.
+		if syncErr := s.GitSync("plan-prep: commit item updates for " + itemID); syncErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: GitSync after RunClaude: %v\n", itemID, syncErr)
+		}
+
 		// Reload item (claude may have updated it via st update)
 		s, _ = store.New(cfg)
 		item, _ = s.Get(itemID)
@@ -815,6 +822,12 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		p, _ = plan.Parse(planText)
 		if p == nil {
 			p = &plan.Plan{RawText: planText}
+		}
+
+		// I-982: commit any item-file writes the sub-agent made via
+		// `st update` before reloading the store. Non-fatal.
+		if syncErr := s.GitSync("plan-prep: commit item updates for " + itemID); syncErr != nil {
+			fmt.Printf("[%s] Warning: GitSync after RunClaude: %v\n", itemID, syncErr)
 		}
 
 		// Reload item — claude may have updated it via `st update`
