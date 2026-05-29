@@ -9,6 +9,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -34,6 +35,13 @@ type CreateOpts struct {
 	// spawns the sub-agent SBAR/title self-review; in-process callers
 	// (tests, migrations) leave it zero, which skips the review entirely.
 	Engine RunEngine
+
+	// I-908: SBAR content supplied at create time. When any field is non-empty,
+	// the scaffold is replaced with real content. EnforceGate runs Layer-1
+	// validation (ValidateSBAR + ValidateSBARLength) before any git commit.
+	Situation, Background, Assessment, Recommendation string
+	EnforceGate bool // set true by the CLI; in-process callers keep false
+	NoValidate  bool // skip Layers 2+3 semantic validation; Layer 1 always runs
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -74,6 +82,52 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		if g.Type != "goal" {
 			fmt.Fprintf(os.Stderr, "create: %s is not a goal (type=%s)\n", gid, g.Type)
 			return 1
+		}
+	}
+
+	// I-908 Layer 1: validate SBAR content before any git commit when EnforceGate.
+	// Only fires for task/issue types; ideas/promotions have no SBAR requirement.
+	if opts.EnforceGate && (itemType == "task" || itemType == "issue") {
+		tempItem := &model.Item{SBAR: model.SBAR{
+			Situation:      opts.Situation,
+			Background:     opts.Background,
+			Assessment:     opts.Assessment,
+			Recommendation: opts.Recommendation,
+		}}
+		vs := quality.ValidateSBAR(tempItem)
+		vs = append(vs, quality.ValidateSBARLength(tempItem)...)
+		if quality.HasError(vs) {
+			fmt.Fprintln(os.Stderr, "create: SBAR validation failed — supply all four fields via --sbar-* flags:")
+			for _, v := range vs {
+				if v.Severity == quality.SeverityError {
+					fmt.Fprintf(os.Stderr, "  %s\n", v)
+				}
+			}
+			return 1
+		}
+	}
+
+	// I-908 Layers 2+3: LLM semantic SBAR validation. Runs only when EnforceGate
+	// and --no-validate is not set. Errors and unresponsive engine degrade to
+	// non-blocking skip — a transient LLM hiccup must not block a Layer-1-clean item.
+	if opts.EnforceGate && !opts.NoValidate && (itemType == "task" || itemType == "issue") {
+		sbar := model.SBAR{
+			Situation:      opts.Situation,
+			Background:     opts.Background,
+			Assessment:     opts.Assessment,
+			Recommendation: opts.Recommendation,
+		}
+		if blocked, findings := validateSBARSemantic(cfg, opts.Engine, sbar); blocked {
+			fmt.Fprintln(os.Stderr, "create: SBAR semantic validation FAILED — refine content and retry (or --no-validate to skip):")
+			for _, f := range findings {
+				fmt.Fprintf(os.Stderr, "  %s\n", f)
+			}
+			return 1
+		} else if len(findings) > 0 {
+			fmt.Fprintln(os.Stderr, "create: SBAR semantic validation warnings (item created; address these for quality):")
+			for _, f := range findings {
+				fmt.Fprintf(os.Stderr, "  warning: %s\n", f)
+			}
 		}
 	}
 
@@ -182,6 +236,19 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 
 	doc.Lines = lines
 
+	// I-908: if real SBAR was supplied via flags, overwrite the scaffold block.
+	var realSBAR model.SBAR
+	if (itemType == "task" || itemType == "issue") &&
+		(opts.Situation != "" || opts.Background != "" || opts.Assessment != "" || opts.Recommendation != "") {
+		realSBAR = model.SBAR{
+			Situation:      opts.Situation,
+			Background:     opts.Background,
+			Assessment:     opts.Assessment,
+			Recommendation: opts.Recommendation,
+		}
+		doc.SetSBARBlock(realSBAR)
+	}
+
 	item := &model.Item{
 		ID:          id,
 		Type:        itemType,
@@ -191,6 +258,7 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		LastTouched: now,
 		Priority:    &opts.Priority,
 		Doc:         doc,
+		SBAR:        realSBAR, // I-908: zero value if no flags supplied
 	}
 
 	if opts.Depends != "" {

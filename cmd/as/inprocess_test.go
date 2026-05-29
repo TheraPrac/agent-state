@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+// testSBARArgsInprocess are the --sbar-* and --no-validate flags used by in-process
+// CLI tests that call `st create task/issue`. I-908 requires substantive SBAR;
+// --no-validate skips the LLM layer so tests remain deterministic.
+var testSBARArgsInprocess = []string{
+	"--sbar-situation", "Test fixture: observable symptom for inprocess integration test.",
+	"--sbar-background", "Integration test in cmd/as/inprocess_test.go; no production code path involved.",
+	"--sbar-assessment", "Standard test fixture; no real diagnosis required for integration coverage.",
+	"--sbar-recommendation", "Keep fixture stable; supply real SBAR for production item creation.",
+	"--no-validate",
+}
+
 // runInProcess runs a command via newApp() in-process, capturing stdout.
 // Returns stdout content and the exit code captured in the exitCode global.
 func runInProcess(t *testing.T, cwd string, args ...string) (string, int) {
@@ -253,7 +264,8 @@ func TestInProcess_Index(t *testing.T) {
 
 func TestInProcess_Create(t *testing.T) {
 	ws := setupInProcessWorkspace(t)
-	stdout, code := runInProcess(t, ws, "create", "task", "New task")
+	args := append([]string{"create", "task", "New task"}, testSBARArgsInprocess...)
+	stdout, code := runInProcess(t, ws, args...)
 	if code != 0 {
 		t.Errorf("create exit %d", code)
 	}
@@ -473,7 +485,8 @@ func TestInProcess_FullLifecycle(t *testing.T) {
 	ws := setupInProcessWorkspace(t)
 
 	// Create
-	stdout, code := runInProcess(t, ws, "create", "task", "Lifecycle item")
+	createArgs := append([]string{"create", "task", "Lifecycle item"}, testSBARArgsInprocess...)
+	stdout, code := runInProcess(t, ws, createArgs...)
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}

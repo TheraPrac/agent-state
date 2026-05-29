@@ -366,9 +366,20 @@ To list goals with weights use:
 			depends, _ := cmd.Flags().GetString("depends")
 			sprint, _ := cmd.Flags().GetString("sprint")
 			goals, _ := cmd.Flags().GetStringSlice("goals")
+			situation, _ := cmd.Flags().GetString("sbar-situation")
+			background, _ := cmd.Flags().GetString("sbar-background")
+			assessment, _ := cmd.Flags().GetString("sbar-assessment")
+			recommendation, _ := cmd.Flags().GetString("sbar-recommendation")
+			noValidate, _ := cmd.Flags().GetBool("no-validate")
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
-				Goals: goals,
+				Goals:          goals,
+				Situation:      situation,
+				Background:     background,
+				Assessment:     assessment,
+				Recommendation: recommendation,
+				EnforceGate:    true,
+				NoValidate:     noValidate,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
 				// (tests, migrations) leave Engine zero and skip the review.
@@ -385,6 +396,13 @@ To list goals with weights use:
 	createCmd.Flags().String("depends", "", "depends on item ID")
 	createCmd.Flags().String("sprint", "", "assign to sprint on creation")
 	createCmd.Flags().StringSlice("goals", nil, "goal IDs to associate on creation (comma-separated)")
+	// I-908: SBAR fields at create time — these names are already used by
+	// security-scan-on-push.sh (T-433); adding them here makes those calls live.
+	createCmd.Flags().String("sbar-situation", "", "SBAR situation field (what is observable right now)")
+	createCmd.Flags().String("sbar-background", "", "SBAR background field (prior context, history, code paths)")
+	createCmd.Flags().String("sbar-assessment", "", "SBAR assessment field (diagnosis — what's wrong and why)")
+	createCmd.Flags().String("sbar-recommendation", "", "SBAR recommendation field (proposed fix, scoped enough to action)")
+	createCmd.Flags().Bool("no-validate", false, "skip Layer-2+3 LLM semantic validation (Layer 1 always runs)")
 	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 

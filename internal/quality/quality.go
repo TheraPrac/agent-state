@@ -124,6 +124,43 @@ func HasError(vs []Violation) bool {
 	return false
 }
 
+// ValidateSBARLength reports a Violation for each SBAR sub-field whose
+// trimmed content is below the per-field minimum character floor.
+// Run after ValidateSBAR (empty/placeholder check) so this only fires
+// on fields with real content that is still too thin to be actionable.
+// Floors: situation ≥20, background ≥40, assessment ≥30, recommendation ≥30.
+//
+// Empty fields are skipped intentionally — ValidateSBAR already catches
+// those with a more specific message. This function only fires when there
+// is content present but it is insufficiently detailed.
+//
+// I-908.
+func ValidateSBARLength(item *model.Item) []Violation {
+	var out []Violation
+	for _, f := range []struct {
+		key, body string
+		min       int
+	}{
+		{"situation", item.SBAR.Situation, 20},
+		{"background", item.SBAR.Background, 40},
+		{"assessment", item.SBAR.Assessment, 30},
+		{"recommendation", item.SBAR.Recommendation, 30},
+	} {
+		body := strings.TrimSpace(f.body)
+		if body == "" {
+			continue // ValidateSBAR handles empty; skip here to avoid double-reporting
+		}
+		if len(body) < f.min {
+			out = append(out, Violation{
+				Severity: SeverityError,
+				Field:    "sbar." + f.key,
+				Message:  fmt.Sprintf("too short (%d chars, minimum %d) — add specifics (file paths, function names, behavioral descriptions)", len(body), f.min),
+			})
+		}
+	}
+	return out
+}
+
 // scaffoldApproach values that should NOT pass as a real plan
 // approach. Match is whole-string case-insensitive after TrimSpace.
 var scaffoldApproach = map[string]bool{

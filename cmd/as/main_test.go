@@ -10,6 +10,18 @@ import (
 
 var binPath string
 
+// testSBARArgs are the --sbar-* and --no-validate flags used by CLI-level tests
+// that call `st create task/issue`. I-908 requires all task/issue creates from
+// the CLI to supply substantive SBAR; --no-validate skips the LLM layer so
+// tests remain deterministic.
+var testSBARArgs = []string{
+	"--sbar-situation", "Test fixture: observable symptom for integration test case.",
+	"--sbar-background", "Integration test setup in cmd/as/main_test.go; no production code path involved.",
+	"--sbar-assessment", "Standard test fixture; no real diagnosis required for integration coverage.",
+	"--sbar-recommendation", "Keep fixture stable; supply real SBAR for production item creation.",
+	"--no-validate",
+}
+
 func TestMain(m *testing.M) {
 	// Build the as binary once for all tests
 	tmp, err := os.MkdirTemp("", "as-bin-*")
@@ -330,7 +342,8 @@ func TestIndex(t *testing.T) {
 
 func TestCreate(t *testing.T) {
 	ws := setupWorkspace(t)
-	stdout, _, code := runAs(t, ws, "create", "task", "New test task")
+	args := append([]string{"create", "task", "New test task"}, testSBARArgs...)
+	stdout, _, code := runAs(t, ws, args...)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -348,7 +361,8 @@ func TestCreate(t *testing.T) {
 func TestCreateIssue(t *testing.T) {
 	// I-406: --severity is dead. Use --priority instead.
 	ws := setupWorkspace(t)
-	stdout, _, code := runAs(t, ws, "create", "issue", "New test issue", "--priority", "1")
+	args := append([]string{"create", "issue", "New test issue", "--priority", "1"}, testSBARArgs...)
+	stdout, _, code := runAs(t, ws, args...)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -548,7 +562,8 @@ func TestFullLifecycle(t *testing.T) {
 	ws := setupWorkspace(t)
 
 	// Step 1: CREATE
-	stdout, _, code := runAs(t, ws, "create", "task", "Lifecycle test task")
+	args := append([]string{"create", "task", "Lifecycle test task"}, testSBARArgs...)
+	stdout, _, code := runAs(t, ws, args...)
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}
@@ -647,7 +662,8 @@ func TestCrossCommandConsistency(t *testing.T) {
 	ws := setupWorkspace(t)
 
 	// Create an item
-	stdout, _, code := runAs(t, ws, "create", "task", "Consistency test item")
+	args := append([]string{"create", "task", "Consistency test item"}, testSBARArgs...)
+	stdout, _, code := runAs(t, ws, args...)
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}
