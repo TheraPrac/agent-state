@@ -88,6 +88,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-908 Layer 1: validate SBAR content before any git commit when EnforceGate.
 	// Only fires for task/issue types; ideas/promotions have no SBAR requirement.
 	if opts.EnforceGate && (itemType == "task" || itemType == "issue") {
+		// ValidateSBAR generates per-field messages that reference item.ID for the
+		// "st update <id> sbar" hint. Pre-creation there is no ID yet, so we
+		// format violations ourselves to avoid garbled hints with an empty ID.
 		tempItem := &model.Item{SBAR: model.SBAR{
 			Situation:      opts.Situation,
 			Background:     opts.Background,
@@ -100,7 +103,13 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			fmt.Fprintln(os.Stderr, "create: SBAR validation failed — supply all four fields via --sbar-* flags:")
 			for _, v := range vs {
 				if v.Severity == quality.SeverityError {
-					fmt.Fprintf(os.Stderr, "  %s\n", v)
+					// Trim the "— fill via st update <id> sbar" hint: not
+					// actionable pre-creation; the top-level message says what to do.
+					msg := v.Message
+					if idx := strings.Index(msg, " — fill via"); idx >= 0 {
+						msg = msg[:idx]
+					}
+					fmt.Fprintf(os.Stderr, "  error: %s — %s\n", v.Field, msg)
 				}
 			}
 			return 1
@@ -124,7 +133,10 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			}
 			return 1
 		} else if len(findings) > 0 {
-			fmt.Fprintln(os.Stderr, "create: SBAR semantic validation warnings (item created; address these for quality):")
+			// Print warnings now, before item creation. The message does NOT say
+			// "item created" because s.Create/s.NextID have not been called yet —
+			// a subsequent failure would leave this warning printed with no item.
+			fmt.Fprintln(os.Stderr, "create: SBAR semantic validation warnings (creating item; address these for quality):")
 			for _, f := range findings {
 				fmt.Fprintf(os.Stderr, "  warning: %s\n", f)
 			}

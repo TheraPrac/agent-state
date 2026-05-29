@@ -31,34 +31,43 @@ func validateSBARSemantic(cfg *config.Config, engine RunEngine, sbar model.SBAR)
 	}
 
 	prompt := buildSBARValidationPrompt(sbar)
-	args := []string{
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
+
+	// Respect the operator-configured permission mode (same pattern as buildClaudeArgs
+	// in run.go lines 3631–3634). Hardcoding --dangerously-skip-permissions would
+	// override any `run.permission_mode` setting in .as/config.yaml.
+	permMode := cfg.RunPermissionMode()
+	var permArgs []string
+	if permMode == "dangerously-skip-permissions" || permMode == "" {
+		permArgs = []string{"--dangerously-skip-permissions"}
+	} else {
+		permArgs = []string{"--permission-mode", permMode}
 	}
 
-	out, exitCode, err := engine.RunClaude(cfg.Root(), args, nil)
-	if err != nil || (exitCode != 0 && len(out) == 0) {
+	args := append([]string{"-p", prompt, "--output-format", "json"}, permArgs...)
+
+	// 2-minute wall timeout — matches the pattern from I-985 (plan review uses
+	// AS_CLAUDE_WALL_TIMEOUT too). Without this the nil env would use the
+	// 2-hour maxWallTimeout in defaultRunClaude, blocking st create for up to
+	// 2 hours on a degraded LLM API.
+	env := []string{"AS_CLAUDE_WALL_TIMEOUT=2m"}
+
+	out, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
+	if err != nil || exitCode != 0 {
+		// Any subprocess failure (crash, timeout, non-zero exit) degrades to skip.
+		// Previously only skipped when exitCode!=0 AND len(out)==0; partial output
+		// from a crashed process could have been misinterpreted as a verdict.
 		fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (subprocess exit %d: %v)\n", exitCode, err)
 		return false, nil
 	}
 
-	// Parse JSON — look for the sbarVerdict shape; tolerate extra text.
+	// Parse JSON. --output-format json produces a single object so the primary
+	// parse should always succeed. If it fails (unexpected wrapper or encoding),
+	// degrade to skip rather than attempting a brace-scan fallback that could
+	// mis-span nested JSON within findings strings.
 	var verdict sbarVerdict
 	if parseErr := json.Unmarshal(out, &verdict); parseErr != nil {
-		// Try to find JSON object in stream output
-		raw := string(out)
-		start := strings.Index(raw, "{")
-		end := strings.LastIndex(raw, "}")
-		if start >= 0 && end > start {
-			if parseErr2 := json.Unmarshal([]byte(raw[start:end+1]), &verdict); parseErr2 != nil {
-				fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (could not parse response)\n")
-				return false, nil
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (no JSON in response)\n")
-			return false, nil
-		}
+		fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (could not parse response: %v)\n", parseErr)
+		return false, nil
 	}
 
 	switch strings.ToUpper(strings.TrimSpace(verdict.Verdict)) {
