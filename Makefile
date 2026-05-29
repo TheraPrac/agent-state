@@ -1,4 +1,4 @@
-.PHONY: build test clean install install-wrapper reconcile-verify docs
+.PHONY: build test clean install install-wrapper install-hook reconcile-verify docs
 
 # WRAPPER_PATH is where the per-agent dispatcher lands. The default
 # (~/bin/st) is in PATH ahead of /usr/local/bin on the developer machine,
@@ -51,12 +51,20 @@ install: build
 	  echo "Run 'make install-wrapper' once so 'st' resolves per-agent."; \
 	fi
 
+# install-hook sets up the post-merge git hook so any `git merge` / `git pull`
+# in this as clone automatically rebuilds bin/st and deploys it to the shared
+# theraprac-workspace/bin/st path (I-984). Idempotent; uses --git-common-dir
+# so it correctly targets the shared .git/hooks/ from both the main clone and
+# any worktree. Run once per machine (or implicitly via install-wrapper).
+install-hook:
+	@bash scripts/install-post-merge-hook.sh
+
 # install-wrapper drops the per-agent dispatcher onto PATH. Run once per
 # machine; subsequent `make install` from any agent's clone is enough to
 # update that agent's binary. Delegates to scripts/install-dispatcher.sh
 # so the same install logic is reachable without make (e.g. from a
 # bootstrap script on a fresh machine).
-install-wrapper:
+install-wrapper: install-hook
 	@WRAPPER_PATH="$(WRAPPER_PATH)" bash scripts/install-dispatcher.sh
 
 # Regenerate theraprac-workspace/docs/st-cli-reference.md from the live

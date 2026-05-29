@@ -169,26 +169,41 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 	// called "Accept" (with suggestions) must not be silently rejected
 	// after N fix attempts.
 	if lastNotes != "" {
-		appendPendingReviewNotes(cfg.PlansDir(), id, lastNotes)
+		if err := appendPendingReviewNotes(cfg.PlansDir(), id, lastNotes); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Warning: could not persist notes to .plans/%s.md (%v) — copy notes above manually. Redraft via 'st plan prep %s' if improvements are needed.\n",
+				id, maxPlanReviewAutoFixIterations, id, err, id)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Notes appended to .plans/%s.md — redraft via 'st plan prep %s' if improvements are needed.\n",
+				id, maxPlanReviewAutoFixIterations, id, id)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory.\n",
+			id, maxPlanReviewAutoFixIterations)
 	}
-	fmt.Fprintf(os.Stderr,
-		"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Notes appended to .plans/%s.md — redraft via 'st plan prep %s' if improvements are needed.\n",
-		id, maxPlanReviewAutoFixIterations, id, id)
 	return 0
 }
 
 // appendPendingReviewNotes appends a "## Pending Review Notes" section to the
 // plan sidecar so advisory notes from an exhausted auto-fix loop are findable
 // via `st plan show` in future sessions rather than lost to terminal scrollback.
-func appendPendingReviewNotes(plansDir, id, notes string) {
+// Idempotent: a pre-existing section is replaced rather than duplicated.
+func appendPendingReviewNotes(plansDir, id, notes string) error {
 	planPath := filepath.Join(plansDir, id+".md")
 	existing, err := os.ReadFile(planPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: warning: could not read plan sidecar to append review notes: %v\n", id, err)
-		return
+		return fmt.Errorf("could not read plan sidecar: %w", err)
 	}
 	section := "\n## Pending Review Notes\n\n" + strings.TrimSpace(notes) + "\n"
-	if err := os.WriteFile(planPath, append(existing, []byte(section)...), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: warning: could not append review notes to plan sidecar: %v\n", id, err)
+	// Strip any prior "## Pending Review Notes" section so re-runs don't accumulate duplicates.
+	body := string(existing)
+	if idx := strings.Index(body, "\n## Pending Review Notes"); idx >= 0 {
+		body = body[:idx]
 	}
+	if err := os.WriteFile(planPath, []byte(body+section), 0644); err != nil {
+		return fmt.Errorf("could not write plan sidecar: %w", err)
+	}
+	return nil
 }
