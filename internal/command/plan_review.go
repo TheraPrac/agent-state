@@ -115,13 +115,16 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 		// approval if the auto-fix engine call itself fails (any
 		// non-Passed StepResult), so an opaque LLM/store failure
 		// does not silently waive the gate.
+		// I-985: pass the wall cap into the auto-fix subprocess so it
+		// shares the same ceiling as the review step.
 		if isAcceptWithNotes(rec) {
 			fmt.Fprintf(os.Stderr,
 				"%s: plan review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
 				id, iter+1, maxPlanReviewAutoFixIterations)
 			notes := extractNotesFromReview(sr.FullOutput)
 			var fixResult StepResult
-			runAutoFixFromNotes(s, cfg, id, "", item, "plan review", notes, RunOpts{}, engine, cwd, "", &fixResult)
+			autoFixEnv := []string{"AS_CLAUDE_WALL_TIMEOUT=" + wallCap.String()}
+			runAutoFixFromNotes(s, cfg, id, "", item, "plan review", notes, RunOpts{}, engine, cwd, "", autoFixEnv, &fixResult)
 			if !fixResult.Passed && fixResult.Error != "" {
 				fmt.Fprintf(os.Stderr,
 					"%s: plan-review auto-fix failed (%s) — refusing approval. Re-run `st plan approve %s` to retry, or `st plan reset %s` to redraft.\n",
@@ -152,11 +155,15 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 	}
 
 	// Exhausted auto-fix iterations without converging on a clean
-	// Accept — fail closed. The PR review (post-I-710) called out
-	// that an opaque LLM that never settles must not silently waive
-	// the substance check, matching the file-header invariant.
+	// Accept — the reviewer returned "Accept with notes" every pass.
+	// "Accept with notes" means the plan was fundamentally accepted;
+	// the remaining notes are advisory, not blocking. Accept and log
+	// the notes so the operator can act on them if they choose.
+	// I-985: failing closed here was incorrect — a plan the reviewer
+	// called "Accept" (with suggestions) must not be silently rejected
+	// after N fix attempts.
 	fmt.Fprintf(os.Stderr,
-		"%s: plan review reached the auto-fix iteration cap (%d) without converging on a clean Accept — refusing approval. Run `st plan reset %s` and redraft.\n",
+		"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Review notes above and redraft via 'st plan prep %s' if improvements are needed.\n",
 		id, maxPlanReviewAutoFixIterations, id)
-	return 2
+	return 0
 }

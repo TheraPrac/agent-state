@@ -427,3 +427,110 @@ func TestPlanShowPrintsPlanAndReportContent(t *testing.T) {
 	}
 }
 
+// TestPrepInteractiveWallTimeoutInjected asserts that the interactive
+// (non-write-only) prepItem path also injects AS_CLAUDE_WALL_TIMEOUT.
+// I-985: the write-only and interactive code paths share the same
+// resolvePrepTimeout() call but are in independent branches; a regression
+// in one would not be caught by a test of the other.
+func TestPrepInteractiveWallTimeoutInjected(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PREP_TIMEOUT", "")
+	s, cfg := setupPrepWriteOnlyEnv(t)
+
+	var (
+		mu           sync.Mutex
+		capturedEnvs [][]string
+	)
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			mu.Lock()
+			capturedEnvs = append(capturedEnvs, append([]string{}, env...))
+			mu.Unlock()
+			result := ClaudeResult{
+				Type: "result", Subtype: "success",
+				Result: cannedPlanText,
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		// Reject immediately so the interactive review loop exits without blocking.
+		PromptUser:    func(p string) (string, error) { return "", nil },
+		SelectMenu:    func(p string, opts []menuOption, def int) string { return "2" },
+		ConfirmPrompt: func(p string) bool { return false },
+	}
+
+	suppressOutput(t, func() {
+		// WriteOnly: false → prepItem (interactive path)
+		Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: false}, engine)
+	})
+
+	want := "AS_CLAUDE_WALL_TIMEOUT=10m0s"
+	found := false
+	for _, envSnapshot := range capturedEnvs {
+		for _, e := range envSnapshot {
+			if strings.Contains(e, want) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected at least one RunClaude invocation with env containing %q; interactive path invocations: %v", want, capturedEnvs)
+	}
+}
+
+// TestPrepWallTimeoutInjected asserts that when AS_PREP_TIMEOUT is unset,
+// the prep sub-agent receives AS_CLAUDE_WALL_TIMEOUT=10m0s in its env.
+// This is the I-985 gate: without it, the subprocess inherits the global
+// 2h wall cap and hangs undetected when a tool call never returns.
+func TestPrepWallTimeoutInjected(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PREP_TIMEOUT", "")
+	s, cfg := setupPrepWriteOnlyEnv(t)
+
+	var (
+		mu           sync.Mutex
+		capturedEnvs [][]string
+	)
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			mu.Lock()
+			capturedEnvs = append(capturedEnvs, append([]string{}, env...))
+			mu.Unlock()
+			result := ClaudeResult{
+				Type: "result", Subtype: "success",
+				Result: cannedPlanText,
+			}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser:    func(p string) (string, error) { return "q", nil },
+		SelectMenu:    func(p string, opts []menuOption, def int) string { return "q" },
+		ConfirmPrompt: func(p string) bool { return false },
+	}
+
+	suppressOutput(t, func() {
+		Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+	})
+
+	want := "AS_CLAUDE_WALL_TIMEOUT=10m0s"
+	found := false
+	for _, envSnapshot := range capturedEnvs {
+		for _, e := range envSnapshot {
+			if strings.Contains(e, want) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected at least one RunClaude invocation with env containing %q; invocations: %v", want, capturedEnvs)
+	}
+}
+

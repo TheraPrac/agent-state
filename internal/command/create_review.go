@@ -131,7 +131,7 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 			if err == nil {
 				if reloaded, ok := s3.Get(itemID); ok {
 					var sr StepResult
-					runAutoFixFromNotes(s3, cfg, itemID, "", reloaded, "item review", notes, RunOpts{}, engine, "", "", &sr)
+					runAutoFixFromNotes(s3, cfg, itemID, "", reloaded, "item review", notes, RunOpts{}, engine, "", "", nil, &sr)
 				}
 			}
 			continue

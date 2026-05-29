@@ -14,6 +14,29 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// defaultPrepWallTimeout caps the plan-prep sub-agent. Normal prep runs
+// 1–4 min; 10m matches the plan-review cap and gives ample headroom.
+// Operator override: AS_PREP_TIMEOUT (Go duration string). I-985.
+const defaultPrepWallTimeout = 10 * time.Minute
+
+// resolvePrepTimeout reads AS_PREP_TIMEOUT and falls back to
+// defaultPrepWallTimeout. Parse errors fall back loudly so a typo
+// never silently raises the cap toward the 2h global ceiling.
+func resolvePrepTimeout() time.Duration {
+	raw := os.Getenv("AS_PREP_TIMEOUT")
+	if raw == "" {
+		return defaultPrepWallTimeout
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"AS_PREP_TIMEOUT=%q: %v — falling back to %s\n",
+			raw, err, defaultPrepWallTimeout)
+		return defaultPrepWallTimeout
+	}
+	return parsed
+}
+
 // relativePlanPath returns the plan sidecar path for itemID, relative
 // to root when possible (so the linked_plans value round-trips between
 // machines without absolute-path drift). Falls back to the absolute
@@ -430,11 +453,15 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		if agentID := cfg.AgentID(); agentID != "" {
 			env = append(env, "AS_AGENT_ID="+agentID)
 		}
+		// I-985: cap the prep sub-agent so a stuck tool call doesn't
+		// hang indefinitely. defaultRunClaude reads AS_CLAUDE_WALL_TIMEOUT
+		// from env and tightens its context.WithTimeout accordingly.
+		env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePrepTimeout().String())
 
 		fmt.Printf("[%s] Exploring codebase and generating plan...\n\n", itemID)
 		output, exitCode, err := engine.RunClaude(cwd, args, env)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] claude error: %v\n", itemID, err)
+			fmt.Fprintf(os.Stderr, "[%s] claude error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
 			return "rejected"
 		}
 
@@ -540,7 +567,8 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			s, _ = store.New(cfg)
 			item, _ = s.Get(itemID)
 			var sr StepResult
-			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", &sr)
+			// I-985: pass the same wall cap as the plan-generation step.
+			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + resolvePrepTimeout().String()}, &sr)
 			// Re-save draft after auto-fix
 			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)
@@ -793,11 +821,13 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		if agentID := cfg.AgentID(); agentID != "" {
 			env = append(env, "AS_AGENT_ID="+agentID)
 		}
+		// I-985: same wall cap as the interactive path.
+		env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePrepTimeout().String())
 
 		fmt.Printf("[%s] Exploring codebase and generating plan...\n", itemID)
 		output, exitCode, err := engine.RunClaude(cwd, args, env)
 		if err != nil {
-			fmt.Printf("[%s] FAILED: claude error: %v\n", itemID, err)
+			fmt.Printf("[%s] FAILED: claude error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
 			return "rejected"
 		}
 

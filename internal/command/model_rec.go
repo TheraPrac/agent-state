@@ -225,7 +225,13 @@ func callRecommender(item *model.Item, cfg *config.Config, engine RunEngine) (Mo
 	}, cfg.Root())
 
 	sessionID := generateSessionID()
-	env := []string{"AS_SESSION_ID=" + sessionID}
+	// I-985: wire the recommenderTimeout constant that was defined but never
+	// used. Haiku one-shot responses arrive in <5s normally; 30s is generous
+	// headroom without risking a 2h hang on a network stall.
+	env := []string{
+		"AS_SESSION_ID=" + sessionID,
+		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", recommenderTimeout),
+	}
 
 	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
 	if err != nil {

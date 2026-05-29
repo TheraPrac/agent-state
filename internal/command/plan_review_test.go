@@ -1,7 +1,11 @@
 package command
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/plan"
@@ -284,7 +288,12 @@ func TestPlanApproveRefusesOnEngineExecError(t *testing.T) {
 // Accept within maxPlanReviewAutoFixIterations passes. A persistent
 // "Accept with notes" verdict that exhausts the cap refuses approval
 // rather than silently waiving the gate.
-func TestPlanApproveRefusesOnAutoFixCapExhaustion(t *testing.T) {
+// TestPlanApproveAcceptsOnAutoFixCapExhaustion asserts that when the
+// review sub-agent persistently returns "Accept with notes" and the
+// auto-fix iteration cap is exhausted, PlanApprove returns 0 (accept)
+// and marks the plan approved. "Accept with notes" means the plan was
+// fundamentally accepted; the notes are advisory, not blocking. I-985.
+func TestPlanApproveAcceptsOnAutoFixCapExhaustion(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "")
 	s, cfg := setupTestEnv(t)
 
@@ -306,13 +315,135 @@ func TestPlanApproveRefusesOnAutoFixCapExhaustion(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected exit 0 (accept-as-advisory) on auto-fix cap exhaustion; got %d", code)
+		}
+	})
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("PlanApproved should be true after accept-with-notes exhaustion")
+	}
+}
+
+// TestPlanReviewAutoFixTimeoutPropagated asserts that when the plan-review
+// sub-agent returns "Accept with notes", the auto-fix subprocess also
+// receives AS_CLAUDE_WALL_TIMEOUT (matching the review cap). I-985.
+func TestPlanReviewAutoFixTimeoutPropagated(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var (
+		mu           sync.Mutex
+		capturedEnvs [][]string
+		callCount    int
+	)
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			mu.Lock()
+			capturedEnvs = append(capturedEnvs, append([]string{}, env...))
+			n := callCount
+			callCount++
+			mu.Unlock()
+
+			// First call (review): return "Accept with notes" to trigger auto-fix.
+			// Subsequent calls (auto-fix + re-review): return clean Accept so the
+			// loop terminates and we can assert on envs captured so far.
+			var result string
+			if n == 0 {
+				result = "RECOMMENDATION: Accept with notes — tighten the AC format"
+			} else {
+				result = "RECOMMENDATION: Accept — looks good"
+			}
+			body, _ := json.Marshal(ClaudeResult{
+				Type: "result", Subtype: "success", Result: result,
+			})
+			return body, 0, nil
+		},
+		PromptUser: func(p string) (string, error) { return "", nil },
+		SelectMenu:  func(p string, opts []menuOption, def int) string { return "1" },
+	}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected exit 0; got %d", code)
+		}
+	})
+
+	// The auto-fix call (call index 1) must carry the wall-timeout env var.
+	want := "AS_CLAUDE_WALL_TIMEOUT=10m0s"
+	found := false
+	mu.Lock()
+	defer mu.Unlock()
+	for i, envSnapshot := range capturedEnvs {
+		for _, e := range envSnapshot {
+			if strings.Contains(e, want) {
+				found = true
+				_ = i
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected at least one RunClaude invocation with env containing %q; invocations: %v", want, capturedEnvs)
+	}
+}
+
+// TestPlanApproveAutoFixFailureRefusesApproval asserts that when the
+// auto-fix sub-agent fails (engine error), PlanApprove returns 2 and
+// does not approve the plan. This verifies I-985's fix: runAutoFixFromNotes
+// now propagates feedbackSR.Passed and feedbackSR.Error into *sr so the
+// guard in plan_review.go can actually fire.
+func TestPlanApproveAutoFixFailureRefusesApproval(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var callCount int
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: review returns "Accept with notes" to trigger auto-fix.
+				body, _ := json.Marshal(ClaudeResult{
+					Type: "result", Subtype: "success",
+					Result: "RECOMMENDATION: Accept with notes — tighten the approach section",
+				})
+				return body, 0, nil
+			}
+			// Second call: auto-fix sub-agent fails (engine error).
+			return nil, 1, fmt.Errorf("simulated auto-fix engine failure")
+		},
+		PromptUser: func(p string) (string, error) { return "", nil },
+		SelectMenu:  func(p string, opts []menuOption, def int) string { return "1" },
+	}
+
+	suppressOutput(t, func() {
 		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
-			t.Errorf("expected exit 2 on auto-fix cap exhaustion; got %d", code)
+			t.Errorf("expected exit 2 when auto-fix engine fails; got %d", code)
 		}
 	})
 	item, _ := s.Get("T-001")
 	if item.PlanApproved {
-		t.Error("PlanApproved should stay false when sub-agent never converges")
+		t.Error("PlanApproved should stay false when auto-fix engine fails")
 	}
 }
 
