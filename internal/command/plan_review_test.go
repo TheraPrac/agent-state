@@ -447,3 +447,53 @@ func TestPlanApproveAutoFixFailureRefusesApproval(t *testing.T) {
 	}
 }
 
+// TestPlanApproveAcceptWithNotesExhaustionPersistsNotes asserts that when the
+// auto-fix iteration cap is exhausted, the remaining review notes are appended
+// to the plan sidecar so they survive the session and are visible via st plan show.
+func TestPlanApproveAcceptWithNotesExhaustionPersistsNotes(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	// The review stub always returns "Accept with notes" followed immediately
+	// by the note content. extractNotesFromReview captures lines after the
+	// "Accept with notes" trigger until it hits a ## section header, so the
+	// note must appear before any such header.
+	const noteBody = "- The approach section needs more detail on rollback strategy."
+	fake := &fakeClaude{stepResults: []string{
+		"RECOMMENDATION: Accept with notes\n" + noteBody,
+	}}
+	engine := RunEngine{
+		RunClaude:  fake.run,
+		PromptUser: func(prompt string) (string, error) { return "", nil },
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string { return "1" },
+	}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected exit 0; got %d", code)
+		}
+	})
+
+	// Plan sidecar should now contain a "Pending Review Notes" section.
+	sidecarPath := cfg.PlansDir() + "/T-001.md"
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("reading plan sidecar: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "## Pending Review Notes") {
+		t.Error("plan sidecar missing '## Pending Review Notes' section")
+	}
+	if !strings.Contains(content, "rollback strategy") {
+		t.Errorf("plan sidecar missing note body; got:\n%s", content)
+	}
+}
+
