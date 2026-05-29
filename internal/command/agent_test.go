@@ -241,6 +241,7 @@ func TestAgentWorkspaceCreateDryRunPrintsCompletePlan(t *testing.T) {
 		"docker_label: theraprac.agent=agent-b",
 		"registry:",
 		"workspace_config:",
+		"st_root:",
 		"dry-run: no filesystem, git, Docker, or env changes will be made",
 	} {
 		if !strings.Contains(stdout, want) {
