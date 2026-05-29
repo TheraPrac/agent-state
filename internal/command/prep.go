@@ -902,6 +902,13 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		return "rejected"
 	}
 
+	// I-982: commit the report sidecar. Both GitSync calls above ran before
+	// plan.SaveReport, so the .report.md would otherwise be left untracked on
+	// disk until the next independent st sync — exactly the race I-982 fixes.
+	if syncErr := s.GitSync("plan-prep: commit plan report for " + itemID); syncErr != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: GitSync after SaveReport: %v — report sidecar may not be committed\n", itemID, syncErr)
+	}
+
 	planRel := relativePlanPath(cfg.PlansDir(), cfg.Root(), itemID)
 	reportRel := relativeReportPath(cfg.PlansDir(), cfg.Root(), itemID)
 	fmt.Printf("[%s] plan saved (%s), report saved (%s), pending approval\n", itemID, planRel, reportRel)
