@@ -1,10 +1,12 @@
 package freshness
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -26,7 +28,9 @@ func setupCheckTestEnv(t *testing.T, withSidecar bool) (*store.Store, *config.Co
 		t.Fatal(err)
 	}
 
-	itemBody := `id: T-001
+	// approvedAt is always 24h ago so the 7-day drift cutoff never triggers.
+	approvedAt := time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+	itemBody := fmt.Sprintf(`id: T-001
 type: task
 status: queued
 created: 2026-03-25T10:00:00-06:00
@@ -36,7 +40,7 @@ completed: null
 
 title: Fixture task
 plan_approved: true
-plan_approved_at: 2026-05-20T10:00:00-06:00
+plan_approved_at: %s`, approvedAt) + `
 
 depends_on:
 - []

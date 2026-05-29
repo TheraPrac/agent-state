@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -336,5 +337,95 @@ func TestCreateGateOffWhenEnforceGateFalse(t *testing.T) {
 	})
 	if code != 0 {
 		t.Errorf("expected exit 0 when EnforceGate is false, got %d", code)
+	}
+}
+
+// TestCreateSemanticValidationEngineErrorDegrades: a subprocess error must
+// degrade gracefully — item is created, not blocked.
+func TestCreateSemanticValidationEngineErrorDegrades(t *testing.T) {
+	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
+	s, cfg := setupTestEnv(t)
+
+	errEngine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			return nil, 1, fmt.Errorf("timeout: subprocess failed")
+		},
+	}
+
+	code := Create(s, cfg, "task", "Test engine error degrades", CreateOpts{
+		Priority:       2,
+		EnforceGate:    true,
+		NoValidate:     false,
+		Situation:      substantiveSBAR.situation,
+		Background:     substantiveSBAR.background,
+		Assessment:     substantiveSBAR.assessment,
+		Recommendation: substantiveSBAR.recommendation,
+		Engine:         errEngine,
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0 when engine errors (graceful degrade), got %d", code)
+	}
+
+	found := false
+	for _, it := range s.All() {
+		if it.Title == "Test engine error degrades" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("item should have been created when engine degrades")
+	}
+}
+
+// TestCreateIdeaPromotionSkipSBARGate: EnforceGate=true on type=idea must skip
+// all SBAR validation — ideas/promotions have no SBAR requirement.
+func TestCreateIdeaPromotionSkipSBARGate(t *testing.T) {
+	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
+	s, cfg := setupTestEnv(t)
+
+	code := Create(s, cfg, "idea", "Test idea promotion skips SBAR gate", CreateOpts{
+		Priority:    3,
+		EnforceGate: true,
+		// No SBAR fields — gate must be skipped for ideas.
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0 for idea type with EnforceGate (gate must be skipped), got %d", code)
+	}
+}
+
+// TestCreateEnforceGateRunsSemanticValidationOnce: with EnforceGate=true the
+// Layer-2+3 semantic validator is called exactly once per create invocation.
+func TestCreateEnforceGateRunsSemanticValidationOnce(t *testing.T) {
+	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
+	s, cfg := setupTestEnv(t)
+
+	calls := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			calls++
+			data, _ := json.Marshal(struct {
+				Verdict  string   `json:"verdict"`
+				Findings []string `json:"findings"`
+			}{"PASS", nil})
+			return data, 0, nil
+		},
+	}
+
+	code := Create(s, cfg, "task", "Test gate runs semantic once", CreateOpts{
+		Priority:       2,
+		EnforceGate:    true,
+		NoValidate:     false,
+		Situation:      substantiveSBAR.situation,
+		Background:     substantiveSBAR.background,
+		Assessment:     substantiveSBAR.assessment,
+		Recommendation: substantiveSBAR.recommendation,
+		Engine:         engine,
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if calls != 1 {
+		t.Errorf("expected semantic validation to run exactly once, got %d calls", calls)
 	}
 }

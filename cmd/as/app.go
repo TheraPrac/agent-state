@@ -355,8 +355,8 @@ To list goals with weights use:
 	root.AddCommand(listCmd)
 
 	createCmd := &cobra.Command{
-		Use:     "create <type> <title>",
-		Short:   "Create a new task, issue, or idea",
+		Use:     "create <type> <title> [--sbar-situation S] [--sbar-background B] [--sbar-assessment A] [--sbar-recommendation R] [--no-validate]",
+		Short:   "Create a new task, issue, or idea (--sbar-situation/background/assessment/recommendation; --no-validate skips LLM check)",
 		Aliases: []string{"new"},
 		Args:    cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
