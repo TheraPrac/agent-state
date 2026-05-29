@@ -455,6 +455,13 @@ func parseList(text string) []string {
 			}
 		}
 		line = strings.TrimSpace(line)
+		// Strip balanced outer backtick wrapping that Claude sometimes adds
+		// to cmd: ACs (e.g. `cmd: foo` → cmd: foo). Only strip when the
+		// entire item is wrapped — inner backticks (cmd: grep -q `x` f) are
+		// preserved. I-990.
+		if len(line) > 2 && line[0] == '`' && line[len(line)-1] == '`' {
+			line = line[1 : len(line)-1]
+		}
 		if line != "" {
 			items = append(items, line)
 		}

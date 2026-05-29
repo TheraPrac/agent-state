@@ -1038,6 +1038,8 @@ func buildPrepPrompt(cfg *config.Config, itemID string, item *model.Item) string
 	b.WriteString("## Acceptance Criteria\n")
 	b.WriteString("- cmd: the same ACs you set on the item\n\n")
 	b.WriteString("CRITICAL: Every AC line MUST begin with '- cmd: '. No prose ACs.\n")
+	b.WriteString("IMPORTANT: Do NOT wrap AC lines in backtick inline-code formatting.\n")
+	b.WriteString("Write raw lines: '- cmd: foo', NOT '- `cmd: foo`'. (I-990)\n")
 	b.WriteString("Use paths relative to the worktree: 'cd ../theraprac-api && ...' or 'cd ../theraprac-web && ...'.\n")
 	b.WriteString("For test suite execution, use `st test <id> <suite> --run` — NEVER use raw `make e2e` or `make test` in ACs.\n")
 	b.WriteString("ACs should be fast to verify — use targeted test runs (specific spec files), not full suite runs.\n")

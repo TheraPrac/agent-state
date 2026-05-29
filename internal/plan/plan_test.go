@@ -355,6 +355,46 @@ func TestDeleteRemovesSidecar(t *testing.T) {
 	}
 }
 
+// I-990: parseList strips balanced outer backtick wrapping that Claude
+// sometimes adds to cmd: ACs (e.g. `cmd: foo` → cmd: foo).
+func TestParseList_StripsOuterBackticks(t *testing.T) {
+	md := "---\nscope_repos: [as]\nplan_approved: false\n---\n\n## Approach\nSome approach.\n\n## Scope\nRepos: as\n\n## Acceptance Criteria\n- `cmd: go test ./...`\n- `cmd: go build ./...`\n"
+	p, err := Parse(md)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.ACs) != 2 {
+		t.Fatalf("ACs = %d, want 2", len(p.ACs))
+	}
+	for _, ac := range p.ACs {
+		if ac[0] == '`' {
+			t.Errorf("AC still has outer backtick: %q", ac)
+		}
+		if !isVerifiable(ac) {
+			t.Errorf("AC failed isVerifiable after strip: %q", ac)
+		}
+	}
+	if p.ACs[0] != "cmd: go test ./..." {
+		t.Errorf("ACs[0] = %q, want %q", p.ACs[0], "cmd: go test ./...")
+	}
+}
+
+// I-990: parseList must NOT strip inner backticks — only balanced outer wrapping.
+func TestParseList_PreservesInnerBackticks(t *testing.T) {
+	md := "---\nscope_repos: [as]\nplan_approved: false\n---\n\n## Approach\nSome approach.\n\n## Scope\nRepos: as\n\n## Acceptance Criteria\n- cmd: grep -q `foo` file\n"
+	p, err := Parse(md)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.ACs) != 1 {
+		t.Fatalf("ACs = %d, want 1", len(p.ACs))
+	}
+	want := "cmd: grep -q `foo` file"
+	if p.ACs[0] != want {
+		t.Errorf("ACs[0] = %q, want %q", p.ACs[0], want)
+	}
+}
+
 // I-767: DeleteReport removes the .report.md sidecar; idempotent.
 func TestDeleteReportRemovesReport(t *testing.T) {
 	dir := t.TempDir()
