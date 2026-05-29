@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 	cwd := cfg.Root()
 	wallCap := resolvePlanReviewTimeout()
 
+	// lastNotes holds the most-recent "Accept with notes" body so the
+	// post-loop path can persist it even after falling out of the loop.
+	var lastNotes string
+
 	// Loop bound is strictly less-than so the final iteration that
 	// fails to auto-fix falls out into the post-loop fail-closed
 	// path. The Accept/Reject/catch-all branches return inline;
@@ -122,6 +127,7 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 				"%s: plan review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
 				id, iter+1, maxPlanReviewAutoFixIterations)
 			notes := extractNotesFromReview(sr.FullOutput)
+			lastNotes = notes
 			var fixResult StepResult
 			autoFixEnv := []string{"AS_CLAUDE_WALL_TIMEOUT=" + wallCap.String()}
 			runAutoFixFromNotes(s, cfg, id, "", item, "plan review", notes, RunOpts{}, engine, cwd, "", autoFixEnv, &fixResult)
@@ -157,13 +163,32 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 	// Exhausted auto-fix iterations without converging on a clean
 	// Accept — the reviewer returned "Accept with notes" every pass.
 	// "Accept with notes" means the plan was fundamentally accepted;
-	// the remaining notes are advisory, not blocking. Accept and log
-	// the notes so the operator can act on them if they choose.
+	// the remaining notes are advisory, not blocking. Accept, but
+	// persist the notes to the plan sidecar so they survive the session.
 	// I-985: failing closed here was incorrect — a plan the reviewer
 	// called "Accept" (with suggestions) must not be silently rejected
 	// after N fix attempts.
+	if lastNotes != "" {
+		appendPendingReviewNotes(cfg.PlansDir(), id, lastNotes)
+	}
 	fmt.Fprintf(os.Stderr,
-		"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Review notes above and redraft via 'st plan prep %s' if improvements are needed.\n",
-		id, maxPlanReviewAutoFixIterations, id)
+		"%s: plan review 'Accept with notes' notes remain after %d auto-fix pass(es) — accepting as advisory. Notes appended to .plans/%s.md — redraft via 'st plan prep %s' if improvements are needed.\n",
+		id, maxPlanReviewAutoFixIterations, id, id)
 	return 0
+}
+
+// appendPendingReviewNotes appends a "## Pending Review Notes" section to the
+// plan sidecar so advisory notes from an exhausted auto-fix loop are findable
+// via `st plan show` in future sessions rather than lost to terminal scrollback.
+func appendPendingReviewNotes(plansDir, id, notes string) {
+	planPath := filepath.Join(plansDir, id+".md")
+	existing, err := os.ReadFile(planPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: warning: could not read plan sidecar to append review notes: %v\n", id, err)
+		return
+	}
+	section := "\n## Pending Review Notes\n\n" + strings.TrimSpace(notes) + "\n"
+	if err := os.WriteFile(planPath, append(existing, []byte(section)...), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: warning: could not append review notes to plan sidecar: %v\n", id, err)
+	}
 }
