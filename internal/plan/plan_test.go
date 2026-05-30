@@ -379,6 +379,24 @@ func TestParseList_StripsOuterBackticks(t *testing.T) {
 	}
 }
 
+// I-990: parseList strips double-backtick wrapping completely (loop, not single-pass).
+func TestParseList_StripsDoubleBackticks(t *testing.T) {
+	md := "---\nscope_repos: [as]\nplan_approved: false\n---\n\n## Approach\nSome approach.\n\n## Scope\nRepos: as\n\n## Acceptance Criteria\n- ``cmd: go test ./...``\n"
+	p, err := Parse(md)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(p.ACs) != 1 {
+		t.Fatalf("ACs = %d, want 1", len(p.ACs))
+	}
+	if p.ACs[0] != "cmd: go test ./..." {
+		t.Errorf("ACs[0] = %q, want %q", p.ACs[0], "cmd: go test ./...")
+	}
+	if !isVerifiable(p.ACs[0]) {
+		t.Errorf("AC failed isVerifiable after double-backtick strip: %q", p.ACs[0])
+	}
+}
+
 // I-990: parseList must NOT strip inner backticks — only balanced outer wrapping.
 func TestParseList_PreservesInnerBackticks(t *testing.T) {
 	md := "---\nscope_repos: [as]\nplan_approved: false\n---\n\n## Approach\nSome approach.\n\n## Scope\nRepos: as\n\n## Acceptance Criteria\n- cmd: grep -q `foo` file\n"
