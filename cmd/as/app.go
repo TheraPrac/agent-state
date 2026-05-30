@@ -1368,12 +1368,15 @@ verdict drifts toward what the operator actually accepts.`,
 		Long: "Alias for `st recommend --top 1 --brief`: scores the PLANNING view\n" +
 			"and prints the top pick as one line — ID, priority, title, and rationale.\n" +
 			"Goal weight, unblock leverage, sprint pressure, and age all contribute;\n" +
-			"priority dominates by construction. Respects the agent's focus_goal when set.",
+			"priority dominates by construction. Respects the agent's focus_goal when set.\n" +
+			"--goal restricts candidates to items tagged with that goal ID (I-896).",
 		Args: cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{Top: 1, Brief: true})
+			goal, _ := cmd.Flags().GetString("goal")
+			exitCode = command.Recommend(appStore, appCfg, command.RecommendOpts{Top: 1, Brief: true, Goal: goal})
 		},
 	}
+	nextCmd.Flags().String("goal", "", "filter to items in this goal (overrides agent focus_goal)")
 	root.AddCommand(nextCmd)
 
 	finishCmd := &cobra.Command{

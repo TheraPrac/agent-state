@@ -254,6 +254,86 @@ func TestRecommend_GoalFocusAutoClearsTerminalGoal(t *testing.T) {
 	}
 }
 
+// setupTestEnvWithGoalTaggedItem seeds G-TEST (active goal) and T-010 — an
+// item explicitly tagged `goals: [G-TEST]` — alongside the base T-001/T-002
+// fixtures (which carry no goal tag). Used by I-896 goal-filter tests.
+func setupTestEnvWithGoalTaggedItem(t *testing.T) (*store.Store, *config.Config) {
+	t.Helper()
+	_, cfg := setupTestEnv(t)
+	root := cfg.Root()
+
+	// Goal file.
+	os.MkdirAll(filepath.Join(root, "goals"), 0755)
+	goalContent := "id: G-TEST\ntype: goal\nstatus: active\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\ntitle: Test goal\nweight: 40\n"
+	writeFile(t, filepath.Join(root, "goals", "G-TEST-test-goal.md"), goalContent)
+
+	// Item tagged to G-TEST (queued, unblocked, unassigned).
+	itemContent := `id: T-010
+type: task
+status: queued
+created: 2026-03-25T09:00:00-06:00
+last_touched: 2026-03-25T09:00:00-06:00
+title: Goal-tagged task
+goals:
+- G-TEST
+sbar:
+  situation: |-
+    I-896 fixture item tagged to G-TEST.
+  background: |-
+    Used to verify --goal filtering in st next.
+  assessment: |-
+    Should appear only when G-TEST is the filter.
+  recommendation: |-
+    Keep fixture stable.
+`
+	writeFile(t, filepath.Join(root, "tasks", "T-010-goal-tagged-task.md"), itemContent)
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New after goal seed: %v", err)
+	}
+	return s2, cfg
+}
+
+// I-896: st next --goal restricts candidates to items tagged with that goal.
+func TestRecommend_GoalFlagFiltersToGoalItems(t *testing.T) {
+	s, cfg := setupTestEnvWithGoalTaggedItem(t)
+
+	var rc int
+	out := captureStdout(t, func() {
+		rc = Recommend(s, cfg, RecommendOpts{Top: 1, Brief: true, Goal: "G-TEST"})
+	})
+	if rc != 0 {
+		t.Fatalf("Recommend with --goal G-TEST rc=%d\n%s", rc, out)
+	}
+	if !strings.Contains(out, "T-010") {
+		t.Errorf("expected T-010 (tagged to G-TEST) in output; got:\n%s", out)
+	}
+	// T-001 is untagged — must not appear when goal filter is active.
+	if strings.Contains(out, "T-001") {
+		t.Errorf("--goal G-TEST must not return untagged T-001; got:\n%s", out)
+	}
+}
+
+// I-896: when --goal is set to a goal that no ready item belongs to,
+// Recommend returns 0 (success) with a "no eligible items" message rather
+// than silently falling back to cross-goal results.
+func TestRecommend_GoalFlagEmptyResultIsExplicit(t *testing.T) {
+	s, cfg := setupTestEnvWithGoalTaggedItem(t)
+
+	var rc int
+	out := captureStdout(t, func() {
+		rc = Recommend(s, cfg, RecommendOpts{Top: 1, Brief: true, Goal: "G-NONEXISTENT"})
+	})
+	if rc != 0 {
+		t.Fatalf("Recommend with unknown --goal rc=%d\n%s", rc, out)
+	}
+	// Must not silently return unrelated items.
+	if strings.Contains(out, "T-001") || strings.Contains(out, "T-010") {
+		t.Errorf("--goal G-NONEXISTENT must not return cross-goal items; got:\n%s", out)
+	}
+}
+
 func setGoalFocusForTest(cfg *config.Config, agentID, goalID string) error {
 	return agent.SetGoalFocus(cfg, agentID, goalID)
 }
