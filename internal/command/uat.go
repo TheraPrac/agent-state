@@ -388,7 +388,9 @@ func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, r
 					}
 					// I-540: a prose AC mentioning a scope suite marked
 					// `skip: <reason>` must render as ⊘ skipped, not ✗ fail.
-					if strings.HasPrefix(val, "skip:") {
+					// auto-skip: is a system-determined "not applicable" written
+					// by st test --auto; render identically.
+					if strings.HasPrefix(val, "skip:") || strings.HasPrefix(val, "auto-skip:") {
 						return checkResult{Label: criterion, Mode: "auto", Passed: true, Skipped: true, Detail: val}
 					}
 					passed := strings.HasPrefix(val, "pass")

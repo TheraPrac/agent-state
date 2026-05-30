@@ -191,7 +191,13 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 		val := getTestingEvidence(item, name)
 		if val == "" || val == "null" {
 			return GateResult{Passed: false, Gate: "testing_complete",
-				Message: fmt.Sprintf("required suite %q not recorded — run `st test %s %s`", name, item.ID, name)}
+				Message: fmt.Sprintf("required suite %q not recorded — run `st test %s %s --run` or `st test %s --auto`", name, item.ID, name, item.ID)}
+		}
+		// auto-skip: written by st test --auto when the suite's repo had no
+		// changed files. Treated as "not applicable" — a system determination,
+		// not a user bypass. Users still cannot --skip required suites.
+		if strings.HasPrefix(val, "auto-skip:") {
+			continue
 		}
 		if !strings.HasPrefix(val, "pass") {
 			return GateResult{Passed: false, Gate: "testing_complete",

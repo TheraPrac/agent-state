@@ -717,3 +717,88 @@ func TestGateStageReachedDefaultStages(t *testing.T) {
 		t.Error("stage_reached should pass with default stages")
 	}
 }
+
+// T-438: auto-skip written by st test --auto is accepted by the gate for
+// required suites — it signals "not applicable" (no files changed in that
+// repo), not a user bypass.
+func TestTestingComplete_AutoSkipPassesGate(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit":      {Command: "make test-unit"},
+			"api_lint":      {Command: "make lint"},
+			"web_typecheck": {Command: "make type-check"},
+			"web_unit":      {Command: "make test-unit"},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	// Only web changed — api suites auto-skipped, web suites passed.
+	item := testItem("T-438", "active")
+	item.TestingEvidence = map[string]interface{}{
+		"api_unit":      "auto-skip: no files changed in theraprac-api",
+		"api_lint":      "auto-skip: no files changed in theraprac-api",
+		"web_typecheck": "pass abc1234 2026-05-30T10:00:00-06:00",
+		"web_unit":      "pass abc1234 2026-05-30T10:00:00-06:00",
+	}
+	allItems := map[string]*model.Item{"T-438": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if !GatesPassed(results) {
+		f := FirstFailure(results)
+		t.Errorf("auto-skip on required suite should pass gate, got: %s", f.Message)
+	}
+}
+
+// A plain "skip:" (user-initiated) on a required suite must still fail the gate.
+// auto-skip is the only system-accepted form; users cannot bypass via --skip.
+func TestTestingComplete_UserSkipOnRequiredFails(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("T-001", "active")
+	item.TestingEvidence = map[string]interface{}{
+		"api_unit": "skip: operator skipped manually",
+	}
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Error("user skip on required suite must not pass testing_complete gate")
+	}
+}
+
+// All repos touched — no auto-skips, all suites must pass.
+func TestTestingComplete_AllReposTouchedNoAutoSkip(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+			"web_unit": {Command: "make test-unit"},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("T-001", "active")
+	item.TestingEvidence = map[string]interface{}{
+		"api_unit": "auto-skip: no files changed in theraprac-api",
+		// web_unit missing — should fail
+	}
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Error("gate should fail when web_unit is missing (auto-skip only covers api_unit)")
+	}
+}
