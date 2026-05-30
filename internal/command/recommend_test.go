@@ -315,22 +315,57 @@ func TestRecommend_GoalFlagFiltersToGoalItems(t *testing.T) {
 	}
 }
 
-// I-896: when --goal is set to a goal that no ready item belongs to,
-// Recommend returns 0 (success) with a "no eligible items" message rather
-// than silently falling back to cross-goal results.
-func TestRecommend_GoalFlagEmptyResultIsExplicit(t *testing.T) {
+// I-896: when --goal names a non-existent goal, Recommend returns the
+// "no recommendable items" message rather than silently returning
+// cross-goal candidates. Tests the filter-returns-nil path added in I-896.
+func TestRecommend_GoalFlagNonExistentGoalReturnsNoItems(t *testing.T) {
 	s, cfg := setupTestEnvWithGoalTaggedItem(t)
 
 	var rc int
 	out := captureStdout(t, func() {
-		rc = Recommend(s, cfg, RecommendOpts{Top: 1, Brief: true, Goal: "G-NONEXISTENT"})
+		rc = Recommend(s, cfg, RecommendOpts{Top: 5, Brief: true, Goal: "G-NONEXISTENT"})
 	})
 	if rc != 0 {
 		t.Fatalf("Recommend with unknown --goal rc=%d\n%s", rc, out)
 	}
-	// Must not silently return unrelated items.
+	// Must not silently return cross-goal items (Top:5 to ensure all candidates
+	// would appear if the filter were skipped).
 	if strings.Contains(out, "T-001") || strings.Contains(out, "T-010") {
 		t.Errorf("--goal G-NONEXISTENT must not return cross-goal items; got:\n%s", out)
+	}
+	// Must emit the explicit "no recommendable items" message so the operator
+	// knows there are zero eligible items, not a full unfiltered list.
+	if !strings.Contains(out, "No recommendable") {
+		t.Errorf("--goal G-NONEXISTENT must print 'No recommendable' message; got:\n%s", out)
+	}
+}
+
+// I-896: when --goal names a terminal (done) goal, Recommend returns empty
+// rather than the full unfiltered candidate set.
+func TestRecommend_GoalFlagTerminalGoalReturnsNoItems(t *testing.T) {
+	_, cfg := setupTestEnvWithGoalTaggedItem(t)
+	root := cfg.Root()
+
+	// Seed a done goal.
+	doneContent := "id: G-DONE\ntype: goal\nstatus: done\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\ntitle: Done goal\nweight: 40\n"
+	writeFile(t, filepath.Join(root, "goals", "G-DONE-done-goal.md"), doneContent)
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	var rc int
+	out := captureStdout(t, func() {
+		rc = Recommend(s2, cfg, RecommendOpts{Top: 5, Brief: true, Goal: "G-DONE"})
+	})
+	if rc != 0 {
+		t.Fatalf("Recommend with terminal --goal rc=%d\n%s", rc, out)
+	}
+	if strings.Contains(out, "T-001") || strings.Contains(out, "T-010") {
+		t.Errorf("--goal G-DONE (terminal) must not return cross-goal items; got:\n%s", out)
+	}
+	if !strings.Contains(out, "No recommendable") {
+		t.Errorf("--goal G-DONE must print 'No recommendable' message; got:\n%s", out)
 	}
 }
 
