@@ -8,6 +8,30 @@ import (
 	"testing"
 )
 
+// I-990: splitACInput strips balanced outer backtick wrapping so
+// backtick-formatted ACs from Claude pass validation.
+func TestSplitACInput_StripsOuterBackticks(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"- `cmd: go test ./...`", "cmd: go test ./..."},
+		{"- ``cmd: go build ./...``", "cmd: go build ./..."},
+		{"- `cmd: grep -q `foo` file`", "cmd: grep -q `foo` file"},
+		{"cmd: echo ok", "cmd: echo ok"}, // no wrapping — unchanged
+	}
+	for _, tc := range cases {
+		got := splitACInput(tc.input)
+		if len(got) != 1 {
+			t.Errorf("splitACInput(%q): got %d items, want 1", tc.input, len(got))
+			continue
+		}
+		if got[0] != tc.want {
+			t.Errorf("splitACInput(%q): got %q, want %q", tc.input, got[0], tc.want)
+		}
+	}
+}
+
 // stdinForACTest pipes value into os.Stdin for the duration of fn,
 // restoring stdin and stderr after. Used by the I-713 AC validator
 // tests to drive UpdateModeStdin deterministically.

@@ -36,6 +36,13 @@ func splitACInput(value string) []string {
 		if line == "" || line == "-" {
 			continue
 		}
+		// Strip balanced outer backtick wrapping (same as plan.parseList).
+		// Claude sometimes formats cmd: ACs as `cmd: foo` or ``cmd: foo``;
+		// without this strip the validator's HasPrefix("cmd:") check misses
+		// the leading backtick and refuses the write. I-990.
+		for len(line) > 2 && line[0] == '`' && line[len(line)-1] == '`' {
+			line = line[1 : len(line)-1]
+		}
 		out = append(out, line)
 	}
 	return out
