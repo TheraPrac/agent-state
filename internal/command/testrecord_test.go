@@ -916,6 +916,142 @@ func TestTestRunPreflight_BlocksOnUploadFailure(t *testing.T) {
 	}
 }
 
+// I-1116: tests for the worktree guard in testRunMode.
+// "myrepo" (no "theraprac-" prefix) avoids suiteNeedsAgentRuntime, so RunCmd
+// reaches execution without needing full agent workspace setup.
+
+func TestTestRunFailsWhenWorktreePresentButSuiteUnrewritten(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.RequiredSuites["myrepo_e2e"] = config.SuiteConfig{Command: "cd ../myrepo && scripts/run.sh"}
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"myrepo"},
+	}
+	// Create worktree BASE for T-003, but NOT the "myrepo" dir inside it.
+	wtBase := filepath.Join(cfg.Root(), "worktrees", "T-003")
+	if err := os.MkdirAll(wtBase, 0755); err != nil {
+		t.Fatalf("create worktree base: %v", err)
+	}
+
+	var ran bool
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(string) ([]byte, int, error) {
+			ran = true
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "myrepo_e2e", opts)
+	if code != 1 {
+		t.Fatalf("returned %d, want 1 (guard should block running against main clone)", code)
+	}
+	if ran {
+		t.Error("RunCmd was called; guard should have exited before executing the suite")
+	}
+}
+
+func TestTestRunNoGuardWhenNoWorktreeOnDisk(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.RequiredSuites["myrepo_e2e"] = config.SuiteConfig{Command: "cd ../myrepo && scripts/run.sh"}
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"myrepo"},
+	}
+	// No worktree directory created; guard must not fire.
+
+	var ran bool
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(string) ([]byte, int, error) {
+			ran = true
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "myrepo_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0 (no worktree on disk; guard must not fire)", code)
+	}
+	if !ran {
+		t.Error("RunCmd was not called; expected execution to proceed when no worktree exists")
+	}
+}
+
+func TestTestRunNoGuardWhenWorktreeDisabled(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.RequiredSuites["myrepo_e2e"] = config.SuiteConfig{Command: "cd ../myrepo && scripts/run.sh"}
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: false, // disabled — guard must not fire
+		BaseDir: "worktrees",
+		Repos:   []string{"myrepo"},
+	}
+	// Worktree base exists on disk; guard still must not fire because Enabled=false.
+	wtBase := filepath.Join(cfg.Root(), "worktrees", "T-003")
+	if err := os.MkdirAll(wtBase, 0755); err != nil {
+		t.Fatalf("create worktree base: %v", err)
+	}
+
+	var ran bool
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(string) ([]byte, int, error) {
+			ran = true
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "myrepo_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0 (worktree disabled; guard must not fire)", code)
+	}
+	if !ran {
+		t.Error("RunCmd was not called; expected execution to proceed when worktree integration is disabled")
+	}
+}
+
+func TestTestRunNoGuardWhenRewriteFired(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.RequiredSuites["myrepo_e2e"] = config.SuiteConfig{Command: "cd ../myrepo && scripts/run.sh"}
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"myrepo"},
+	}
+	// Create both the worktree base AND the "myrepo" dir so the rewrite fires.
+	wtRepo := filepath.Join(cfg.Root(), "worktrees", "T-003", "myrepo")
+	if err := os.MkdirAll(wtRepo, 0755); err != nil {
+		t.Fatalf("create worktree repo dir: %v", err)
+	}
+
+	var gotCmd string
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			gotCmd = command
+			return []byte("PASS\n"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	code := TestRecord(s, cfg, "T-003", "myrepo_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0 (rewrite fired; guard must not fire)", code)
+	}
+	if !strings.Contains(gotCmd, filepath.Join("worktrees", "T-003", "myrepo")) {
+		t.Errorf("cmd was not rewritten to worktree path; got: %s", gotCmd)
+	}
+}
+
 func TestTestRunPreflight_OptOutEnvSkipsProbe(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	t.Setenv("AS_SKIP_EVIDENCE_PREFLIGHT", "1")
