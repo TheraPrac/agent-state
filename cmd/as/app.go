@@ -371,6 +371,7 @@ To list goals with weights use:
 			assessment, _ := cmd.Flags().GetString("sbar-assessment")
 			recommendation, _ := cmd.Flags().GetString("sbar-recommendation")
 			noValidate, _ := cmd.Flags().GetBool("no-validate")
+			noDedup, _ := cmd.Flags().GetBool("no-dedup")
 			exitCode = command.Create(appStore, appCfg, args[0], args[1], command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
 				Goals:          goals,
@@ -380,6 +381,7 @@ To list goals with weights use:
 				Recommendation: recommendation,
 				EnforceGate:    true,
 				NoValidate:     noValidate,
+				NoDedup:        noDedup,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
 				// (tests, migrations) leave Engine zero and skip the review.
@@ -403,6 +405,7 @@ To list goals with weights use:
 	createCmd.Flags().String("sbar-assessment", "", "SBAR assessment field (diagnosis — what's wrong and why)")
 	createCmd.Flags().String("sbar-recommendation", "", "SBAR recommendation field (proposed fix, scoped enough to action)")
 	createCmd.Flags().Bool("no-validate", false, "skip Layer-2+3 LLM semantic validation (Layer 1 always runs)")
+	createCmd.Flags().Bool("no-dedup", false, "skip semantic duplicate detection (T-437)")
 	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 

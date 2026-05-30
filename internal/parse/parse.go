@@ -584,7 +584,7 @@ func isListKey(key string) bool {
 	case "tags", "depends_on", "blocks", "related_issues",
 		"acceptance_criteria", "next_actions", "resolution",
 		"invariants", "doc_changes", "sessions", "linked_plans",
-		"tests_written", "goals":
+		"tests_written", "goals", "observations":
 		return true
 	}
 	return false
@@ -612,6 +612,8 @@ func storeList(item *model.Item, key, nestKey string, list []string) {
 		item.DocChanges = list
 	case "sessions":
 		item.Sessions = list
+	case "observations":
+		item.Observations = list
 	case "linked_plans":
 		item.LinkedPlans = list
 	case "goals":

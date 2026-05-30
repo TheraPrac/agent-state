@@ -42,6 +42,7 @@ type CreateOpts struct {
 	Situation, Background, Assessment, Recommendation string
 	EnforceGate bool // set true by the CLI; in-process callers keep false
 	NoValidate  bool // skip Layers 2+3 semantic validation; Layer 1 always runs
+	NoDedup     bool // skip semantic duplicate detection (T-437)
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -140,6 +141,24 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			for _, f := range findings {
 				fmt.Fprintf(os.Stderr, "  warning: %s\n", f)
 			}
+		}
+	}
+
+	// T-437: semantic duplicate detection. Runs after SBAR validation so the
+	// content is known-quality before we compare it. Degrades gracefully:
+	// any error or missing engine falls through to normal create.
+	if !opts.NoDedup && opts.EnforceGate && opts.Situation != "" {
+		if matchID, dedupErr := runSemanticDedup(s, cfg, itemType, title, opts.Situation, opts.Engine); dedupErr == nil && matchID != "" {
+			matched, _ := s.Get(matchID)
+			hitCount := 0
+			if matched != nil {
+				hitCount = len(matched.Observations)
+			}
+			fmt.Printf("Merged into %s (%d observations) — not creating a new item\n", matchID, hitCount)
+			if matched != nil {
+				fmt.Printf("  Existing: %s\n", matched.Title)
+			}
+			return 0
 		}
 	}
 

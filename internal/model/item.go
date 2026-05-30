@@ -62,6 +62,11 @@ type Item struct {
 	DocChanges         []string
 	LinkedPlans        []string
 	Goals              []string
+	// Observations records each time a semantically-duplicate create was
+	// attempted and merged into this item instead of creating a new one.
+	// Each entry is a pipe-delimited string: "<RFC3339> | <trigger_id> | <note>".
+	// len(Observations) is the hit count.
+	Observations []string
 
 	// Nested structures (kept as raw key-value for flexibility)
 	WorkTracking    map[string]interface{}

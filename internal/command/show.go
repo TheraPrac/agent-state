@@ -84,6 +84,7 @@ func Show(s *store.Store, cfg *config.Config, id string, opts ShowOpts) int {
 	// work against both the raw file and the pretty output.
 	showDefaultTo(os.Stdout, s, cfg, id, item)
 	renderTimeTracking(os.Stdout, item)
+	renderObservations(os.Stdout, item)
 	return 0
 }
 
@@ -96,6 +97,7 @@ func showTo(w io.Writer, s *store.Store, cfg *config.Config, id string, opts Sho
 	}
 	showDefaultTo(w, s, cfg, id, item)
 	renderTimeTracking(w, item)
+	renderObservations(w, item)
 	return 0
 }
 
@@ -354,5 +356,17 @@ func renderTimeTracking(w io.Writer, item *modelItemRef) {
 				fmt.Fprintf(w, "      %s\n", line.Raw)
 			}
 		}
+	}
+}
+
+// renderObservations prints the hit-count and observation log when an item
+// has been independently re-discovered by the semantic dedup system (T-437).
+func renderObservations(w io.Writer, item *modelItemRef) {
+	if len(item.Observations) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nobservations: %d independent re-discoveries\n", len(item.Observations))
+	for _, obs := range item.Observations {
+		fmt.Fprintf(w, "  - %s\n", obs)
 	}
 }
