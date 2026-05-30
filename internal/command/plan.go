@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -536,6 +537,81 @@ func PlanShow(s *store.Store, cfg *config.Config, id string) int {
 			}
 		}
 	}
+	return 0
+}
+
+// PlanWrite writes a plan body directly to .plans/<id>.md without
+// spawning an exploration agent. This is the lightweight alternative
+// to `st plan prep` for items where the SBAR already describes the
+// implementation precisely and the agent has already explored the
+// relevant source files (I-917).
+//
+// When selfApprove is true (--self-approve CLI flag), PlanWrite also
+// calls PlanApprove with Engine:nil after writing. Engine:nil runs the
+// SBAR substance gate and the AC verifiability gate (fast static
+// checks, <1s each) and — if both pass — stamps PlanApproved on the
+// item. The I-710 plan-review sub-agent is NOT spawned: that
+// sub-agent is calibrated for plan-prep outputs (blind exploration);
+// an agent using PlanWrite has already done that exploration itself.
+// If any static gate fails, PlanApprove prints the specific gaps and
+// returns a non-zero exit code so the agent can fix the plan inline
+// and re-run (I-1092).
+func PlanWrite(s *store.Store, cfg *config.Config, id string, body string, selfApprove bool) int {
+	_, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+
+	plansDir := cfg.PlansDir()
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "creating plans dir for %s: %v\n", id, err)
+		return 1
+	}
+	if err := os.WriteFile(filepath.Join(plansDir, id+".md"), []byte(body), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "writing plan for %s: %v\n", id, err)
+		return 1
+	}
+
+	// Stamp linked_plans so the sidecar is discoverable by st plan show,
+	// st resume, and the plan-before-code hook regardless of whether
+	// --self-approve is used. PlanApprove's own back-fill is idempotent
+	// (checks for duplicates) so calling it afterward is safe.
+	sidecarRel := relativePlanPath(plansDir, cfg.Root(), id)
+	if err := s.Mutate(id, func(it *model.Item) error {
+		for _, lp := range it.LinkedPlans {
+			if lp == sidecarRel {
+				return nil
+			}
+		}
+		it.LinkedPlans = append(it.LinkedPlans, sidecarRel)
+		it.Doc.ReplaceList("linked_plans", it.LinkedPlans)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "linking plan for %s: %v\n", id, err)
+		return 1
+	}
+
+	agentID := cfg.AgentID()
+	if agentID == "" {
+		agentID = "user"
+	}
+	_ = changelog.Append(cfg, id, changelog.Entry{
+		Op:       "plan_write",
+		NewValue: agentID,
+		Reason:   "I-917: plan written directly by agent (st plan write)",
+	})
+
+	fmt.Printf("Wrote plan for %s (%d bytes)\n", id, len(body))
+
+	if selfApprove {
+		fmt.Fprintf(os.Stderr, "st plan write: running static gates (SBAR + AC verifiability; no review sub-agent)…\n")
+		// Engine:nil skips the I-710 review sub-agent; SBAR substance
+		// and AC verifiability gates still run. I-1092.
+		return PlanApprove(s, cfg, id, PlanApproveOpts{Engine: nil})
+	}
+
+	autoSync(s, fmt.Sprintf("st plan write: %s", id))
 	return 0
 }
 
