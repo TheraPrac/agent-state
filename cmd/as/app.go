@@ -1461,11 +1461,22 @@ verdict drifts toward what the operator actually accepts.`,
 	root.AddCommand(prCmd)
 
 	testRecordCmd := &cobra.Command{
-		Use:   "test <id> <suite>",
+		Use:   "test <id> [<suite>]",
 		Short: "Record or execute a test suite for an item",
-		Long:  "Without --run: records a manual test pass. With --run: executes the suite command, captures output, uploads evidence. With --skip <reason>: marks a scope suite as intentionally skipped (scope suites only — required suites cannot be skipped).",
-		Args:  cobra.ExactArgs(2),
+		Long:  "Without --run: records a manual test pass. With --run: executes the suite command, captures output, uploads evidence. With --skip <reason>: marks a scope suite as intentionally skipped (scope suites only — required suites cannot be skipped). With --auto: detects changed files from the worktree and runs all applicable Tier 1+2 suites (suite arg not required).",
+		Args:  cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
+			auto, _ := cmd.Flags().GetBool("auto")
+			if auto {
+				agent, _ := cmd.Flags().GetString("agent")
+				exitCode = command.AutoTest(appStore, appCfg, args[0], command.TestRecordOpts{Agent: agent})
+				return
+			}
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "suite is required without --auto (or use: st test <id> --auto)")
+				exitCode = 1
+				return
+			}
 			run, _ := cmd.Flags().GetBool("run")
 			cov, _ := cmd.Flags().GetBool("coverage")
 			skip, _ := cmd.Flags().GetString("skip")
@@ -1479,6 +1490,7 @@ verdict drifts toward what the operator actually accepts.`,
 	testRecordCmd.Flags().Bool("coverage", false, "enforce per-file coverage thresholds (requires --run)")
 	testRecordCmd.Flags().String("skip", "", "mark a scope suite as intentionally skipped with the given reason (scope suites only)")
 	testRecordCmd.Flags().String("agent", "", "agent workspace/runtime to target when executing a suite")
+	testRecordCmd.Flags().Bool("auto", false, "detect changed files and run all applicable Tier 1+2 suites automatically")
 	root.AddCommand(testRecordCmd)
 
 	revertCmd := &cobra.Command{

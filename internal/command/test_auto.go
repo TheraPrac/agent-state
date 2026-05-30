@@ -1,0 +1,222 @@
+package command
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/store"
+)
+
+// AutoTest detects changed files in the item's worktree repos and runs all
+// applicable Tier 1 (required) and Tier 2 (scope) suites in order.
+func AutoTest(s *store.Store, cfg *config.Config, id string, opts TestRecordOpts) int {
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+	if item.Status != "active" {
+		fmt.Fprintf(os.Stderr, "%s is %s — must be active to run tests\n", id, item.Status)
+		return 1
+	}
+	if cfg.Testing == nil {
+		fmt.Fprintln(os.Stderr, "no testing configuration found")
+		return 1
+	}
+	if cfg.Worktree == nil || len(cfg.Worktree.Repos) == 0 {
+		fmt.Fprintln(os.Stderr, "--auto requires worktree.repos to be configured")
+		return 1
+	}
+
+	touched, err := detectTouchedRepos(cfg, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "detecting changes: %v\n", err)
+		return 1
+	}
+
+	tier1, tier2 := selectAutoSuites(cfg, item, touched)
+	all := append(tier1, tier2...)
+	if len(all) == 0 {
+		fmt.Printf("[auto] %s — no applicable suites (touched repos: %s)\n", id, descTouched(touched))
+		return 0
+	}
+
+	fmt.Printf("[auto] %s — %d suite(s): %s\n", id, len(all), strings.Join(all, ", "))
+
+	var failed []string
+	for i, suite := range all {
+		fmt.Printf("\n[%d/%d] %s\n", i+1, len(all), suite)
+		code := TestRecord(s, cfg, id, suite, TestRecordOpts{
+			Run:        true,
+			Agent:      opts.Agent,
+			Cwd:        opts.Cwd,
+			GitHeadSHA: opts.GitHeadSHA,
+			RunCmd:     opts.RunCmd,
+			ReadFile:   opts.ReadFile,
+			Backend:    opts.Backend,
+		})
+		if code != 0 {
+			failed = append(failed, suite)
+		}
+	}
+
+	fmt.Println()
+	if len(failed) == 0 {
+		fmt.Printf("[auto] All %d suite(s) passed.\n", len(all))
+		return 0
+	}
+	fmt.Printf("[auto] %d/%d suite(s) failed: %s\n", len(failed), len(all), strings.Join(failed, ", "))
+	return 1
+}
+
+// detectTouchedRepos runs `git diff main..HEAD --name-only` in each configured
+// repo's worktree directory and returns the changed file list per repo name.
+func detectTouchedRepos(cfg *config.Config, id string) (map[string][]string, error) {
+	result := make(map[string][]string)
+	for _, repo := range cfg.Worktree.Repos {
+		dir := resolveRepoDirForItem(cfg, id, repo)
+		if !isGitDir(dir) {
+			continue
+		}
+		out, err := runGit(dir, "diff", "main..HEAD", "--name-only")
+		if err != nil {
+			// Silently skip — repo may lack a local main ref or have no divergence.
+			continue
+		}
+		var files []string
+		for _, f := range strings.Split(strings.TrimSpace(out), "\n") {
+			if f != "" {
+				files = append(files, f)
+			}
+		}
+		if len(files) > 0 {
+			result[repo] = files
+		}
+	}
+	return result, nil
+}
+
+// selectAutoSuites returns (tier1, tier2) suite lists based on which repos have
+// changes and whether the item has a scope_class override.
+//
+//   - Tier 1 (required suites): filtered by suite-name prefix → repo mapping,
+//     unless scope_class is set (class suites run regardless of file scope).
+//   - Tier 2 (scope suites): filtered by prefix AND trigger glob patterns.
+//   - live_acceptance is always excluded — it is a manual gate, not auto-runnable.
+func selectAutoSuites(cfg *config.Config, item *model.Item, touched map[string][]string) (tier1, tier2 []string) {
+	requiredSuites, _ := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+
+	seen := map[string]bool{}
+
+	for name := range requiredSuites {
+		if seen[name] {
+			continue
+		}
+		if item.ScopeClass != "" {
+			// Class suites are defined by item type, not by which files changed.
+			seen[name] = true
+			tier1 = append(tier1, name)
+			continue
+		}
+		repo := autoScopeRepo(name)
+		if _, changed := touched[repo]; changed && repo != "" {
+			seen[name] = true
+			tier1 = append(tier1, name)
+		}
+	}
+	sort.Strings(tier1)
+
+	for name, sc := range cfg.Testing.ScopeSuites {
+		if name == "live_acceptance" || seen[name] {
+			continue
+		}
+		repo := autoScopeRepo(name)
+		files, changed := touched[repo]
+		if !changed || repo == "" {
+			continue
+		}
+		if len(sc.Triggers) > 0 && !autoMatchTriggers(files, sc.Triggers) {
+			continue
+		}
+		seen[name] = true
+		tier2 = append(tier2, name)
+	}
+	sort.Strings(tier2)
+
+	return tier1, tier2
+}
+
+// autoScopeRepo maps a suite name to its worktree repo directory name using the
+// suite-name prefix convention: api_* → theraprac-api, web_* → theraprac-web, etc.
+func autoScopeRepo(suiteName string) string {
+	prefix, _, _ := strings.Cut(suiteName, "_")
+	switch prefix {
+	case "api":
+		return "theraprac-api"
+	case "web":
+		return "theraprac-web"
+	case "infra":
+		return "theraprac-infra"
+	case "workspace":
+		return "as"
+	default:
+		return ""
+	}
+}
+
+// autoMatchTriggers returns true if any file matches any trigger glob pattern.
+// Supports ** as "any path segment(s)": src/app/** matches src/app/foo/bar.ts.
+func autoMatchTriggers(files []string, patterns []string) bool {
+	for _, f := range files {
+		for _, pattern := range patterns {
+			if autoGlobMatch(pattern, f) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// autoGlobMatch matches a file path against a glob pattern with ** support.
+func autoGlobMatch(pattern, name string) bool {
+	if !strings.Contains(pattern, "**") {
+		ok, _ := filepath.Match(pattern, name)
+		return ok
+	}
+	// Split on first **: check prefix (before **) and suffix (after **).
+	before, after, _ := strings.Cut(pattern, "**")
+	if before != "" && !strings.HasPrefix(name, before) {
+		return false
+	}
+	if after == "" {
+		return true
+	}
+	// Strip leading / from the suffix segment so "**/*.go" works.
+	after = strings.TrimPrefix(after, "/")
+	if after == "" {
+		return true
+	}
+	ok, _ := filepath.Match(after, filepath.Base(name))
+	if ok {
+		return true
+	}
+	return strings.HasSuffix(name, "/"+after) || strings.HasSuffix(name, after)
+}
+
+// descTouched returns a short description of which repos were touched.
+func descTouched(touched map[string][]string) string {
+	if len(touched) == 0 {
+		return "none"
+	}
+	var repos []string
+	for repo := range touched {
+		repos = append(repos, fmt.Sprintf("%s(%d)", repo, len(touched[repo])))
+	}
+	sort.Strings(repos)
+	return strings.Join(repos, ", ")
+}
