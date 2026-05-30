@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ func UAT(s *store.Store, cfg *config.Config, id string, opts UATOpts) int {
 		}
 		runCmd = func(cmd string) ([]byte, int, error) {
 			cmd = rewriteACPaths(cfg, id, runDir, cmd)
-			return runCmdInDir(runDir, cmd)
+			return runCmdInDirWithTimeout(runDir, cmd, 10*time.Minute)
 		}
 	}
 
@@ -336,6 +337,14 @@ func ValidateACsyntax(acs []string) []string {
 			errors = append(errors, fmt.Sprintf("AC #%d: empty command", i+1))
 			continue
 		}
+		// Anti-pattern: st test --run re-runs full suites during UAT, bypassing
+		// pre-recorded testing_evidence and causing 10-40 minute UAT runs.
+		if reStTestRun.MatchString(cmd) {
+			errors = append(errors, fmt.Sprintf(
+				"AC #%d: anti-pattern — 'st test --run' re-runs the full suite during UAT; use a targeted 'go test -run TestFoo' instead. Suite pass/fail is already checked from testing_evidence.\n  cmd: %s",
+				i+1, cmd,
+			))
+		}
 		// Shell syntax check
 		check := exec.Command("sh", "-n", "-c", cmd)
 		if out, err := check.CombinedOutput(); err != nil {
@@ -348,6 +357,9 @@ func ValidateACsyntax(acs []string) []string {
 	}
 	return errors
 }
+
+// reStTestRun matches the anti-pattern `st test <id> <suite> --run` in a cmd: AC.
+var reStTestRun = regexp.MustCompile(`\bst\s+test\b.+--run\b`)
 
 func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, runCmd func(string) ([]byte, int, error)) checkResult {
 	// cmd: prefix — execute command

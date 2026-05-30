@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -562,6 +563,32 @@ func runCmdInDir(dir, command string) ([]byte, int, error) {
 		cmd.Dir = dir
 	}
 	output, err := cmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return output, 0, err
+		}
+	}
+	return output, exitCode, nil
+}
+
+// runCmdInDirWithTimeout executes a shell command like runCmdInDir but cancels
+// after the given timeout. On timeout the exit code is -1 and the error message
+// describes how long the command ran before being killed.
+func runCmdInDirWithTimeout(dir, command string, timeout time.Duration) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		msg := fmt.Sprintf("exit timeout: command exceeded %.0fs\n%s", timeout.Seconds(), string(output))
+		return []byte(msg), -1, nil
+	}
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
@@ -414,5 +415,76 @@ func TestUATScopeClassSkipsScopeSuiteRequired(t *testing.T) {
 
 	if strings.Contains(output, "web_e2e") {
 		t.Errorf("class items should not surface scope_suites markers in UAT:\n%s", output)
+	}
+}
+
+// TestUATCmdTimeout verifies that a cmd: AC that runs longer than the timeout
+// fails with a clear timeout message rather than hanging indefinitely.
+func TestUATCmdTimeout(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"cmd: sleep 300"}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	// Inject a 1-second timeout runCmd to keep the test fast.
+	timeoutRunCmd := func(cmd string) ([]byte, int, error) {
+		return runCmdInDirWithTimeout("", cmd, 1*time.Second)
+	}
+
+	opts := UATOpts{
+		RunCmd:  timeoutRunCmd,
+		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+	}
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	exit := UAT(s, cfg, "T-003", opts)
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 32768)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+
+	if exit == 0 {
+		t.Errorf("expected non-zero exit for timed-out cmd: AC, got 0")
+	}
+	if !strings.Contains(output, "timeout") {
+		t.Errorf("expected 'timeout' in UAT output, got:\n%s", output)
+	}
+}
+
+// TestValidateACsyntaxAntiPattern verifies that ValidateACsyntax rejects
+// cmd: ACs that use `st test --run` (re-runs full suites during UAT).
+func TestValidateACsyntaxAntiPattern(t *testing.T) {
+	badACs := []string{
+		"- cmd: st test T-216 api_unit --run",
+		"- cmd: st test T-216 api_lint --run",
+		"- cmd: st test T-100 web_typecheck --run",
+	}
+	errs := ValidateACsyntax(badACs)
+	if len(errs) != 3 {
+		t.Errorf("expected 3 anti-pattern errors, got %d: %v", len(errs), errs)
+	}
+	for _, e := range errs {
+		if !strings.Contains(e, "anti-pattern") {
+			t.Errorf("expected 'anti-pattern' in error, got: %s", e)
+		}
+	}
+
+	// These are fine: targeted go test commands, not suite re-runs.
+	goodACs := []string{
+		"- cmd: go test ./internal/handlers/ -run TestAgingBucketCalculation -v -count=1",
+		"- cmd: st test T-216 api_unit --skip 'no changes'",
+		"- cmd: st stack",
+	}
+	errs = ValidateACsyntax(goodACs)
+	if len(errs) != 0 {
+		t.Errorf("expected 0 errors for good ACs, got %d: %v", len(errs), errs)
 	}
 }
