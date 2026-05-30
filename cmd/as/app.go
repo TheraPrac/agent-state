@@ -2666,7 +2666,86 @@ implement step during st run.`,
 	}
 	prepFlags(planPrepCmd)
 
-	planCmd.AddCommand(planApproveCmd, planResetCmd, planInvalidateCmd, planCheckCmd, planShowCmd, planPrepCmd)
+	// I-917: `st plan write` — write a plan body directly from stdin (or
+	// --file) without spawning an exploration agent. For items where the
+	// SBAR is already precise and the agent has already read the relevant
+	// source files, this eliminates the double-exploration that `st plan
+	// prep` causes. --self-approve additionally runs the fast static
+	// gates (SBAR substance + AC verifiability) and stamps PlanApproved
+	// when they pass, skipping the I-710 review sub-agent (I-1092).
+	planWriteCmd := &cobra.Command{
+		Use:   "write <id>",
+		Short: "Write a plan body directly from stdin (no exploration agent spawned)",
+		Long: `Plan write reads a plan body from stdin (or --file) and writes it to
+.plans/<id>.md without spawning an exploration agent.
+
+Use this when the SBAR already describes the implementation precisely
+and you have already read the relevant source files. Running st plan prep
+in that case duplicates all the exploration at full token cost with no
+benefit (I-917).
+
+Plan body format (markdown with YAML frontmatter):
+
+  ---
+  scope_repos: [as]
+  ---
+
+  ## Approach
+  Describe the technical approach here.
+
+  ## Acceptance criteria
+  - cmd: go test ./cmd/as/ -run TestPlanWrite -count=1
+
+With --self-approve: after writing, runs the SBAR substance gate and
+AC verifiability gate (fast static checks, <1s). If both pass, stamps
+PlanApproved on the item — no review sub-agent spawned (I-1092). If
+any gate fails, prints the specific gaps so you can fix the plan inline
+and re-run.
+
+Without --self-approve: writes the plan and stamps linked_plans; use
+st plan approve <id> separately (which runs the full review sub-agent).`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			id := args[0]
+			filePath, _ := cmd.Flags().GetString("file")
+			selfApprove, _ := cmd.Flags().GetBool("self-approve")
+
+			var body []byte
+			var err error
+			if filePath != "" {
+				body, err = os.ReadFile(filePath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "st plan write: reading --file %s: %v\n", filePath, err)
+					exitCode = 1
+					return
+				}
+			} else {
+				if !command.StdinIsPiped() {
+					fmt.Fprintf(os.Stderr, "st plan write: no --file given and stdin is not piped — pipe content or use --file <path>\n")
+					exitCode = 1
+					return
+				}
+				body, err = io.ReadAll(os.Stdin)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "st plan write: reading stdin: %v\n", err)
+					exitCode = 1
+					return
+				}
+			}
+
+			if len(body) == 0 {
+				fmt.Fprintf(os.Stderr, "st plan write: plan body is empty — pipe content via stdin or use --file\n")
+				exitCode = 1
+				return
+			}
+
+			exitCode = command.PlanWrite(appStore, appCfg, id, string(body), selfApprove)
+		},
+	}
+	planWriteCmd.Flags().String("file", "", "read plan body from this file instead of stdin")
+	planWriteCmd.Flags().Bool("self-approve", false, "after writing, run static gates (SBAR+AC) and auto-approve if they pass (no review sub-agent)")
+
+	planCmd.AddCommand(planApproveCmd, planResetCmd, planInvalidateCmd, planCheckCmd, planShowCmd, planPrepCmd, planWriteCmd)
 	root.AddCommand(planCmd)
 
 	filesCmd := &cobra.Command{
