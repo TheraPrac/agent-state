@@ -216,6 +216,7 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	// patterns still appear in cmd, the rewrite did not fire (the repo dir is absent
 	// inside the worktree). Fail loudly; running against the main clone produces
 	// misleading pass/fail signals.
+	// NOTE: the RepoMap resolution below must stay in sync with rewriteSuiteForWorktree.
 	if cfg.Worktree != nil && cfg.Worktree.Enabled && cfg.Worktree.BaseDir != "" {
 		if wtBase := cfg.WorktreeForItem(id); wtBase != "" {
 			if _, err := os.Stat(wtBase); err == nil {
@@ -226,10 +227,13 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 							repoDir = mapped
 						}
 					}
-					for _, pattern := range []string{
-						"cd ../" + repoDir,
-						"cd ../" + repo,
-					} {
+					// Deduplicate: when repoDir == repo (no RepoMap entry), checking both
+					// patterns would run strings.Contains twice on the same string.
+					patterns := []string{"cd ../" + repoDir}
+					if repo != repoDir {
+						patterns = append(patterns, "cd ../"+repo)
+					}
+					for _, pattern := range patterns {
 						if strings.Contains(cmd, pattern) {
 							fmt.Fprintf(os.Stderr,
 								"error: suite %q references %q but the worktree rewrite did not fire for item %s.\n"+
