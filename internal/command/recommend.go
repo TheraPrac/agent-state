@@ -174,10 +174,18 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	if goalID != "" {
 		goal, ok := s.Get(goalID)
 		if !ok || goal.Type != "goal" || goal.Status != "active" {
-			// Goal is gone or terminal — auto-clear so the agent isn't
-			// silently stuck with an empty result set.
-			if opts.Goal == "" { // only auto-clear when it came from focus, not --goal
+			if opts.Goal == "" {
+				// focus_goal is stale — auto-clear so the agent isn't
+				// silently stuck with an empty result set, and return
+				// the unfiltered candidates (degraded-but-useful behaviour).
 				_ = agent.ClearGoalFocus(cfg, cfg.Identity().ID)
+			} else {
+				// Explicit --goal named a non-existent or terminal goal.
+				// Return empty rather than silently ignoring the filter —
+				// the operator asked for a specific goal and must see that
+				// there are no eligible items, not a misleading full list.
+				// I-896.
+				return nil
 			}
 		} else {
 			filtered := cands[:0]
