@@ -24,7 +24,7 @@ import (
 // show their full body; machine sections show only the self-documenting
 // header. `--full --all` overrides this and expands everything.
 var expandedByDefault = map[string]bool{
-	"item": true, "plan": true, "ac": true,
+	"item": true, "plan": true, "ac": true, "observations": true,
 }
 
 // showFull writes the composite view to w. Taking an io.Writer (instead

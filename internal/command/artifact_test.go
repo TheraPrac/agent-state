@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // Every declared kind dispatches, returns rc 0, and prints non-empty
@@ -146,5 +148,62 @@ func TestArtifact_ErrorPaths(t *testing.T) {
 	}
 	if rc := Artifact(s, cfg, "T-002", ArtifactOpts{Kind: "item", Format: "xml"}); rc != 2 {
 		t.Errorf("bad --format must rc=2, got %d", rc)
+	}
+}
+
+// T-437: observations facet — empty and non-empty item variants.
+func TestFacetObservations(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Empty: item with no observations → summary "none", non-empty text.
+	out := captureStdout(t, func() {
+		Artifact(s, cfg, "T-001", ArtifactOpts{Kind: "observations"})
+	})
+	if !strings.Contains(out, "none") && !strings.Contains(out, "(no ") {
+		t.Errorf("empty observations should say none: %s", out)
+	}
+
+	// Non-empty: write an item with observations and confirm they render.
+	writeFile(t, filepath.Join(cfg.Root(), "tasks", "T-999-obs.md"), `id: T-999
+type: task
+status: active
+created: 2026-05-30T10:00:00-06:00
+last_touched: 2026-05-30T10:00:00-06:00
+title: Observations test item
+observations:
+- 2026-05-30T10:01:00-06:00 | st create I-999-duplicate | duplicate situation observed
+- 2026-05-30T10:02:00-06:00 | st create I-999-another | second re-discovery
+sbar:
+  situation: test item with observations
+  background: used for facet test
+  assessment: straightforward
+  recommendation: verify facet renders observations
+`)
+	// Re-load the store to pick up the new file.
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	out = captureStdout(t, func() {
+		Artifact(s2, cfg, "T-999", ArtifactOpts{Kind: "observations"})
+	})
+	if !strings.Contains(out, "re-discover") {
+		t.Errorf("non-empty observations should mention re-discover: %s", out)
+	}
+	if !strings.Contains(out, "duplicate situation observed") {
+		t.Errorf("observations text should contain first entry: %s", out)
+	}
+
+	// JSON shape: must be a []string slice.
+	outJSON := captureStdout(t, func() {
+		Artifact(s2, cfg, "T-999", ArtifactOpts{Kind: "observations", Format: "json"})
+	})
+	var obs []string
+	if err := json.Unmarshal([]byte(outJSON), &obs); err != nil {
+		t.Errorf("observations JSON must be []string, got error: %v\n%s", err, outJSON)
+	}
+	if len(obs) != 2 {
+		t.Errorf("expected 2 observations, got %d: %v", len(obs), obs)
 	}
 }
