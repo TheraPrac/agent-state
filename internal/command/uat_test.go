@@ -526,3 +526,120 @@ func TestValidateACsyntaxFullSuiteAntiPattern(t *testing.T) {
 		t.Errorf("expected 0 errors for allowed ACs, got %d: %v", len(errs), errs)
 	}
 }
+
+// TestCleanACs verifies the st uat --clean-acs conversion job (I-1120).
+func TestCleanACs(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+
+	// Seed two items: one with suite-run ACs (T-001) and one with clean ACs (T-003).
+	// Use Doc.ReplaceList so ACs persist to disk (Mutate serializes via Doc.String()).
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Status = "queued"
+		acs := []string{"cmd: go test ./...", "cmd: make test-unit", "cmd: grep -q 'foo' file.go"}
+		it.AcceptanceCriteria = acs
+		rawACs := []string{"- cmd: go test ./...", "- cmd: make test-unit", "- cmd: grep -q 'foo' file.go"}
+		it.Doc.ReplaceList("acceptance_criteria", rawACs)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-001: %v", err)
+	}
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		acs := []string{"cmd: go test ./internal/handlers/ -run TestFoo -v -count=1", "cmd: grep -q 'handler' ./file.go"}
+		it.AcceptanceCriteria = acs
+		rawACs := []string{"- cmd: go test ./internal/handlers/ -run TestFoo -v -count=1", "- cmd: grep -q 'handler' ./file.go"}
+		it.Doc.ReplaceList("acceptance_criteria", rawACs)
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	// Dry run: should print summary but not modify T-001.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := CleanACs(s, cfg, CleanACsOpts{Apply: false})
+	w.Close()
+	os.Stdout = old
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+
+	if code != 0 {
+		t.Fatalf("dry run returned %d, want 0\noutput: %s", code, out)
+	}
+	if !strings.Contains(out, "T-001") {
+		t.Errorf("expected T-001 in dry-run output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Dry run") {
+		t.Errorf("expected 'Dry run' in output, got:\n%s", out)
+	}
+	// Verify T-001 was NOT modified.
+	item, ok := s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found")
+	}
+	if len(item.AcceptanceCriteria) != 3 {
+		t.Errorf("dry run should not modify ACs, got %d ACs", len(item.AcceptanceCriteria))
+	}
+
+	// Apply mode: should remove suite-run ACs from T-001, leave T-003 untouched.
+	code = CleanACs(s, cfg, CleanACsOpts{Apply: true})
+	if code != 0 {
+		t.Fatalf("apply returned %d, want 0", code)
+	}
+	item, ok = s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found after apply")
+	}
+	if len(item.AcceptanceCriteria) != 1 {
+		t.Errorf("expected 1 AC remaining (grep), got %d: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if !strings.Contains(item.AcceptanceCriteria[0], "grep") {
+		t.Errorf("expected grep AC to survive, got: %s", item.AcceptanceCriteria[0])
+	}
+	// T-003 (clean ACs) should be untouched.
+	item3, ok := s.Get("T-003")
+	if !ok {
+		t.Fatal("T-003 not found")
+	}
+	if len(item3.AcceptanceCriteria) != 2 {
+		t.Errorf("T-003 ACs should be untouched, got %d", len(item3.AcceptanceCriteria))
+	}
+
+	// --item filter: only scan T-001; T-003 ignored.
+	// Reset T-001 to test --item.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"cmd: npm run test", "cmd: test -f output.go"}
+		it.Doc.ReplaceList("acceptance_criteria", []string{"- cmd: npm run test", "- cmd: test -f output.go"})
+		return nil
+	}); err != nil {
+		t.Fatalf("reset T-001: %v", err)
+	}
+	code = CleanACs(s, cfg, CleanACsOpts{Apply: true, Item: "T-001"})
+	if code != 0 {
+		t.Fatalf("apply --item returned %d, want 0", code)
+	}
+	item, _ = s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 1 || !strings.Contains(item.AcceptanceCriteria[0], "test -f") {
+		t.Errorf("expected only 'cmd: test -f' AC remaining, got: %v", item.AcceptanceCriteria)
+	}
+
+	// --item with unknown ID should return exit 1.
+	code = CleanACs(s, cfg, CleanACsOpts{Item: "NONEXISTENT"})
+	if code != 1 {
+		t.Errorf("expected exit 1 for unknown item, got %d", code)
+	}
+
+	// --item with terminal-status item should return exit 1.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Status = "done"
+		it.Doc.SetField("status", "done")
+		return nil
+	}); err != nil {
+		t.Fatalf("set T-001 done: %v", err)
+	}
+	code = CleanACs(s, cfg, CleanACsOpts{Item: "T-001"})
+	if code != 1 {
+		t.Errorf("expected exit 1 for terminal-status item, got %d", code)
+	}
+}

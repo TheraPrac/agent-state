@@ -2163,11 +2163,26 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 	uatCmd := &cobra.Command{
 		Use:   "uat <id>",
 		Short: "Run automated UAT verification and produce evidence report",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(0, 1),
 		Run: func(cmd *cobra.Command, args []string) {
+			cleanACs, _ := cmd.Flags().GetBool("clean-acs")
+			apply, _ := cmd.Flags().GetBool("apply")
+			itemFilter, _ := cmd.Flags().GetString("item")
+			if cleanACs {
+				exitCode = command.CleanACs(appStore, appCfg, command.CleanACsOpts{Apply: apply, Item: itemFilter})
+				return
+			}
+			if len(args) == 0 {
+				fmt.Fprintln(os.Stderr, "Error: requires <id> argument or --clean-acs flag")
+				exitCode = 1
+				return
+			}
 			exitCode = command.UAT(appStore, appCfg, args[0], command.UATOpts{})
 		},
 	}
+	uatCmd.Flags().Bool("clean-acs", false, "Scan all open items and remove test-suite-rerun ACs (dry run by default)")
+	uatCmd.Flags().Bool("apply", false, "Commit AC removals (default: dry run)")
+	uatCmd.Flags().String("item", "", "Limit scan to a specific item ID")
 	root.AddCommand(uatCmd)
 
 	mergeCmd := &cobra.Command{

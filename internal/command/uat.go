@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -327,12 +328,10 @@ func evaluateAcceptanceCriteria(item *model.Item, cfg *config.Config, runCmd fun
 func ValidateACsyntax(acs []string) []string {
 	var errors []string
 	for i, ac := range acs {
-		trimmed := strings.TrimSpace(ac)
-		trimmed = strings.TrimPrefix(trimmed, "- ")
-		if !strings.HasPrefix(trimmed, "cmd:") {
+		cmd, ok := extractACcmd(ac)
+		if !ok {
 			continue
 		}
-		cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:"))
 		if cmd == "" {
 			errors = append(errors, fmt.Sprintf("AC #%d: empty command", i+1))
 			continue
@@ -399,6 +398,154 @@ var reMakeTestTarget = regexp.MustCompile(`\bmake\s+test-\S`)
 
 // reNpmRunTest matches bare `npm run test` (not test:unit, test:e2e, etc.).
 var reNpmRunTest = regexp.MustCompile(`\bnpm\s+run\s+test(?:\s|$)`)
+
+// extractACcmd strips "- " and "cmd:" prefixes from an AC string and returns
+// (cmd, true) when the AC is a cmd: entry, or ("", false) otherwise.
+// Used by both ValidateACsyntax and CleanACs to keep trimming in sync.
+func extractACcmd(ac string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ac), "- "))
+	if !strings.HasPrefix(trimmed, "cmd:") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:")), true
+}
+
+// isSuiteRunCmd returns true if cmd is an anti-pattern full-suite invocation.
+func isSuiteRunCmd(cmd string) bool {
+	if reStTestRun.MatchString(cmd) {
+		return true
+	}
+	if reGoTestSuite.MatchString(cmd) && !reGoTestRunFilter.MatchString(cmd) {
+		return true
+	}
+	if reMakeTestTarget.MatchString(cmd) {
+		return true
+	}
+	if reNpmRunTest.MatchString(cmd) && !strings.Contains(cmd, "--testPathPattern") {
+		return true
+	}
+	return false
+}
+
+// CleanACsOpts configures the CleanACs operation.
+type CleanACsOpts struct {
+	Apply bool   // if false, dry-run only (print what would be removed)
+	Item  string // if set, only scan this one item ID
+}
+
+// CleanACs scans open items for suite-run ACs and removes them.
+// Dry-run by default; pass Apply: true to commit changes.
+func CleanACs(s *store.Store, cfg *config.Config, opts CleanACsOpts) int {
+	// Build target item list.
+	var items []*model.Item
+	if opts.Item != "" {
+		it, ok := s.Get(opts.Item)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "item %s not found\n", opts.Item)
+			return 1
+		}
+		if cfg.IsTerminalStatus(it.Type, it.Status) {
+			fmt.Fprintf(os.Stderr, "item %s is terminal (status: %s) — skipping\n", opts.Item, it.Status)
+			return 1
+		}
+		items = []*model.Item{it}
+	} else {
+		items = s.List(func(it *model.Item) bool {
+			return !cfg.IsTerminalStatus(it.Type, it.Status) && len(it.AcceptanceCriteria) > 0
+		})
+	}
+
+	// Collect removals grouped by item.
+	type removal struct{ idx int; ac string }
+	byItem := make(map[string][]removal)
+	var order []string
+	for _, item := range items {
+		for i, ac := range item.AcceptanceCriteria {
+			cmd, ok := extractACcmd(ac)
+			if !ok {
+				continue
+			}
+			if isSuiteRunCmd(cmd) {
+				if _, seen := byItem[item.ID]; !seen {
+					order = append(order, item.ID)
+				}
+				byItem[item.ID] = append(byItem[item.ID], removal{idx: i, ac: ac})
+			}
+		}
+	}
+
+	if len(order) == 0 {
+		fmt.Println("No suite-run ACs found.")
+		return 0
+	}
+
+	total := 0
+	for _, id := range order {
+		removals := byItem[id]
+		total += len(removals)
+		fmt.Printf("%s: %d suite-run AC(s) to remove\n", id, len(removals))
+		for _, r := range removals {
+			fmt.Printf("  [%d] %s\n", r.idx+1, r.ac)
+		}
+	}
+
+	if !opts.Apply {
+		fmt.Printf("\nDry run: %d AC(s) in %d item(s) would be removed. Re-run with --apply to commit.\n", total, len(order))
+		return 0
+	}
+
+	// Apply removals: for each item, remove matching ACs in one Mutate call.
+	// The Mutate closure re-scans from the disk-parsed item so it is safe
+	// even when the in-memory cache differs from what ended up on disk.
+	failed := 0
+	for _, id := range order {
+		var removedACs []string
+		if err := s.Mutate(id, func(it *model.Item) error {
+			var kept []string
+			for _, ac := range it.AcceptanceCriteria {
+				cmd, ok := extractACcmd(ac)
+				if !ok || !isSuiteRunCmd(cmd) {
+					kept = append(kept, ac)
+				} else {
+					removedACs = append(removedACs, ac)
+				}
+			}
+			// Update both the struct field and the Doc (Doc drives serialization).
+			it.AcceptanceCriteria = kept
+			rawKept := make([]string, len(kept))
+			for i, k := range kept {
+				if strings.HasPrefix(k, "- ") {
+					rawKept[i] = k
+				} else {
+					rawKept[i] = "- " + k
+				}
+			}
+			it.Doc.ReplaceList("acceptance_criteria", rawKept)
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: mutate failed: %v\n", id, err)
+			failed++
+			continue
+		}
+		for _, ac := range removedACs {
+			changelog.Append(cfg, id, changelog.Entry{
+				Op: "ac_purge", Field: "acceptance_criteria",
+				OldValue: ac, NewValue: "",
+			})
+		}
+		fmt.Printf("  %s: removed %d AC(s)\n", id, len(removedACs))
+	}
+
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, "%d item(s) failed to update\n", failed)
+		return 1
+	}
+
+	if err := autoSync(s, fmt.Sprintf("st uat --clean-acs: purged suite-run ACs from %d item(s)", len(order))); err != nil {
+		return 1
+	}
+	return 0
+}
 
 func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, runCmd func(string) ([]byte, int, error)) checkResult {
 	// cmd: prefix — execute command
