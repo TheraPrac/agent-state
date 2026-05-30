@@ -629,4 +629,17 @@ func TestCleanACs(t *testing.T) {
 	if code != 1 {
 		t.Errorf("expected exit 1 for unknown item, got %d", code)
 	}
+
+	// --item with terminal-status item should return exit 1.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Status = "done"
+		it.Doc.SetField("status", "done")
+		return nil
+	}); err != nil {
+		t.Fatalf("set T-001 done: %v", err)
+	}
+	code = CleanACs(s, cfg, CleanACsOpts{Item: "T-001"})
+	if code != 1 {
+		t.Errorf("expected exit 1 for terminal-status item, got %d", code)
+	}
 }

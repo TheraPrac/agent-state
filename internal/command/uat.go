@@ -328,12 +328,10 @@ func evaluateAcceptanceCriteria(item *model.Item, cfg *config.Config, runCmd fun
 func ValidateACsyntax(acs []string) []string {
 	var errors []string
 	for i, ac := range acs {
-		trimmed := strings.TrimSpace(ac)
-		trimmed = strings.TrimPrefix(trimmed, "- ")
-		if !strings.HasPrefix(trimmed, "cmd:") {
+		cmd, ok := extractACcmd(ac)
+		if !ok {
 			continue
 		}
-		cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:"))
 		if cmd == "" {
 			errors = append(errors, fmt.Sprintf("AC #%d: empty command", i+1))
 			continue
@@ -401,8 +399,18 @@ var reMakeTestTarget = regexp.MustCompile(`\bmake\s+test-\S`)
 // reNpmRunTest matches bare `npm run test` (not test:unit, test:e2e, etc.).
 var reNpmRunTest = regexp.MustCompile(`\bnpm\s+run\s+test(?:\s|$)`)
 
+// extractACcmd strips "- " and "cmd:" prefixes from an AC string and returns
+// (cmd, true) when the AC is a cmd: entry, or ("", false) otherwise.
+// Used by both ValidateACsyntax and CleanACs to keep trimming in sync.
+func extractACcmd(ac string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ac), "- "))
+	if !strings.HasPrefix(trimmed, "cmd:") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:")), true
+}
+
 // isSuiteRunCmd returns true if cmd is an anti-pattern full-suite invocation.
-// Shares the same match logic as ValidateACsyntax to keep both callers in sync.
 func isSuiteRunCmd(cmd string) bool {
 	if reStTestRun.MatchString(cmd) {
 		return true
@@ -436,6 +444,10 @@ func CleanACs(s *store.Store, cfg *config.Config, opts CleanACsOpts) int {
 			fmt.Fprintf(os.Stderr, "item %s not found\n", opts.Item)
 			return 1
 		}
+		if cfg.IsTerminalStatus(it.Type, it.Status) {
+			fmt.Fprintf(os.Stderr, "item %s is terminal (status: %s) — skipping\n", opts.Item, it.Status)
+			return 1
+		}
 		items = []*model.Item{it}
 	} else {
 		items = s.List(func(it *model.Item) bool {
@@ -449,11 +461,10 @@ func CleanACs(s *store.Store, cfg *config.Config, opts CleanACsOpts) int {
 	var order []string
 	for _, item := range items {
 		for i, ac := range item.AcceptanceCriteria {
-			trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ac), "- "))
-			if !strings.HasPrefix(trimmed, "cmd:") {
+			cmd, ok := extractACcmd(ac)
+			if !ok {
 				continue
 			}
-			cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:"))
 			if isSuiteRunCmd(cmd) {
 				if _, seen := byItem[item.ID]; !seen {
 					order = append(order, item.ID)
@@ -492,16 +503,11 @@ func CleanACs(s *store.Store, cfg *config.Config, opts CleanACsOpts) int {
 		if err := s.Mutate(id, func(it *model.Item) error {
 			var kept []string
 			for _, ac := range it.AcceptanceCriteria {
-				trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ac), "- "))
-				if !strings.HasPrefix(trimmed, "cmd:") {
+				cmd, ok := extractACcmd(ac)
+				if !ok || !isSuiteRunCmd(cmd) {
 					kept = append(kept, ac)
-					continue
-				}
-				cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "cmd:"))
-				if isSuiteRunCmd(cmd) {
-					removedACs = append(removedACs, ac)
 				} else {
-					kept = append(kept, ac)
+					removedACs = append(removedACs, ac)
 				}
 			}
 			// Update both the struct field and the Doc (Doc drives serialization).
@@ -532,9 +538,10 @@ func CleanACs(s *store.Store, cfg *config.Config, opts CleanACsOpts) int {
 
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, "%d item(s) failed to update\n", failed)
+		return 1
 	}
 
-	if err := autoSync(s, fmt.Sprintf("st uat --clean-acs: purged suite-run ACs from %d item(s)", len(order)-failed)); err != nil {
+	if err := autoSync(s, fmt.Sprintf("st uat --clean-acs: purged suite-run ACs from %d item(s)", len(order))); err != nil {
 		return 1
 	}
 	return 0
