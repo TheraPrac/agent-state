@@ -1468,6 +1468,12 @@ verdict drifts toward what the operator actually accepts.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			auto, _ := cmd.Flags().GetBool("auto")
 			if auto {
+				if skip, _ := cmd.Flags().GetString("skip"); skip != "" {
+					fmt.Fprintln(os.Stderr, "warning: --skip is ignored with --auto; use st test <id> <suite> --skip to skip individual suites")
+				}
+				if cov, _ := cmd.Flags().GetBool("coverage"); cov {
+					fmt.Fprintln(os.Stderr, "warning: --coverage is not supported with --auto")
+				}
 				agent, _ := cmd.Flags().GetString("agent")
 				exitCode = command.AutoTest(appStore, appCfg, args[0], command.TestRecordOpts{Agent: agent})
 				return

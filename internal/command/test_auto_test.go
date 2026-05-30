@@ -59,6 +59,9 @@ func TestAutoGlobMatch(t *testing.T) {
 		{"**/*.go", "internal/foo.ts", false},
 		// Pure ** matches everything
 		{"**", "anything/at/all.ts", true},
+		// Multi-segment suffix: src/**/hooks/useFoo.ts should NOT match src/other-hooks/useFoo.ts
+		{"src/**/hooks/useFoo.ts", "src/lib/hooks/useFoo.ts", true},
+		{"src/**/hooks/useFoo.ts", "src/other-hooks/useFoo.ts", false},
 	}
 	for _, tt := range tests {
 		got := autoGlobMatch(tt.pattern, tt.name)
@@ -279,5 +282,18 @@ func TestSelectAutoSuites_NoChanges(t *testing.T) {
 
 	if len(tier1)+len(tier2) != 0 {
 		t.Errorf("expected no suites for empty touched map, got tier1=%v tier2=%v", tier1, tier2)
+	}
+}
+
+// TestAutoGlobMatch_MultiStarFalsePositive ensures the HasSuffix fallback does
+// not false-positive on a path that only shares a suffix segment with the pattern.
+func TestAutoGlobMatch_MultiStarFalsePositive(t *testing.T) {
+	// "src/other-hooks/useFoo.ts" should NOT match "src/**/hooks/useFoo.ts"
+	if autoGlobMatch("src/**/hooks/useFoo.ts", "src/other-hooks/useFoo.ts") {
+		t.Error("false positive: src/other-hooks/useFoo.ts should not match src/**/hooks/useFoo.ts")
+	}
+	// But "src/lib/hooks/useFoo.ts" SHOULD match
+	if !autoGlobMatch("src/**/hooks/useFoo.ts", "src/lib/hooks/useFoo.ts") {
+		t.Error("false negative: src/lib/hooks/useFoo.ts should match src/**/hooks/useFoo.ts")
 	}
 }

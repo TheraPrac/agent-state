@@ -33,6 +33,13 @@ func AutoTest(s *store.Store, cfg *config.Config, id string, opts TestRecordOpts
 		return 1
 	}
 
+	// Mirror the classOK guard in TestRecord (testrecord.go:83) — an unknown
+	// scope_class must fail loudly here too, not silently produce zero suites.
+	if _, classOK := cfg.Testing.RequiredSuitesFor(item.ScopeClass); !classOK {
+		fmt.Fprintf(os.Stderr, "unknown scope_class %q — declare in config.testing.scope_classes or remove from item\n", item.ScopeClass)
+		return 1
+	}
+
 	touched, err := detectTouchedRepos(cfg, id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "detecting changes: %v\n", err)
@@ -83,9 +90,18 @@ func detectTouchedRepos(cfg *config.Config, id string) (map[string][]string, err
 		if !isGitDir(dir) {
 			continue
 		}
-		out, err := runGit(dir, "diff", "main..HEAD", "--name-only")
+		// Use merge-base(origin/main, HEAD) as the diff anchor — same as
+		// ComputeFileChanges — so stale local main refs don't skew the result.
+		// Fall back to main..HEAD if origin/main is unavailable (offline/no remote).
+		base, err := runGit(dir, "merge-base", "origin/main", "HEAD")
+		var out string
+		if err == nil {
+			out, err = runGit(dir, "diff", strings.TrimSpace(base)+"..HEAD", "--name-only")
+		} else {
+			out, err = runGit(dir, "diff", "main..HEAD", "--name-only")
+		}
 		if err != nil {
-			// Silently skip — repo may lack a local main ref or have no divergence.
+			// Silently skip — repo may have no divergence or no main ref.
 			continue
 		}
 		var files []string
@@ -205,7 +221,12 @@ func autoGlobMatch(pattern, name string) bool {
 	if ok {
 		return true
 	}
-	return strings.HasSuffix(name, "/"+after) || strings.HasSuffix(name, after)
+	// Fall back to suffix matching for multi-segment suffixes (e.g. after =
+	// "hooks/useFoo.ts" from pattern "src/**/hooks/useFoo.ts"). Use the /
+	// separator form only — the bare HasSuffix(name, after) would false-positive
+	// on "src/other-hooks/useFoo.ts" matching pattern "src/**/hooks/useFoo.ts".
+	// Root-level files (no leading /) are caught by the filepath.Match branch above.
+	return strings.HasSuffix(name, "/"+after)
 }
 
 // descTouched returns a short description of which repos were touched.
