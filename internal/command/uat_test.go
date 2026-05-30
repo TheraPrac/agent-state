@@ -214,7 +214,7 @@ func TestValidateACsyntax(t *testing.T) {
 	// Valid commands
 	valid := []string{
 		"- cmd: grep -q 'foo' file.txt",
-		"- cmd: cd ../theraprac-api && make test-unit",
+		"- cmd: go test ./internal/handlers/ -run TestClaimsAging -v -count=1",
 		"- cmd: test -f file.go",
 	}
 	errors := ValidateACsyntax(valid)
@@ -486,5 +486,40 @@ func TestValidateACsyntaxAntiPattern(t *testing.T) {
 	errs = ValidateACsyntax(goodACs)
 	if len(errs) != 0 {
 		t.Errorf("expected 0 errors for good ACs, got %d: %v", len(errs), errs)
+	}
+}
+
+// TestValidateACsyntaxFullSuiteAntiPattern verifies that ValidateACsyntax rejects
+// bare go test, make test-*, and npm run test suite runs (I-1119).
+func TestValidateACsyntaxFullSuiteAntiPattern(t *testing.T) {
+	blocked := []string{
+		"- cmd: go test ./...",
+		"- cmd: go test ./internal/db/...",
+		"- cmd: make test-unit",
+		"- cmd: cd ../theraprac-api && make test-api-lint",
+		"- cmd: npm run test",
+		"- cmd: npm run test -- --verbose",
+	}
+	errs := ValidateACsyntax(blocked)
+	if len(errs) != len(blocked) {
+		t.Errorf("expected %d anti-pattern errors, got %d: %v", len(blocked), len(errs), errs)
+	}
+	for _, e := range errs {
+		if !strings.Contains(e, "anti-pattern") {
+			t.Errorf("expected 'anti-pattern' in error, got: %s", e)
+		}
+	}
+
+	// These are fine: targeted invocations, not full-suite runs.
+	allowed := []string{
+		"- cmd: go test ./internal/handlers/ -run TestAgingBucketCalculation -v -count=1",
+		"- cmd: go test -run TestFoo ./internal/db/...",
+		"- cmd: npm run test -- --testPathPattern=AgingReport",
+		"- cmd: npm run test:unit",
+		"- cmd: grep -q 'handler' ./internal/handlers/api_aging.go",
+	}
+	errs = ValidateACsyntax(allowed)
+	if len(errs) != 0 {
+		t.Errorf("expected 0 errors for allowed ACs, got %d: %v", len(errs), errs)
 	}
 }

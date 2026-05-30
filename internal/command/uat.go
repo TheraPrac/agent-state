@@ -346,6 +346,30 @@ func ValidateACsyntax(acs []string) []string {
 			))
 			continue
 		}
+		// Anti-pattern: bare `go test` without -run runs the full suite.
+		if reGoTestSuite.MatchString(cmd) && !reGoTestRunFilter.MatchString(cmd) {
+			errors = append(errors, fmt.Sprintf(
+				"AC #%d: anti-pattern — 'go test' without -run re-runs the full suite during UAT; use 'go test -run TestFoo' for a targeted check. Suite pass/fail is already checked from testing_evidence.\n  cmd: %s",
+				i+1, cmd,
+			))
+			continue
+		}
+		// Anti-pattern: make test-* runs the full suite for that target.
+		if reMakeTestTarget.MatchString(cmd) {
+			errors = append(errors, fmt.Sprintf(
+				"AC #%d: anti-pattern — 'make test-*' re-runs the full suite during UAT; use a targeted 'go test -run TestFoo' or verify via testing_evidence instead.\n  cmd: %s",
+				i+1, cmd,
+			))
+			continue
+		}
+		// Anti-pattern: npm run test without --testPathPattern runs all JS tests.
+		if reNpmRunTest.MatchString(cmd) && !strings.Contains(cmd, "--testPathPattern") {
+			errors = append(errors, fmt.Sprintf(
+				"AC #%d: anti-pattern — 'npm run test' without --testPathPattern re-runs the full suite during UAT; use 'npm run test -- --testPathPattern=ComponentName' instead. Suite pass/fail is already checked from testing_evidence.\n  cmd: %s",
+				i+1, cmd,
+			))
+			continue
+		}
 		// Shell syntax check
 		check := exec.Command("sh", "-n", "-c", cmd)
 		if out, err := check.CombinedOutput(); err != nil {
@@ -361,6 +385,19 @@ func ValidateACsyntax(acs []string) []string {
 
 // reStTestRun matches the anti-pattern `st test <id> <suite> --run` in a cmd: AC.
 var reStTestRun = regexp.MustCompile(`\bst\s+test\b.+--run\b`)
+
+// reGoTestSuite matches any `go test` invocation; paired with reGoTestRunFilter
+// to detect full-suite runs (no -run filter).
+var reGoTestSuite = regexp.MustCompile(`\bgo\s+test\b`)
+
+// reGoTestRunFilter matches the -run flag that scopes a `go test` to specific functions.
+var reGoTestRunFilter = regexp.MustCompile(`(?:^|\s)-run\b`)
+
+// reMakeTestTarget matches `make test-<anything>` suite targets.
+var reMakeTestTarget = regexp.MustCompile(`\bmake\s+test-\S`)
+
+// reNpmRunTest matches bare `npm run test` (not test:unit, test:e2e, etc.).
+var reNpmRunTest = regexp.MustCompile(`\bnpm\s+run\s+test(?:\s|$)`)
 
 func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, runCmd func(string) ([]byte, int, error)) checkResult {
 	// cmd: prefix — execute command
