@@ -188,11 +188,23 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 				val = s
 			}
 		}
-		passed := strings.HasPrefix(val, "pass")
 		detail := val
 		if detail == "" || detail == "null" {
 			detail = "not recorded"
 		}
+		// auto-skip written by st test --auto: suite not applicable (no repo
+		// changes) — render as ⊘ skipped, same as user-initiated skip:.
+		if strings.HasPrefix(val, "auto-skip:") {
+			results = append(results, checkResult{
+				Label:   name,
+				Mode:    "auto",
+				Passed:  true,
+				Skipped: true,
+				Detail:  detail,
+			})
+			continue
+		}
+		passed := strings.HasPrefix(val, "pass")
 		results = append(results, checkResult{
 			Label:  name,
 			Mode:   "auto",
