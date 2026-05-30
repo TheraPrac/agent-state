@@ -5367,7 +5367,23 @@ func buildPlanReviewPrompt(itemID string, item *model.Item) string {
 	b.WriteString("- ACs should use `st test <id> <suite> --run` for test suite execution, NOT raw `make` commands\n")
 	b.WriteString("- ACs should be fast to verify — avoid full E2E suite runs when a targeted spec suffices\n")
 	b.WriteString("- ACs should use relative paths from the worktree base (cd ../theraprac-web, NOT cd /absolute/path)\n")
+	b.WriteString("\nPACING: If your investigation is taking a long time, prefer concluding with a verdict\n")
+	b.WriteString("over deeper digging — operators value a decision over a perfect report.\n")
 	return b.String()
+}
+
+// buildPlanReviewWrapUpPrompt is the drive-to-conclusion prompt sent when the
+// first-pass plan-review sub-agent hits its wall cap (I-810). It resumes the
+// same session so all prior analysis is in context.
+func buildPlanReviewWrapUpPrompt(itemID string) string {
+	return fmt.Sprintf(
+		"You are reviewing the plan for %s and you have approximately 90 seconds remaining.\n\n"+
+			"STOP all further investigation. Using only the analysis you have already done, "+
+			"emit your verdict NOW:\n\n"+
+			"RECOMMENDATION: Accept | Reject | Feedback\n\n"+
+			"One sentence of justification. Be terse — operators need a decision, not a perfect report.\n",
+		itemID,
+	)
 }
 
 // buildItemReviewPrompt creates a prompt for claude to critically review a

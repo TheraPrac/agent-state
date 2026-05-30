@@ -106,11 +106,12 @@ func TestPlanReviewBypassFlag(t *testing.T) {
 	}
 }
 
-// TestPlanReviewDefaultCapTenMinutes asserts that when no override is
-// set, plan-review injects AS_CLAUDE_WALL_TIMEOUT=10m0s into the env
-// passed to RunClaude. This is the gate that prevents the I-738 hang
-// from recurring under default operator conditions.
-func TestPlanReviewDefaultCapTenMinutes(t *testing.T) {
+// TestPlanReviewDefaultFirstPassCap asserts that when no override is set,
+// plan-review injects AS_CLAUDE_WALL_TIMEOUT=23m30s (25m default − 90s
+// wrap-up budget) on the first pass. This is the gate that prevents the
+// I-738 hang from recurring and the I-810 referendum timeout from
+// discarding all analysis.
+func TestPlanReviewDefaultFirstPassCap(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "")
 	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "")
 	s, cfg := setupTestEnv(t)
@@ -148,9 +149,10 @@ func TestPlanReviewDefaultCapTenMinutes(t *testing.T) {
 		}
 	})
 
-	// The plan-review call must carry the wall-timeout env var. At least one
-	// invocation (there may be a second Haiku model-rec call) must have it.
-	want := "AS_CLAUDE_WALL_TIMEOUT=10m0s"
+	// The first-pass plan-review call must carry 23m30s (25m − 90s wrap-up
+	// budget). At least one invocation (there may be a second Haiku
+	// model-rec call) must have it.
+	want := "AS_CLAUDE_WALL_TIMEOUT=23m30s"
 	found := false
 	for _, envSnapshot := range capturedEnvs {
 		for _, e := range envSnapshot {
@@ -165,5 +167,194 @@ func TestPlanReviewDefaultCapTenMinutes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected at least one RunClaude invocation with env containing %q; invocations: %v", want, capturedEnvs)
+	}
+}
+
+// TestPlanReviewWrapUpSkippedOnCleanPass asserts that when the first-pass
+// stub returns a clean Accept, no wrap-up (--resume) call is ever made.
+// Regression guard: the wrap-up path must not fire on the happy path.
+func TestPlanReviewWrapUpSkippedOnCleanPass(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var resumeCalls int
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			// Detect --resume flag: wrap-up uses isResume=true → --resume arg.
+			for _, a := range args {
+				if a == "--resume" {
+					resumeCalls++
+				}
+			}
+			body, _ := json.Marshal(ClaudeResult{
+				Type: "result", Subtype: "success",
+				Result: "RECOMMENDATION: Accept — plan looks good",
+			})
+			return body, 0, nil
+		},
+	}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected exit 0; got %d", code)
+		}
+	})
+
+	if resumeCalls != 0 {
+		t.Errorf("wrap-up resume was called %d time(s); expected 0 on a clean first pass", resumeCalls)
+	}
+}
+
+// TestPlanReviewWrapUpYieldsVerdict asserts the drive-to-conclusion path:
+// first pass times out (wall time limit, empty output), wrap-up resume
+// returns an Accept verdict → PlanApprove returns 0 and approves the plan.
+func TestPlanReviewWrapUpYieldsVerdict(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "") // default 25m; wrap-up is enabled
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if a == "--resume" {
+					// Wrap-up resume → return Accept verdict.
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: "RECOMMENDATION: Accept — sufficient evidence gathered.",
+					})
+					return body, 0, nil
+				}
+			}
+			// First pass (non-resume, non-haiku) → simulate wall-time kill.
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+			}
+			return nil, 1, errors.New("killed: wall time limit (23m30s)")
+		},
+	}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected exit 0 after wrap-up verdict; got %d", code)
+		}
+	})
+
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("PlanApproved should be true after wrap-up Accept verdict")
+	}
+}
+
+// TestPlanReviewWrapUpDoubleTimeout asserts that when both the first pass
+// and the wrap-up resume time out, runPlanReview returns 2 and the plan
+// is not approved.
+func TestPlanReviewWrapUpDoubleTimeout(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "") // default 25m; wrap-up is enabled
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+			}
+			// Both first pass and wrap-up resume time out.
+			return nil, 1, errors.New("killed: wall time limit")
+		},
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+		t.Errorf("expected exit 2 on double timeout; got %d", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if item.PlanApproved {
+		t.Error("PlanApproved should stay false after double timeout")
+	}
+}
+
+// TestPlanReviewWrapUpDisabledForShortCap asserts that a tiny
+// AS_PLAN_APPROVE_TIMEOUT (≤ 2× wrapUpBudget = 3m) disables the wrap-up
+// and falls straight to exit 2 on the first wall-time hit — one non-Haiku
+// review call, no --resume call.
+func TestPlanReviewWrapUpDisabledForShortCap(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	t.Setenv("AS_PLAN_APPROVE_TIMEOUT", "1s")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var reviewCalls, resumeCalls int
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+				if a == "--resume" {
+					resumeCalls++
+				}
+			}
+			reviewCalls++
+			return nil, 1, errors.New("killed: wall time limit (1s)")
+		},
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+		t.Errorf("expected exit 2; got %d", code)
+	}
+
+	if resumeCalls != 0 {
+		t.Errorf("wrap-up --resume was called %d time(s); expected 0 for short cap", resumeCalls)
+	}
+	if reviewCalls != 1 {
+		t.Errorf("expected exactly 1 review call; got %d", reviewCalls)
 	}
 }

@@ -378,8 +378,11 @@ func TestPlanReviewAutoFixTimeoutPropagated(t *testing.T) {
 		}
 	})
 
-	// The auto-fix call (call index 1) must carry the wall-timeout env var.
-	want := "AS_CLAUDE_WALL_TIMEOUT=10m0s"
+	// Every review call must carry the first-pass wall-timeout env var
+	// (23m30s = default 25m − 90s wrap-up budget; I-810). The auto-fix call
+	// also carries the cap when it fires (AS_PLAN_APPROVE_TIMEOUT override
+	// path tested separately in TestPlanReviewWrapUpDisabledForShortCap).
+	want := "AS_CLAUDE_WALL_TIMEOUT=23m30s"
 	found := false
 	mu.Lock()
 	defer mu.Unlock()

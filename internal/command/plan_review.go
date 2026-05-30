@@ -18,11 +18,20 @@ import (
 // the model usually loops on the same edits.
 const maxPlanReviewAutoFixIterations = 2
 
-// defaultPlanReviewWallTimeout is the per-step wall cap injected into the
-// plan-review sub-agent via AS_CLAUDE_WALL_TIMEOUT. I-738 hung 53min on the
-// global 2h ceiling; observed normal runtime is 1–4 min (I-735/736/737).
+// defaultPlanReviewWallTimeout is the total wall cap for the plan-review
+// sub-agent. I-738 hung 53min on the global 2h ceiling; I-810 raised the
+// cap from 10m to 25m after referendum-style plans (I-705..I-709) routinely
+// exceeded 10m without being hung. 25m absorbs the referendum long tail
+// while still bounding the I-738-class hang.
 // Operator override: AS_PLAN_APPROVE_TIMEOUT (duration string).
-const defaultPlanReviewWallTimeout = 10 * time.Minute
+const defaultPlanReviewWallTimeout = 25 * time.Minute
+
+// planReviewWrapUpBudget is the time reserved at the end of the wall cap
+// for a drive-to-conclusion wrap-up pass. The first execution runs under
+// wallCap−planReviewWrapUpBudget; on wall-time hit the session is resumed
+// with a terse "emit your verdict NOW" prompt capped at this budget.
+// I-810: prevents a hard kill from discarding all in-progress analysis.
+const planReviewWrapUpBudget = 90 * time.Second
 
 // resolvePlanReviewTimeout reads AS_PLAN_APPROVE_TIMEOUT (a Go duration
 // string) and falls back to defaultPlanReviewWallTimeout. On parse error
@@ -70,6 +79,21 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 	cwd := cfg.Root()
 	wallCap := resolvePlanReviewTimeout()
 
+	// I-810: split the wall cap into a first-pass budget and a wrap-up
+	// reserve. If the cap is too small to split safely (≤ 2× wrapUpBudget,
+	// e.g. a tiny AS_PLAN_APPROVE_TIMEOUT override), run the full cap on the
+	// first pass and skip the wrap-up entirely — strictly no worse than
+	// the pre-I-810 behavior.
+	firstPassCap := wallCap - planReviewWrapUpBudget
+	wrapEnabled := wallCap > 2*planReviewWrapUpBudget
+	if !wrapEnabled {
+		firstPassCap = wallCap
+	}
+
+	// reviewSessionID is generated once and threaded through all executions
+	// so the wrap-up pass can resume the same Claude session via --resume.
+	reviewSessionID := generateSessionID()
+
 	// lastNotes holds the most-recent "Accept with notes" body so the
 	// post-loop path can persist it even after falling out of the loop.
 	var lastNotes string
@@ -82,29 +106,52 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 		// Build the prompt and execute claude. I-752: inject the wall
 		// cap via ExtraEnv so defaultRunClaude tightens its ceiling
 		// from the 2h global to the plan-review-specific cap.
+		// I-810: use firstPassCap (wallCap − wrapUpBudget) so that a
+		// wall-time hit leaves room for the wrap-up resume below.
 		prompt := buildPlanReviewPrompt(id, item)
 		step := config.RunStepDef{
 			Type:     "claude",
 			Prompt:   prompt,
-			ExtraEnv: []string{"AS_CLAUDE_WALL_TIMEOUT=" + wallCap.String()},
+			ExtraEnv: []string{"AS_CLAUDE_WALL_TIMEOUT=" + firstPassCap.String()},
 		}
 		step.SetName("plan_review_approve")
-		sr := executeClaude(s, cfg, id, "", step, RunOpts{}, engine, cwd, "", false)
+		sr := executeClaude(s, cfg, id, "", step, RunOpts{}, engine, cwd, reviewSessionID, false)
 
 		if !sr.Passed && sr.FullOutput == "" {
-			// I-752: surface the wall-time case explicitly so the operator
-			// knows to extend AS_PLAN_APPROVE_TIMEOUT or use --bypass-review,
-			// rather than chasing a generic "sub-agent failed" message.
-			if strings.Contains(sr.Error, "wall time limit") {
+			if !strings.Contains(sr.Error, "wall time limit") {
+				fmt.Fprintf(os.Stderr,
+					"%s: plan-review sub-agent failed (%s) — refusing approval. Re-run `st plan approve %s` to retry, or `st plan reset %s` to redraft.\n",
+					id, sr.Error, id, id)
+				return 2
+			}
+			// I-810: drive-to-conclusion wrap-up. Resume the same Claude
+			// session with a terse "emit verdict NOW" prompt so the operator
+			// gets a real decision rather than a hard-kill with zero output.
+			if wrapEnabled {
+				wrapStep := config.RunStepDef{
+					Type:     "claude",
+					Prompt:   buildPlanReviewWrapUpPrompt(id),
+					ExtraEnv: []string{"AS_CLAUDE_WALL_TIMEOUT=" + planReviewWrapUpBudget.String()},
+				}
+				wrapStep.SetName("plan_review_approve")
+				wrapSR := executeClaude(s, cfg, id, "", wrapStep, RunOpts{}, engine, cwd, reviewSessionID, true)
+				if wrapSR.FullOutput != "" {
+					fmt.Fprintf(os.Stderr,
+						"%s: plan review first pass timed out — wrap-up verdict captured (partial analysis)\n", id)
+					sr = wrapSR
+					// sr.FullOutput is now non-empty; fall through to rec parsing.
+				} else {
+					fmt.Fprintf(os.Stderr,
+						"%s: plan review timed out after %s — refusing approval. Re-run, set AS_PLAN_APPROVE_TIMEOUT=<longer>, or pass --bypass-review.\n",
+						id, wallCap)
+					return 2
+				}
+			} else {
 				fmt.Fprintf(os.Stderr,
 					"%s: plan review timed out after %s — refusing approval. Re-run, set AS_PLAN_APPROVE_TIMEOUT=<longer>, or pass --bypass-review.\n",
 					id, wallCap)
 				return 2
 			}
-			fmt.Fprintf(os.Stderr,
-				"%s: plan-review sub-agent failed (%s) — refusing approval. Re-run `st plan approve %s` to retry, or `st plan reset %s` to redraft.\n",
-				id, sr.Error, id, id)
-			return 2
 		}
 
 		rec := extractRecommendation(sr.FullOutput)
