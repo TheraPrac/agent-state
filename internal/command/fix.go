@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -25,7 +26,10 @@ func Fix(s *store.Store, cfg *config.Config) int {
 	fixed += fixStaleDeps(s, cfg)
 	fixed += fixReciprocalDeps(s, cfg)
 	fixed += fixDanglingDeps(s, cfg)
+	fixed += fixDuplicateBlocks(s, cfg)
 	fixed += fixDeliveryGate(s, cfg)
+	fixed += fixDirectoryMismatch(s, cfg)
+	fixed += fixOrphanDeliveryStage(s, cfg)
 	fixed += fixIndex(s, cfg)
 
 	return fixed
@@ -317,6 +321,103 @@ func fixDeliveryGate(s *store.Store, cfg *config.Config) int {
 			item.ID, stage, cfg.Delivery.ArchiveGate)
 	}
 
+	return fixed
+}
+
+// fixDuplicateBlocks removes duplicate delivery: blocks that arise when st
+// close appends a new block instead of updating the existing one. The YAML
+// parser reads the LAST delivery block while SetNestedField updates the FIRST,
+// creating an infinite fixDeliveryGate loop. Only delivery: is targeted — other
+// blocks (time_tracking, work_tracking) may have intentional multi-occurrence
+// semantics and should not be touched here.
+func fixDuplicateBlocks(s *store.Store, _ *config.Config) int {
+	var fixed int
+	for _, item := range s.All() {
+		if item.Doc == nil || !item.Doc.HasDuplicateDeliveryBlock() {
+			continue
+		}
+		itemID := item.ID
+		var n int
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			n = item.Doc.RemoveDuplicateDeliveryBlock()
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error fixing duplicate delivery block on %s: %v\n", itemID, err)
+			continue
+		}
+		if n > 0 {
+			fixed++
+			fmt.Printf("  \033[33m⟳\033[0m %s: removed duplicate delivery block (%d line(s))\n", itemID, n)
+		}
+	}
+	return fixed
+}
+
+// fixDirectoryMismatch moves items whose file sits in the wrong directory for
+// their current status. This repairs the gap left by `st update status <X>`
+// which writes the status field but does not call Store.Move — so items can
+// end up in archive/ with status queued, or in issues/ with status archived.
+func fixDirectoryMismatch(s *store.Store, cfg *config.Config) int {
+	var fixed int
+	for _, item := range s.All() {
+		if item.Doc == nil || item.Type == "" {
+			continue
+		}
+		path, ok := s.Path(item.ID)
+		if !ok {
+			continue
+		}
+		expectedDir := cfg.DirectoryForStatus(item.Type, item.Status)
+		if expectedDir == "" {
+			continue
+		}
+		actualDir := filepath.Base(filepath.Dir(path))
+		if actualDir == expectedDir {
+			continue
+		}
+		itemID := item.ID
+		if err := s.Move(itemID); err != nil {
+			fmt.Fprintf(os.Stderr, "  move-failed: %s — %v\n", itemID, err)
+			continue
+		}
+		fixed++
+		fmt.Printf("  \033[33m⟳\033[0m %s: moved from %q to %q (status %q)\n",
+			itemID, actualDir, expectedDir, item.Status)
+	}
+	return fixed
+}
+
+// fixOrphanDeliveryStage clears delivery.stage when it is "closed" on an item
+// whose status is non-terminal. This repairs items that were briefly closed
+// and then re-opened via `st update status queued` — the re-open path does not
+// reset delivery.stage, leaving a stale "closed" that appears in `st list`.
+func fixOrphanDeliveryStage(s *store.Store, cfg *config.Config) int {
+	var fixed int
+	for _, item := range s.All() {
+		if item.Doc == nil || item.Type == "" {
+			continue
+		}
+		if cfg.IsTerminalStatus(item.Type, item.Status) {
+			continue
+		}
+		stage, _ := item.Delivery["stage"].(string)
+		if stage != "closed" {
+			continue
+		}
+		itemID := item.ID
+		if err := s.Mutate(itemID, func(item *model.Item) error {
+			item.Doc.RemoveNestedField("delivery.stage")
+			if item.Delivery != nil {
+				delete(item.Delivery, "stage")
+			}
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "  error clearing delivery.stage on %s: %v\n", itemID, err)
+			continue
+		}
+		fixed++
+		fmt.Printf("  \033[33m⟳\033[0m %s: cleared stale delivery.stage=closed (status is non-terminal)\n", itemID)
+	}
 	return fixed
 }
 

@@ -713,6 +713,80 @@ func (d *ParsedDocument) RemoveNestedField(path string) bool {
 	return true
 }
 
+// HasDuplicateDeliveryBlock returns true if the document has more than one
+// top-level delivery: block. Used as a cheap pre-check before
+// RemoveDuplicateDeliveryBlock so fixDuplicateBlocks only calls Mutate (which
+// always writes to disk) when there is actually something to fix.
+func (d *ParsedDocument) HasDuplicateDeliveryBlock() bool {
+	count := 0
+	for i, line := range d.Lines {
+		if line.Key != "delivery" || line.Indent != 0 || line.IsEmpty {
+			continue
+		}
+		// Verify it's a block (has at least one indented child).
+		for j := i + 1; j < len(d.Lines); j++ {
+			if d.Lines[j].IsEmpty {
+				continue
+			}
+			if d.Lines[j].Indent > 0 {
+				count++
+			}
+			break
+		}
+	}
+	return count > 1
+}
+
+// RemoveDuplicateDeliveryBlock removes all but the FIRST top-level delivery:
+// block. Duplicate delivery blocks arise when st close appends a new block
+// rather than updating the existing one — the parser then reads the LAST value
+// while SetNestedField updates the FIRST, creating an infinite fixDeliveryGate
+// loop. Keeping the FIRST is correct because it holds the most recently written
+// delivery stage (fixDeliveryGate writes via SetNestedField, which targets the
+// first block). Returns the number of lines removed.
+func (d *ParsedDocument) RemoveDuplicateDeliveryBlock() int {
+	seenDelivery := false
+	var keep []Line
+	i := 0
+	removed := 0
+	for i < len(d.Lines) {
+		line := d.Lines[i]
+		if line.Key == "delivery" && line.Indent == 0 && !line.IsEmpty {
+			// Check if this is a block (has nested children).
+			isBlock := false
+			for j := i + 1; j < len(d.Lines); j++ {
+				if d.Lines[j].IsEmpty {
+					continue
+				}
+				if d.Lines[j].Indent > 0 {
+					isBlock = true
+				}
+				break
+			}
+			if isBlock && seenDelivery {
+				// Skip this duplicate delivery block and its nested lines.
+				i++
+				for i < len(d.Lines) {
+					if d.Lines[i].Indent == 0 && !d.Lines[i].IsEmpty {
+						break
+					}
+					i++
+					removed++
+				}
+				removed++ // for the header itself
+				continue
+			}
+			if isBlock {
+				seenDelivery = true
+			}
+		}
+		keep = append(keep, line)
+		i++
+	}
+	d.Lines = keep
+	return removed
+}
+
 // GetNestedField returns the value for a dotted-path field (e.g. "work_tracking.branch").
 func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
 	parts := strings.SplitN(path, ".", 2)
