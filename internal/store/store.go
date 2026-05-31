@@ -180,25 +180,28 @@ func effectiveTouch(item *model.Item) time.Time {
 //     intended end state and beats a non-terminal one.
 //  4. Lexicographically-smallest path — final tie-break for full determinism.
 func pickCanonicalCandidate(cands []scanCandidate, cfg *config.Config) scanCandidate {
-	isConsistent := func(c scanCandidate) bool {
-		dir := cfg.DirectoryForStatus(c.item.Type, c.item.Status)
-		return dir != "" && filepath.Base(filepath.Dir(c.path)) == dir
-	}
-
 	chosen := cands[0]
 	for _, c := range cands[1:] {
-		if better(c, chosen, isConsistent, cfg) {
+		if betterCandidate(c, chosen, cfg) {
 			chosen = c
 		}
 	}
 	return chosen
 }
 
-// better reports whether candidate a should be preferred over b under the
-// layered precedence documented on pickCanonicalCandidate.
-func better(a, b scanCandidate, isConsistent func(scanCandidate) bool, cfg *config.Config) bool {
+// selfConsistent reports whether a candidate file sits in the directory that
+// its own status maps to (e.g. status=done living in archive/). A copy that
+// is mid-move or corrupt fails this check.
+func selfConsistent(c scanCandidate, cfg *config.Config) bool {
+	dir := cfg.DirectoryForStatus(c.item.Type, c.item.Status)
+	return dir != "" && filepath.Base(filepath.Dir(c.path)) == dir
+}
+
+// betterCandidate reports whether candidate a should be preferred over b under
+// the layered precedence documented on pickCanonicalCandidate.
+func betterCandidate(a, b scanCandidate, cfg *config.Config) bool {
 	// 1. self-consistency
-	if ac, bc := isConsistent(a), isConsistent(b); ac != bc {
+	if ac, bc := selfConsistent(a, cfg), selfConsistent(b, cfg); ac != bc {
 		return ac
 	}
 	// 2. recency
