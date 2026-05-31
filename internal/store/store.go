@@ -150,27 +150,69 @@ func sameBasename(cands []scanCandidate) bool {
 	return true
 }
 
-// pickCanonicalCandidate chooses the candidate whose directory matches
-// the item's current status. Falls back to the lexicographically-
-// smallest path when no candidate matches, so the choice is deterministic
-// across runs.
-func pickCanonicalCandidate(cands []scanCandidate, cfg *config.Config) scanCandidate {
-	for _, c := range cands {
-		dir := cfg.DirectoryForStatus(c.item.Type, c.item.Status)
-		if dir == "" {
-			continue
-		}
-		if filepath.Base(filepath.Dir(c.path)) == dir {
-			return c
-		}
+// effectiveTouch returns the most recent intentional-write timestamp for
+// an item: the later of LastTouched and Completed. A close stamps both;
+// a stale resurrected copy (carried in by a peer git-merge from before the
+// close) retains its older timestamps. Used as the primary recency signal
+// in pickCanonicalCandidate so the last real state transition wins.
+func effectiveTouch(item *model.Item) time.Time {
+	t := item.LastTouched
+	if item.Completed != nil && item.Completed.After(t) {
+		t = *item.Completed
 	}
+	return t
+}
+
+// pickCanonicalCandidate chooses which of several files sharing an ID is the
+// authoritative one. Selection is a deterministic, layered comparison so the
+// result never depends on directory-scan (Go map) iteration order:
+//
+//  1. Self-consistent first — a copy whose directory matches its own status
+//     (e.g. status=done living in archive/) beats a copy that is mid-move or
+//     corrupt. When exactly one copy is self-consistent it always wins.
+//  2. More-recent effectiveTouch — when several copies are each self-consistent
+//     (the I-1241 case: a done/archive copy plus a pre-close active/issues copy
+//     resurrected by a peer merge), the one written most recently wins. This is
+//     correct in BOTH directions: on close the archive copy is newer; on a
+//     genuine reopen the issues copy is newer — so neither silently reverts.
+//  3. Terminal status — tie-break when timestamps are equal (e.g. an
+//     identical-body resurrection): a terminal copy (done/abandoned) is the
+//     intended end state and beats a non-terminal one.
+//  4. Lexicographically-smallest path — final tie-break for full determinism.
+func pickCanonicalCandidate(cands []scanCandidate, cfg *config.Config) scanCandidate {
+	isConsistent := func(c scanCandidate) bool {
+		dir := cfg.DirectoryForStatus(c.item.Type, c.item.Status)
+		return dir != "" && filepath.Base(filepath.Dir(c.path)) == dir
+	}
+
 	chosen := cands[0]
 	for _, c := range cands[1:] {
-		if c.path < chosen.path {
+		if better(c, chosen, isConsistent, cfg) {
 			chosen = c
 		}
 	}
 	return chosen
+}
+
+// better reports whether candidate a should be preferred over b under the
+// layered precedence documented on pickCanonicalCandidate.
+func better(a, b scanCandidate, isConsistent func(scanCandidate) bool, cfg *config.Config) bool {
+	// 1. self-consistency
+	if ac, bc := isConsistent(a), isConsistent(b); ac != bc {
+		return ac
+	}
+	// 2. recency
+	if at, bt := effectiveTouch(a.item), effectiveTouch(b.item); !at.Equal(bt) {
+		return at.After(bt)
+	}
+	// 3. terminal status
+	at := cfg.IsTerminalStatus(a.item.Type, a.item.Status)
+	bt := cfg.IsTerminalStatus(b.item.Type, b.item.Status)
+	if at != bt {
+		return at
+	}
+	// 4. deterministic path fallback
+	return a.path < b.path
 }
 
 // RemoveStaleDuplicates scans every type directory for files whose

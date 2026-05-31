@@ -501,3 +501,103 @@ blocks:
 		t.Errorf("canonical archive copy should remain; got %v", err)
 	}
 }
+
+// TestCheck_FixKeepsDoneCopyOverResurrectedActive is the I-1241 regression:
+// the realistic resurrection has the issues/ copy at its PRE-close status
+// (active) while the archive/ copy is the freshly-closed done copy. Both are
+// self-consistent (active→issues, done→archive), so the old map-iteration
+// tie-break could pick the stale active copy — and then `st check --fix`
+// (RemoveStaleDuplicates) deleted the archive/done copy, silently reverting
+// the close. This drove I-1236/I-714/I-741 back to active on 2026-05-31.
+// The recency tie-break must keep the archive/done copy (newer last_touched)
+// and the fix must delete the stale issues/active copy.
+func TestCheck_FixKeepsDoneCopyOverResurrectedActive(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Stale resurrected copy: active, older last_touched (peer pre-close state).
+	staleActive := `id: I-010
+type: issue
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-05-30T09:00:00-06:00
+
+title: Closed issue resurrected as active by a peer merge
+
+depends_on:
+- []
+
+blocks:
+- []
+`
+	// Freshly-closed copy: done, newer last_touched (stamped at close time).
+	freshDone := `id: I-010
+type: issue
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-05-31T12:00:00-06:00
+
+completed: 2026-05-31T12:00:00-06:00
+
+title: Closed issue resurrected as active by a peer merge
+
+depends_on:
+- []
+
+blocks:
+- []
+`
+	stalePath := filepath.Join(root, "issues", "I-010-closed-issue.md")
+	canonicalPath := filepath.Join(root, "archive", "I-010-closed-issue.md")
+	if err := os.WriteFile(stalePath, []byte(staleActive), 0644); err != nil {
+		t.Fatalf("seed stale active: %v", err)
+	}
+	if err := os.WriteFile(canonicalPath, []byte(freshDone), 0644); err != nil {
+		t.Fatalf("seed canonical done: %v", err)
+	}
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	origExecGit := execGit
+	origExecGitNoOutput := execGitNoOutput
+	defer func() {
+		execGit = origExecGit
+		execGitNoOutput = origExecGitNoOutput
+	}()
+	execGit = func(dir string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "rev-list" {
+			return []byte("0\n"), nil
+		}
+		return []byte(""), nil
+	}
+	execGitNoOutput = func(dir string, args ...string) error { return nil }
+
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	// Canonical selection must be the archive/done copy regardless of scan order.
+	if got := s.All()["I-010"]; got == nil || got.Status != "done" {
+		t.Fatalf("canonical item status = %v, want done (recency tie-break)", got)
+	}
+
+	// Auto-fix must delete the stale active copy and keep the done copy —
+	// the close must NOT be reverted.
+	if code := Check(s, cfg, false, false); code != 0 {
+		t.Logf("Check returned %d (non-fatal — other validators may flag the seed item)", code)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Errorf("fix should remove the stale issues/active copy; stat err=%v", err)
+	}
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Errorf("archive/done copy must survive (close not reverted); got %v", err)
+	}
+}

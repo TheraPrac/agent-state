@@ -312,6 +312,75 @@ title: Resurrected from a peer branch
 	}
 }
 
+// I-1241: the real resurrection case — a peer git-merge carries back the
+// PRE-close copy, so the issues/ file keeps status:active (newer dir-status
+// match) while the archive/ file is the freshly-closed done copy. BOTH are
+// self-consistent, so the old "first self-consistent wins" logic returned
+// whichever the directory-scan map yielded first (nondeterministic) and could
+// pick the stale active copy — which then made st check --fix delete the
+// done copy and silently revert the close. The recency tie-break must pick
+// the archive/done copy because it was last_touched more recently (at close).
+func TestScan_PrefersRecentDoneOverResurrectedActive(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// Stale copy resurrected from a peer branch: still active, older timestamp.
+	staleActive := `id: I-002
+type: issue
+status: active
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-05-30T09:00:00-06:00
+
+title: Resurrected pre-close copy
+`
+	// Freshly-closed copy: done, newer last_touched (stamped at close time).
+	freshDone := `id: I-002
+type: issue
+status: done
+created: 2026-04-01T10:00:00-06:00
+last_touched: 2026-05-31T12:00:00-06:00
+
+completed: 2026-05-31T12:00:00-06:00
+
+title: Resurrected pre-close copy
+`
+	writeItem(t, filepath.Join(root, "issues", "I-002-resurrected-pre-close-copy.md"), staleActive)
+	writeItem(t, filepath.Join(root, "archive", "I-002-resurrected-pre-close-copy.md"), freshDone)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	path, ok := s.Path("I-002")
+	if !ok {
+		t.Fatal("I-002 missing after scan")
+	}
+	if filepath.Base(filepath.Dir(path)) != "archive" {
+		t.Errorf("scan picked %s — expected the archive/done copy (recency tie-break)", path)
+	}
+	if got := s.All()["I-002"]; got == nil || got.Status != "done" {
+		t.Errorf("canonical item status = %v, want done", got)
+	}
+
+	// Read-only scan: neither file is deleted.
+	if _, err := os.Stat(filepath.Join(root, "issues", "I-002-resurrected-pre-close-copy.md")); err != nil {
+		t.Errorf("scan should not delete the stale file; got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "archive", "I-002-resurrected-pre-close-copy.md")); err != nil {
+		t.Errorf("canonical archive copy should still exist; got %v", err)
+	}
+}
+
 // I-472 safety boundary: when two files share an ID prefix but have
 // different filenames (an ID-collision, not a peer-merge resurrection),
 // RemoveStaleDuplicates must leave them BOTH in place. Removing either
