@@ -951,6 +951,7 @@ func Defaults() *Config {
 					"awaiting_decision": "tasks",
 					"done":              "archive",
 					"abandoned":         "archive",
+					"archived":          "archive",
 				},
 			},
 			"issue": {
@@ -969,6 +970,7 @@ func Defaults() *Config {
 					"awaiting_decision": "issues",
 					"done":              "archive",
 					"abandoned":         "archive",
+					"archived":          "archive",
 				},
 			},
 			"idea": {
