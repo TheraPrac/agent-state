@@ -375,6 +375,12 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 			// truth for prior list contents (accepted, PR #107 #5).
 			oldValue, _ = item.Doc.GetField(field)
 			item.Doc.ReplaceList(field, []string{listItemRaw(value)})
+		case field == "stage":
+			// "stage" is a display alias for delivery.stage; route to the
+			// correct nested path so writes land in the delivery: block
+			// rather than silently creating an orphan top-level stage: key.
+			oldValue, _ = item.Doc.GetNestedField("delivery.stage")
+			item.SetNested("delivery", "stage", value)
 		case strings.Contains(field, "."):
 			oldValue, _ = item.Doc.GetNestedField(field)
 			item.Doc.SetNestedField(field, value)

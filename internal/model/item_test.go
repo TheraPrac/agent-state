@@ -387,3 +387,62 @@ func TestParsedDocumentSetFieldIgnoresNested(t *testing.T) {
 		t.Error("should not modify nested id")
 	}
 }
+
+func TestHasDuplicateDeliveryBlock_NoDuplicate(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: I-001", Key: "id"},
+			{Raw: "delivery:", Key: "delivery"},
+			{Raw: "  stage: coding", Key: "stage", Indent: 2, BlockKey: "delivery"},
+		},
+	}
+	if doc.HasDuplicateDeliveryBlock() {
+		t.Error("should be false when only one delivery block")
+	}
+}
+
+func TestHasDuplicateDeliveryBlock_WithDuplicate(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: I-001", Key: "id"},
+			{Raw: "delivery:", Key: "delivery"},
+			{Raw: "  stage: uat_approved", Key: "stage", Indent: 2, BlockKey: "delivery"},
+			{Raw: "other: foo", Key: "other"},
+			{Raw: "delivery:", Key: "delivery"},
+			{Raw: "  stage: coding", Key: "stage", Indent: 2, BlockKey: "delivery"},
+		},
+	}
+	if !doc.HasDuplicateDeliveryBlock() {
+		t.Error("should be true when two delivery blocks present")
+	}
+}
+
+func TestRemoveDuplicateDeliveryBlock_KeepsFirst(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: I-001", Key: "id"},
+			{Raw: "delivery:", Key: "delivery"},
+			{Raw: "  stage: uat_approved", Key: "stage", Indent: 2, BlockKey: "delivery"},
+			{Raw: "other: foo", Key: "other"},
+			{Raw: "delivery:", Key: "delivery"},
+			{Raw: "  stage: coding", Key: "stage", Indent: 2, BlockKey: "delivery"},
+		},
+	}
+	n := doc.RemoveDuplicateDeliveryBlock()
+	if n == 0 {
+		t.Fatal("expected lines to be removed")
+	}
+	got := doc.String()
+	if strings.Contains(got, "stage: coding") {
+		t.Error("second delivery block should be removed")
+	}
+	if !strings.Contains(got, "stage: uat_approved") {
+		t.Error("first delivery block should be preserved")
+	}
+	if !strings.Contains(got, "other: foo") {
+		t.Error("non-delivery field should be preserved")
+	}
+	if doc.HasDuplicateDeliveryBlock() {
+		t.Error("should have no duplicate after removal")
+	}
+}
