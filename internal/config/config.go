@@ -422,6 +422,20 @@ func (c *Config) AgentID() string {
 	return c.Identity().ID
 }
 
+// LocalAgentID returns the agent ID sourced from the filesystem only
+// (agent-workspace.yaml or local-agent.yaml), ignoring the AS_AGENT_ID
+// env var. Used by st whoami to detect mismatches between the env var
+// and the on-disk configuration. I-877.
+func (c *Config) LocalAgentID() string {
+	if markerID := agentIDFromWorkspaceMarker(c.startDir); markerID != "" {
+		return markerID
+	}
+	if la, err := loadLocalAgent(c.root); err == nil && la.ID != "" {
+		return la.ID
+	}
+	return ""
+}
+
 // AgentContext is the resolved (current-agent, scoped?) pair that
 // agent-facing st renderers consult to decide their default filter.
 //
