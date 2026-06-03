@@ -1208,9 +1208,12 @@ in-flight, run 'st release' against the active items first.
 			force, _ := cmd.Flags().GetBool("force")
 			addToSprint, _ := cmd.Flags().GetBool("add-to-sprint")
 			ackDrift, _ := cmd.Flags().GetString("ack-drift")
+			escalate, _ := cmd.Flags().GetString("escalate")
+			inline, _ := cmd.Flags().GetBool("inline")
 			exitCode = command.Start(appStore, appCfg, args[0], command.StartOpts{
 				Slug: slug, Repos: repos, NoPush: noPush, Force: force,
 				AddToSprint: addToSprint, AckDrift: ackDrift,
+				Escalate: escalate, Inline: inline,
 			})
 		},
 	}
@@ -1220,6 +1223,8 @@ in-flight, run 'st release' against the active items first.
 	startCmd.Flags().Bool("force", false, "bypass the I-490 queue-approval gate and the I-681 sprint-inheritance gate (logs to changelog). NOTE: does NOT bypass the I-711 freshness gate — use --ack-drift for Drift; Stale requires re-prep.")
 	startCmd.Flags().Bool("add-to-sprint", false, "resolve the I-681 sprint-inheritance gate by adding this item to the active sprint of an in-progress item it blocks")
 	startCmd.Flags().String("ack-drift", "", "operator-supplied one-line note acknowledging plan drift surfaced by the I-711 freshness gate; proceeds activation despite drift findings")
+	startCmd.Flags().String("escalate", "", "override the resolved model tier (haiku|sonnet|opus); logs a start_escalate changelog entry with the original tier")
+	startCmd.Flags().Bool("inline", false, "no-op synonym; DISPATCH line is always printed (kept for wrapper-hook compatibility)")
 	root.AddCommand(startCmd)
 
 	// I-711: `st cache prune` removes freshness cache entries older

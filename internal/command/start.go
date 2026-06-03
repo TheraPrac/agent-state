@@ -113,6 +113,14 @@ type StartOpts struct {
 	// Stale forces re-prep.
 	AckDrift string
 
+	// Escalate overrides the resolved model tier (can go up or down).
+	// Logged to changelog as start_escalate with the original tier.
+	Escalate string
+
+	// Inline is a no-op synonym for compatibility with wrapper hooks
+	// that grep for the DISPATCH line — the directive is always printed.
+	Inline bool
+
 	// PRFetch is an injectable GitHub PR-state function for testing the
 	// I-876 open-PR guard in createWorktrees. nil = use getPRState.
 	PRFetch func(*config.Config, string) (string, []string)
@@ -463,6 +471,24 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	if agentID != "" {
 		fmt.Printf("  Assigned to: %s\n", agentID)
 	}
+
+	// Emit dispatch directive so the operator knows which model tier to
+	// launch. decideTier follows the model_tier → model_tier_rec → Haiku
+	// API → sonnet-fallback chain without a network call when the tier
+	// is already stamped on the item by plan prep/approve (T-425).
+	tierResult := decideTier(s, cfg, ModelRecOpts{ItemID: id})
+	dispatchTier := tierResult.Tier
+	if opts.Escalate != "" {
+		if _, valid := validTiers[opts.Escalate]; valid {
+			_ = changelog.Append(cfg, id, changelog.Entry{
+				Op: "start_escalate", OldValue: dispatchTier, NewValue: opts.Escalate,
+			})
+			dispatchTier = opts.Escalate
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: --escalate %q is not a valid tier (haiku|sonnet|opus) — using resolved tier %s\n", opts.Escalate, dispatchTier)
+		}
+	}
+	fmt.Printf("DISPATCH: launch session with model=%s\n", dispatchTier)
 
 	// Auto-push onto the work stack so the Stop hook attributes per-turn
 	// metrics to this item by default. Skip with --no-push for "set up the
