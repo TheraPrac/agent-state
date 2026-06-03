@@ -3079,6 +3079,7 @@ Kinds:
 				fmt.Printf("agent_id:    (unknown — no st project found)\n")
 				fmt.Printf("ST_ROOT:     %s\n", os.Getenv("ST_ROOT"))
 				fmt.Printf("AS_AGENT_ID: %s\n", os.Getenv("AS_AGENT_ID"))
+				exitCode = 0
 				return
 			}
 			id := cfg.Identity()
@@ -3088,8 +3089,17 @@ Kinds:
 			fmt.Printf("source:      %s\n", id.Source)
 			fmt.Printf("ST_ROOT:     %s\n", stRoot)
 			fmt.Printf("AS_AGENT_ID: %s\n", asAgentID)
-			if id.ID != "" && asAgentID != "" && id.ID != asAgentID {
-				fmt.Printf("\nWARNING: AS_AGENT_ID (%s) does not match resolved agent_id (%s)\n", asAgentID, id.ID)
+			// Warn when AS_AGENT_ID is set but disagrees with the on-disk
+			// identity (agent-workspace.yaml or local-agent.yaml). When the
+			// env var is present, cfg.Identity() uses it as the primary
+			// source, so comparing id.ID against asAgentID is always equal.
+			// We compare against LocalAgentID() instead, which reads only
+			// the filesystem. I-877.
+			if asAgentID != "" {
+				localID := cfg.LocalAgentID()
+				if localID != "" && localID != asAgentID {
+					fmt.Printf("\nWARNING: AS_AGENT_ID (%s) does not match on-disk agent_id (%s)\n", asAgentID, localID)
+				}
 			}
 			exitCode = 0
 		},

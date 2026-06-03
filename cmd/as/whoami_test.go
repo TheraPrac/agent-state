@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,13 +10,8 @@ import (
 // TestWhoami_PrintsAgentIDAndEnv verifies that `st whoami` prints the required
 // fields even when config discovery fails (no st project in cwd). I-877.
 func TestWhoami_PrintsAgentIDAndEnv(t *testing.T) {
-	os.Setenv("AS_AGENT_ID", "agent-test")
-	os.Setenv("ST_ROOT", "/test/root")
-	defer os.Unsetenv("AS_AGENT_ID")
-	defer os.Unsetenv("ST_ROOT")
-
-	// Use a temp dir with no st project so the command falls through to the
-	// "unknown" path, which still prints env vars.
+	// runInProcess sets AS_AGENT_ID=test-agent internally; just verify the
+	// fields appear in output.
 	out, _ := runInProcess(t, t.TempDir(), "whoami")
 	for _, want := range []string{"AS_AGENT_ID:", "ST_ROOT:"} {
 		if !strings.Contains(out, want) {
@@ -24,20 +20,23 @@ func TestWhoami_PrintsAgentIDAndEnv(t *testing.T) {
 	}
 }
 
-// TestWhoami_MatchWarnsOnMismatch verifies that a mismatch between AS_AGENT_ID
-// and the resolved config identity surfaces a WARNING line. I-877.
-func TestWhoami_MatchWarnsOnMismatch(t *testing.T) {
+// TestWhoami_WarnsOnMismatch verifies that a mismatch between AS_AGENT_ID and
+// the config-resolved identity surfaces a WARNING line. I-877.
+//
+// runInProcess sets AS_AGENT_ID=test-agent unconditionally. We set up a
+// workspace whose local-agent.yaml declares id=real-agent so the resolved
+// identity differs, triggering the warning.
+func TestWhoami_WarnsOnMismatch(t *testing.T) {
 	dir := setupInProcessWorkspace(t)
-	// AS_AGENT_ID=wrong-agent; config resolves agent from workspace which will
-	// differ → warning expected.
-	os.Setenv("AS_AGENT_ID", "wrong-agent")
-	defer os.Unsetenv("AS_AGENT_ID")
+	// Write a local-agent.yaml with a known id that differs from
+	// AS_AGENT_ID=test-agent (set by runInProcess).
+	os.MkdirAll(filepath.Join(dir, ".as"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".as", "local-agent.yaml"),
+		[]byte("id: real-agent\n"), 0o644)
 
 	out, _ := runInProcess(t, dir, "whoami")
-	// Either WARNING is present or the resolved agent_id is empty (no identity
-	// in a bare temp workspace). Either outcome is acceptable — the key is that
-	// the command exits 0 and prints the fields.
-	if !strings.Contains(out, "agent_id:") {
-		t.Errorf("whoami output missing agent_id:; got:\n%s", out)
+	// The config resolves id=real-agent; AS_AGENT_ID=test-agent → mismatch.
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("expected WARNING in output for identity mismatch; got:\n%s", out)
 	}
 }
