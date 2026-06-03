@@ -1430,6 +1430,28 @@ verdict drifts toward what the operator actually accepts.`,
 	finishCmd.Flags().BoolP("list", "l", false, "list active worktrees")
 	root.AddCommand(finishCmd)
 
+	worktreeCmd := &cobra.Command{
+		Use:   "worktree",
+		Short: "Manage per-item worktrees",
+	}
+	worktreeAddCmd := &cobra.Command{
+		Use:   "add <id> <repo>",
+		Short: "Add a repo worktree to an already-active item",
+		Long: `Provision, env-wire, and register a new repo worktree for an active item.
+
+The worktree is created on the item's existing branch (read from .workinfo)
+and appended to .workinfo so st finish cleans it up automatically.
+
+Example:
+  st worktree add I-456 theraprac-api   # add api worktree to a web-only item`,
+		Args: cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.WorktreeAdd(appStore, appCfg, args[0], args[1])
+		},
+	}
+	worktreeCmd.AddCommand(worktreeAddCmd)
+	root.AddCommand(worktreeCmd)
+
 	releaseCmd := &cobra.Command{
 		Use:   "release <id>",
 		Short: "Unassign an item from the current agent",

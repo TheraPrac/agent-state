@@ -614,88 +614,9 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	}
 
 	for _, repoShort := range repos {
-		repoDir := wt.RepoMap[repoShort]
-		if repoDir == "" {
-			repoDir = repoShort // fallback: use short name as dir name
+		if err := provisionSingleRepoWorktree(cfg, workDir, branch, repoShort, parentDir); err != nil {
+			return "", err
 		}
-
-		mainRepoPath := filepath.Join(parentDir, repoDir)
-		wtPath := filepath.Join(workDir, repoDir)
-
-		// Skip if already exists
-		if _, err := os.Stat(wtPath); err == nil {
-			fmt.Printf("  %s: worktree exists, skipping\n", repoDir)
-			continue
-		}
-
-		// Verify main repo exists
-		if _, err := os.Stat(filepath.Join(mainRepoPath, ".git")); err != nil {
-			return "", fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
-		}
-
-		// Fetch origin/main to get a fresh tracking ref. Branching from stale
-		// local main manufactured phantom e2e/openapi-drift failures.
-		// fetchErr drives the start-point decision below — using it directly
-		// avoids the stale-ref window where a prior tracking ref passes
-		// remoteBranchExists even after a failed fetch.
-		fmt.Printf("  %s: fetching origin main...\n", repoDir)
-		fetchErr := gitRun(mainRepoPath, "fetch", "origin", "main")
-		if fetchErr != nil {
-			// Non-fatal: local-only test repos have no remote.
-			fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, fetchErr)
-		}
-
-		// Best-effort fast-forward local main using the just-fetched ref.
-		// Kept for non-worktree tooling that reads local main. Uses merge
-		// --ff-only (local, no extra network call) instead of pull --ff-only
-		// (which would fetch again).
-		if fetchErr == nil {
-			fmt.Printf("  %s: fast-forwarding main...\n", repoDir)
-			if err := gitRun(mainRepoPath, "merge", "--ff-only", "origin/main"); err != nil {
-				// Non-fatal: local main may have diverged.
-				fmt.Printf("  %s: fast-forward skipped (%v)\n", repoDir, err)
-			}
-		}
-
-		// Create worktree with branch
-		fmt.Printf("  %s: creating worktree at %s\n", repoDir, wtPath)
-		if branchExists(mainRepoPath, branch) {
-			// Reuse existing branch
-			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, branch); err != nil {
-				return "", fmt.Errorf("worktree add %s (existing branch): %w", repoDir, err)
-			}
-		} else if remoteBranchExists(mainRepoPath, branch) {
-			// Track remote branch
-			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/"+branch); err != nil {
-				return "", fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
-			}
-		} else {
-			// Create new branch from fresh origin/main so the worktree base
-			// is current regardless of local main's state. Fall back to HEAD
-			// only when the fetch failed (local-only repo or network error).
-			if fetchErr == nil {
-				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/main"); err != nil {
-					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
-				}
-			} else {
-				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
-					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
-				}
-			}
-		}
-
-		// Symlink .env files from main checkout
-		symlinkEnvFiles(mainRepoPath, wtPath)
-
-		// I-526: legacy start-work.sh ran `make install` for node
-		// projects so the worktree's node_modules/.bin had tsc / vitest
-		// on PATH for `make type-check` and `make test-unit`. The Go
-		// port had dropped that step, so every fresh worktree's web
-		// suites failed with `sh: tsc: command not found`. Re-add it,
-		// but only for newly-created worktrees (the existing-worktree
-		// branch above continues with `continue`, so we never reach
-		// here for those).
-		maybeInstallNodeDeps(wtPath)
 	}
 
 	// Write .workinfo metadata
@@ -816,6 +737,67 @@ func maybeInstallNodeDeps(wtPath string) {
 		fmt.Printf("  %s: install failed (%v) — run `cd %s && make install` manually\n",
 			filepath.Base(wtPath), err, wtPath)
 	}
+}
+
+// provisionSingleRepoWorktree fetches, creates, env-wires, and node-installs
+// one repo's worktree under workDir on the given branch. Shared by
+// createWorktrees (initial start) and WorktreeAdd (add-after-start).
+func provisionSingleRepoWorktree(cfg *config.Config, workDir, branch, repoShort, parentDir string) error {
+	wt := cfg.Worktree
+	repoDir := wt.RepoMap[repoShort]
+	if repoDir == "" {
+		repoDir = repoShort
+	}
+
+	mainRepoPath := filepath.Join(parentDir, repoDir)
+	wtPath := filepath.Join(workDir, repoDir)
+
+	if _, err := os.Stat(wtPath); err == nil {
+		fmt.Printf("  %s: worktree exists, skipping\n", repoDir)
+		return nil
+	}
+
+	if _, err := os.Stat(filepath.Join(mainRepoPath, ".git")); err != nil {
+		return fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
+	}
+
+	fmt.Printf("  %s: fetching origin main...\n", repoDir)
+	fetchErr := gitRun(mainRepoPath, "fetch", "origin", "main")
+	if fetchErr != nil {
+		fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, fetchErr)
+	}
+
+	if fetchErr == nil {
+		fmt.Printf("  %s: fast-forwarding main...\n", repoDir)
+		if err := gitRun(mainRepoPath, "merge", "--ff-only", "origin/main"); err != nil {
+			fmt.Printf("  %s: fast-forward skipped (%v)\n", repoDir, err)
+		}
+	}
+
+	fmt.Printf("  %s: creating worktree at %s\n", repoDir, wtPath)
+	if branchExists(mainRepoPath, branch) {
+		if err := gitRun(mainRepoPath, "worktree", "add", wtPath, branch); err != nil {
+			return fmt.Errorf("worktree add %s (existing branch): %w", repoDir, err)
+		}
+	} else if remoteBranchExists(mainRepoPath, branch) {
+		if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/"+branch); err != nil {
+			return fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
+		}
+	} else {
+		if fetchErr == nil {
+			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/main"); err != nil {
+				return fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+			}
+		} else {
+			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
+				return fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+			}
+		}
+	}
+
+	symlinkEnvFiles(mainRepoPath, wtPath)
+	maybeInstallNodeDeps(wtPath)
+	return nil
 }
 
 func writeWorkinfo(workDir, id, branch string, repos []string) {

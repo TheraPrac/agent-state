@@ -66,8 +66,15 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 		}
 	}
 
+	// Use .workinfo repo list if present (covers repos added via st worktree add);
+	// fall back to the global config list.
+	reposToFinish := cfg.Worktree.Repos
+	if wi, err := readWorkinfo(wtDir); err == nil && len(wi.Repos) > 0 {
+		reposToFinish = wi.Repos
+	}
+
 	// For each repo in the worktree
-	for _, repo := range cfg.Worktree.Repos {
+	for _, repo := range reposToFinish {
 		repoDir := filepath.Join(wtDir, repo)
 		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 			continue
