@@ -153,6 +153,14 @@ func autoSync(s *store.Store, msg string, newPaths ...string) error {
 			fmt.Fprint(os.Stderr, err)
 			return err
 		}
+		if errors.Is(err, store.ErrPushDiverged) {
+			fmt.Fprintf(os.Stderr, "warning: auto-sync: push diverged — a peer changed the same file(s); resolve the conflict, then run `st sync`\n")
+			return nil
+		}
+		if errors.Is(err, store.ErrPushRejectedButOriginUnchanged) {
+			fmt.Fprintf(os.Stderr, "warning: auto-sync: push blocked by a server-side gate (branch protection or pre-receive hook) — retrying won't help; check remote settings\n")
+			return nil
+		}
 		fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", err)
 	}
 	return nil
