@@ -35,7 +35,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Commands that don't need config/store
 			switch cmd.Name() {
-			case "version", "init", "docgen":
+			case "version", "init", "docgen", "whoami":
 				return nil
 			}
 			dir := cwd
@@ -3065,6 +3065,36 @@ Kinds:
 	}
 	versionCmd.Flags().Bool("short", false, "print commit + dirty flag only (machine-readable)")
 	root.AddCommand(versionCmd)
+
+	whoamiCmd := &cobra.Command{
+		Use:   "whoami",
+		Short: "Print resolved agent identity and environment variables",
+		Run: func(cmd *cobra.Command, args []string) {
+			dir := cwd
+			if dir == "" {
+				dir, _ = os.Getwd()
+			}
+			cfg, err := config.Load(dir)
+			if err != nil || !cfg.Discovered {
+				fmt.Printf("agent_id:    (unknown — no st project found)\n")
+				fmt.Printf("ST_ROOT:     %s\n", os.Getenv("ST_ROOT"))
+				fmt.Printf("AS_AGENT_ID: %s\n", os.Getenv("AS_AGENT_ID"))
+				return
+			}
+			id := cfg.Identity()
+			stRoot := os.Getenv("ST_ROOT")
+			asAgentID := os.Getenv("AS_AGENT_ID")
+			fmt.Printf("agent_id:    %s\n", id.ID)
+			fmt.Printf("source:      %s\n", id.Source)
+			fmt.Printf("ST_ROOT:     %s\n", stRoot)
+			fmt.Printf("AS_AGENT_ID: %s\n", asAgentID)
+			if id.ID != "" && asAgentID != "" && id.ID != asAgentID {
+				fmt.Printf("\nWARNING: AS_AGENT_ID (%s) does not match resolved agent_id (%s)\n", asAgentID, id.ID)
+			}
+			exitCode = 0
+		},
+	}
+	root.AddCommand(whoamiCmd)
 
 	initCmd := &cobra.Command{
 		Use:   "init",
