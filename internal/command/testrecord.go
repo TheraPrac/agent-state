@@ -849,13 +849,23 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 		}
 		wtRepo := filepath.Join(wtBase, repoDir)
 		if _, err := os.Stat(wtRepo); err == nil {
+			// I-998: if the worktree repo is on the same commit as the main
+			// checkout, run from the warm main checkout instead. The main clone
+			// has a live golangci-lint + Go build cache; the worktree starts
+			// cold and hits the 5-minute lint timeout on unmodified repos.
+			targetRepo := wtRepo
+			mainRepo := resolveRepoDir(cfg, repo)
+			if mainRepo != "" && worktreeRepoOnSameCommit(wtRepo, mainRepo) {
+				fmt.Printf("[warm-checkout] %s unchanged — running suite from main checkout (%s)\n", repo, mainRepo)
+				targetRepo = mainRepo
+			}
 			// Replace various relative path patterns
 			for _, pattern := range []string{
 				"cd ../" + repoDir,
 				"cd ../" + repo,
 			} {
 				if strings.Contains(suiteCmd, pattern) {
-					suiteCmd = strings.Replace(suiteCmd, pattern, "cd "+wtRepo, 1)
+					suiteCmd = strings.Replace(suiteCmd, pattern, "cd "+targetRepo, 1)
 					return suiteCmd
 				}
 			}
@@ -863,6 +873,22 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 	}
 
 	return suiteCmd
+}
+
+// worktreeRepoOnSameCommit returns true when the worktree repo and the main
+// checkout are on the same HEAD commit. Used by rewriteSuiteForWorktree to
+// decide whether to use the warm main-checkout cache. Returns false on any
+// git error so the safe default is always the worktree path. I-998.
+func worktreeRepoOnSameCommit(wtRepo, mainRepo string) bool {
+	wtSHA, err := runGit(wtRepo, "rev-parse", "HEAD")
+	if err != nil {
+		return false
+	}
+	mainSHA, err := runGit(mainRepo, "rev-parse", "HEAD")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(wtSHA) == strings.TrimSpace(mainSHA)
 }
 
 type testAgentRuntime struct {
