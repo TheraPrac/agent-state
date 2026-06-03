@@ -221,30 +221,37 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	// NOTE: the RepoMap resolution below must stay in sync with rewriteSuiteForWorktree.
 	if cfg.Worktree != nil && cfg.Worktree.Enabled && cfg.Worktree.BaseDir != "" {
 		if wtBase := cfg.WorktreeForItem(id); wtBase != "" {
-			if _, err := os.Stat(wtBase); err == nil {
-				for _, repo := range cfg.Worktree.Repos {
-					repoDir := repo
-					if cfg.Worktree.RepoMap != nil {
-						if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
-							repoDir = mapped
-						}
+			if _, statErr := os.Stat(wtBase); statErr != nil {
+				// Worktree is expected but doesn't exist — running would execute
+				// against the main clone and clobber any existing evidence record.
+				fmt.Fprintf(os.Stderr,
+					"error: item %s has no active worktree at %s — running would produce misleading results.\n"+
+						"  Run `st start %s` to recreate the worktree, then retry.\n",
+					id, wtBase, id)
+				return 1
+			}
+			for _, repo := range cfg.Worktree.Repos {
+				repoDir := repo
+				if cfg.Worktree.RepoMap != nil {
+					if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+						repoDir = mapped
 					}
-					// Deduplicate: when repoDir == repo (no RepoMap entry), checking both
-					// patterns would run strings.Contains twice on the same string.
-					patterns := []string{"cd ../" + repoDir}
-					if repo != repoDir {
-						patterns = append(patterns, "cd ../"+repo)
-					}
-					for _, pattern := range patterns {
-						if strings.Contains(cmd, pattern) {
-							fmt.Fprintf(os.Stderr,
-								"error: suite %q references %q but the worktree rewrite did not fire for item %s.\n"+
-									"  Running would execute against the main clone, not the feature-branch worktree.\n"+
-									"  Expected repo at: %s\n"+
-									"  If the repo dir is missing, run `st start %s` to recreate the worktree.\n",
-								suite, pattern, id, filepath.Join(wtBase, repoDir), id)
-							return 1
-						}
+				}
+				// Deduplicate: when repoDir == repo (no RepoMap entry), checking both
+				// patterns would run strings.Contains twice on the same string.
+				patterns := []string{"cd ../" + repoDir}
+				if repo != repoDir {
+					patterns = append(patterns, "cd ../"+repo)
+				}
+				for _, pattern := range patterns {
+					if strings.Contains(cmd, pattern) {
+						fmt.Fprintf(os.Stderr,
+							"error: suite %q references %q but the worktree rewrite did not fire for item %s.\n"+
+								"  Running would execute against the main clone, not the feature-branch worktree.\n"+
+								"  Expected repo at: %s\n"+
+								"  If the repo dir is missing, run `st start %s` to recreate the worktree.\n",
+							suite, pattern, id, filepath.Join(wtBase, repoDir), id)
+						return 1
 					}
 				}
 			}

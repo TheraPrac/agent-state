@@ -954,7 +954,7 @@ func TestTestRunFailsWhenWorktreePresentButSuiteUnrewritten(t *testing.T) {
 	}
 }
 
-func TestTestRunNoGuardWhenNoWorktreeOnDisk(t *testing.T) {
+func TestTestRunErrorsWhenNoWorktreeOnDisk(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	cfg.Testing.RequiredSuites["myrepo_e2e"] = config.SuiteConfig{Command: "cd ../myrepo && scripts/run.sh"}
 	cfg.Worktree = &config.WorktreeConfig{
@@ -962,7 +962,8 @@ func TestTestRunNoGuardWhenNoWorktreeOnDisk(t *testing.T) {
 		BaseDir: "worktrees",
 		Repos:   []string{"myrepo"},
 	}
-	// No worktree directory created; guard must not fire.
+	// No worktree directory created. --run must refuse rather than execute
+	// against the main clone (which would clobber prior evidence records).
 
 	var ran bool
 	opts := TestRecordOpts{
@@ -976,11 +977,11 @@ func TestTestRunNoGuardWhenNoWorktreeOnDisk(t *testing.T) {
 	}
 
 	code := TestRecord(s, cfg, "T-003", "myrepo_e2e", opts)
-	if code != 0 {
-		t.Fatalf("returned %d, want 0 (no worktree on disk; guard must not fire)", code)
+	if code == 0 {
+		t.Fatal("returned 0, want non-zero: --run with missing worktree must refuse")
 	}
-	if !ran {
-		t.Error("RunCmd was not called; expected execution to proceed when no worktree exists")
+	if ran {
+		t.Error("RunCmd was called; expected --run to refuse when worktree does not exist")
 	}
 }
 

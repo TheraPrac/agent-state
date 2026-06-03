@@ -332,6 +332,9 @@ func PR(s *store.Store, cfg *config.Config, id string, opts PROpts) int {
 	if len(scopeSuites) > 0 {
 		fmt.Printf("  scope suites: %s\n", strings.Join(scopeSuites, ", "))
 	}
+	if err := autoSync(s, fmt.Sprintf("st pr: %s %s#%d", id, opts.Repo, opts.PRNumber)); err != nil {
+		return 1
+	}
 	return 0
 }
 

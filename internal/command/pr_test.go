@@ -514,6 +514,38 @@ func TestPRLastTouchedBySet(t *testing.T) {
 	}
 }
 
+// TestPRTriggersAutoSync: st pr must call autoSync so the PR manifest write
+// is committed before a subsequent workspace pull can clobber it (I-1301).
+// In the test env there is no git repo, so autoSync logs a warning and returns
+// nil — the function must still return 0.
+func TestPRTriggersAutoSync(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+
+	opts := mockGitOpts(
+		"M\tinternal/db/billing.go",
+		"10\t5\tinternal/db/billing.go",
+		"sha123",
+		map[string]string{"internal/db/billing.go": "h1"},
+		map[string]bool{},
+	)
+
+	code := PR(s, cfg, "T-003", opts)
+	if code != 0 {
+		t.Fatalf("PR returned %d, want 0 (autoSync git-error is non-fatal)", code)
+	}
+
+	// Verify manifest was written — autoSync non-fatal means the Mutate write
+	// persisted even though the git sync could not commit it.
+	item, ok := s.Get("T-003")
+	if !ok {
+		t.Fatal("item not found after PR")
+	}
+	prs, _ := getNestedField(item, "manifest", "prs")
+	if prs != "api#42" {
+		t.Errorf("manifest.prs = %q, want api#42 — write should survive non-fatal autoSync", prs)
+	}
+}
+
 // setupPRTestEnvWithManifest creates a test env with .manifest dir pre-created
 func setupPRTestEnvWithManifest(t *testing.T) (*store.Store, *config.Config) {
 	t.Helper()
