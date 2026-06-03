@@ -607,11 +607,28 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 			return "", fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
 		}
 
-		// Pull main
-		fmt.Printf("  %s: pulling main...\n", repoDir)
-		if err := gitRun(mainRepoPath, "pull", "--ff-only"); err != nil {
-			// Non-fatal: might be on a different branch or no remote
-			fmt.Printf("  %s: pull skipped (%v)\n", repoDir, err)
+		// Fetch origin/main to get a fresh tracking ref. Branching from stale
+		// local main manufactured phantom e2e/openapi-drift failures.
+		// fetchErr drives the start-point decision below — using it directly
+		// avoids the stale-ref window where a prior tracking ref passes
+		// remoteBranchExists even after a failed fetch.
+		fmt.Printf("  %s: fetching origin main...\n", repoDir)
+		fetchErr := gitRun(mainRepoPath, "fetch", "origin", "main")
+		if fetchErr != nil {
+			// Non-fatal: local-only test repos have no remote.
+			fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, fetchErr)
+		}
+
+		// Best-effort fast-forward local main using the just-fetched ref.
+		// Kept for non-worktree tooling that reads local main. Uses merge
+		// --ff-only (local, no extra network call) instead of pull --ff-only
+		// (which would fetch again).
+		if fetchErr == nil {
+			fmt.Printf("  %s: fast-forwarding main...\n", repoDir)
+			if err := gitRun(mainRepoPath, "merge", "--ff-only", "origin/main"); err != nil {
+				// Non-fatal: local main may have diverged.
+				fmt.Printf("  %s: fast-forward skipped (%v)\n", repoDir, err)
+			}
 		}
 
 		// Create worktree with branch
@@ -627,9 +644,17 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 				return "", fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
 			}
 		} else {
-			// Create new branch
-			if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
-				return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+			// Create new branch from fresh origin/main so the worktree base
+			// is current regardless of local main's state. Fall back to HEAD
+			// only when the fetch failed (local-only repo or network error).
+			if fetchErr == nil {
+				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/main"); err != nil {
+					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+				}
+			} else {
+				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
+					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+				}
 			}
 		}
 
