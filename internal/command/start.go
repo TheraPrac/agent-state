@@ -607,21 +607,28 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 			return "", fmt.Errorf("%s is not a git repo at %s", repoDir, mainRepoPath)
 		}
 
-		// I-1299: fetch origin/main first so new worktrees branch from a
-		// FRESH base. Branching from local main when it is several commits
-		// behind origin manufactured phantom e2e/openapi-drift failures.
+		// Fetch origin/main to get a fresh tracking ref. Branching from stale
+		// local main manufactured phantom e2e/openapi-drift failures.
+		// fetchErr drives the start-point decision below — using it directly
+		// avoids the stale-ref window where a prior tracking ref passes
+		// remoteBranchExists even after a failed fetch.
 		fmt.Printf("  %s: fetching origin main...\n", repoDir)
-		if err := gitRun(mainRepoPath, "fetch", "origin", "main"); err != nil {
+		fetchErr := gitRun(mainRepoPath, "fetch", "origin", "main")
+		if fetchErr != nil {
 			// Non-fatal: local-only test repos have no remote.
-			fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, err)
+			fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, fetchErr)
 		}
 
-		// Best-effort fast-forward local main too, so non-worktree tooling
-		// (and the existing-branch reuse path below) sees fresh main.
-		fmt.Printf("  %s: pulling main...\n", repoDir)
-		if err := gitRun(mainRepoPath, "pull", "--ff-only"); err != nil {
-			// Non-fatal: might be on a different branch or no remote
-			fmt.Printf("  %s: pull skipped (%v)\n", repoDir, err)
+		// Best-effort fast-forward local main using the just-fetched ref.
+		// Kept for non-worktree tooling that reads local main. Uses merge
+		// --ff-only (local, no extra network call) instead of pull --ff-only
+		// (which would fetch again).
+		if fetchErr == nil {
+			fmt.Printf("  %s: fast-forwarding main...\n", repoDir)
+			if err := gitRun(mainRepoPath, "merge", "--ff-only", "origin/main"); err != nil {
+				// Non-fatal: local main may have diverged.
+				fmt.Printf("  %s: fast-forward skipped (%v)\n", repoDir, err)
+			}
 		}
 
 		// Create worktree with branch
@@ -637,16 +644,17 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 				return "", fmt.Errorf("worktree add %s (remote branch): %w", repoDir, err)
 			}
 		} else {
-			// Create new branch from fresh origin/main (I-1299) so the
-			// worktree base is current regardless of local main's state.
-			// Fall back to current HEAD only when origin/main is absent
-			// (e.g. a local-only repo with no remote).
-			addArgs := []string{"worktree", "add", wtPath, "-b", branch}
-			if remoteBranchExists(mainRepoPath, "main") {
-				addArgs = append(addArgs, "origin/main")
-			}
-			if err := gitRun(mainRepoPath, addArgs...); err != nil {
-				return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+			// Create new branch from fresh origin/main so the worktree base
+			// is current regardless of local main's state. Fall back to HEAD
+			// only when the fetch failed (local-only repo or network error).
+			if fetchErr == nil {
+				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch, "origin/main"); err != nil {
+					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+				}
+			} else {
+				if err := gitRun(mainRepoPath, "worktree", "add", wtPath, "-b", branch); err != nil {
+					return "", fmt.Errorf("worktree add %s (new branch): %w", repoDir, err)
+				}
 			}
 		}
 
