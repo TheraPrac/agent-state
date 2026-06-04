@@ -802,3 +802,91 @@ func TestTestingComplete_AllReposTouchedNoAutoSkip(t *testing.T) {
 		t.Error("gate should fail when web_unit is missing (auto-skip only covers api_unit)")
 	}
 }
+
+// I-831: when a default-class item has goal tags matching a scope class and a
+// required suite is missing, the gate failure message includes a hint.
+func TestGateHintsScopeClassForGoalTaggedItem(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {},
+		},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {},
+				},
+				AppliesToGoals: []string{"st-tooling"},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("T-001", "active")
+	item.Tags = []string{"goal:st-tooling"}
+	// No evidence recorded — gate should fail with hint.
+	item.TestingEvidence = map[string]interface{}{}
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Fatal("gate should fail when required suite has no evidence")
+	}
+
+	var failMsg string
+	for _, r := range results {
+		if !r.Passed {
+			failMsg = r.Message
+			break
+		}
+	}
+	if !strings.Contains(failMsg, "workspace-config") {
+		t.Errorf("failure message should mention workspace-config, got: %s", failMsg)
+	}
+	if !strings.Contains(failMsg, "st update") {
+		t.Errorf("failure message should mention st update, got: %s", failMsg)
+	}
+	// Original st-test recovery instruction must still be present (augment, not replace).
+	if !strings.Contains(failMsg, "st test") {
+		t.Errorf("failure message should still mention st test, got: %s", failMsg)
+	}
+}
+
+// I-831: a default-class item without goal tags gets the undecorated failure.
+func TestGateNoHintForUntaggedMissingSuite(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {},
+		},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {},
+				},
+				AppliesToGoals: []string{"st-tooling"},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("T-001", "active")
+	item.Tags = []string{"unrelated-tag"}
+	item.TestingEvidence = map[string]interface{}{}
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Fatal("gate should fail when required suite has no evidence")
+	}
+
+	for _, r := range results {
+		if !r.Passed && strings.Contains(r.Message, "scope_class") && strings.Contains(r.Message, "goal tags suggest") {
+			t.Errorf("unexpected scope_class hint in message for untagged item: %s", r.Message)
+		}
+	}
+}

@@ -179,19 +179,39 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 			Message: fmt.Sprintf("scope_class %q has no required suites declared — fix config.testing.scope_classes.%s", item.ScopeClass, item.ScopeClass)}
 	}
 
-	// Iterate required suites in sorted order so the failure message is
-	// deterministic when multiple are missing — agents see the same suite
-	// named first across runs instead of map-iteration-order roulette.
+	// Build sorted suite list once — used for deterministic messages and the
+	// empty-class check below.
 	suiteNames := make([]string, 0, len(requiredSuites))
 	for name := range requiredSuites {
 		suiteNames = append(suiteNames, name)
 	}
 	sort.Strings(suiteNames)
+
+	// I-831: compute hint once (loop-invariant). Fires even when the default
+	// class has no required suites (I-776 back-compat path).
+	var scopeHint string
+	if item.ScopeClass == "" {
+		if suggestedClass := cfg.Testing.ScopeClassForGoalTags(item.Tags); suggestedClass != "" {
+			scopeHint = fmt.Sprintf(" (hint: goal tags suggest scope_class %q — run `st update %s scope_class %s` to use the correct suite set)", suggestedClass, item.ID, suggestedClass)
+		}
+	}
+	if scopeHint != "" && len(suiteNames) == 0 {
+		// No required suites configured for the default class (I-776 back-compat).
+		// Still surface the hint so the operator knows to set scope_class.
+		return GateResult{Passed: false, Gate: "testing_complete",
+			Message: "no required suites configured for default class" + scopeHint}
+	}
+
+	// Iterate required suites in sorted order so the failure message is
+	// deterministic when multiple are missing — agents see the same suite
+	// named first across runs instead of map-iteration-order roulette.
 	for _, name := range suiteNames {
 		val := getTestingEvidence(item, name)
 		if val == "" || val == "null" {
-			return GateResult{Passed: false, Gate: "testing_complete",
-				Message: fmt.Sprintf("required suite %q not recorded — run `st test %s %s --run` or `st test %s --auto`", name, item.ID, name, item.ID)}
+			// Augment with the scope hint (if any) while keeping the original
+			// st-test recovery instruction so the operator always has both paths.
+			msg := fmt.Sprintf("required suite %q not recorded — run `st test %s %s --run` or `st test %s --auto`%s", name, item.ID, name, item.ID, scopeHint)
+			return GateResult{Passed: false, Gate: "testing_complete", Message: msg}
 		}
 		// auto-skip: written by st test --auto when the suite's repo had no
 		// changed files. Treated as "not applicable" — a system determination,
