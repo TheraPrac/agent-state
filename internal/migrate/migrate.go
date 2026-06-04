@@ -244,6 +244,7 @@ var canonicalOrder = []string{
 	"related_issues",
 	"_blank_11",
 	"linked_plans",
+	"plan_written_at", "plan_failed_at", "plan_failure_reason",
 	"_blank_12",
 	"doc_changes",
 	"_blank_13",

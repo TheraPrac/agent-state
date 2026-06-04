@@ -47,7 +47,10 @@ type Item struct {
 	Weight           *int              // goal type only: strategic weight 1-100; active goals must sum to ≤100
 	SuccessCriterion string // goal type only
 	PlanApprovedAt   string // RFC3339 timestamp; set by `st plan approve` (I-178)
-	PlanApprovedBy string // operator or agent ID that approved the plan (I-178)
+	PlanApprovedBy   string // operator or agent ID that approved the plan (I-178)
+	PlanWrittenAt    string // RFC3339 timestamp; set by `st plan prep --write-only` on success (I-833)
+	PlanFailedAt     string // RFC3339 timestamp; set by `st plan prep --write-only` on failure (I-833)
+	PlanFailureReason string // short phrase describing failure; set alongside PlanFailedAt (I-833)
 
 	// List fields
 	Tags               []string
@@ -230,6 +233,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"plan_approved_by": true, "parallel_group": true,
 	"weight": true, "success_criterion": true,
 	"dropped_reason": true,
+	"plan_written_at": true, "plan_failed_at": true, "plan_failure_reason": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,
 	"related_issues": true, "acceptance_criteria": true,

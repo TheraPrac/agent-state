@@ -534,3 +534,145 @@ func TestPrepWallTimeoutInjected(t *testing.T) {
 	}
 }
 
+
+// TestPrepWriteOnlyStampsCompletionTimestamp: a successful --write-only run
+// stamps plan_written_at on the item and leaves plan_failed_at empty. I-833.
+func TestPrepWriteOnlyStampsCompletionTimestamp(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+	engine, _, _ := makeWriteOnlyEngine(nil, nil, nil, 0)
+
+	suppressStdout(t, func() {
+		code := Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+		if code != 0 {
+			t.Errorf("Prep returned %d, want 0", code)
+		}
+	})
+
+	// Reload store to pick up Mutate writes.
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"T-001", "T-002"} {
+		item, ok := s2.Get(id)
+		if !ok {
+			t.Fatalf("%s: not found after prep", id)
+		}
+		if item.PlanWrittenAt == "" {
+			t.Errorf("%s: plan_written_at is empty after successful write-only prep", id)
+		}
+		if item.PlanFailedAt != "" {
+			t.Errorf("%s: plan_failed_at = %q, want empty on success", id, item.PlanFailedAt)
+		}
+		if item.PlanFailureReason != "" {
+			t.Errorf("%s: plan_failure_reason = %q, want empty on success", id, item.PlanFailureReason)
+		}
+	}
+}
+
+// TestPrepWriteOnlyStampsFailureTimestamp: when the engine fails, the item
+// gets plan_failed_at + plan_failure_reason and plan_written_at stays empty.
+// I-833.
+func TestPrepWriteOnlyStampsFailureTimestamp(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+	// First prep call (T-001) fails; second (T-002) succeeds.
+	engine, _, _ := makeWriteOnlyEngine(nil, nil, nil, 1)
+
+	suppressStdout(t, func() {
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+	})
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// T-001: failed → plan_failed_at set, plan_written_at empty.
+	failed, ok := s2.Get("T-001")
+	if !ok {
+		t.Fatal("T-001: not found")
+	}
+	if failed.PlanFailedAt == "" {
+		t.Error("T-001: plan_failed_at is empty after failed prep")
+	}
+	if failed.PlanFailureReason == "" {
+		t.Error("T-001: plan_failure_reason is empty after failed prep")
+	}
+	if failed.PlanWrittenAt != "" {
+		t.Errorf("T-001: plan_written_at = %q, want empty on failure", failed.PlanWrittenAt)
+	}
+
+	// T-002: succeeded → plan_written_at set, plan_failed_at empty.
+	succeeded, ok := s2.Get("T-002")
+	if !ok {
+		t.Fatal("T-002: not found")
+	}
+	if succeeded.PlanWrittenAt == "" {
+		t.Error("T-002: plan_written_at is empty after successful prep")
+	}
+	if succeeded.PlanFailedAt != "" {
+		t.Errorf("T-002: plan_failed_at = %q, want empty on success", succeeded.PlanFailedAt)
+	}
+}
+
+// TestPrepWriteOnlyStampsFailureOnReviewError: when the plan-review subprocess
+// returns an error, the item gets plan_failed_at stamped. I-833.
+func TestPrepWriteOnlyStampsFailureOnReviewError(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+
+	// Engine: prep succeeds; plan_review errors.
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, e := range env {
+				if strings.HasPrefix(e, "ST_RUN_STEP=plan_review") {
+					return nil, 1, errors.New("simulated review failure")
+				}
+			}
+			result := ClaudeResult{Type: "result", Subtype: "success", Result: cannedPlanText}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser:    func(p string) (string, error) { return "", nil },
+		SelectMenu:    func(p string, opts []menuOption, def int) string { return "" },
+		ConfirmPrompt: func(p string) bool { return false },
+	}
+
+	suppressStdout(t, func() {
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+	})
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"T-001", "T-002"} {
+		item, ok := s2.Get(id)
+		if !ok {
+			t.Fatalf("%s: not found", id)
+		}
+		if item.PlanFailedAt == "" {
+			t.Errorf("%s: plan_failed_at empty after review error", id)
+		}
+		if item.PlanFailureReason == "" {
+			t.Errorf("%s: plan_failure_reason empty after review error", id)
+		}
+		if item.PlanWrittenAt != "" {
+			t.Errorf("%s: plan_written_at = %q, want empty on review error", id, item.PlanWrittenAt)
+		}
+	}
+}
+
+// TestPrepStandaloneReturnsOneOnWriteOnlyFailure: PrepStandalone returns 1
+// when --write-only prep fails (not the old silent-0 behavior). I-833.
+func TestPrepStandaloneReturnsOneOnWriteOnlyFailure(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+	engine, _, _ := makeWriteOnlyEngine(nil, nil, nil, 99) // all prep calls fail
+
+	var code int
+	suppressStdout(t, func() {
+		code = PrepStandalone(s, cfg, "T-001", PrepOpts{WriteOnly: true}, engine)
+	})
+	if code == 0 {
+		t.Errorf("PrepStandalone returned 0 on failure, want non-zero")
+	}
+}
