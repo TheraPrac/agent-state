@@ -3154,6 +3154,44 @@ Kinds:
 	}
 	root.AddCommand(initCmd)
 
+	// I-1318: session-scoped timer commands.
+	timerCmd := &cobra.Command{
+		Use:   "timer",
+		Short: "Manage session-scoped work timers for active items",
+	}
+	timerPauseCmd := &cobra.Command{
+		Use:   "pause",
+		Short: "Flush elapsed session time into accumulated_seconds for all active items owned by this agent",
+		Run: func(cmd *cobra.Command, args []string) {
+			n, err := command.TimerPauseAll(appStore, appCfg, "")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 1
+				return
+			}
+			if n > 0 {
+				fmt.Printf("timer pause: paused %d item(s)\n", n)
+			}
+		},
+	}
+	timerResumeCmd := &cobra.Command{
+		Use:   "resume",
+		Short: "Write session_started_at = now for all active items owned by this agent (idempotent)",
+		Run: func(cmd *cobra.Command, args []string) {
+			n, err := command.TimerResumeAll(appStore, appCfg, "")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 1
+				return
+			}
+			if n > 0 {
+				fmt.Printf("timer resume: resumed %d item(s)\n", n)
+			}
+		},
+	}
+	timerCmd.AddCommand(timerPauseCmd, timerResumeCmd)
+	root.AddCommand(timerCmd)
+
 	root.AddCommand(newDocgenCmd())
 
 	// Apply group assignments after every command is registered. Keeping

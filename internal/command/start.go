@@ -395,6 +395,23 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 		item.TimeTracking["started_at"] = now
 		item.SetNested("time_tracking", "started_at", now)
+		// I-1318: if session_started_at is already set (e.g. prior session crashed
+		// before the stop-hook could flush it), accumulate the elapsed time before
+		// resetting the timer epoch so the prior segment is not silently lost.
+		if prior, _ := getNestedField(item, "time_tracking", "session_started_at"); prior != "" {
+			if t0, err := time.Parse(time.RFC3339, prior); err == nil {
+				elapsed := int(time.Now().Sub(t0).Seconds())
+				if elapsed < 0 {
+					elapsed = 0
+				}
+				acc := 0
+				if v, _ := getNestedField(item, "time_tracking", "accumulated_seconds"); v != "" {
+					fmt.Sscanf(v, "%d", &acc) //nolint:errcheck
+				}
+				item.SetNested("time_tracking", "accumulated_seconds", fmt.Sprintf("%d", acc+elapsed))
+			}
+		}
+		item.SetNested("time_tracking", "session_started_at", now)
 		return nil
 	}); err != nil {
 		if errors.Is(err, store.ErrAlreadyClaimed) {
