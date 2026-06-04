@@ -35,7 +35,16 @@ func TestCheckGitStatusUncommitted(t *testing.T) {
 		// git rev-list returns 0 behind
 		return []byte("0\n"), nil
 	}
-	execGitNoOutput = func(dir string, args ...string) error { return nil }
+	// I-1313: checkGitStatus now skips agent-state files identical to
+	// refs/heads/main (already committed there). Model main as existing
+	// (rev-parse → nil) but the dirty files as DIFFERING from main
+	// (diff --quiet → err) so they count as genuinely uncommitted.
+	execGitNoOutput = func(dir string, args ...string) error {
+		if len(args) > 0 && args[0] == "diff" {
+			return errors.New("differs from refs/heads/main")
+		}
+		return nil
+	}
 
 	// Use a real config with root set
 	testCfg := &config.Config{}

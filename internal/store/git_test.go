@@ -913,6 +913,15 @@ func TestGitSync_FromFeatureBranch_LandsOnMainNotBranch(t *testing.T) {
 	if staged := run("diff", "--cached", "--name-only"); staged != "" {
 		t.Errorf("agent-state left staged against the feature branch: %q", staged)
 	}
+
+	// (6) The working-tree item file is byte-identical to refs/heads/main —
+	// this is the precondition the session-stop / st check "ONMAIN" guards
+	// rely on to recognize the file as already-committed (not dirty WIP) and
+	// skip it rather than re-committing it onto the feature branch.
+	if err := gitCmdQuiet(root, "diff", "--quiet", "refs/heads/main", "--",
+		"tasks/T-001-first-task.md"); err != nil {
+		t.Errorf("working tree does not match refs/heads/main — the ONMAIN guard would not recognize it as already-committed")
+	}
 }
 
 // TestGitSync_RejectedPushIsLoud is the core I-684 guard: when the remote

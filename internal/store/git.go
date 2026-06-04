@@ -721,19 +721,36 @@ func (s *Store) commitStagedOntoMain(root, message string) (string, error) {
 	}
 	baseSHA := strings.TrimSpace(baseOut)
 
-	// The staged paths (real index vs HEAD) are exactly what st just staged,
-	// toplevel-relative.
-	changedOut, err := gitOutput(toplevel, "diff", "--cached", "--name-only")
+	// Pull the staged changes as raw entries — each is
+	//   :<srcmode> <dstmode> <srcsha> <dstsha> <status>\0<path>\0
+	// This gives the already-hashed staged blob AND its exact mode (so the
+	// executable bit and symlinks survive), and -z makes paths with spaces or
+	// non-ASCII bytes safe — unlike --name-only, which octal-quotes them and
+	// would mis-stat. --no-renames keeps each change as a single-path A/M/D/T
+	// entry. Reusing the staged blob directly means no re-hash and exact parity
+	// with what `git commit` would have written.
+	// --no-abbrev: full 40-char blob SHAs (update-index --cacheinfo rejects
+	// abbreviated ones, which --raw emits by default).
+	rawOut, err := gitOutput(toplevel, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev")
 	if err != nil {
-		return "", fmt.Errorf("diff --cached: %w", err)
+		return "", fmt.Errorf("diff --cached --raw: %w", err)
 	}
-	var changed []string
-	for _, l := range strings.Split(strings.TrimSpace(changedOut), "\n") {
-		if l != "" {
-			changed = append(changed, l)
+	type stagedEntry struct{ mode, sha, status, path string }
+	var entries []stagedEntry
+	// -z stream alternates meta\0path\0meta\0path\0…
+	rawTokens := strings.Split(rawOut, "\x00")
+	for i := 0; i+1 < len(rawTokens); i += 2 {
+		meta, path := rawTokens[i], rawTokens[i+1]
+		if meta == "" || path == "" {
+			continue
 		}
+		f := strings.Fields(strings.TrimPrefix(meta, ":")) // [srcmode dstmode srcsha dstsha status]
+		if len(f) < 5 {
+			continue
+		}
+		entries = append(entries, stagedEntry{mode: f[1], sha: f[3], status: f[4], path: path})
 	}
-	if len(changed) == 0 {
+	if len(entries) == 0 {
 		return baseSHA, nil
 	}
 
@@ -760,27 +777,20 @@ func (s *Store) commitStagedOntoMain(root, message string) (string, error) {
 		return "", fmt.Errorf("read-tree %s into temp index: %w", baseSHA, err)
 	}
 
-	for _, rel := range changed {
-		abs := filepath.Join(toplevel, rel)
-		if _, statErr := os.Stat(abs); statErr != nil {
-			if os.IsNotExist(statErr) {
-				if err := gitCmdEnv(toplevel, env, "update-index", "--remove", "--", rel); err != nil {
-					return "", fmt.Errorf("update-index --remove %q: %w", rel, err)
-				}
-				continue
+	for _, e := range entries {
+		// Deletion (status D / dstmode 000000 / null dstsha): remove from the
+		// temp index.
+		if e.status == "D" || e.mode == "000000" || strings.Trim(e.sha, "0") == "" {
+			if err := gitCmdEnv(toplevel, env, "update-index", "--remove", "--", e.path); err != nil {
+				return "", fmt.Errorf("update-index --remove %q: %w", e.path, err)
 			}
-			return "", fmt.Errorf("stat %q: %w", abs, statErr)
+			continue
 		}
-		// `--path <rel>` applies .gitattributes the same way `git add` would,
-		// so the blob hash matches a normal commit's.
-		blobOut, err := gitOutput(toplevel, "hash-object", "-w", "--path", rel, "--", abs)
-		if err != nil {
-			return "", fmt.Errorf("hash-object %q: %w", abs, err)
-		}
-		blob := strings.TrimSpace(blobOut)
+		// Overlay the already-staged blob at its exact mode (preserves the
+		// executable bit and symlinks — no re-hash needed).
 		if err := gitCmdEnv(toplevel, env, "update-index", "--add", "--cacheinfo",
-			"100644,"+blob+","+rel); err != nil {
-			return "", fmt.Errorf("update-index %q: %w", rel, err)
+			e.mode+","+e.sha+","+e.path); err != nil {
+			return "", fmt.Errorf("update-index %q: %w", e.path, err)
 		}
 	}
 

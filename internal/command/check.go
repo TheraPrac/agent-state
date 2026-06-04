@@ -217,15 +217,41 @@ func checkGitStatus(cfg *config.Config, quiet bool) int {
 	var issues int
 	root := cfg.Root()
 
-	// Check for uncommitted agent-state changes
+	// Check for uncommitted agent-state changes.
+	//
+	// I-1313: st commits agent-state to refs/heads/main, never to the checked-out
+	// branch. When the workspace clone is on a feature branch, files already
+	// committed to main show as modified ONLY because HEAD is the feature branch
+	// (working tree == main's content; branch HEAD == older). Those are not
+	// uncommitted — exclude any tracked entry byte-identical to refs/heads/main
+	// so `st check` doesn't false-positive on every feature-branch session.
 	itemDir := cfg.Paths.Root
 	out, err := execGit(root, "status", "--porcelain", "--", itemDir+"/")
 	if err == nil && len(out) > 0 {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		count := len(lines)
-		issues++
-		if !quiet {
-			fmt.Printf("  \033[31m✗\033[0m %d uncommitted agent-state change(s)\n", count)
+		mainExists := execGitNoOutput(root, "rev-parse", "--verify", "--quiet", "refs/heads/main") == nil
+		count := 0
+		for _, line := range lines {
+			if len(line) < 4 {
+				continue
+			}
+			code := line[:2]
+			path := strings.TrimSpace(line[3:])
+			// Untracked (`??`) entries are genuinely not on main — always count.
+			// Tracked entries identical to refs/heads/main are already committed
+			// there; skip them.
+			if mainExists && !strings.HasPrefix(code, "??") {
+				if execGitNoOutput(root, "diff", "--quiet", "refs/heads/main", "--", path) == nil {
+					continue
+				}
+			}
+			count++
+		}
+		if count > 0 {
+			issues++
+			if !quiet {
+				fmt.Printf("  \033[31m✗\033[0m %d uncommitted agent-state change(s)\n", count)
+			}
 		}
 	}
 
