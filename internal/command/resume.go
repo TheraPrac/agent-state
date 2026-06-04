@@ -99,7 +99,7 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 		}
 	}
 
-	fmt.Print(renderResume(item, entries, sessionID, planBody, planNote, audit, rs))
+	fmt.Print(renderResume(cfg, item, entries, sessionID, planBody, planNote, audit, rs))
 	return 0
 }
 
@@ -214,7 +214,7 @@ func priorSessionUnfinalized(entries []changelog.Entry, currentSessionID string)
 // authoritative; non-empty means the plan could not be loaded (missing /
 // unreadable / empty) and the section renders a ⚠️ block instead of silently
 // vanishing (I-690 — operator silent-failure principle).
-func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBody, planNote string, audit tapeAudit, rs remoteState) string {
+func renderResume(cfg *config.Config, item *model.Item, entries []changelog.Entry, sessionID, planBody, planNote string, audit tapeAudit, rs remoteState) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# RESUME %s — %s\n\n", item.ID, item.Title)
@@ -351,6 +351,26 @@ func renderResume(item *model.Item, entries []changelog.Entry, sessionID, planBo
 			fmt.Fprintf(&b, "  ? [confidence %.2f] %s\n", e.Confidence, flattenLine(e.Reason))
 		}
 		b.WriteString("\n")
+	}
+
+	// (3b) Heuristics — cross-item operational rules for this agent (I-804).
+	// Filtered by item tags so only relevant entries surface. Falls back to
+	// a loud audit warning if agent-memory/*.md files exist but no structured
+	// heuristics have been recorded yet (operator silent-failure principle).
+	agentID := cfg.AgentID()
+	heuristics, _ := changelog.HeuristicList(cfg, agentID, item.Tags)
+	if len(heuristics) > 0 {
+		b.WriteString("## Heuristics\n")
+		for _, e := range heuristics {
+			fmt.Fprintf(&b, "  • %s\n", flattenLine(e.Reason))
+		}
+		b.WriteString("\n")
+	} else {
+		agentMemoryDir := filepath.Join(filepath.Dir(cfg.Root()), "theraprac-workspace", "agent-memory")
+		if matches, _ := filepath.Glob(filepath.Join(agentMemoryDir, "*.md")); len(matches) > 0 {
+			b.WriteString("## ⚠️  agent-memory/*.md file(s) found but no heuristics recorded\n")
+			b.WriteString("  Run `st heuristic migrate` to import them into the structured channel.\n\n")
+		}
 	}
 
 	// (4) Execution tape — what the doing actually got to.

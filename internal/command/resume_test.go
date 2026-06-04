@@ -10,6 +10,15 @@ import (
 	"github.com/jfinlinson/agent-state/internal/model"
 )
 
+// testResumeCfg returns a minimal config for renderResume unit tests that
+// don't need a full store — no heuristics on disk, so the heuristics section
+// is silently empty.
+func testResumeCfg(t *testing.T) *config.Config {
+	t.Helper()
+	_, cfg := setupTestEnv(t)
+	return cfg
+}
+
 func TestDetectTapeGap(t *testing.T) {
 	// git ahead of tape ⇒ loud gap, not verified
 	g := detectTapeGap(2, 5, "fix/I-679")
@@ -73,6 +82,7 @@ func TestLastSessionID(t *testing.T) {
 }
 
 func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{
 		ID: "I-679", Title: "xsession record", Type: "issue", Status: "active",
 		Sessions:     []string{"sess-1"},
@@ -92,7 +102,7 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 	}
 	gap := tapeAudit{gap: true, message: "branch has 3 commits but 1 on tape — 2 uncaptured."}
 
-	out := renderResume(item, entries, "sess-1", "# Plan\nDo the thing.", "", gap, remoteState{})
+	out := renderResume(cfg, item, entries, "sess-1", "# Plan\nDo the thing.", "", gap, remoteState{})
 
 	// Gap banner must precede the State/Decisions sections — a record that
 	// looks complete but is not must be impossible to miss.
@@ -138,8 +148,9 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 }
 
 func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "T-1", Title: "x", Type: "task", Status: "active"}
-	out := renderResume(item, nil, "", "", "NOT FOUND — expected .plans/T-1.md", tapeAudit{
+	out := renderResume(cfg, item, nil, "", "", "NOT FOUND — expected .plans/T-1.md", tapeAudit{
 		verified: false, message: "no resolvable git worktree — exec tape is UNVERIFIED.",
 	}, remoteState{})
 	if !strings.Contains(out, "UNVERIFIED") {
@@ -151,8 +162,9 @@ func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
 }
 
 func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active"}
-	out := renderResume(item, nil, "", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{
+	out := renderResume(cfg, item, nil, "", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{
 		verified: true, message: `branch "b": 3 commit(s), 3 on the recorded exec tape — consistent.`,
 	}, remoteState{})
 	if !strings.Contains(out, "✓ Execution tape verified against ground truth") {
@@ -174,6 +186,7 @@ func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
 // next_actions — must both render, and Next must sit between State and the
 // historical record (forward directive before backward narrative).
 func TestRenderResume_PlanAndNextRendered(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{
 		ID: "I-679", Title: "xsession record", Type: "issue", Status: "active",
 		NextActions: []string{
@@ -182,7 +195,7 @@ func TestRenderResume_PlanAndNextRendered(t *testing.T) {
 			"Then Phase C (PreCompact/Stop backstop)",
 		},
 	}
-	out := renderResume(item, nil, "", "# I-690 Plan\nDo the renderer fix.", "",
+	out := renderResume(cfg, item, nil, "", "# I-690 Plan\nDo the renderer fix.", "",
 		tapeAudit{verified: true, message: "consistent."}, remoteState{})
 
 	si := strings.Index(out, "## State")
@@ -210,8 +223,9 @@ func TestRenderResume_PlanAndNextRendered(t *testing.T) {
 // (operator silent-failure principle). The normal Plan header must NOT appear
 // — a cold session must not mistake "no plan shown" for "no plan needed".
 func TestRenderResume_MissingPlanIsLoudNotSilent(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-690", Title: "x", Type: "issue", Status: "active"}
-	out := renderResume(item, nil, "", "",
+	out := renderResume(cfg, item, nil, "", "",
 		"NOT FOUND — expected /ws/.plans/I-690.md",
 		tapeAudit{verified: true, message: "consistent."}, remoteState{})
 
@@ -271,6 +285,7 @@ func TestPriorSessionUnfinalized(t *testing.T) {
 // (distinct from the current one) must be announced in the impossible-to-miss
 // top zone (before State); a healthy mid-session resume must NOT show it.
 func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
+	cfg := testResumeCfg(t)
 	// s1 was killed (activity, no marker); the live session being resumed
 	// is s2 (the freshly-started one after the kill).
 	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1", "s2"}}
@@ -280,7 +295,7 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 			Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "a real fork"},
 		{Timestamp: "2026-05-19T10:10:00-06:00", Op: "start", SessionID: "s2", Kind: changelog.KindTransition},
 	}
-	out := renderResume(item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"}, remoteState{})
 	bi := strings.Index(out, "PREVIOUS SESSION DID NOT FINALIZE")
 	si := strings.Index(out, "## State")
 	if bi < 0 {
@@ -291,13 +306,13 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 	}
 	// s1 finalized cleanly ⇒ banner must vanish.
 	fin := changelog.Entry{Timestamp: "2026-05-19T10:06:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition}
-	if strings.Contains(renderResume(item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}), "PREVIOUS SESSION DID NOT FINALIZE") {
+	if strings.Contains(renderResume(cfg, item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}), "PREVIOUS SESSION DID NOT FINALIZE") {
 		t.Errorf("a finalized prior session must NOT show the killed banner")
 	}
 	// Mid-session resume (only the live session s9, activity, no marker):
 	// must NOT show the alarmist banner.
 	mid := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s9"}}
-	midOut := renderResume(mid, []changelog.Entry{
+	midOut := renderResume(cfg, mid, []changelog.Entry{
 		{Timestamp: "2026-05-19T11:00:00-06:00", Op: "commit", SessionID: "s9", NewValue: "d", Kind: changelog.KindExec},
 	}, "s9", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
 	if strings.Contains(midOut, "PREVIOUS SESSION DID NOT FINALIZE") {
@@ -309,6 +324,7 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 // fork AT/above the threshold is a (provisional) fact rendered inline — only
 // BELOW-threshold extracted goes to the single boundary-confirm block.
 func TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s1"}}
 	entries := []changelog.Entry{
 		{Timestamp: "2026-05-19T10:00:00-06:00", Op: "decision", SessionID: "s1",
@@ -316,7 +332,7 @@ func TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed(t *testing.T) 
 			Reason: "agent-scoped resolution"},
 		{Timestamp: "2026-05-19T10:01:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition},
 	}
-	out := renderResume(item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
 	if !strings.Contains(out, "[extracted, confidence 0.85] agent-scoped resolution") {
 		t.Errorf("high-confidence extracted must render inline as a fact:\n%s", out)
 	}
@@ -329,12 +345,13 @@ func TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed(t *testing.T) 
 // visible warning section between State and Next so a cold session can't miss
 // that a parallel agent has already pushed this work (I-876).
 func TestResumeRendersRemoteStateSection(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-876", Title: "x", Type: "issue", Status: "active"}
 	rs := remoteState{
 		prState: "OPEN",
 		prURLs:  []string{"https://github.com/org/repo/pull/42"},
 	}
-	out := renderResume(item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, rs)
+	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, rs)
 
 	if !strings.Contains(out, "## Remote state") {
 		t.Errorf("open PR must render a Remote state section:\n%s", out)
@@ -363,8 +380,9 @@ func TestResumeRendersRemoteStateSection(t *testing.T) {
 // TestResumeNoRemoteStateSectionWhenNoPR: when no PR is found, the Remote state
 // section must NOT appear (no noise for clean items).
 func TestResumeNoRemoteStateSectionWhenNoPR(t *testing.T) {
+	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-876", Title: "x", Type: "issue", Status: "active"}
-	out := renderResume(item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
 	if strings.Contains(out, "## Remote state") {
 		t.Errorf("no PR ⇒ Remote state section must not appear:\n%s", out)
 	}
