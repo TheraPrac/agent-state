@@ -337,6 +337,15 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		// (e.g., reopened after a partial close).
 		advanceDeliveryStage(item, "coding")
 
+		// I-830: backfill scope_class from goal tags for items that were
+		// queued before auto-set was in place (idempotent — skips if already set).
+		if item.ScopeClass == "" {
+			if cls := cfg.Testing.ScopeClassForGoalTags(item.Tags); cls != "" {
+				item.ScopeClass = cls
+				item.Doc.SetField("scope_class", cls)
+			}
+		}
+
 		item.Doc.SetField("status", tc.ActiveStatus)
 		item.Status = tc.ActiveStatus
 

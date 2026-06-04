@@ -302,6 +302,14 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		item.Goals = opts.Goals
 	}
 
+	// I-830: auto-assign scope_class from goal tags when not explicitly set.
+	if item.ScopeClass == "" {
+		if cls := cfg.Testing.ScopeClassForGoalTags(item.Tags); cls != "" {
+			item.ScopeClass = cls
+			item.Doc.SetField("scope_class", cls)
+		}
+	}
+
 	item.WorkTracking = make(map[string]interface{})
 	item.Delivery = make(map[string]interface{})
 	item.TestingEvidence = make(map[string]interface{})
