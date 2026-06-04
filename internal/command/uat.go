@@ -183,6 +183,18 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 		})
 		return results
 	}
+	// I-831: when a default-class item carries goal tags that map to a
+	// scope class, surface a hint before the misleading api/web suite rows.
+	if item.ScopeClass == "" {
+		if suggestedClass := cfg.Testing.ScopeClassForGoalTags(item.Tags); suggestedClass != "" {
+			results = append(results, checkResult{
+				Label:  "scope_class",
+				Mode:   "auto",
+				Passed: false,
+				Detail: fmt.Sprintf("goal tags suggest scope_class %q — run `st update %s scope_class %s` then re-run", suggestedClass, item.ID, suggestedClass),
+			})
+		}
+	}
 	for name := range requiredSuites {
 		val := ""
 		if v, ok := item.TestingEvidence[name]; ok {

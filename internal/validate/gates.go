@@ -190,8 +190,15 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 	for _, name := range suiteNames {
 		val := getTestingEvidence(item, name)
 		if val == "" || val == "null" {
-			return GateResult{Passed: false, Gate: "testing_complete",
-				Message: fmt.Sprintf("required suite %q not recorded — run `st test %s %s --run` or `st test %s --auto`", name, item.ID, name, item.ID)}
+			msg := fmt.Sprintf("required suite %q not recorded — run `st test %s %s --run` or `st test %s --auto`", name, item.ID, name, item.ID)
+			// I-831: when goal tags map to a scope class, the missing evidence is
+			// expected — add an actionable hint instead of a bare "run st test".
+			if item.ScopeClass == "" {
+				if suggestedClass := cfg.Testing.ScopeClassForGoalTags(item.Tags); suggestedClass != "" {
+					msg = fmt.Sprintf("required suite %q not recorded (hint: goal tags suggest scope_class %q — run `st update %s scope_class %s` to use the correct suite set)", name, suggestedClass, item.ID, suggestedClass)
+				}
+			}
+			return GateResult{Passed: false, Gate: "testing_complete", Message: msg}
 		}
 		// auto-skip: written by st test --auto when the suite's repo had no
 		// changed files. Treated as "not applicable" — a system determination,

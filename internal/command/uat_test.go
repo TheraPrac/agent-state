@@ -643,3 +643,90 @@ func TestCleanACs(t *testing.T) {
 		t.Errorf("expected exit 1 for terminal-status item, got %d", code)
 	}
 }
+
+// I-831: when a default-class item carries goal tags that map to a scope class,
+// checkTestSuites prepends a failing hint row with an actionable fix command.
+func TestUATHintsScopeClassForGoalTaggedItem(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	// Inject workspace-config scope class with applies_to_goals: [st-tooling].
+	if cfg.Testing.ScopeClasses == nil {
+		cfg.Testing.ScopeClasses = make(map[string]config.ScopeClassConfig)
+	}
+	cfg.Testing.ScopeClasses["workspace-config"] = config.ScopeClassConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"workspace_test": {Command: "bash run.sh"},
+		},
+		AppliesToGoals: []string{"st-tooling"},
+	}
+
+	// Create a default-class item with goal:st-tooling tag and no evidence.
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = ""
+		it.Tags = []string{"goal:st-tooling"}
+		it.TestingEvidence = map[string]interface{}{}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	item, ok := s.Get("T-003")
+	if !ok {
+		t.Fatal("T-003 not found")
+	}
+
+	results := checkTestSuites(item, cfg)
+	if len(results) == 0 {
+		t.Fatal("expected at least one check result")
+	}
+	hint := results[0]
+	if hint.Label != "scope_class" {
+		t.Errorf("first result label = %q, want scope_class", hint.Label)
+	}
+	if hint.Passed {
+		t.Error("hint check should be failing (Passed=false)")
+	}
+	if !strings.Contains(hint.Detail, "workspace-config") {
+		t.Errorf("hint detail should mention workspace-config, got: %s", hint.Detail)
+	}
+	if !strings.Contains(hint.Detail, "st update") {
+		t.Errorf("hint detail should mention st update, got: %s", hint.Detail)
+	}
+}
+
+// I-831: when a default-class item has no goal tags matching any scope class,
+// no hint row is prepended.
+func TestUATNoHintForUntaggedItem(t *testing.T) {
+	s, cfg := setupUATTestEnv(t)
+
+	if cfg.Testing.ScopeClasses == nil {
+		cfg.Testing.ScopeClasses = make(map[string]config.ScopeClassConfig)
+	}
+	cfg.Testing.ScopeClasses["workspace-config"] = config.ScopeClassConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"workspace_test": {Command: "bash run.sh"},
+		},
+		AppliesToGoals: []string{"st-tooling"},
+	}
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = ""
+		it.Tags = []string{"some-unrelated-tag"}
+		it.TestingEvidence = map[string]interface{}{}
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	item, ok := s.Get("T-003")
+	if !ok {
+		t.Fatal("T-003 not found")
+	}
+
+	results := checkTestSuites(item, cfg)
+	for _, r := range results {
+		if r.Label == "scope_class" && strings.Contains(r.Detail, "goal tags suggest") {
+			t.Errorf("unexpected hint row for untagged item: %+v", r)
+		}
+	}
+}
