@@ -614,3 +614,65 @@ func TestPrepWriteOnlyStampsFailureTimestamp(t *testing.T) {
 		t.Errorf("T-002: plan_failed_at = %q, want empty on success", succeeded.PlanFailedAt)
 	}
 }
+
+// TestPrepWriteOnlyStampsFailureOnReviewError: when the plan-review subprocess
+// returns an error, the item gets plan_failed_at stamped. I-833.
+func TestPrepWriteOnlyStampsFailureOnReviewError(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+
+	// Engine: prep succeeds; plan_review errors.
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, e := range env {
+				if strings.HasPrefix(e, "ST_RUN_STEP=plan_review") {
+					return nil, 1, errors.New("simulated review failure")
+				}
+			}
+			result := ClaudeResult{Type: "result", Subtype: "success", Result: cannedPlanText}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		PromptUser:    func(p string) (string, error) { return "", nil },
+		SelectMenu:    func(p string, opts []menuOption, def int) string { return "" },
+		ConfirmPrompt: func(p string) bool { return false },
+	}
+
+	suppressStdout(t, func() {
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+	})
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"T-001", "T-002"} {
+		item, ok := s2.Get(id)
+		if !ok {
+			t.Fatalf("%s: not found", id)
+		}
+		if item.PlanFailedAt == "" {
+			t.Errorf("%s: plan_failed_at empty after review error", id)
+		}
+		if item.PlanFailureReason == "" {
+			t.Errorf("%s: plan_failure_reason empty after review error", id)
+		}
+		if item.PlanWrittenAt != "" {
+			t.Errorf("%s: plan_written_at = %q, want empty on review error", id, item.PlanWrittenAt)
+		}
+	}
+}
+
+// TestPrepStandaloneReturnsOneOnWriteOnlyFailure: PrepStandalone returns 1
+// when --write-only prep fails (not the old silent-0 behavior). I-833.
+func TestPrepStandaloneReturnsOneOnWriteOnlyFailure(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+	engine, _, _ := makeWriteOnlyEngine(nil, nil, nil, 99) // all prep calls fail
+
+	var code int
+	suppressStdout(t, func() {
+		code = PrepStandalone(s, cfg, "T-001", PrepOpts{WriteOnly: true}, engine)
+	})
+	if code == 0 {
+		t.Errorf("PrepStandalone returned 0 on failure, want non-zero")
+	}
+}

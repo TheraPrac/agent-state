@@ -303,7 +303,11 @@ func PrepStandalone(s *store.Store, cfg *config.Config, itemID string, opts Prep
 
 	fmt.Printf("━━━ Planning %s — %s ━━━\n\n", itemID, item.Title)
 	if opts.WriteOnly {
-		prepItemWriteOnly(s, cfg, itemID, item, opts, engine, worktreeDir)
+		// I-833: propagate failure so automation callers get a non-zero exit
+		// code when prep fails, instead of the old silent 0-always behavior.
+		if result := prepItemWriteOnly(s, cfg, itemID, item, opts, engine, worktreeDir); result != "accepted" {
+			return 1
+		}
 	} else {
 		prepItem(s, cfg, itemID, item, opts, engine, worktreeDir)
 	}
@@ -851,7 +855,7 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		output, exitCode, err := engine.RunClaude(cwd, args, env)
 		if err != nil {
 			fmt.Printf("[%s] FAILED: claude error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
-			stampPrepFailure(s, cfg, itemID, "claude error: "+err.Error())
+			stampPrepFailure(s, itemID, "claude error: "+err.Error())
 			return "rejected"
 		}
 
@@ -863,7 +867,7 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 			planText = string(output)
 		} else {
 			fmt.Printf("[%s] FAILED: claude exited %d\n", itemID, exitCode)
-			stampPrepFailure(s, cfg, itemID, fmt.Sprintf("claude exited %d", exitCode))
+			stampPrepFailure(s, itemID, fmt.Sprintf("claude exited %d", exitCode))
 			return "rejected"
 		}
 
@@ -896,7 +900,7 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 
 		if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 			fmt.Printf("[%s] FAILED: save draft plan: %v\n", itemID, err)
-			stampPrepFailure(s, cfg, itemID, "save draft plan: "+err.Error())
+			stampPrepFailure(s, itemID, "save draft plan: "+err.Error())
 			return "rejected"
 		}
 
@@ -927,19 +931,19 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 	// not a complete review and must not be persisted as the report.
 	if reviewSR.Error != "" {
 		fmt.Printf("[%s] FAILED: plan-review error: %s\n", itemID, reviewSR.Error)
-		stampPrepFailure(s, cfg, itemID, "plan-review error: "+reviewSR.Error)
+		stampPrepFailure(s, itemID, "plan-review error: "+reviewSR.Error)
 		return "rejected"
 	}
 
 	if err := plan.SaveReport(cfg.PlansDir(), itemID, reviewSR.FullOutput); err != nil {
 		fmt.Printf("[%s] FAILED: save report: %v\n", itemID, err)
-		stampPrepFailure(s, cfg, itemID, "save report: "+err.Error())
+		stampPrepFailure(s, itemID, "save report: "+err.Error())
 		return "rejected"
 	}
 
 	// I-833: stamp plan_written_at BEFORE the final GitSync so the field is
 	// committed in the same sync as the report sidecar (I-982 ordering rule).
-	stampPrepSuccess(s, cfg, itemID)
+	stampPrepSuccess(s, itemID)
 
 	// I-982: commit the report sidecar and the plan_written_at stamp together.
 	// Both GitSync calls above ran before plan.SaveReport, so the .report.md
@@ -957,7 +961,7 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 
 // stampPrepSuccess writes plan_written_at and clears plan_failed_at /
 // plan_failure_reason. Called by prepItemWriteOnly on success. I-833.
-func stampPrepSuccess(s *store.Store, cfg *config.Config, itemID string) {
+func stampPrepSuccess(s *store.Store, itemID string) {
 	now := time.Now().Format(time.RFC3339)
 	if err := s.Mutate(itemID, func(it *model.Item) error {
 		it.PlanWrittenAt = now
@@ -973,10 +977,10 @@ func stampPrepSuccess(s *store.Store, cfg *config.Config, itemID string) {
 }
 
 // stampPrepFailure writes plan_failed_at + plan_failure_reason, clears
-// plan_written_at, and commits the stamp. Called by prepItemWriteOnly at
-// each early-exit failure path. Non-fatal on both Mutate and GitSync
-// failures — warn to stderr (same posture as other GitSync callers). I-833.
-func stampPrepFailure(s *store.Store, cfg *config.Config, itemID, reason string) {
+// plan_written_at, and commits the stamp via autoSync. Called by
+// prepItemWriteOnly at each early-exit failure path. Non-fatal on both
+// Mutate and autoSync failures — warn to stderr. I-833.
+func stampPrepFailure(s *store.Store, itemID, reason string) {
 	now := time.Now().Format(time.RFC3339)
 	if err := s.Mutate(itemID, func(it *model.Item) error {
 		it.PlanFailedAt = now
@@ -990,8 +994,8 @@ func stampPrepFailure(s *store.Store, cfg *config.Config, itemID, reason string)
 		fmt.Fprintf(os.Stderr, "[%s] Warning: could not stamp plan_failed_at: %v\n", itemID, err)
 		return
 	}
-	if syncErr := s.GitSync("plan-prep: commit failure stamp for " + itemID); syncErr != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Warning: GitSync after failure stamp: %v\n", itemID, syncErr)
+	if syncErr := autoSync(s, "plan-prep: commit failure stamp for "+itemID); syncErr != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: autoSync after failure stamp: %v\n", itemID, syncErr)
 	}
 }
 
