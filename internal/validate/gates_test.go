@@ -848,6 +848,10 @@ func TestGateHintsScopeClassForGoalTaggedItem(t *testing.T) {
 	if !strings.Contains(failMsg, "st update") {
 		t.Errorf("failure message should mention st update, got: %s", failMsg)
 	}
+	// Original st-test recovery instruction must still be present (augment, not replace).
+	if !strings.Contains(failMsg, "st test") {
+		t.Errorf("failure message should still mention st test, got: %s", failMsg)
+	}
 }
 
 // I-831: a default-class item without goal tags gets the undecorated failure.
@@ -881,8 +885,8 @@ func TestGateNoHintForUntaggedMissingSuite(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if !r.Passed && strings.Contains(r.Message, "goal tags suggest") {
-			t.Errorf("unexpected hint in message for untagged item: %s", r.Message)
+		if !r.Passed && strings.Contains(r.Message, "scope_class") && strings.Contains(r.Message, "goal tags suggest") {
+			t.Errorf("unexpected scope_class hint in message for untagged item: %s", r.Message)
 		}
 	}
 }

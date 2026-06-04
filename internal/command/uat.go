@@ -184,14 +184,16 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 		return results
 	}
 	// I-831: when a default-class item carries goal tags that map to a
-	// scope class, surface a hint before the misleading api/web suite rows.
+	// scope class, surface an advisory hint. Rendered as ⊘ (Skipped) so it
+	// does not count as auto-fail — it is informational, not a gate.
 	if item.ScopeClass == "" {
 		if suggestedClass := cfg.Testing.ScopeClassForGoalTags(item.Tags); suggestedClass != "" {
 			results = append(results, checkResult{
-				Label:  "scope_class",
-				Mode:   "auto",
-				Passed: false,
-				Detail: fmt.Sprintf("goal tags suggest scope_class %q — run `st update %s scope_class %s` then re-run", suggestedClass, item.ID, suggestedClass),
+				Label:   "scope_class_hint",
+				Mode:    "auto",
+				Passed:  true,
+				Skipped: true,
+				Detail:  fmt.Sprintf("goal tags suggest scope_class %q — run `st update %s scope_class %s` then re-run", suggestedClass, item.ID, suggestedClass),
 			})
 		}
 	}

@@ -680,11 +680,15 @@ func TestUATHintsScopeClassForGoalTaggedItem(t *testing.T) {
 		t.Fatal("expected at least one check result")
 	}
 	hint := results[0]
-	if hint.Label != "scope_class" {
-		t.Errorf("first result label = %q, want scope_class", hint.Label)
+	if hint.Label != "scope_class_hint" {
+		t.Errorf("first result label = %q, want scope_class_hint", hint.Label)
 	}
-	if hint.Passed {
-		t.Error("hint check should be failing (Passed=false)")
+	// Hint must be Skipped=true so it does not inflate autoFail.
+	if !hint.Skipped {
+		t.Error("hint check should be Skipped=true to avoid counting as auto-fail")
+	}
+	if !hint.Passed {
+		t.Error("hint check Passed should be true (Skipped=true implies Passed is unused, but should not be false)")
 	}
 	if !strings.Contains(hint.Detail, "workspace-config") {
 		t.Errorf("hint detail should mention workspace-config, got: %s", hint.Detail)
@@ -725,7 +729,7 @@ func TestUATNoHintForUntaggedItem(t *testing.T) {
 
 	results := checkTestSuites(item, cfg)
 	for _, r := range results {
-		if r.Label == "scope_class" && strings.Contains(r.Detail, "goal tags suggest") {
+		if r.Label == "scope_class_hint" {
 			t.Errorf("unexpected hint row for untagged item: %+v", r)
 		}
 	}
