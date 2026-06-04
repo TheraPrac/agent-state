@@ -35,6 +35,12 @@ const (
 	// I-679 decision writers (Phase B native-structured / Phase C
 	// extraction backstop). So an unknown Op can safely default away from it.
 	KindDecision Kind = "decision"
+	// KindHeuristic is an operational rule learned from experience: "when X,
+	// do Y / don't do Z". Captures operator corrections, validated unusual
+	// approaches, and cross-item behavioral guidance (I-804). Stored in a
+	// per-agent heuristic file rather than per-item changelogs, so it
+	// surfaces at every resume regardless of which item is active.
+	KindHeuristic Kind = "heuristic"
 )
 
 // Source records provenance for KindDecision entries so a resuming session
@@ -77,6 +83,10 @@ type Entry struct {
 	Kind       Kind    `json:"kind,omitempty"`
 	Source     Source  `json:"source,omitempty"`     // provenance; decision entries only
 	Confidence float64 `json:"confidence,omitempty"` // 0<c≤1 for SourceExtracted; omitted ⇒ not applicable / fully trusted
+
+	// I-804 heuristic fields. Only set on KindHeuristic entries.
+	Scope         string   `json:"scope,omitempty"`          // "per-agent" (default) or "global"
+	RelevanceTags []string `json:"relevance_tags,omitempty"` // tag/file affinity hints for resume filtering
 }
 
 // classifyKind derives the Kind for an entry from its Op. The exec set is
@@ -316,6 +326,93 @@ func LastSnapshot(cfg *config.Config, id, stepName string) string {
 		}
 	}
 	return ""
+}
+
+// heuristicPath returns the path to the per-agent heuristic log file.
+func heuristicPath(cfg *config.Config, agentID string) string {
+	return filepath.Join(cfg.ChangelogDir(), "_heuristic-"+agentID+".log")
+}
+
+// HeuristicAppend writes a KindHeuristic entry to the per-agent heuristic log.
+// entry.Kind is forced to KindHeuristic; Agent and Timestamp are auto-stamped
+// if absent. Writes to .changelog/_heuristic-<agentID>.log, creating the file
+// if it does not exist.
+func HeuristicAppend(cfg *config.Config, entry Entry) error {
+	if entry.Timestamp == "" {
+		entry.Timestamp = time.Now().Format(time.RFC3339)
+	}
+	agentID := cfg.AgentID()
+	if entry.Agent == "" {
+		entry.Agent = agentID
+	}
+	entry.Kind = KindHeuristic
+
+	dir := cfg.ChangelogDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating changelog dir: %w", err)
+	}
+
+	path := heuristicPath(cfg, agentID)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshaling entry: %w", err)
+	}
+	data = append(data, '\n')
+
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("writing entry: %w", err)
+	}
+
+	return nil
+}
+
+// HeuristicList reads heuristic entries for a given agent.
+//
+// filterTags controls relevance filtering:
+//   - Empty filterTags (nil or zero-length): return ALL entries. An item
+//     with no tags is a signal that any operational rule may be relevant —
+//     surfacing everything is the conservative "superset beats silent drop"
+//     choice and matches the approved plan (I-804 §HeuristicList).
+//   - Non-empty filterTags: include only entries where len(RelevanceTags)==0
+//     (universal) OR at least one RelevanceTags element matches a filterTags
+//     element. This narrows to rules relevant to the item's context.
+//
+// Returns nil, nil if the heuristic file does not exist.
+func HeuristicList(cfg *config.Config, agentID string, filterTags []string) ([]Entry, error) {
+	path := heuristicPath(cfg, agentID)
+	entries, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(filterTags) == 0 || len(entries) == 0 {
+		return entries, nil
+	}
+
+	tagSet := make(map[string]bool, len(filterTags))
+	for _, t := range filterTags {
+		tagSet[t] = true
+	}
+
+	var filtered []Entry
+	for _, e := range entries {
+		if len(e.RelevanceTags) == 0 {
+			filtered = append(filtered, e)
+			continue
+		}
+		for _, rt := range e.RelevanceTags {
+			if tagSet[rt] {
+				filtered = append(filtered, e)
+				break
+			}
+		}
+	}
+	return filtered, nil
 }
 
 // Format renders a changelog entry as a human-readable string.

@@ -1773,6 +1773,41 @@ Example:
 	}
 	root.AddCommand(resumeCmd)
 
+	// st heuristic — I-804 operational-heuristic capture and recall.
+	heuristicCmd := &cobra.Command{
+		Use:   "heuristic",
+		Short: "Record and recall operational heuristics for this agent",
+	}
+	heuristicAddCmd := &cobra.Command{
+		Use:   "add",
+		Short: "Record an operational heuristic",
+		Run: func(cmd *cobra.Command, args []string) {
+			text, _ := cmd.Flags().GetString("text")
+			tags, _ := cmd.Flags().GetString("tags")
+			exitCode = command.Heuristic_Add(appCfg, text, tags)
+		},
+	}
+	heuristicAddCmd.Flags().String("text", "", "heuristic rule text (required)")
+	heuristicAddCmd.Flags().String("tags", "", "comma-separated relevance tags (optional)")
+	heuristicListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List recorded heuristics for this agent",
+		Run: func(cmd *cobra.Command, args []string) {
+			agent, _ := cmd.Flags().GetString("agent")
+			exitCode = command.Heuristic_List(appCfg, agent)
+		},
+	}
+	heuristicListCmd.Flags().String("agent", "", "agent ID to list heuristics for (default: current agent)")
+	heuristicMigrateCmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Import agent-memory/feedback_*.md files as structured heuristics",
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Heuristic_Migrate(appCfg)
+		},
+	}
+	heuristicCmd.AddCommand(heuristicAddCmd, heuristicListCmd, heuristicMigrateCmd)
+	root.AddCommand(heuristicCmd)
+
 	// st capture-decision — I-679 Phase B native-structured decision
 	// capture. Hidden: this is hook-invoked machine glue (the
 	// capture-decision.sh PostToolUse hook for AskUserQuestion /
@@ -3176,6 +3211,9 @@ var commandGroupAssignments = map[string]string{
 	"merge":        "uat-pipeline",
 	"deploy-check": "uat-pipeline",
 	"smoke":        "uat-pipeline",
+
+	// Heuristics
+	"heuristic": "querying",
 
 	// Querying
 	"status":     "querying",
