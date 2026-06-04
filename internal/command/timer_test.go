@@ -1,0 +1,178 @@
+package command
+
+import (
+	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/testutil"
+)
+
+// seedSessionStartedAt writes session_started_at on item id, t seconds in the past.
+func seedSessionStartedAt(t *testing.T, env *testutil.Env, id string, secsAgo int) {
+	t.Helper()
+	ts := time.Now().Add(-time.Duration(secsAgo) * time.Second).Format(time.RFC3339)
+	if err := env.S.Mutate(id, func(it *model.Item) error {
+		it.SetNested("time_tracking", "session_started_at", ts)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed session_started_at on %s: %v", id, err)
+	}
+}
+
+// readTTField reads a string value from time_tracking on item id. Returns "".
+func readTTField(t *testing.T, env *testutil.Env, id, key string) string {
+	t.Helper()
+	env.Reload(t)
+	item, ok := env.S.Get(id)
+	if !ok {
+		t.Fatalf("item %s not found", id)
+	}
+	v, _ := getNestedField(item, "time_tracking", key)
+	return v
+}
+
+func TestTimerPauseAllFlushesElapsed(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// T-003 is active and assigned to agent-a in testutil
+	seedSessionStartedAt(t, env, "T-003", 120) // 2 minutes ago
+
+	n, err := TimerPauseAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerPauseAll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item paused, got %d", n)
+	}
+
+	acc := readTTField(t, env, "T-003", "accumulated_seconds")
+	if acc == "" {
+		t.Fatal("accumulated_seconds not written")
+	}
+	secs, _ := strconv.Atoi(acc)
+	if secs < 100 || secs > 200 {
+		t.Errorf("accumulated_seconds expected ~120, got %d", secs)
+	}
+
+	sessStart := readTTField(t, env, "T-003", "session_started_at")
+	if sessStart != "" {
+		t.Errorf("session_started_at should be cleared, got %q", sessStart)
+	}
+}
+
+func TestTimerPauseAllNoActiveItems(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// No session_started_at set on T-003 — timer is already paused
+
+	n, err := TimerPauseAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerPauseAll: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 items paused (no live timer), got %d", n)
+	}
+}
+
+func TestTimerPauseAllOnlyOwnAgent(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Assign T-003 to a different agent
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.AssignedTo = "agent-b"
+		it.Doc.SetField("assigned_to", "agent-b")
+		return nil
+	}); err != nil {
+		t.Fatalf("reassign T-003: %v", err)
+	}
+	seedSessionStartedAt(t, env, "T-003", 60)
+
+	n, err := TimerPauseAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerPauseAll: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("should not touch peer agent's item, got n=%d", n)
+	}
+	// session_started_at should still be set on T-003
+	sessStart := readTTField(t, env, "T-003", "session_started_at")
+	if sessStart == "" {
+		t.Error("peer agent's session_started_at was incorrectly cleared")
+	}
+}
+
+func TestTimerResumeAllSetsSessionStart(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// T-003 active, assigned agent-a, no session_started_at
+
+	n, err := TimerResumeAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerResumeAll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item resumed, got %d", n)
+	}
+
+	sessStart := readTTField(t, env, "T-003", "session_started_at")
+	if sessStart == "" {
+		t.Fatal("session_started_at should be set after resume")
+	}
+	// Should parse as a valid RFC3339 time
+	if _, err := time.Parse(time.RFC3339, sessStart); err != nil {
+		t.Errorf("session_started_at %q is not valid RFC3339: %v", sessStart, err)
+	}
+}
+
+func TestTimerResumeAllIdempotent(t *testing.T) {
+	env := testutil.NewEnv(t)
+	seedSessionStartedAt(t, env, "T-003", 300) // 5 minutes ago
+
+	firstVal := readTTField(t, env, "T-003", "session_started_at")
+
+	n, err := TimerResumeAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerResumeAll: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("already-running timer should not be touched, got n=%d", n)
+	}
+
+	// session_started_at must be unchanged
+	afterVal := readTTField(t, env, "T-003", "session_started_at")
+	if afterVal != firstVal {
+		t.Errorf("session_started_at changed from %q to %q — double-count risk", firstVal, afterVal)
+	}
+}
+
+func TestTimerPauseClockSkewGuard(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Set session_started_at 60 seconds in the FUTURE (clock skew)
+	futureTS := time.Now().Add(60 * time.Second).Format(time.RFC3339)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "session_started_at", futureTS)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed future session_started_at: %v", err)
+	}
+
+	n, err := TimerPauseAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerPauseAll: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item processed, got %d", n)
+	}
+
+	acc := readTTField(t, env, "T-003", "accumulated_seconds")
+	secs := 0
+	if acc != "" {
+		fmt.Sscanf(acc, "%d", &secs)
+	}
+	if secs < 0 {
+		t.Errorf("accumulated_seconds went negative (%d) — clock-skew guard failed", secs)
+	}
+	// Should be 0 (clamp) not negative
+	if secs > 5 {
+		t.Errorf("accumulated_seconds should be ~0 for future start, got %d", secs)
+	}
+}

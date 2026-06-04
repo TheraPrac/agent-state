@@ -395,6 +395,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 		item.TimeTracking["started_at"] = now
 		item.SetNested("time_tracking", "started_at", now)
+		item.SetNested("time_tracking", "session_started_at", now)
 		return nil
 	}); err != nil {
 		if errors.Is(err, store.ErrAlreadyClaimed) {

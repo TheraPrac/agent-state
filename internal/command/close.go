@@ -185,29 +185,50 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// Record completion time tracking
 		item.SetNested("time_tracking", "completed_at", nowStr)
 
-		// I-514: emit all four duration fields from a single wallDur so
-		// they agree to the second / rounding. Prefer started_at; fall
-		// back to item.Created only when started_at is missing or
-		// unparseable (back-compat for legacy items closed without one).
-		var wallDur time.Duration
-		var anchored bool
-		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
-			if t, err := time.Parse(time.RFC3339, startedAt); err == nil {
-				wallDur = now.Sub(t)
-				anchored = true
+		// I-1318: compute work duration from session-scoped accumulated time.
+		// accumulated_seconds holds the sum of all completed work periods;
+		// session_started_at is the current period's start (if the timer is
+		// running). Together they give actual work time, not wall-clock.
+		//
+		// Migration fallback: items started before this fix have neither field.
+		// Fall back to started_at wall-clock so in-flight items still get a
+		// best-effort number rather than silently emitting zero. Remove the
+		// item.Created fallback (I-1314) — it produces meaningless durations.
+		var workDur time.Duration
+		haveSessionFields := false
+		{
+			accSecs := 0
+			if v, ok := getNestedField(item, "time_tracking", "accumulated_seconds"); ok && v != "" {
+				fmt.Sscanf(v, "%d", &accSecs) //nolint:errcheck
+				haveSessionFields = true
+			}
+			if sessStart, ok := getNestedField(item, "time_tracking", "session_started_at"); ok && sessStart != "" {
+				haveSessionFields = true
+				if t0, err := time.Parse(time.RFC3339, sessStart); err == nil {
+					if elapsed := now.Sub(t0); elapsed > 0 {
+						workDur += elapsed
+					}
+				}
+			}
+			if haveSessionFields {
+				workDur += time.Duration(accSecs) * time.Second
+			} else if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
+				if t0, err := time.Parse(time.RFC3339, startedAt); err == nil {
+					workDur = now.Sub(t0)
+				}
 			}
 		}
-		if !anchored && !item.Created.IsZero() {
-			wallDur = now.Sub(item.Created)
-			anchored = true
-		}
-		if anchored {
+		item.SetNested("time_tracking", "session_started_at", "")
+		// Write duration fields when we have session fields (even if workDur rounds
+		// to 0 seconds — the timestamp fields still convey timing info and existing
+		// tests check for field presence) or when workDur is non-zero.
+		if haveSessionFields || workDur > 0 {
 			item.SetNested("time_tracking", "total_duration_seconds",
-				fmt.Sprintf("%d", int(wallDur.Seconds())))
+				fmt.Sprintf("%d", int(workDur.Seconds())))
 			item.SetNested("time_tracking", "work_duration_seconds",
-				fmt.Sprintf("%d", int(wallDur.Seconds())))
-			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", wallDur.Hours()))
-			item.SetNested("time_tracking", "total_wall_time", formatDuration(wallDur))
+				fmt.Sprintf("%d", int(workDur.Seconds())))
+			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", workDur.Hours()))
+			item.SetNested("time_tracking", "total_wall_time", formatDuration(workDur))
 		}
 
 		// Apply the precomputed LOC snapshot. computed outside the lock

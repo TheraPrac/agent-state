@@ -219,3 +219,85 @@ func locateItemFile(root, id string) (string, error) {
 	}
 	return "", fmt.Errorf("not found: %s", id)
 }
+
+// TestClose_DurationAccumulatedPlusElapsed verifies that st close uses
+// accumulated_seconds + elapsed(session_started_at) when session fields exist.
+func TestClose_DurationAccumulatedPlusElapsed(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	// 300 accumulated seconds from a previous session + 60s live segment
+	sessStart := time.Now().Add(-60 * time.Second).Format(time.RFC3339)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", time.Now().Add(-2*time.Hour).Format(time.RFC3339))
+		it.SetNested("time_tracking", "accumulated_seconds", "300")
+		it.SetNested("time_tracking", "session_started_at", sessStart)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, _ := env.S.Get("T-003")
+	total := readIntField(closed, "time_tracking", "total_duration_seconds")
+	// Expect ~360s (300 + 60); allow ±5s for clock jitter
+	if total < 355 || total > 400 {
+		t.Errorf("total_duration_seconds expected ~360 (300+60), got %d", total)
+	}
+}
+
+// TestClose_DurationMigrationFallback verifies that items with only started_at
+// (no session fields) still get a best-effort wall-clock duration, NOT zero.
+func TestClose_DurationMigrationFallback(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	startedAt := time.Now().Add(-90 * time.Minute).Format(time.RFC3339)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", startedAt)
+		// deliberately NOT setting accumulated_seconds or session_started_at
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, _ := env.S.Get("T-003")
+	total := readIntField(closed, "time_tracking", "total_duration_seconds")
+	// Migration fallback should produce ~90 minutes, not zero
+	if total < 60*60 || total > 2*60*60 {
+		t.Errorf("migration fallback: total_duration_seconds expected ~5400 (90m), got %d", total)
+	}
+}
+
+// TestClose_ClearsSessionStartedAt verifies that st close zeroes session_started_at.
+func TestClose_ClearsSessionStartedAt(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "session_started_at", time.Now().Format(time.RFC3339))
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, _ := env.S.Get("T-003")
+	sessStart, _ := getNestedField(closed, "time_tracking", "session_started_at")
+	if sessStart != "" {
+		t.Errorf("session_started_at should be cleared after close, got %q", sessStart)
+	}
+}
