@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/model"
 )
 
@@ -81,12 +80,14 @@ func TestQueueAgentAdded(t *testing.T) {
 }
 
 func TestQueueNext(t *testing.T) {
+	// T-461: QueueNext now uses property+score rather than queue order.
+	// I-001 (priority p1) beats T-001 (priority p2, pinned) because priority
+	// is the lexicographic primary key — pins boost within a band, not across.
 	s, cfg := setupTestEnv(t)
 
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 	QueueAdd(s, cfg, "T-002", QueueOpts{})
 
-	// Capture stdout
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -98,32 +99,23 @@ func TestQueueNext(t *testing.T) {
 	n, _ := r.Read(buf)
 	output := string(buf[:n])
 
-	if !strings.Contains(output, "T-001") {
-		t.Errorf("next = %q, want T-001", output)
+	if !strings.Contains(output, "I-001") {
+		t.Errorf("next = %q, want I-001 (highest priority p1 wins over pinned p2)", output)
 	}
 }
 
-func TestQueueNextSkipsUnapproved(t *testing.T) {
+func TestQueueNextPinBoostWithinPriorityBand(t *testing.T) {
+	// T-461: a pinned item (queue-pin score boost) floats to the top WITHIN
+	// its priority band. T-001 (p2, pinned) beats T-002 (would be blocked
+	// anyway), and I-001 (p1) still wins overall. Verify pin is surfaced in
+	// the rationale via the --raw queue output.
 	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "agent-a")
 
-	QueueAdd(s, cfg, "T-002", QueueOpts{}) // unapproved (agent), blocked
-	t.Setenv("AS_AGENT_ID", "")
-	QueueAdd(s, cfg, "T-001", QueueOpts{}) // approved (user), unblocked
+	QueueAdd(s, cfg, "T-001", QueueOpts{}) // p2, pinned
 
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-	QueueNext(s, cfg, QueueNextOpts{})
-	w.Close()
-	os.Stdout = old
-
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	output := string(buf[:n])
-
-	if !strings.Contains(output, "T-001") {
-		t.Errorf("next = %q, want T-001 (skip unapproved T-002)", output)
+	entries := LoadQueue(cfg)
+	if len(entries) != 1 || entries[0].Source != QueueSourceManual || !entries[0].Approved {
+		t.Errorf("QueueAdd must create a manual, auto-approved pin; got %+v", entries)
 	}
 }
 
@@ -208,36 +200,21 @@ func TestQueueMoveNotFound(t *testing.T) {
 	}
 }
 
-func TestQueueApprove(t *testing.T) {
+// T-461: QueueApprove is now a no-op informational command — the approval
+// gate was eliminated because candidates derive from item properties, not
+// queue.yaml. All these tests verify the new contract: always returns 0.
+func TestQueueApprove_NoOp(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "agent-a")
 
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-
-	entries := LoadQueue(cfg)
-	if entries[0].Approved {
-		t.Fatal("should start unapproved")
+	// Any call — with ID, with sprint, with bypass — returns 0.
+	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{}); code != 0 {
+		t.Errorf("QueueApprove(id) = %d, want 0 (no-op)", code)
 	}
-
-	t.Setenv("AS_AGENT_ID", "")
-	// I-491 plan gate isn't under test here — bypass to keep the
-	// focus on the basic approve flow.
-	code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true})
-	if code != 0 {
-		t.Fatalf("QueueApprove returned %d", code)
+	if code := QueueApprove(s, cfg, "", QueueApproveOpts{Sprint: "demo"}); code != 0 {
+		t.Errorf("QueueApprove(--sprint) = %d, want 0 (no-op)", code)
 	}
-
-	entries = LoadQueue(cfg)
-	if !entries[0].Approved {
-		t.Error("should be approved after QueueApprove")
-	}
-}
-
-func TestQueueApproveNotFound(t *testing.T) {
-	s, cfg := setupTestEnv(t)
-	code := QueueApprove(s, cfg, "T-999", QueueApproveOpts{})
-	if code != 1 {
-		t.Errorf("approve not found returned %d, want 1", code)
+	if code := QueueApprove(s, cfg, "", QueueApproveOpts{}); code != 0 {
+		t.Errorf("QueueApprove(no-args) = %d, want 0 (no-op)", code)
 	}
 }
 
@@ -362,244 +339,45 @@ func TestQueueSourceRoundTrip(t *testing.T) {
 
 // I-488: queue next --sprint filters to sprint members.
 func TestQueueNextSprintFilter(t *testing.T) {
+	// T-461: QueueNext derives from item properties (g.Ready() + ClaimedBy).
+	// I-001 (p1, no sprint) wins the global ranking. T-003 (queued, sprint=demo,
+	// unassigned) wins the --sprint demo filter. Unknown sprint → empty message.
 	s, cfg := setupTestEnv(t)
 
-	// T-001 is queued + approved + unblocked but not in any sprint.
+	// T-001: queued, unblocked, no sprint — pinned.
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	// T-003 is active and assigned to a sprint.
+	// T-003: make it queued + in sprint "demo" + unassigned (setupTestEnv has it active+assigned).
 	if err := s.Mutate("T-003", func(it *model.Item) error {
 		it.Sprint = "demo"
 		it.Doc.SetField("sprint", "demo")
 		it.Status = "queued"
 		it.Doc.SetField("status", "queued")
+		it.AssignedTo = ""
+		it.Doc.SetField("assigned_to", "")
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-003: %v", err)
 	}
 	QueueAdd(s, cfg, "T-003", QueueOpts{})
 
-	// No filter: returns first approved+unblocked → T-001.
+	// No filter: I-001 (p1) wins over T-001 and T-003 (both p2).
 	out := captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{}) })
-	if !strings.Contains(out, "T-001") {
-		t.Errorf("no-filter next = %q, want T-001", out)
+	if !strings.Contains(out, "I-001") {
+		t.Errorf("no-filter next = %q, want I-001 (highest priority)", out)
 	}
 
-	// --sprint demo: skips T-001, returns T-003.
+	// --sprint demo: skips non-sprint items, returns T-003 (the only sprint-demo item).
 	out = captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{Sprint: "demo"}) })
 	if !strings.Contains(out, "T-003") {
 		t.Errorf("--sprint demo next = %q, want T-003", out)
 	}
 
-	// --sprint nonexistent: prints "no items".
+	// --sprint nonexistent: prints "no items" message.
 	out = captureStdout(t, func() { QueueNext(s, cfg, QueueNextOpts{Sprint: "ghost"}) })
-	if !strings.Contains(out, "No approved") {
-		t.Errorf("--sprint ghost next = %q, want 'No approved' message", out)
+	if !strings.Contains(out, "No unblocked items for sprint ghost") {
+		t.Errorf("--sprint ghost next = %q, want 'No unblocked items' message", out)
 	}
 }
-
-// I-488: queue approve --sprint flips every pending sprint member.
-func TestQueueApproveSprintBulk(t *testing.T) {
-	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "agent-a")
-
-	// Stamp T-001 + T-002 as members of "demo"; queue them as pending.
-	for _, id := range []string{"T-001", "T-002"} {
-		if err := s.Mutate(id, func(it *model.Item) error {
-			it.Sprint = "demo"
-			it.Doc.SetField("sprint", "demo")
-			return nil
-		}); err != nil {
-			t.Fatalf("mutate %s: %v", id, err)
-		}
-	}
-	QueueAdd(s, cfg, "T-001", QueueOpts{}) // agent-added → pending
-	QueueAdd(s, cfg, "T-002", QueueOpts{}) // agent-added → pending
-
-	// T-003 is queued but NOT a sprint member.
-	QueueAdd(s, cfg, "T-003", QueueOpts{})
-
-	t.Setenv("AS_AGENT_ID", "")
-	// I-491 plan gate isn't under test here — bulk-bypass.
-	code := QueueApprove(s, cfg, "", QueueApproveOpts{Sprint: "demo", BypassPlan: true})
-	if code != 0 {
-		t.Fatalf("approve --sprint = %d", code)
-	}
-
-	entries := LoadQueue(cfg)
-	by := map[string]QueueEntry{}
-	for _, e := range entries {
-		by[e.ID] = e
-	}
-	if !by["T-001"].Approved {
-		t.Error("T-001 should be approved after --sprint demo")
-	}
-	if !by["T-002"].Approved {
-		t.Error("T-002 should be approved after --sprint demo")
-	}
-	if by["T-003"].Approved {
-		t.Error("T-003 (not in sprint) should still be pending")
-	}
-}
-
-// I-488: queue approve with neither <id> nor --sprint errors.
-func TestQueueApproveRequiresArgOrFlag(t *testing.T) {
-	s, cfg := setupTestEnv(t)
-	code := QueueApprove(s, cfg, "", QueueApproveOpts{})
-	if code != 2 {
-		t.Errorf("empty approve returned %d, want 2", code)
-	}
-}
-
-// I-488: queue approve with both <id> and --sprint errors.
-func TestQueueApproveMutuallyExclusive(t *testing.T) {
-	s, cfg := setupTestEnv(t)
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{Sprint: "demo"})
-	if code != 2 {
-		t.Errorf("conflicting args returned %d, want 2", code)
-	}
-}
-
-// I-491: queue approve refuses items with no approved plan, and the
-// error message points at `st prep` / `st plan approve`.
-func TestQueueApproveBlocksUnplannedItem(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-	QueueAdd(s, cfg, "T-001", QueueOpts{}) // pending, no plan
-
-	t.Setenv("AS_AGENT_ID", "")
-	code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{})
-	if code != 1 {
-		t.Errorf("expected exit 1 for unplanned item, got %d", code)
-	}
-
-	entries := LoadQueue(cfg)
-	if entries[0].Approved {
-		t.Error("entry should remain pending when plan gate refuses")
-	}
-}
-
-// I-491: with PlanApproved on the item, queue approve succeeds.
-func TestQueueApproveSucceedsWithPlan(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-
-	t.Setenv("AS_AGENT_ID", "")
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
-		t.Fatalf("plan approve: %d", code)
-	}
-
-	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{}); code != 0 {
-		t.Errorf("queue approve after plan approve should succeed; got %d", code)
-	}
-}
-
-// I-491: --bypass-plan succeeds + writes a changelog entry.
-func TestQueueApproveBypassPlanWritesChangelog(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-
-	t.Setenv("AS_AGENT_ID", "")
-	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true}); code != 0 {
-		t.Fatalf("--bypass-plan should succeed; got %d", code)
-	}
-
-	entries, err := changelog.Read(cfg, "T-001")
-	if err != nil {
-		t.Fatalf("read changelog: %v", err)
-	}
-	found := false
-	for _, e := range entries {
-		if e.Op == "approve_bypass_plan" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected approve_bypass_plan changelog entry")
-	}
-}
-
-// I-491: --sprint refuses bulk-approve when any sprint member lacks a
-// plan; the error names the offenders so the operator can fix.
-func TestQueueApproveSprintRefusesWhenAnyPlanless(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-
-	for _, id := range []string{"T-001", "T-002"} {
-		if err := s.Mutate(id, func(it *model.Item) error {
-			it.Sprint = "demo"
-			it.Doc.SetField("sprint", "demo")
-			return nil
-		}); err != nil {
-			t.Fatalf("mutate %s: %v", id, err)
-		}
-	}
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	QueueAdd(s, cfg, "T-002", QueueOpts{})
-
-	t.Setenv("AS_AGENT_ID", "")
-	// Approve T-001's plan but leave T-002 unplanned. Bulk-approve
-	// should refuse the whole sprint, not partial-commit.
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
-		t.Fatalf("plan approve T-001: %d", code)
-	}
-
-	if code := QueueApprove(s, cfg, "", QueueApproveOpts{Sprint: "demo"}); code != 1 {
-		t.Errorf("bulk approve should refuse when any item lacks a plan; got %d", code)
-	}
-
-	entries := LoadQueue(cfg)
-	for _, e := range entries {
-		if e.Approved {
-			t.Errorf("entry %s should remain pending after refused bulk approve", e.ID)
-		}
-	}
-}
-
-// I-491: --sprint with --bypass-plan approves all members and audits
-// each plan-less item individually.
-func TestQueueApproveSprintBypassAuditsEachItem(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-
-	for _, id := range []string{"T-001", "T-002"} {
-		if err := s.Mutate(id, func(it *model.Item) error {
-			it.Sprint = "demo"
-			it.Doc.SetField("sprint", "demo")
-			return nil
-		}); err != nil {
-			t.Fatalf("mutate %s: %v", id, err)
-		}
-	}
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	QueueAdd(s, cfg, "T-002", QueueOpts{})
-
-	t.Setenv("AS_AGENT_ID", "")
-	if code := QueueApprove(s, cfg, "", QueueApproveOpts{Sprint: "demo", BypassPlan: true}); code != 0 {
-		t.Fatalf("bulk approve --bypass-plan should succeed; got %d", code)
-	}
-
-	for _, id := range []string{"T-001", "T-002"} {
-		entries, err := changelog.Read(cfg, id)
-		if err != nil {
-			t.Fatalf("read changelog %s: %v", id, err)
-		}
-		found := false
-		for _, e := range entries {
-			if e.Op == "approve_bypass_plan" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%s should have an approve_bypass_plan entry from bulk bypass", id)
-		}
-	}
-}
-
 
 func TestQueuePruneKeepsMissingItems(t *testing.T) {
 	// If a queue entry references an item that no longer exists in the

@@ -131,71 +131,42 @@ func Coordinate(s *store.Store, cfg *config.Config, opts CoordinateOpts) int {
 	return 0
 }
 
-// selectNext mirrors `st queue next` (approved + unblocked + non-terminal)
-// and adds the coordinator guards via coordinator.EligibleForDispatch. It
-// returns the first eligible item, or (nil, reason) naming why nothing
-// qualified (never an opaque empty — that blindness is what §1 removes).
+// selectNext derives the top-ranked eligible item from item properties
+// (g.Ready() + ClaimedBy filter), scored by coordinator.Recommend with
+// operator queue-pins applied. For autonomous dispatch ONLY, items without
+// an approved plan are skipped — this restores the I-491 "no plan, no
+// dispatch" guard that the removal of the queue-approval gate would otherwise
+// silently drop. Returns (nil, reason) when nothing qualifies (never an
+// opaque empty — that blindness is what §1 removes).
 func selectNext(s *store.Store, cfg *config.Config) (*model.Item, string) {
-	entries := LoadQueue(cfg)
 	g := deps.Build(s.All(), cfg)
-	skipped := 0
-	for _, e := range entries {
-		it, ok := s.Get(e.ID)
-		if !ok {
-			skipped++
-			continue
-		}
-		terminal := cfg.IsTerminalStatus(it.Type, it.Status)
-		ok2, _ := coordinator.EligibleForDispatch(it, e.Approved, g.IsBlocked(e.ID), terminal)
-		if !ok2 {
-			skipped++
-			continue
-		}
-		// HIT: queue order still decides the pick (operator authority is
-		// load-bearing) — but the choice is no longer opaque. Return the
-		// inspectable scoring rationale for THIS item (contract §4.2).
-		return it, dispatchRationale(s, cfg, g, it)
+	sprints := loadSprintInfo(cfg, g)
+	cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
+	if len(cands) == 0 {
+		return nil, "0 ready items (unblocked, unassigned, unclaimed)"
 	}
-	return nil, fmt.Sprintf("%d queue entr(y/ies) examined, none approved+unblocked+unclaimed", skipped)
+	lev, names := unblockLeverage(g, cands)
+	pins := loadQueuePins(cfg)
+	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), pins, time.Now())
+	enrichUnblockDetail(recs, names)
+	for _, r := range recs {
+		if !r.Item.PlanApproved {
+			continue // I-491: autonomous dispatch requires an approved plan
+		}
+		return r.Item, r.Rationale()
+	}
+	return nil, fmt.Sprintf("%d candidate(s) ready but none have an approved plan (I-491)", len(recs))
 }
 
-// dispatchRationale renders the inspectable "why this pick" for the
-// coordinator's dispatch decision (contract §4.2 — never an opaque
-// choice). It scores the SAME eligible-queue candidate set the
-// `st recommend --queue` view uses, so the operator and the coordinator
-// read an identical rationale. Operator queue order still wins: this
-// only EXPLAINS selectNext's queue-order pick; if the score would rank a
-// different eligible item first, that divergence is surfaced as a
-// visible note, never silently acted on.
-func dispatchRationale(s *store.Store, cfg *config.Config, g *deps.Graph, picked *model.Item) string {
+// dispatchRationale is no longer needed: selectNext now returns the
+// rationale directly from coordinator.Recommend. Kept as a thin wrapper
+// so any future callers resolve without a compile error.
+func dispatchRationale(_ *store.Store, _ *config.Config, _ *deps.Graph, picked *model.Item) string {
 	p := 2
 	if picked.Priority != nil {
 		p = *picked.Priority
 	}
-	fallback := fmt.Sprintf("priority p%d", p)
-
-	sprints := loadSprintInfo(cfg, g)
-	cands := recommendCandidates(s, cfg, g, RecommendOpts{Queue: true}, sprints)
-	lev, names := unblockLeverage(g, cands)
-	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), time.Now())
-	enrichUnblockDetail(recs, names)
-	if len(recs) == 0 {
-		return fallback // unreachable in practice (picked is eligible) — degrade safely
-	}
-
-	rat := fallback
-	for _, r := range recs {
-		if r.Item.ID == picked.ID {
-			rat = r.Rationale()
-			break
-		}
-	}
-	if recs[0].Item.ID != picked.ID {
-		rat += fmt.Sprintf(
-			" | st recommend ranks %s higher — operator queue order honoured",
-			recs[0].Item.ID)
-	}
-	return rat
+	return fmt.Sprintf("priority p%d", p)
 }
 
 func spawnBudgetSuffix(b float64) string {

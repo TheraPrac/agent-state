@@ -85,7 +85,9 @@ func TestIsQueuePending_GoalReachableShortCircuits(t *testing.T) {
 	}
 }
 
-func TestIsQueuePending_NonGoalReachableStillPending(t *testing.T) {
+func TestIsQueuePending_AlwaysFalse(t *testing.T) {
+	// T-461: approval gate eliminated — IsQueuePending always returns false
+	// regardless of who added the item.
 	t.Setenv("AS_AGENT_ID", "agent-a")
 
 	s, cfg := setupTestEnv(t)
@@ -94,8 +96,8 @@ func TestIsQueuePending_NonGoalReachableStillPending(t *testing.T) {
 		t.Fatalf("QueueAdd rc=%d", rc)
 	}
 
-	if !IsQueuePending(s, cfg, "T-001") {
-		t.Error("non-goal-reachable agent-added item should still be pending")
+	if IsQueuePending(s, cfg, "T-001") {
+		t.Error("IsQueuePending must always return false (T-461: approval gate removed)")
 	}
 }
 
@@ -114,13 +116,13 @@ func TestPendingApprovalCount_ExcludesGoalReachable(t *testing.T) {
 	}
 	s = reloadStoreGoal(t, cfg)
 
-	// Both are agent-added (Approved=false), but T-001 is goal-reachable.
+	// T-461: approval gate eliminated — PendingApprovalCount always returns 0.
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 	QueueAdd(s, cfg, "T-002", QueueOpts{})
 
 	count := PendingApprovalCount(s, cfg)
-	if count != 1 {
-		t.Errorf("PendingApprovalCount = %d, want 1 (only T-002 not goal-reachable)", count)
+	if count != 0 {
+		t.Errorf("PendingApprovalCount = %d, want 0 (T-461: approval gate removed)", count)
 	}
 }
 

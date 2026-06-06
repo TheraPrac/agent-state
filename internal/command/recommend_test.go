@@ -98,23 +98,24 @@ func TestRecommend_JSONStableContract(t *testing.T) {
 
 // DISPATCH view: empty queue ⇒ nothing; after a user-approved add the
 // eligible item appears (mirrors selectNext's candidate set exactly).
-func TestRecommend_QueueDispatchView(t *testing.T) {
+func TestRecommend_QueueFlagNoOp(t *testing.T) {
+	// T-461: --queue flag is a backward-compat no-op; both views use property-
+	// based candidates. A pin adds a "queue pin" score boost but does not gate
+	// visibility. Ready items appear regardless of queue state.
 	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "") // user-added ⇒ approved (I-490)
 
-	empty := captureStdout(t, func() {
-		Recommend(s, cfg, RecommendOpts{Queue: true})
-	})
-	if !strings.Contains(empty, "No recommendable items") {
-		t.Fatalf("empty queue must yield none, got:\n%s", empty)
+	// Without pins, --queue and default view return the same ready items.
+	withFlag := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{Queue: true}) })
+	without := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{}) })
+	if withFlag != without {
+		t.Fatalf("--queue flag must not change the candidate set:\nwith: %s\nwithout: %s", withFlag, without)
 	}
 
+	// After pinning T-001, the "queue pin" factor appears in its rationale.
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	out := captureStdout(t, func() {
-		Recommend(s, cfg, RecommendOpts{Queue: true})
-	})
-	if !strings.Contains(out, "T-001") || !strings.Contains(out, "why:") {
-		t.Fatalf("approved+eligible T-001 must appear in dispatch view:\n%s", out)
+	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{Queue: true}) })
+	if !strings.Contains(out, "queue pin") {
+		t.Fatalf("pinned T-001 must show 'queue pin' factor:\n%s", out)
 	}
 }
 

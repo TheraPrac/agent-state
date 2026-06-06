@@ -75,7 +75,7 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 	cands := recommendCandidates(s, cfg, g, opts, sprints)
 	leverage, names := unblockLeverage(g, cands)
 
-	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), time.Now())
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), loadQueuePins(cfg), time.Now())
 	enrichUnblockDetail(recs, names)
 
 	if len(recs) > top {
@@ -119,12 +119,16 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 	return 0
 }
 
-// recommendCandidates resolves the candidate set:
-//   - --queue ⇒ the DISPATCH view: queue entries that pass
-//     coordinator.EligibleForDispatch (exactly what selectNext sees), so
-//     the operator and the coordinator read the identical rationale.
-//   - default ⇒ the PLANNING view: g.Ready() (unblocked + start-status +
-//     unassigned) — the established "what's workable" primitive.
+// recommendCandidates resolves the candidate set from item properties:
+// g.Ready() (unblocked + start-status + unassigned), further filtered to
+// exclude items already claimed by a running session (ClaimedBy != "").
+// queue.yaml is no longer the candidate source; it is an optional pin layer
+// applied at scoring time via loadQueuePins (pinned items get a score boost
+// but cannot leapfrog a strictly-higher-priority item).
+//
+// The Queue field on opts is accepted for backward compatibility but has no
+// effect on the candidate set — both planning and dispatch views now derive
+// candidates from item properties.
 //
 // --scope sprint further restricts to members of an ACTIVE sprint.
 // --goal (or the calling agent's focus_goal when no explicit flag is set)
@@ -133,21 +137,13 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	opts RecommendOpts, sprints map[string]coordinator.SprintInfo) []*model.Item {
 
-	var cands []*model.Item
-	if opts.Queue {
-		for _, e := range LoadQueue(cfg) {
-			it, ok := s.Get(e.ID)
-			if !ok {
-				continue
-			}
-			terminal := cfg.IsTerminalStatus(it.Type, it.Status)
-			if ok2, _ := coordinator.EligibleForDispatch(
-				it, e.Approved, g.IsBlocked(e.ID), terminal); ok2 {
-				cands = append(cands, it)
-			}
+	ready := g.Ready()
+	cands := ready[:0:len(ready)]
+	for _, it := range ready {
+		if it.ClaimedBy != "" {
+			continue
 		}
-	} else {
-		cands = g.Ready()
+		cands = append(cands, it)
 	}
 
 	if opts.Scope == "sprint" {
@@ -262,6 +258,21 @@ func loadGoalWeights(s *store.Store) map[string]float64 {
 		w := float64(*g.Weight)
 		for _, itemID := range g.Goals {
 			out[itemID] += w
+		}
+	}
+	return out
+}
+
+// loadQueuePins returns the set of item IDs that are operator-pinned in
+// queue.yaml. An entry is a pin when its Source is NOT QueueSourceSprint
+// (i.e., "manual", empty/legacy, or any future manual variant). Sprint-
+// sourced entries are NOT pins — they were legacy auto-queue artefacts.
+// Resilient: an unreadable queue.yaml yields an empty set (no boost).
+func loadQueuePins(cfg *config.Config) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range LoadQueue(cfg) {
+		if e.Source != QueueSourceSprint {
+			out[e.ID] = true
 		}
 	}
 	return out

@@ -41,15 +41,24 @@ func writeBoundary(t *testing.T, root string) {
 
 func TestSelectNext(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "") // user-added ⇒ approved
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
+
+	// T-461: selectNext derives from item properties, not queue.yaml.
+	// The I-491 dispatch-safety guard skips items without an approved plan.
+	// Set PlanApproved=true on T-001 only; I-001 (p1) is left unplanned so
+	// selectNext must skip it and return T-001 — the only planned candidate.
+	if err := s.Mutate("T-001", func(m *model.Item) error {
+		m.PlanApproved = true
+		return nil
+	}); err != nil {
+		t.Fatalf("set PlanApproved on T-001: %v", err)
+	}
+	QueueAdd(s, cfg, "T-001", QueueOpts{}) // pin (score boost, not eligibility gate)
 
 	it, why := selectNext(s, cfg)
 	if it == nil || it.ID != "T-001" {
-		t.Fatalf("selectNext = %v (%s), want T-001", it, why)
+		t.Fatalf("selectNext = %v (%s), want T-001 (only planned candidate)", it, why)
 	}
-	// Contract §4.2: the hit is no longer an opaque pick — it carries an
-	// inspectable scoring rationale, not the old empty string.
+	// Contract §4.2: the hit carries an inspectable scoring rationale.
 	if !strings.Contains(why, "priority p") {
 		t.Errorf("hit must carry a decomposed rationale, got %q", why)
 	}
