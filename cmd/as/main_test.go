@@ -143,6 +143,7 @@ func runAs(t *testing.T, workspace string, args ...string) (string, string, int)
 		"AS_SESSION_ID=test-session-001",
 		"CLAUDECODE=",
 		"AS_INTERNAL_NO_REVIEW=1",
+		"AS_INTERNAL_NO_CLASSIFY=1",
 	)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

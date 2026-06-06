@@ -86,6 +86,20 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		}
 	}
 
+	// I-904: auto-classify goals when none supplied explicitly. CLI path only
+	// (opts.EnforceGate is false for in-process/test callers); engine nil →
+	// classifyGoals returns nil, false, nil silently. The "no active goal
+	// matched" warning is emitted inside classifyGoals when the LLM ran and
+	// found nothing — the caller only needs to act on a non-empty match.
+	if len(opts.Goals) == 0 && opts.EnforceGate && (itemType == "task" || itemType == "issue") {
+		matched, _, _ := classifyGoals(s, cfg, itemType, title, opts.Situation, opts.Engine)
+		if len(matched) > 0 {
+			opts.Goals = matched
+			fmt.Fprintf(os.Stderr, "hint: auto-assigned goal(s) %s from title/description match — use --goals to override\n",
+				strings.Join(matched, ", "))
+		}
+	}
+
 	// I-908 Layer 1: validate SBAR content before any git commit when EnforceGate.
 	// Only fires for task/issue types; ideas/promotions have no SBAR requirement.
 	if opts.EnforceGate && (itemType == "task" || itemType == "issue") {
