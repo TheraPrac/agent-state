@@ -81,14 +81,17 @@ func TestStatusMe_DoneRespectsTouchedByAndWindow(t *testing.T) {
 	}
 }
 
-func TestStatusMe_NeedsYouAndProposedNext(t *testing.T) {
+// T-461: approval gate removed; all entries are auto-approved. NEEDS-YOU is
+// always empty. Agent-proposed entries at pos > 0 appear in PROPOSED-NEXT;
+// pos 0 is the current pick (not shown until claimed). User-added entries
+// are never shown in another agent's rollup.
+func TestStatusMe_ProposedNext(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	t.Setenv("AS_AGENT_ID", "agent-b") // queue adds will record AddedBy=agent-b
-	// T-001 added by agent-b → goes to NEEDS-YOU (agent add ⇒ !Approved).
-	QueueAdd(s, cfg, "T-001", QueueOpts{Reason: "for review"})
-	// User-added entry (AddedBy="user") must NOT appear in agent-b's rollup.
+	t.Setenv("AS_AGENT_ID", "agent-b")
+	QueueAdd(s, cfg, "T-001", QueueOpts{Reason: "top pick"})  // pos 0 — not shown
+	QueueAdd(s, cfg, "T-002", QueueOpts{Reason: "proposed"})   // pos 1 → PROPOSED-NEXT
 	t.Setenv("AS_AGENT_ID", "")
-	QueueAdd(s, cfg, "I-001", QueueOpts{})
+	QueueAdd(s, cfg, "I-001", QueueOpts{}) // user-added — must not appear
 
 	var buf bytes.Buffer
 	rc := statusMeTo(&buf, s, cfg, StatusOpts{Me: true, Agent: "agent-b"})
@@ -96,8 +99,8 @@ func TestStatusMe_NeedsYouAndProposedNext(t *testing.T) {
 		t.Fatalf("rc=%d\n%s", rc, buf.String())
 	}
 	got := buf.String()
-	if !strings.Contains(got, "T-001") {
-		t.Errorf("T-001 (agent-proposed, !Approved) must appear in NEEDS-YOU\n%s", got)
+	if !strings.Contains(got, "T-002") {
+		t.Errorf("T-002 (agent-proposed, pos=1) must appear in PROPOSED-NEXT\n%s", got)
 	}
 	if strings.Contains(got, "I-001") {
 		t.Errorf("I-001 (user-added) must NOT appear in agent-b's rollup\n%s", got)

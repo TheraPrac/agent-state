@@ -62,6 +62,7 @@ func TestQueueAddNotFound(t *testing.T) {
 	}
 }
 
+// T-461: all QueueAdd calls are auto-approved regardless of caller identity.
 func TestQueueAgentAdded(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	t.Setenv("AS_AGENT_ID", "agent-a")
@@ -71,8 +72,8 @@ func TestQueueAgentAdded(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d", len(entries))
 	}
-	if entries[0].Approved {
-		t.Error("agent-added items should not be auto-approved")
+	if !entries[0].Approved {
+		t.Error("agent-added items must be auto-approved (T-461: approval gate removed)")
 	}
 	if entries[0].AddedBy != "agent-a" {
 		t.Errorf("added_by = %q", entries[0].AddedBy)

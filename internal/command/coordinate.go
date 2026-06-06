@@ -158,16 +158,6 @@ func selectNext(s *store.Store, cfg *config.Config) (*model.Item, string) {
 	return nil, fmt.Sprintf("%d candidate(s) ready but none have an approved plan (I-491)", len(recs))
 }
 
-// dispatchRationale is no longer needed: selectNext now returns the
-// rationale directly from coordinator.Recommend. Kept as a thin wrapper
-// so any future callers resolve without a compile error.
-func dispatchRationale(_ *store.Store, _ *config.Config, _ *deps.Graph, picked *model.Item) string {
-	p := 2
-	if picked.Priority != nil {
-		p = *picked.Priority
-	}
-	return fmt.Sprintf("priority p%d", p)
-}
 
 func spawnBudgetSuffix(b float64) string {
 	if b > 0 {

@@ -101,11 +101,14 @@ func TestArc_AddArgsValidation(t *testing.T) {
 }
 
 // Status --me --arc filters all four sections.
+// T-461: NEEDS-YOU is retired (approval gate removed). Items appear in
+// PROPOSED-NEXT when at queue pos > 0. To ensure T-001 appears in
+// PROPOSED-NEXT, T-002 is added first (pos=0 = current pick, not shown).
 func TestStatusMe_ArcFilter(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	t.Setenv("AS_AGENT_ID", "agent-b")
-	QueueAdd(s, cfg, "T-001", QueueOpts{})             // agent-proposed (NEEDS-YOU)
-	QueueAdd(s, cfg, "T-002", QueueOpts{})             // agent-proposed (NEEDS-YOU)
+	QueueAdd(s, cfg, "T-002", QueueOpts{})             // pos=0 (current pick, not shown)
+	QueueAdd(s, cfg, "T-001", QueueOpts{})             // pos=1 → PROPOSED-NEXT
 	ArcAdd(s, cfg, "trust-surface", []string{"T-001"}) // only T-001 in arc
 
 	var buf bytes.Buffer

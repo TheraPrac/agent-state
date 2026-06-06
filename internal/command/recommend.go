@@ -29,7 +29,7 @@ type RecommendOpts struct {
 	JSON  bool   // machine output (the future T-348 TUI panel consumer)
 	Top   int    // max rows to print; <=0 ⇒ 10
 	Scope string // "all" (default) | "sprint" (active-sprint members only)
-	Queue bool   // candidate set = the DISPATCH view (queue + EligibleForDispatch)
+	Queue bool   // accepted for backward compatibility; has no effect (T-461: candidates always derive from item properties)
 	Brief bool   // one-line render: "<ID> p<N>  <title> — <rationale>"
 	Goal  string // explicit goal filter (overrides agent focus_goal when set)
 }

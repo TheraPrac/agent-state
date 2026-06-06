@@ -558,37 +558,23 @@ func TestSprintShowOrdersByQueuePosition(t *testing.T) {
 	}
 }
 
-// sprint next is a thin wrapper around queue next --sprint.
+// sprint next derives from item properties (T-461: approval gate removed).
+// SprintAdd sets Sprint on items; they are immediately visible once unblocked.
+// T-002 depends on T-001 → T-001 leads.
 func TestSprintNextHonorsApprovalAndDeps(t *testing.T) {
 	s, cfg, _, sprintID := setupSprintTestEnv(t)
 
-	SprintAdd(s, cfg, sprintID, []string{"T-001", "T-002"})
-
-	// No queue entries → no approved items.
+	// No sprint members yet → no candidates match this sprint.
 	out := captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
-	if !strings.Contains(out, "No approved") {
-		t.Errorf("expected 'No approved' with empty queue, got %q", out)
+	if !strings.Contains(out, "No unblocked items") {
+		t.Errorf("expected 'No unblocked items' before SprintAdd, got %q", out)
 	}
 
-	// Add both as pending (agent-added → Approved=false), then approve both.
-	// T-002 depends on T-001 → blocked → next is T-001.
-	// I-491 plan gate isn't under test here — bypass to focus on
-	// approval-and-block ordering.
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	QueueAdd(s, cfg, "T-001", QueueOpts{})
-	QueueAdd(s, cfg, "T-002", QueueOpts{})
-	t.Setenv("AS_AGENT_ID", "")
-
-	out = captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
-	if !strings.Contains(out, "No approved") {
-		t.Errorf("expected 'No approved' while pending, got %q", out)
-	}
-
-	QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true})
-	QueueApprove(s, cfg, "T-002", QueueApproveOpts{BypassPlan: true})
+	// SprintAdd sets Sprint field on items; T-001 is unblocked, T-002 is blocked.
+	SprintAdd(s, cfg, sprintID, []string{"T-001", "T-002"})
 	out = captureStdout(t, func() { SprintNext(s, cfg, sprintID) })
 	if !strings.Contains(out, "T-001") {
-		t.Errorf("expected T-001 (T-002 is blocked by T-001), got %q", out)
+		t.Errorf("expected T-001 (T-002 blocked by T-001), got %q", out)
 	}
 }
 

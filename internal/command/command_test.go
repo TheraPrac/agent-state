@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -395,68 +394,16 @@ func TestStartNotFound(t *testing.T) {
 	}
 }
 
-// I-490: start refuses to activate an item with a pending queue entry.
-func TestStartRefusesPending(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-
-	// Agent-add → pending entry.
-	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
-		t.Fatalf("queue add: %d", code)
-	}
-
-	if code := Start(s, cfg, "T-001", StartOpts{}); code != 1 {
-		t.Errorf("expected exit 1 for pending start, got %d", code)
-	}
-
-	item, _ := s.Get("T-001")
-	if item.Status == "active" {
-		t.Error("item should NOT have been activated when pending")
-	}
-}
-
-// I-490: approving a pending entry then starting succeeds.
-func TestStartAfterApprove(t *testing.T) {
+// T-461: approval gate removed — QueueAdd always sets Approved=true.
+// Start succeeds immediately after a QueueAdd; no approve step needed.
+func TestStartAfterQueueAdd(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 	s, cfg := setupTestEnv(t)
 	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
 		t.Fatalf("queue add: %d", code)
-	}
-	t.Setenv("AS_AGENT_ID", "")
-	// I-491 plan gate isn't under test here — bypass to focus on
-	// the start-after-approve flow.
-	if code := QueueApprove(s, cfg, "T-001", QueueApproveOpts{BypassPlan: true}); code != 0 {
-		t.Fatalf("approve: %d", code)
 	}
 	if code := Start(s, cfg, "T-001", StartOpts{}); code != 0 {
-		t.Errorf("expected start to succeed after approve, got %d", code)
-	}
-}
-
-// I-490: --force bypasses the gate and writes a changelog entry.
-func TestStartForceBypassesPending(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "agent-a")
-	s, cfg := setupTestEnv(t)
-	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
-		t.Fatalf("queue add: %d", code)
-	}
-	if code := Start(s, cfg, "T-001", StartOpts{Force: true}); code != 0 {
-		t.Errorf("--force should succeed against pending, got %d", code)
-	}
-
-	entries, err := changelog.Read(cfg, "T-001")
-	if err != nil {
-		t.Fatalf("read changelog: %v", err)
-	}
-	found := false
-	for _, e := range entries {
-		if e.Op == "start_force" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected start_force entry in changelog after --force bypass")
+		t.Errorf("start must succeed immediately after QueueAdd (no approval gate), got %d", code)
 	}
 }
 

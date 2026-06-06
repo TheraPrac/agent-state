@@ -187,6 +187,16 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 		if recs[i].Priority != recs[j].Priority {
 			return recs[i].Priority < recs[j].Priority // lower p = better
 		}
+		// Pin is a guaranteed top-of-band elevation: any pinned item beats any
+		// unpinned item within the same priority band, regardless of score.
+		// This is separate from pinWeight (which appears in the rationale so the
+		// boost is inspectable) — the sort ensures the guarantee holds even when
+		// an unpinned item has high unblock leverage exceeding pinWeight.
+		pi := pinned[recs[i].Item.ID]
+		pj := pinned[recs[j].Item.ID]
+		if pi != pj {
+			return pi // pinned wins
+		}
 		if recs[i].Score != recs[j].Score {
 			return recs[i].Score > recs[j].Score // higher composite = better
 		}

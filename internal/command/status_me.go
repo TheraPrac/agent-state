@@ -154,10 +154,11 @@ func buildStatusMe(s *store.Store, cfg *config.Config, agent string, cutoff time
 		queuePos := pos + 1 // 1-indexed for operator readability
 		entry.QueuePos = &queuePos
 		entry.Reason = e.Reason
-		if !e.Approved {
-			r.NeedsYou = append(r.NeedsYou, entry)
-		} else if pos > 0 {
-			// Approved + behind position 1 = future intent, not the current pick.
+		// T-461: approval gate removed — all entries are auto-approved.
+		// NEEDS-YOU section is retired; agent-proposed items at pos > 0 are
+		// future intent (PROPOSED-NEXT); pos 0 is the current pick (not shown
+		// here — it will appear in IN-FLIGHT once claimed).
+		if pos > 0 {
 			r.ProposedNext = append(r.ProposedNext, entry)
 		}
 	}

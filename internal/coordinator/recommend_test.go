@@ -224,6 +224,19 @@ func TestRecommend_NilPinMapNoBoost(t *testing.T) {
 	}
 }
 
+// A pinned item tops its band even when an unpinned competitor has high
+// unblock leverage that exceeds pinWeight in raw score.
+func TestRecommend_PinBeatsHighLeverage(t *testing.T) {
+	pinned := &model.Item{ID: "T-PIN", Priority: pInt(2), Created: refNow}
+	heavy := &model.Item{ID: "T-HVY", Priority: pInt(2), Created: refNow}
+	// T-HVY unblocks 3 items at unblockWeight=10 each → score=30 > pinWeight=20.
+	recs := Recommend([]*model.Item{heavy, pinned},
+		map[string]int{"T-HVY": 3}, nil, nil, map[string]bool{"T-PIN": true}, refNow)
+	if got := ids(recs); got[0] != "T-PIN" {
+		t.Fatalf("pin must top band even against high leverage: got %v, want T-PIN first", got)
+	}
+}
+
 func TestNamedUnblocked(t *testing.T) {
 	if got := NamedUnblocked("unblocks 2", []string{"A", "B"}); got != "unblocks 2 (A,B)" {
 		t.Errorf("got %q", got)

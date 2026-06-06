@@ -89,6 +89,13 @@ func TestCoordinateDryRun(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	writeBoundary(t, cfg.Root())
 	t.Setenv("AS_AGENT_ID", "")
+	// I-491: selectNext requires PlanApproved=true on the dispatched item.
+	if err := s.Mutate("T-001", func(m *model.Item) error {
+		m.PlanApproved = true
+		return nil
+	}); err != nil {
+		t.Fatalf("set PlanApproved: %v", err)
+	}
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 
 	var rc int
@@ -152,6 +159,13 @@ func TestCoordinateDryRun_ReflectsEmpiricalBaselines(t *testing.T) {
 	coordinator.ResetEmpiricalForTest()
 	t.Cleanup(coordinator.ResetEmpiricalForTest)
 	t.Setenv("AS_AGENT_ID", "")
+	// I-491: selectNext requires PlanApproved=true.
+	if err := s.Mutate("T-001", func(m *model.Item) error {
+		m.PlanApproved = true
+		return nil
+	}); err != nil {
+		t.Fatalf("set PlanApproved: %v", err)
+	}
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 
 	var rc int
