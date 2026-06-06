@@ -44,6 +44,52 @@ func webE2EScopeSkipped(item *model.Item) bool {
 	return strings.HasPrefix(strings.TrimSpace(s), "skip")
 }
 
+// closeUsage returns the canonical one-line usage plus a concrete example
+// for `st close`, shown on every parse-error path (I-1305) so a confused
+// caller always sees how to reassemble the full command in one step. The
+// valid resolutions are taken from the live terminal statuses so the
+// example stays honest if the vocabulary ever changes.
+func closeUsage(id string, terminal []string) string {
+	example := id
+	if example == "" {
+		example = "<id>"
+	}
+	return fmt.Sprintf(
+		"usage: st close <id> <%s> [--reason <text>]\n  e.g. st close %s abandoned --reason superseded",
+		strings.Join(terminal, "|"), example)
+}
+
+// correctResolution maps a near-miss resolution to its canonical terminal
+// status (I-1305). It returns (canonical, true) when `input` is a
+// case-only mismatch (`Done`→`done`) or a unique case-insensitive prefix
+// of exactly one terminal status (`abandon`→`abandoned`,
+// `archive`→`archived`, `don`→`done`). An exact match needs no correction
+// and an ambiguous prefix (`a` → abandoned|archived) returns ok=false, so
+// in both cases the normal validator handles the value.
+func correctResolution(input string, terminal []string) (string, bool) {
+	in := strings.ToLower(strings.TrimSpace(input))
+	if in == "" {
+		return input, false
+	}
+	var match string
+	prefixHits := 0
+	for _, ts := range terminal {
+		if ts == in {
+			// Exact after lowercasing — only a correction if the case
+			// differed from the original input.
+			return ts, ts != input
+		}
+		if strings.HasPrefix(ts, in) {
+			match = ts
+			prefixHits++
+		}
+	}
+	if prefixHits == 1 {
+		return match, true
+	}
+	return input, false
+}
+
 func Close(s *store.Store, cfg *config.Config, id, resolution string, opts CloseOpts) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -75,6 +121,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		return 2
 	}
 
+	// I-1305: correct-and-confirm a near-miss resolution (a unique
+	// case-insensitive prefix of exactly one terminal status, or a
+	// case-only mismatch) so muscle-memory typos like `abandon`→
+	// `abandoned`, `archive`→`archived`, or `Done`→`done` are accepted
+	// with a confirmation note rather than dead-ending the caller.
+	if corrected, ok := correctResolution(resolution, tc.TerminalStatuses); ok {
+		fmt.Fprintf(os.Stderr, "close: interpreting %q as %q\n", resolution, corrected)
+		resolution = corrected
+	}
+
 	// Resolution must be a valid terminal status
 	validTerminal := false
 	for _, ts := range tc.TerminalStatuses {
@@ -84,7 +140,22 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		}
 	}
 	if !validTerminal {
-		fmt.Fprintf(os.Stderr, "invalid resolution %q — valid: %v\n", resolution, tc.TerminalStatuses)
+		// I-1305: every parse-error path prints the full corrected
+		// invocation, not just the bare enum list, so the caller can
+		// reassemble the whole command in one step.
+		if resolution == "" {
+			fmt.Fprintln(os.Stderr, "close: missing resolution")
+		} else {
+			fmt.Fprintf(os.Stderr, "close: invalid resolution %q — valid: %s\n",
+				resolution, strings.Join(tc.TerminalStatuses, " "))
+		}
+		// Free text in the positional slot (a space), or a --reason
+		// supplied with no resolution, is the classic "I put my reason
+		// where the resolution goes" mistake — point at the separate flag.
+		if strings.Contains(resolution, " ") || (resolution == "" && opts.Reason != "") {
+			fmt.Fprintln(os.Stderr, "  note: the reason for closing goes in --reason, not the resolution slot")
+		}
+		fmt.Fprintln(os.Stderr, closeUsage(id, tc.TerminalStatuses))
 		return 2
 	}
 
