@@ -151,41 +151,9 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		return 1
 	}
 
-	// I-490: queue approval gate. If the item is on the queue with
-	// Approved=false, refuse to start unless --force was passed. This
-	// makes the I-488 pending status meaningful — agents in YOLO mode
-	// can no longer skip the operator's approval checkpoint. Items
-	// not on the queue at all are unaffected.
-	//
-	// Track the bypass; the audit write is deferred until after the
-	// start actually succeeds (post-Mutate) so a `--force` that fails
-	// a later guard (assignment, claim race) doesn't leave a misleading
-	// bypass record.
-	forceBypassedPending := false
+	// T-461: approval gate removed — queue entries are auto-approved.
+	// Track the sprint-inheritance bypass for post-Mutate audit.
 	forceBypassedSprint := false
-	autoApprovedByClassifier := false
-	if IsQueuePending(s, cfg, id) {
-		switch {
-		case binaryAutonomyEnabled() && classifierGreen(item):
-			// T-346: binary autonomy — when the classifier verdict on
-			// this item is green and ST_BINARY_AUTONOMY=1, bypass the
-			// per-item approval gate. This is the "concentrate operator
-			// attention on red items" half of the loop. The audit fires
-			// post-Mutate via a dedicated reason string so the green
-			// auto-approve is distinguishable from --force in the
-			// changelog.
-			autoApprovedByClassifier = true
-			fmt.Fprintf(os.Stderr, "auto-approved %s (classifier verdict=green, ST_BINARY_AUTONOMY=1)\n", id)
-		case opts.Force:
-			forceBypassedPending = true
-			fmt.Fprintf(os.Stderr, "warning: --force bypassed pending-approval gate for %s\n", id)
-		default:
-			fmt.Fprintf(os.Stderr,
-				"%s is pending operator approval — run `st queue approve %s` first (or `st start %s --force` to bypass)\n",
-				id, id, id)
-			return 1
-		}
-	}
 
 	// Check: not assigned to another agent
 	identity := cfg.Identity()
@@ -454,23 +422,6 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		OldValue: tc.StartStatus, NewValue: tc.ActiveStatus,
 	})
 
-	// I-490: record the --force bypass only after the start actually
-	// succeeded. Best-effort — a logging miss does not fail the start.
-	if forceBypassedPending {
-		_ = changelog.Append(cfg, id, changelog.Entry{
-			Op:     "start_force",
-			Reason: "bypassed I-490 queue approval gate via --force",
-		})
-	}
-	// T-346: record the binary-autonomy auto-approve. A distinct op
-	// label keeps the audit clean — operators reviewing the log can
-	// tell auto-approves from manual --force bypasses.
-	if autoApprovedByClassifier {
-		_ = changelog.Append(cfg, id, changelog.Entry{
-			Op:     "start_auto_approved",
-			Reason: "classifier verdict=green; ST_BINARY_AUTONOMY=1 bypassed I-490 queue approval gate",
-		})
-	}
 	// I-681: record a --force bypass of the sprint-inheritance gate, only
 	// after the start succeeded. Distinct op so operators can tell a
 	// deliberate off-sprint start from an I-490 queue-approval bypass.

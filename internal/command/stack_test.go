@@ -240,26 +240,23 @@ func TestLoadStackLegacyFallback(t *testing.T) {
 	}
 }
 
-// I-490: stack push refuses pending items unless --from-pending.
-func TestStackPushBlocksPending(t *testing.T) {
+// T-461: approval gate removed — QueueAdd is always auto-approved.
+// StackPush succeeds immediately; --from-pending is a no-op flag but still
+// accepted for backward compatibility.
+func TestStackPushAfterQueueAdd(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 	s, cfg := setupTestEnv(t)
 
-	// Pending entry (agent-added → Approved=false).
 	if code := QueueAdd(s, cfg, "T-001", QueueOpts{}); code != 0 {
 		t.Fatalf("queue add: %d", code)
 	}
 
-	if code := StackPush(s, cfg, "T-001", StackPushOpts{}); code != 1 {
-		t.Errorf("expected push of pending item to refuse with exit 1, got %d", code)
-	}
-
-	if code := StackPush(s, cfg, "T-001", StackPushOpts{FromPending: true}); code != 0 {
-		t.Errorf("--from-pending should bypass; got %d", code)
+	if code := StackPush(s, cfg, "T-001", StackPushOpts{}); code != 0 {
+		t.Errorf("StackPush must succeed after auto-approved QueueAdd, got %d", code)
 	}
 	entries := LoadStack(cfg)
 	if len(entries) != 1 || entries[0].ID != "T-001" {
-		t.Errorf("stack after --from-pending push = %+v", entries)
+		t.Errorf("stack after push = %+v", entries)
 	}
 }
 

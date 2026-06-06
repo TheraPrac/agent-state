@@ -469,7 +469,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 		sprints := loadSprintInfo(cfg, g)
 		cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
 		leverage, _ := unblockLeverage(g, cands)
-		recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), time.Now())
+		recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), loadQueuePins(cfg), time.Now())
 		if len(recs) > 0 {
 			next := recs[0]
 			b.WriteString("## Next Action\n")

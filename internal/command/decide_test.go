@@ -199,40 +199,26 @@ func TestUpdate_StatusTransitions_AwaitingDecision(t *testing.T) {
 	}
 }
 
-// TestStart_AutoApprovesGreenItem covers the binary-autonomy bypass:
-// with ST_BINARY_AUTONOMY=1 and a green-classified item, the I-490
-// gate gives way and start proceeds.
+// T-461: approval gate removed — all QueueAdd entries are auto-approved.
+// Binary autonomy (T-346) was gated on IsQueuePending; since that is now
+// always false, start succeeds for any agent-added item without a pending
+// bypass. The start_auto_approved changelog path is unreachable.
 func TestStart_AutoApprovesGreenItem(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 	t.Setenv("ST_BINARY_AUTONOMY", "1")
 	s, cfg := setupTestEnv(t)
 
-	// Queue-add as the agent → entry is pending.
 	if rc := QueueAdd(s, cfg, "T-001", QueueOpts{}); rc != 0 {
 		t.Fatalf("QueueAdd: %d", rc)
 	}
-	// Persist a green verdict so classifierGreen returns true.
-	if err := persistClassification(s, "T-001", classify.Result{
-		Verdict:      classify.VerdictGreen,
-		Reason:       "small isolated change",
-		ClassifiedAt: time.Now().UTC(),
-		ClassifiedBy: "model:claude",
-		InputHash:    "h",
-	}); err != nil {
-		t.Fatalf("persistClassification: %v", err)
-	}
-
+	// Start must succeed: no pending gate to bypass.
 	if rc := Start(s, cfg, "T-001", StartOpts{}); rc != 0 {
 		t.Errorf("Start green-classified rc = %d; want 0", rc)
 	}
-	entries, _ := changelog.Read(cfg, "T-001")
-	if !hasOp(entries, "start_auto_approved") {
-		t.Error("changelog missing start_auto_approved entry")
-	}
 }
 
-// TestStart_AutoApproveDisabledWhenFlagOff confirms the auto-approve
-// is gated — flag off means the pending gate still blocks the start.
+// T-461: without a pending gate, flag-off has no effect — start succeeds
+// for any agent-added item regardless of ST_BINARY_AUTONOMY.
 func TestStart_AutoApproveDisabledWhenFlagOff(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "agent-a")
 	os.Unsetenv("ST_BINARY_AUTONOMY")
@@ -241,13 +227,9 @@ func TestStart_AutoApproveDisabledWhenFlagOff(t *testing.T) {
 	if rc := QueueAdd(s, cfg, "T-001", QueueOpts{}); rc != 0 {
 		t.Fatalf("QueueAdd: %d", rc)
 	}
-	if err := persistClassification(s, "T-001", classify.Result{
-		Verdict: classify.VerdictGreen, ClassifiedBy: "model:claude", InputHash: "h",
-	}); err != nil {
-		t.Fatalf("persistClassification: %v", err)
-	}
-	if rc := Start(s, cfg, "T-001", StartOpts{}); rc != 1 {
-		t.Errorf("Start with flag off rc = %d; want 1", rc)
+	// No pending gate → start always succeeds (exit 0).
+	if rc := Start(s, cfg, "T-001", StartOpts{}); rc != 0 {
+		t.Errorf("Start (flag off, no gate) rc = %d; want 0", rc)
 	}
 }
 

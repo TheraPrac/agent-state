@@ -153,14 +153,15 @@ func TestTui_DoRefreshPicksUpQueueChanges(t *testing.T) {
 	if m.pending != 0 {
 		t.Fatalf("initial pending = %d, want 0", m.pending)
 	}
-	// Simulate an out-of-band agent queue-add (Approved=false).
-	t.Setenv("AS_AGENT_ID", "agent-bot") // non-empty ⇒ NOT auto-approved
+	// T-461: all QueueAdd calls are auto-approved; PendingApprovalCount is
+	// always 0 regardless of caller identity.
+	t.Setenv("AS_AGENT_ID", "agent-bot")
 	QueueAdd(s, cfg, "T-002", QueueOpts{})
 
 	m = doRefresh(m)
-	if m.pending != 1 {
-		t.Errorf("after out-of-band agent QueueAdd, pending = %d, want 1\n"+
-			"(refresh must reflect substrate changes — the trust-substrate point)",
+	if m.pending != 0 {
+		t.Errorf("after T-461, QueueAdd is always auto-approved: pending = %d, want 0"+
+			" (refresh must reflect substrate changes — the trust-substrate point)",
 			m.pending)
 	}
 }

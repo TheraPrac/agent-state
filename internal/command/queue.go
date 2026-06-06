@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/coordinator"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/registry"
@@ -64,37 +64,16 @@ type QueueApproveOpts struct {
 	BypassPlan bool
 }
 
-// IsQueuePending reports whether `id` has a queue entry that is still
-// awaiting operator approval (Approved=false). Returns false when the
-// item is not on the queue at all — the I-490 gate only fires for
-// pending entries, so items never queued can still be `st start`-ed.
-// Goal-reachable items short-circuit to false (T-412): operator intent
-// is already encoded by goal seeding, so the per-item gate is redundant.
-func IsQueuePending(s *store.Store, cfg *config.Config, id string) bool {
-	if IsGoalReachable(s, cfg, id) {
-		return false
-	}
-	for _, e := range LoadQueue(cfg) {
-		if e.ID == id {
-			return !e.Approved
-		}
-	}
+// IsQueuePending always returns false. Queue entries are auto-approved on add
+// (T-461: approval gate eliminated — candidates derive from item properties).
+func IsQueuePending(_ *store.Store, _ *config.Config, _ string) bool {
 	return false
 }
 
-// PendingApprovalCount returns how many queue entries are waiting on
-// operator approval. Surfaced by `st prime` / `st status` so the
-// session-start banner highlights pending items the operator needs to
-// approve before agents can pick them up (I-490). Goal-reachable items
-// are excluded (T-412) — their approval is implicit in goal seeding.
-func PendingApprovalCount(s *store.Store, cfg *config.Config) int {
-	n := 0
-	for _, e := range LoadQueue(cfg) {
-		if !e.Approved && !IsGoalReachable(s, cfg, e.ID) {
-			n++
-		}
-	}
-	return n
+// PendingApprovalCount always returns 0. Queue entries are auto-approved on
+// add (T-461: approval gate eliminated — candidates derive from item properties).
+func PendingApprovalCount(_ *store.Store, _ *config.Config) int {
+	return 0
 }
 
 // IsGoalReachable reports whether id is listed in item.Goals for any active
@@ -168,28 +147,23 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 	entries := LoadQueue(cfg)
 	for _, e := range entries {
 		if e.ID == id {
-			fmt.Fprintf(os.Stderr, "%s is already in the queue\n", id)
+			fmt.Fprintf(os.Stderr, "%s is already pinned\n", id)
 			return 1
 		}
 	}
 
-	agentID := cfg.AgentID()
 	addedBy := "user"
-	approved := true
-	if agentID != "" {
+	if agentID := cfg.AgentID(); agentID != "" {
 		addedBy = agentID
-		approved = false
-	}
-	if !approved && IsGoalReachable(s, cfg, id) {
-		approved = true
 	}
 
 	entries = append(entries, QueueEntry{
-		ID:       id,
-		AddedAt:  time.Now().Format(time.RFC3339),
-		AddedBy:  addedBy,
-		Reason:   opts.Reason,
-		Approved: approved,
+		ID:      id,
+		AddedAt: time.Now().Format(time.RFC3339),
+		AddedBy: addedBy,
+		Reason:  opts.Reason,
+		Approved: true,
+		Source:  QueueSourceManual,
 	})
 
 	if err := SaveQueue(cfg, entries); err != nil {
@@ -197,11 +171,7 @@ func QueueAdd(s *store.Store, cfg *config.Config, id string, opts QueueOpts) int
 		return 1
 	}
 
-	status := ""
-	if !approved {
-		status = " (pending approval)"
-	}
-	fmt.Printf("Added %s to queue at position %d%s\n", id, len(entries), status)
+	fmt.Printf("Pinned %s — will boost scheduling priority within its priority band\n", id)
 	if err := autoSync(s, fmt.Sprintf("st queue add: %s", id)); err != nil {
 		return 1
 	}
@@ -366,34 +336,24 @@ func formatEpicSprintChain(r *registry.Registry, epicID, sprintID string) string
 }
 
 func QueueNext(s *store.Store, cfg *config.Config, opts QueueNextOpts) int {
-	entries := LoadQueue(cfg)
 	g := deps.Build(s.All(), cfg)
+	sprints := loadSprintInfo(cfg, g)
+	cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
+	lev, _ := unblockLeverage(g, cands)
+	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), loadQueuePins(cfg), time.Now())
 
-	for _, e := range entries {
-		if !e.Approved {
+	for _, r := range recs {
+		if opts.Sprint != "" && r.Item.Sprint != opts.Sprint {
 			continue
 		}
-		if g.IsBlocked(e.ID) {
-			continue
-		}
-		item, ok := s.Get(e.ID)
-		if !ok {
-			continue
-		}
-		if cfg.IsTerminalStatus(item.Type, item.Status) {
-			continue
-		}
-		if opts.Sprint != "" && item.Sprint != opts.Sprint {
-			continue
-		}
-		fmt.Printf("%s — %s\n", e.ID, item.Title)
+		fmt.Printf("%s — %s\n", r.Item.ID, r.Item.Title)
 		return 0
 	}
 
 	if opts.Sprint != "" {
-		fmt.Printf("No approved, unblocked items in queue for sprint %s\n", opts.Sprint)
+		fmt.Printf("No unblocked items for sprint %s\n", opts.Sprint)
 	} else {
-		fmt.Println("No approved, unblocked items in queue")
+		fmt.Println("No unblocked, unassigned items ready")
 	}
 	return 0
 }
@@ -602,124 +562,9 @@ func QueueMove(s *store.Store, cfg *config.Config, id string, position int) int 
 	return 0
 }
 
-func QueueApprove(s *store.Store, cfg *config.Config, id string, opts QueueApproveOpts) int {
-	if id == "" && opts.Sprint == "" {
-		fmt.Fprintln(os.Stderr, "queue approve requires <id> or --sprint <slug>")
-		return 2
-	}
-	if id != "" && opts.Sprint != "" {
-		fmt.Fprintln(os.Stderr, "queue approve: <id> and --sprint are mutually exclusive")
-		return 2
-	}
-
-	entries := LoadQueue(cfg)
-
-	if opts.Sprint != "" {
-		// I-491: pre-pass — collect candidates and check the plan gate.
-		// Without --bypass-plan, refuse the whole bulk-approve if any
-		// candidate lacks an approved plan, so the operator gets a
-		// "fix these N items first" signal rather than a partial commit.
-		var candidates []int
-		var planless []string
-		for i, e := range entries {
-			if entries[i].Approved {
-				continue
-			}
-			item, ok := s.Get(e.ID)
-			if !ok {
-				continue
-			}
-			if item.Sprint != opts.Sprint {
-				continue
-			}
-			candidates = append(candidates, i)
-			if !item.PlanApproved {
-				planless = append(planless, e.ID)
-			}
-		}
-		if len(candidates) == 0 {
-			fmt.Printf("No pending sprint-%s items in queue\n", opts.Sprint)
-			return 0
-		}
-		if !opts.BypassPlan && len(planless) > 0 {
-			fmt.Fprintf(os.Stderr,
-				"refusing to approve sprint %s — %d item(s) have no approved plan: %s\n",
-				opts.Sprint, len(planless), strings.Join(planless, ", "))
-			fmt.Fprintln(os.Stderr,
-				"run `st prep <id>` (Accept) or `st plan approve <id>` for each, or pass --bypass-plan to override")
-			return 1
-		}
-		approved := 0
-		var approvedIDs []string
-		for _, i := range candidates {
-			entries[i].Approved = true
-			approved++
-			approvedIDs = append(approvedIDs, entries[i].ID)
-		}
-		if err := SaveQueue(cfg, entries); err != nil {
-			fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
-			return 1
-		}
-		// Audit per-bypass so each override is traceable.
-		if opts.BypassPlan {
-			for _, id := range planless {
-				_ = changelog.Append(cfg, id, changelog.Entry{
-					Op:     "approve_bypass_plan",
-					Reason: fmt.Sprintf("I-491 plan gate bypassed via --bypass-plan (sprint %s bulk approve)", opts.Sprint),
-				})
-			}
-		}
-		fmt.Printf("Approved %d item(s) for sprint %s: %s\n", approved, opts.Sprint, strings.Join(approvedIDs, ", "))
-		if opts.BypassPlan && len(planless) > 0 {
-			fmt.Fprintf(os.Stderr, "warning: --bypass-plan overrode the I-491 plan gate for: %s\n", strings.Join(planless, ", "))
-		}
-		if err := autoSync(s, fmt.Sprintf("st queue approve --sprint %s: %d item(s)", opts.Sprint, approved)); err != nil {
-			return 1
-		}
-		return 0
-	}
-
-	// entryIdx defaults to -1 so a future refactor that drops the
-	// `if entryIdx < 0` guard below can't silently mutate entries[0].
-	entryIdx := -1
-	for i, e := range entries {
-		if e.ID == id {
-			entryIdx = i
-			break
-		}
-	}
-	if entryIdx < 0 {
-		fmt.Fprintf(os.Stderr, "%s not in queue\n", id)
-		return 1
-	}
-
-	// I-491: per-item plan gate. Refuse approval when the item's plan
-	// has not been operator-approved (PlanApproved=false). Bypass via
-	// --bypass-plan logs to the changelog so the override is auditable.
-	item, ok := s.Get(id)
-	if ok && !item.PlanApproved {
-		if !opts.BypassPlan {
-			fmt.Fprintf(os.Stderr,
-				"%s has no approved plan — run `st prep %s` (Accept) or `st plan approve %s` first (or `--bypass-plan` to override)\n",
-				id, id, id)
-			return 1
-		}
-		_ = changelog.Append(cfg, id, changelog.Entry{
-			Op:     "approve_bypass_plan",
-			Reason: "I-491 plan gate bypassed via --bypass-plan",
-		})
-		fmt.Fprintf(os.Stderr, "warning: --bypass-plan overrode the I-491 plan gate for %s\n", id)
-	}
-
-	entries[entryIdx].Approved = true
-	if err := SaveQueue(cfg, entries); err != nil {
-		fmt.Fprintf(os.Stderr, "saving queue: %v\n", err)
-		return 1
-	}
-	fmt.Printf("Approved %s\n", id)
-	if err := autoSync(s, fmt.Sprintf("st queue approve: %s", id)); err != nil {
-		return 1
-	}
+func QueueApprove(_ *store.Store, _ *config.Config, _ string, _ QueueApproveOpts) int {
+	fmt.Println("Queue entries are auto-approved — no action needed (T-461: approval gate removed).")
+	fmt.Println("Use `st queue add <id>` to pin an item to boost its scheduling priority.")
 	return 0
 }
 
