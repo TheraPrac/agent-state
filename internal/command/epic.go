@@ -9,21 +9,104 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// EpicCreateOpts carries optional flags for `st epic create`.
+type EpicCreateOpts struct {
+	GoalID string
+}
+
+// validateGoalID returns an error if goalID is not an active goal item.
+func validateGoalID(s *store.Store, goalID string) error {
+	item, ok := s.Get(goalID)
+	if !ok {
+		return fmt.Errorf("goal not found: %s", goalID)
+	}
+	if item.Type != "goal" {
+		return fmt.Errorf("%s is type %q, not \"goal\"", goalID, item.Type)
+	}
+	if item.Status != "active" {
+		return fmt.Errorf("%s is a %s goal; only active goals can be linked", goalID, item.Status)
+	}
+	return nil
+}
+
 // EpicCreate creates a new epic with a generated ID.
-func EpicCreate(cfg *config.Config, title string) int {
+func EpicCreate(s *store.Store, cfg *config.Config, title string, opts EpicCreateOpts) int {
+	if opts.GoalID != "" {
+		if err := validateGoalID(s, opts.GoalID); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+	}
+
 	r, err := registry.Load(cfg.EpicsPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
 		return 1
 	}
 
-	e := r.AddEpic(title)
+	e := r.AddEpic(title, opts.GoalID)
 	if err := r.Save(cfg.EpicsPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("Created epic %s — %s\n", e.ID, e.Title)
+	if opts.GoalID != "" {
+		fmt.Printf("  goal: %s\n", opts.GoalID)
+	}
+	if err := autoSync(s, fmt.Sprintf("st epic create: %s", e.ID)); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// EpicSetGoal links (or clears) an existing epic's goal association.
+// Pass "-" or "" to clear. Validates that the goal exists and is type "goal".
+func EpicSetGoal(s *store.Store, cfg *config.Config, epicID, goalID string) int {
+	// Normalise clear sentinel.
+	if goalID == "-" {
+		goalID = ""
+	}
+
+	if goalID != "" {
+		if err := validateGoalID(s, goalID); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+	}
+
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	idx := -1
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		fmt.Fprintf(os.Stderr, "epic not found: %s\n", epicID)
+		return 1
+	}
+
+	r.Epics[idx].GoalID = goalID
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	if goalID == "" {
+		fmt.Printf("Cleared goal link on epic %s\n", epicID)
+	} else {
+		fmt.Printf("Linked epic %s to goal %s\n", epicID, goalID)
+	}
+	if err := autoSync(s, fmt.Sprintf("st epic set-goal: %s -> %s", epicID, goalID)); err != nil {
+		return 1
+	}
 	return 0
 }
 
@@ -54,7 +137,11 @@ func EpicList(s *store.Store, cfg *config.Config) int {
 		if e.Priority != nil {
 			prio = fmt.Sprintf("p%d", *e.Priority)
 		}
-		fmt.Printf("%-4s %-30s %-8s %d items  %s\n", prio, e.ID, e.Status, counts[e.ID], e.Title)
+		line := fmt.Sprintf("%-4s %-30s %-8s %d items  %s", prio, e.ID, e.Status, counts[e.ID], e.Title)
+		if e.GoalID != "" {
+			line += fmt.Sprintf("  goal:%s", e.GoalID)
+		}
+		fmt.Println(line)
 	}
 	return 0
 }

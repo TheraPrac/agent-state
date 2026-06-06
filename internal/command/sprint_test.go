@@ -17,7 +17,7 @@ func setupSprintTestEnv(t *testing.T) (*store.Store, *config.Config, string, str
 	s, cfg := setupTestEnv(t)
 
 	// Create an epic
-	EpicCreate(cfg, "Test Epic")
+	EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 
@@ -350,7 +350,7 @@ func TestComputeParallelGroupsEmptyItems(t *testing.T) {
 
 func TestSprintCreateSetsSequence(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	EpicCreate(cfg, "Parent")
+	EpicCreate(nil, cfg, "Parent", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 
@@ -723,7 +723,7 @@ depends_on:
 	cfg, _ := config.Load(root)
 	st, _ := store.New(cfg)
 
-	EpicCreate(cfg, "Epic")
+	EpicCreate(nil, cfg, "Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Sprint", SprintCreateOpts{})
@@ -761,7 +761,7 @@ depends_on:
 	s, _ := store.New(cfg)
 
 	// Create epic and sprint
-	EpicCreate(cfg, "Different Epic")
+	EpicCreate(nil, cfg, "Different Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})

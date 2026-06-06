@@ -137,7 +137,7 @@ func TestStatusSingleItem(t *testing.T) {
 func TestEpicCreateError(t *testing.T) {
 	cfg := config.Defaults()
 	// Epics path points to nonexistent dir — should handle gracefully
-	code := EpicCreate(cfg, "Will Fail")
+	code := EpicCreate(nil, cfg, "Will Fail", EpicCreateOpts{})
 	_ = code // may or may not fail depending on path resolution
 }
 
@@ -167,7 +167,7 @@ func TestNoteAddAndRm(t *testing.T) {
 
 func TestEpicListWithCreatedEpic(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	EpicCreate(cfg, "Coverage Epic")
+	EpicCreate(nil, cfg, "Coverage Epic", EpicCreateOpts{})
 	code := EpicList(s, cfg)
 	if code != 0 {
 		t.Errorf("epic list with epic exit %d", code)
@@ -681,7 +681,7 @@ func TestWebE2EScopeSkipped(t *testing.T) {
 
 func TestSprintCreateHappy(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	EpicCreate(cfg, "Sprint Test Epic")
+	EpicCreate(nil, cfg, "Sprint Test Epic", EpicCreateOpts{})
 
 	// Load epics to get the generated ID
 	r, _ := registry.Load(cfg.EpicsPath())
@@ -698,7 +698,7 @@ func TestSprintCreateHappy(t *testing.T) {
 
 func TestSprintListWithEpic(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	EpicCreate(cfg, "List Epic")
+	EpicCreate(nil, cfg, "List Epic", EpicCreateOpts{})
 
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
@@ -751,11 +751,11 @@ func TestEpicCreateAndListHappy(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	os.MkdirAll(filepath.Dir(cfg.EpicsPath()), 0755)
 
-	code := EpicCreate(cfg, "Coverage Epic 1")
+	code := EpicCreate(nil, cfg, "Coverage Epic 1", EpicCreateOpts{})
 	if code != 0 {
 		t.Errorf("epic create exit %d", code)
 	}
-	code = EpicCreate(cfg, "Coverage Epic 2")
+	code = EpicCreate(nil, cfg, "Coverage Epic 2", EpicCreateOpts{})
 	if code != 0 {
 		t.Errorf("epic create 2 exit %d", code)
 	}
@@ -785,7 +785,7 @@ func TestNoteAddLoadError(t *testing.T) {
 func TestSprintCreateWithEpicV2(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	os.MkdirAll(filepath.Dir(cfg.EpicsPath()), 0755)
-	EpicCreate(cfg, "My Epic")
+	EpicCreate(nil, cfg, "My Epic", EpicCreateOpts{})
 
 	r, _ := registry.Load(cfg.EpicsPath())
 	if len(r.Epics) == 0 {
@@ -1098,7 +1098,7 @@ func TestStatusQueuedUnassignedHeader(t *testing.T) {
 
 	// Create an epic
 	r := &registry.Registry{}
-	e := r.AddEpic("Infra Epic")
+	e := r.AddEpic("Infra Epic", "")
 	r.Save(cfg.EpicsPath())
 
 	// Epic task with tag

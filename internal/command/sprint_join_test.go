@@ -288,7 +288,7 @@ depends_on:
 	s, _ := store.New(cfg)
 
 	// Create epic and sprint
-	EpicCreate(cfg, "Test Epic")
+	EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
@@ -583,7 +583,7 @@ title: Done task
 	cfg, _ := config.Load(root)
 	s, _ := store.New(cfg)
 
-	EpicCreate(cfg, "Done Epic")
+	EpicCreate(nil, cfg, "Done Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Done Sprint", SprintCreateOpts{})

@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 func TestEpicCreate(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	code := EpicCreate(cfg, "Test Epic")
+	code := EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	if code != 0 {
 		t.Fatalf("EpicCreate returned %d, want 0", code)
 	}
@@ -54,7 +55,7 @@ func TestEpicListEmpty(t *testing.T) {
 func TestEpicListWithItems(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// Create an epic
-	EpicCreate(cfg, "Test Epic")
+	EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	code := EpicList(s, cfg)
 	if code != 0 {
 		t.Errorf("EpicList returned %d, want 0", code)
@@ -66,7 +67,7 @@ func TestEpicListWithItems(t *testing.T) {
 func TestSprintCreate(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	// Create epic first
-	EpicCreate(cfg, "Parent Epic")
+	EpicCreate(nil, cfg, "Parent Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 
@@ -97,7 +98,7 @@ func TestSprintCreateBadEpic(t *testing.T) {
 func TestSprintCreateWithDescription(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	r, _ := registry.Load(cfg.EpicsPath())
-	e := r.AddEpic("Goal Epic")
+	e := r.AddEpic("Goal Epic", "")
 	r.Save(cfg.EpicsPath())
 
 	code := SprintCreate(cfg, e.ID, "With Goal", SprintCreateOpts{
@@ -627,7 +628,7 @@ func setupTestEnvWithEpics(t *testing.T) (*store.Store, *config.Config) {
 
 	// Create an epic
 	r := &registry.Registry{}
-	e := r.AddEpic("Test Epic")
+	e := r.AddEpic("Test Epic", "")
 	r.Save(cfg.EpicsPath())
 
 	// Add a task with that epic
@@ -807,7 +808,7 @@ func intPtr(i int) *int {
 
 func TestSprintListWithSprints(t *testing.T) {
 	_, cfg := setupTestEnv(t)
-	EpicCreate(cfg, "Parent")
+	EpicCreate(nil, cfg, "Parent", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	SprintCreate(cfg, r.Epics[0].ID, "Sprint 1", SprintCreateOpts{})
 
@@ -825,7 +826,7 @@ func TestWriteQueuedTasksWithSprint(t *testing.T) {
 	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
 
 	r := &registry.Registry{}
-	e := r.AddEpic("Test Epic")
+	e := r.AddEpic("Test Epic", "")
 	sp, _ := r.AddSprint(e.ID, "Sprint 1")
 	os.MkdirAll(filepath.Join(root, ".as"), 0755)
 	r.Save(filepath.Join(root, ".as", "epics.yaml"))
@@ -874,10 +875,10 @@ func writeFile2(t *testing.T, path, content string) {
 func TestEpicMoveCommand(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	if code := EpicCreate(cfg, "alpha"); code != 0 {
+	if code := EpicCreate(nil, cfg, "alpha", EpicCreateOpts{}); code != 0 {
 		t.Fatalf("epic create: %d", code)
 	}
-	if code := EpicCreate(cfg, "beta"); code != 0 {
+	if code := EpicCreate(nil, cfg, "beta", EpicCreateOpts{}); code != 0 {
 		t.Fatalf("epic create: %d", code)
 	}
 
@@ -916,7 +917,7 @@ func TestEpicMoveCommandNotFound(t *testing.T) {
 func TestSprintMoveCommand(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	EpicCreate(cfg, "epic")
+	EpicCreate(nil, cfg, "epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "sprint A", SprintCreateOpts{})
@@ -941,5 +942,117 @@ func TestSprintMoveCommandNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	if code := SprintMove(s, cfg, "ghost", 1); code != 1 {
 		t.Errorf("expected exit 1, got %d", code)
+	}
+}
+
+// --- I-1323: EpicCreate --goal, EpicSetGoal ---
+
+func TestEpicCreateWithGoal(t *testing.T) {
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s = reloadStoreGoal(t, cfg)
+
+	code := EpicCreate(s, cfg, "Billing Revamp", EpicCreateOpts{GoalID: "G-001"})
+	if code != 0 {
+		t.Fatalf("EpicCreate returned %d, want 0", code)
+	}
+
+	r, _ := registry.Load(cfg.EpicsPath())
+	if len(r.Epics) != 1 {
+		t.Fatalf("expected 1 epic, got %d", len(r.Epics))
+	}
+	if r.Epics[0].GoalID != "G-001" {
+		t.Errorf("GoalID = %q, want G-001", r.Epics[0].GoalID)
+	}
+}
+
+func TestEpicCreateRejectsNonGoal(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Missing ID — hits the "not found" path.
+	code := EpicCreate(s, cfg, "Epic", EpicCreateOpts{GoalID: "G-999"})
+	if code == 0 {
+		t.Error("expected non-zero for missing goal ID, got 0")
+	}
+
+	// Wrong type — T-001 is type "task", not "goal".
+	code = EpicCreate(s, cfg, "Epic", EpicCreateOpts{GoalID: "T-001"})
+	if code == 0 {
+		t.Error("expected non-zero for wrong-type goal ID, got 0")
+	}
+
+	// Neither attempt should have written an epic.
+	r, _ := registry.Load(cfg.EpicsPath())
+	if len(r.Epics) != 0 {
+		t.Error("EpicCreate must not write an epic on validation failure")
+	}
+}
+
+func TestEpicSetGoal(t *testing.T) {
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s = reloadStoreGoal(t, cfg)
+
+	// Create an epic without a goal first.
+	EpicCreate(nil, cfg, "Auth", EpicCreateOpts{})
+	r, _ := registry.Load(cfg.EpicsPath())
+	epicID := r.Epics[0].ID
+
+	// Link to goal.
+	code := EpicSetGoal(s, cfg, epicID, "G-001")
+	if code != 0 {
+		t.Fatalf("EpicSetGoal link returned %d", code)
+	}
+	r, _ = registry.Load(cfg.EpicsPath())
+	if r.Epics[0].GoalID != "G-001" {
+		t.Errorf("after set-goal: GoalID = %q, want G-001", r.Epics[0].GoalID)
+	}
+
+	// Clear with "-".
+	code = EpicSetGoal(s, cfg, epicID, "-")
+	if code != 0 {
+		t.Fatalf("EpicSetGoal clear returned %d", code)
+	}
+	r, _ = registry.Load(cfg.EpicsPath())
+	if r.Epics[0].GoalID != "" {
+		t.Errorf("after clear: GoalID = %q, want empty", r.Epics[0].GoalID)
+	}
+}
+
+func TestGoalReviewListsEpics(t *testing.T) {
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	seedGoalFile(t, cfg, "G-002", "active", 20)
+	s = reloadStoreGoal(t, cfg)
+
+	// Two epics linked to G-001, none to G-002.
+	EpicCreate(nil, cfg, "Epic A", EpicCreateOpts{})
+	EpicCreate(nil, cfg, "Epic B", EpicCreateOpts{})
+	reg, _ := registry.Load(cfg.EpicsPath())
+	EpicSetGoal(s, cfg, reg.Epics[0].ID, "G-001")
+	EpicSetGoal(s, cfg, reg.Epics[1].ID, "G-001")
+
+	var buf bytes.Buffer
+	code := GoalReview(s, cfg, GoalReviewOpts{Out: &buf})
+	if code != 0 {
+		t.Fatalf("GoalReview returned %d", code)
+	}
+	body := buf.String()
+
+	if !strings.Contains(body, "epics:") {
+		t.Errorf("expected 'epics:' line for G-001; output:\n%s", body)
+	}
+	if !strings.Contains(body, reg.Epics[0].ID) || !strings.Contains(body, reg.Epics[1].ID) {
+		t.Errorf("expected both epic IDs in output; output:\n%s", body)
+	}
+	// G-002 has no epics — no epics line should appear for it.
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "G-002") {
+			// Check that the next line (if any) is not an epics: line.
+			if i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "epics:") {
+				t.Errorf("G-002 should have no epics line; got: %s", lines[i+1])
+			}
+		}
 	}
 }

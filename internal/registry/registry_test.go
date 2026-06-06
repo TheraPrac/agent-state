@@ -22,7 +22,7 @@ func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	e := r.AddEpic("Billing v1")
+	e := r.AddEpic("Billing v1", "")
 	s, err := r.AddSprint(e.ID, "Week 13")
 	if err != nil {
 		t.Fatalf("AddSprint: %v", err)
@@ -78,7 +78,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestAddEpicGeneratesID(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Test Epic")
+	e := r.AddEpic("Test Epic", "")
 	parts := strings.Split(e.ID, "-")
 	if len(parts) != 3 {
 		t.Errorf("expected 3-part ID, got %d: %q", len(parts), e.ID)
@@ -98,7 +98,7 @@ func TestAddSprintValidatesEpic(t *testing.T) {
 
 func TestAddSprintSuccess(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent Epic")
+	e := r.AddEpic("Parent Epic", "")
 	s, err := r.AddSprint(e.ID, "Good Sprint")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -145,8 +145,8 @@ func TestNoteOperations(t *testing.T) {
 
 func TestListSprintsFilterByEpic(t *testing.T) {
 	r := &Registry{}
-	e1 := r.AddEpic("Epic 1")
-	e2 := r.AddEpic("Epic 2")
+	e1 := r.AddEpic("Epic 1", "")
+	e2 := r.AddEpic("Epic 2", "")
 
 	r.AddSprint(e1.ID, "Sprint A")
 	r.AddSprint(e1.ID, "Sprint B")
@@ -190,7 +190,7 @@ func TestListNotesLimit(t *testing.T) {
 
 func TestGetEpic(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Find Me")
+	e := r.AddEpic("Find Me", "")
 
 	found, ok := r.GetEpic(e.ID)
 	if !ok {
@@ -208,7 +208,7 @@ func TestGetEpic(t *testing.T) {
 
 func TestGetSprint(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s, _ := r.AddSprint(e.ID, "Child")
 
 	found, ok := r.GetSprint(s.ID)
@@ -230,7 +230,7 @@ func TestSaveQuotesSpecialChars(t *testing.T) {
 	path := filepath.Join(dir, "test.yaml")
 
 	r := &Registry{}
-	r.AddEpic("Title: with colon")
+	r.AddEpic("Title: with colon", "")
 	r.AddNote("a", "s", "Message with #hash and 'quotes'")
 
 	if err := r.Save(path); err != nil {
@@ -253,7 +253,7 @@ func TestSaveQuotesSpecialChars(t *testing.T) {
 
 func TestUniqueIDsAcrossTypes(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Epic")
+	e := r.AddEpic("Epic", "")
 	s, _ := r.AddSprint(e.ID, "Sprint")
 	n := r.AddNote("a", "s", "Note")
 
@@ -267,7 +267,7 @@ func TestUniqueIDsAcrossTypes(t *testing.T) {
 
 func TestAddSprintAutoSequence(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s1, err := r.AddSprint(e.ID, "Sprint 1")
 	if err != nil {
 		t.Fatalf("AddSprint: %v", err)
@@ -287,7 +287,7 @@ func TestAddSprintAutoSequence(t *testing.T) {
 
 func TestAddSprintAppendsToEpicSprintOrder(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s1, _ := r.AddSprint(e.ID, "Sprint 1")
 	s2, _ := r.AddSprint(e.ID, "Sprint 2")
 
@@ -302,7 +302,7 @@ func TestAddSprintAppendsToEpicSprintOrder(t *testing.T) {
 
 func TestSprintByID(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s, _ := r.AddSprint(e.ID, "Test Sprint")
 
 	found, err := r.SprintByID(s.ID)
@@ -321,7 +321,7 @@ func TestSprintByID(t *testing.T) {
 
 func TestSprintAddItems(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s, _ := r.AddSprint(e.ID, "Sprint")
 
 	// Add items
@@ -354,7 +354,7 @@ func TestSprintAddItems(t *testing.T) {
 
 func TestSprintRemoveItem(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("Parent")
+	e := r.AddEpic("Parent", "")
 	s, _ := r.AddSprint(e.ID, "Sprint")
 	r.SprintAddItems(s.ID, []string{"T-001", "T-002", "T-003"})
 
@@ -382,8 +382,8 @@ func TestSprintRemoveItem(t *testing.T) {
 
 func TestSprintsForEpic(t *testing.T) {
 	r := &Registry{}
-	e1 := r.AddEpic("Epic 1")
-	e2 := r.AddEpic("Epic 2")
+	e1 := r.AddEpic("Epic 1", "")
+	e2 := r.AddEpic("Epic 2", "")
 
 	r.AddSprint(e1.ID, "Sprint A")
 	r.AddSprint(e1.ID, "Sprint B")
@@ -409,7 +409,7 @@ func TestSprintFieldsRoundtrip(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	e := r.AddEpic("Epic")
+	e := r.AddEpic("Epic", "")
 	s, _ := r.AddSprint(e.ID, "Sprint")
 	r.SprintAddItems(s.ID, []string{"T-001", "T-002"})
 
@@ -459,7 +459,7 @@ func TestSprintDescriptionRoundtrip(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	e := r.AddEpic("Epic")
+	e := r.AddEpic("Epic", "")
 	s, _ := r.AddSprint(e.ID, "Sprint")
 	for i := range r.Sprints {
 		if r.Sprints[i].ID == s.ID {
@@ -487,7 +487,7 @@ func TestSprintNoDescriptionOmitted(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	e := r.AddEpic("Epic")
+	e := r.AddEpic("Epic", "")
 	r.AddSprint(e.ID, "Sprint")
 
 	if err := r.Save(path); err != nil {
@@ -504,7 +504,7 @@ func TestEpicSprintOrderRoundtrip(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	e := r.AddEpic("Epic")
+	e := r.AddEpic("Epic", "")
 	s1, _ := r.AddSprint(e.ID, "Sprint 1")
 	s2, _ := r.AddSprint(e.ID, "Sprint 2")
 
@@ -553,9 +553,9 @@ func TestEpicPriorityRoundTripAndOrder(t *testing.T) {
 	path := filepath.Join(dir, "epics.yaml")
 
 	r := &Registry{}
-	a := r.AddEpic("alpha-go-live")
-	b := r.AddEpic("billing-v2")
-	c := r.AddEpic("unprioritized")
+	a := r.AddEpic("alpha-go-live", "")
+	b := r.AddEpic("billing-v2", "")
+	c := r.AddEpic("unprioritized", "")
 	prio := 1
 	r.Epics[indexOfEpic(r, b.ID)].Priority = &prio
 	prio2 := 2
@@ -585,9 +585,9 @@ func TestEpicPriorityRoundTripAndOrder(t *testing.T) {
 
 func TestMoveEpicRenumbers(t *testing.T) {
 	r := &Registry{}
-	a := r.AddEpic("a")
-	b := r.AddEpic("b")
-	c := r.AddEpic("c")
+	a := r.AddEpic("a", "")
+	b := r.AddEpic("b", "")
+	c := r.AddEpic("c", "")
 
 	// Initial state: all unprioritized.
 	if err := r.MoveEpic(a.ID, 1); err != nil {
@@ -635,7 +635,7 @@ func TestMoveEpicNotFound(t *testing.T) {
 
 func TestMoveEpicRejectsZero(t *testing.T) {
 	r := &Registry{}
-	a := r.AddEpic("a")
+	a := r.AddEpic("a", "")
 	if err := r.MoveEpic(a.ID, 0); err == nil {
 		t.Error("expected error for pos=0")
 	}
@@ -644,8 +644,8 @@ func TestMoveEpicRejectsZero(t *testing.T) {
 // I-489: MoveSprint renumbers within the parent epic only.
 func TestMoveSprintRenumbersWithinEpic(t *testing.T) {
 	r := &Registry{}
-	e1 := r.AddEpic("e1")
-	e2 := r.AddEpic("e2")
+	e1 := r.AddEpic("e1", "")
+	e2 := r.AddEpic("e2", "")
 	s1, _ := r.AddSprint(e1.ID, "s1") // Sequence 1
 	s2, _ := r.AddSprint(e1.ID, "s2") // Sequence 2
 	s3, _ := r.AddSprint(e1.ID, "s3") // Sequence 3
@@ -697,7 +697,7 @@ func TestMoveSprintNotFound(t *testing.T) {
 // SprintsForEpic was sorted — this test pins down the consistency fix).
 func TestListSprintsSortedBySequence(t *testing.T) {
 	r := &Registry{}
-	e := r.AddEpic("e")
+	e := r.AddEpic("e", "")
 	s1, _ := r.AddSprint(e.ID, "s1")
 	s2, _ := r.AddSprint(e.ID, "s2")
 	s3, _ := r.AddSprint(e.ID, "s3")
@@ -808,7 +808,7 @@ func TestSave_DrainOfOversizedFileAllowed(t *testing.T) {
 func TestSave_NormalRegistryUnaffected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "notes.yaml")
 	r := &Registry{}
-	e := r.AddEpic("Epic A")
+	e := r.AddEpic("Epic A", "")
 	if _, err := r.AddSprint(e.ID, "Sprint 1"); err != nil {
 		t.Fatalf("AddSprint: %v", err)
 	}
@@ -894,5 +894,45 @@ func TestSave_StatErrorIsLoudNotMisDecided(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "could not be stat'd") {
 		t.Errorf("a non-not-exist stat failure must be surfaced distinctly, got: %q", err)
+	}
+}
+
+// --- I-1323: Epic.GoalID ---
+
+func TestEpicGoalRoundtrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "epics.yaml")
+	r, _ := Load(path)
+	e := r.AddEpic("Billing", "G-001")
+	if e.GoalID != "G-001" {
+		t.Fatalf("AddEpic GoalID = %q, want G-001", e.GoalID)
+	}
+	if err := r.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	r2, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(r2.Epics) != 1 {
+		t.Fatalf("got %d epics after reload, want 1", len(r2.Epics))
+	}
+	if r2.Epics[0].GoalID != "G-001" {
+		t.Errorf("reloaded GoalID = %q, want G-001", r2.Epics[0].GoalID)
+	}
+}
+
+func TestEpicGoalOmittedWhenEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "epics.yaml")
+	r, _ := Load(path)
+	r.AddEpic("No Goal", "")
+	if err := r.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(raw), "goal:") {
+		t.Errorf("expected no 'goal:' line when GoalID is empty; got:\n%s", raw)
 	}
 }

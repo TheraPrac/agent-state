@@ -257,7 +257,7 @@ func TestSprintRecoverReleasesStale(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Create epic + sprint + add item
-	EpicCreate(cfg, "Test Epic")
+	EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})
@@ -298,7 +298,7 @@ func TestSprintRecoverReleasesStale(t *testing.T) {
 func TestSprintRecoverSkipsFresh(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	EpicCreate(cfg, "Test Epic")
+	EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	r, _ := registry.Load(cfg.EpicsPath())
 	epicID := r.Epics[0].ID
 	SprintCreate(cfg, epicID, "Sprint 1", SprintCreateOpts{})

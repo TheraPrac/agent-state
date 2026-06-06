@@ -39,7 +39,7 @@ func corruptRegistryEnv(t *testing.T) (*store.Store, *config.Config) {
 
 func TestEpicCreateLoadErr(t *testing.T) {
 	_, cfg := corruptRegistryEnv(t)
-	code := EpicCreate(cfg, "Test Epic")
+	code := EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	if code != 1 {
 		t.Errorf("expected 1, got %d", code)
 	}
@@ -54,7 +54,7 @@ func TestEpicCreateSaveErr(t *testing.T) {
 	// Make file unwritable after config loads
 	os.Chmod(filepath.Join(root, ".as", "epics.yaml"), 0444)
 	t.Cleanup(func() { os.Chmod(filepath.Join(root, ".as", "epics.yaml"), 0644) })
-	code := EpicCreate(cfg, "Test Epic")
+	code := EpicCreate(nil, cfg, "Test Epic", EpicCreateOpts{})
 	if code != 1 {
 		t.Errorf("expected 1, got %d", code)
 	}

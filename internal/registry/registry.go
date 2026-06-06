@@ -77,6 +77,7 @@ type Epic struct {
 	// I-489 introduces this; pre-existing epics carry nil until the operator
 	// runs `st epic move <id> <pos>`.
 	Priority    *int
+	GoalID      string   // optional: parent goal this epic advances (I-1323)
 	SprintOrder []string // ordered sprint IDs
 }
 
@@ -158,6 +159,7 @@ func Load(path string) (*Registry, error) {
 				ID:     current["id"],
 				Title:  current["title"],
 				Status: current["status"],
+				GoalID: current["goal"],
 			}
 			if p, ok := current["priority"]; ok && p != "" {
 				n := parseInt(p)
@@ -282,6 +284,9 @@ func (r *Registry) Save(path string) error {
 			if e.Priority != nil {
 				b.WriteString(fmt.Sprintf("    priority: %d\n", *e.Priority))
 			}
+			if e.GoalID != "" {
+				b.WriteString(fmt.Sprintf("    goal: %s\n", e.GoalID))
+			}
 			if len(e.SprintOrder) > 0 {
 				b.WriteString(fmt.Sprintf("    sprint_order: [%s]\n", strings.Join(e.SprintOrder, ", ")))
 			}
@@ -374,12 +379,13 @@ func (r *Registry) Save(path string) error {
 }
 
 // AddEpic creates a new epic with a generated adjective-verb-noun ID.
-func (r *Registry) AddEpic(title string) Epic {
+func (r *Registry) AddEpic(title, goalID string) Epic {
 	existing := r.allIDs()
 	e := Epic{
 		ID:     namegen.GenerateUnique(existing),
 		Title:  title,
 		Status: "active",
+		GoalID: goalID,
 	}
 	r.Epics = append(r.Epics, e)
 	return e

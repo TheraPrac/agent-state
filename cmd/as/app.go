@@ -1912,12 +1912,23 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 		Use:   "epic",
 		Short: "Manage epics",
 	}
-	epicCmd.AddCommand(&cobra.Command{
+	epicCreateCmd := &cobra.Command{
 		Use:   "create <title>",
 		Short: "Create a new epic",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.EpicCreate(appCfg, args[0])
+			goalFlag, _ := cmd.Flags().GetString("goal")
+			exitCode = command.EpicCreate(appStore, appCfg, args[0], command.EpicCreateOpts{GoalID: goalFlag})
+		},
+	}
+	epicCreateCmd.Flags().String("goal", "", "goal ID to link this epic to")
+	epicCmd.AddCommand(epicCreateCmd)
+	epicCmd.AddCommand(&cobra.Command{
+		Use:   "set-goal <epic-id> <goal-id>",
+		Short: "Link an existing epic to a goal (pass - to clear)",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.EpicSetGoal(appStore, appCfg, args[0], args[1])
 		},
 	})
 	epicCmd.AddCommand(&cobra.Command{
