@@ -8,7 +8,6 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/registry"
 )
 
 func TestQueueAddShow(t *testing.T) {
@@ -178,22 +177,14 @@ func TestQueueMove(t *testing.T) {
 	}
 }
 
-// I-489: queue move flips Source to "manual" so a future sprint-add
-// chain walk skips this entry (and so sprint rm doesn't cascade-remove
-// it). This converts an explicit operator placement into a "pin."
+// queue move flips Source to "manual" so sprint rm doesn't cascade-remove
+// it. This converts an explicit operator placement into a "pin."
 func TestQueueMoveFlipsSourceToManual(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "")
 	s, cfg := setupTestEnv(t)
 
-	r, _ := registry.Load(cfg.EpicsPath())
-	e := r.AddEpic("e", "")
-	prio := 1
-	r.Epics[indexOfEpicTest(r, e.ID)].Priority = &prio
-	sp, _ := r.AddSprint(e.ID, "sp1")
-	r.Save(cfg.EpicsPath())
-
-	if code := SprintAdd(s, cfg, sp.ID, []string{"T-001"}); code != 0 {
-		t.Fatalf("sprint add: %d", code)
+	// Seed a sprint-sourced entry directly (I-1322: SprintAdd no longer auto-queues).
+	if err := SaveQueue(cfg, []QueueEntry{{ID: "T-001", Source: QueueSourceSprint}}); err != nil {
+		t.Fatalf("SaveQueue: %v", err)
 	}
 	entries := LoadQueue(cfg)
 	if entries[0].Source != QueueSourceSprint {
@@ -609,125 +600,6 @@ func TestQueueApproveSprintBypassAuditsEachItem(t *testing.T) {
 	}
 }
 
-// I-489: computeSprintQueuePosition formula honors the chain.
-func TestComputeSprintQueuePosition(t *testing.T) {
-	s, cfg := setupTestEnv(t)
-	_ = s
-
-	r, _ := registry.Load(cfg.EpicsPath())
-	a := r.AddEpic("alpha", "")
-	b := r.AddEpic("billing", "")
-	prio1 := 1
-	prio2 := 2
-	r.Epics[indexOfEpicTest(r, a.ID)].Priority = &prio1
-	r.Epics[indexOfEpicTest(r, b.ID)].Priority = &prio2
-	sa, _ := r.AddSprint(a.ID, "alpha-1")
-	sb, _ := r.AddSprint(b.ID, "billing-1")
-	r.SprintAddItems(sa.ID, []string{"T-001"})
-	r.SprintAddItems(sb.ID, []string{"T-002"})
-	r.Save(cfg.EpicsPath())
-
-	posA := computeSprintQueuePosition(r, sa.ID, "T-001")
-	posB := computeSprintQueuePosition(r, sb.ID, "T-002")
-	if posA >= posB {
-		t.Errorf("alpha (p1) item should sort before billing (p2): posA=%d posB=%d", posA, posB)
-	}
-
-	r.SprintAddItems(sa.ID, []string{"T-003"})
-	pos1 := computeSprintQueuePosition(r, sa.ID, "T-001")
-	pos3 := computeSprintQueuePosition(r, sa.ID, "T-003")
-	if pos1 >= pos3 {
-		t.Errorf("first-in-sprint should sort before second: pos1=%d pos3=%d", pos1, pos3)
-	}
-
-	c := r.AddEpic("unprio", "")
-	sc, _ := r.AddSprint(c.ID, "unprio-1")
-	r.SprintAddItems(sc.ID, []string{"T-004"})
-	posC := computeSprintQueuePosition(r, sc.ID, "T-004")
-	if posC <= posB {
-		t.Errorf("unprioritized epic should sort after numbered: posC=%d posB=%d", posC, posB)
-	}
-}
-
-// I-489: sprint add lands a high-priority epic's item ahead of a
-// previously-queued lower-priority epic's item.
-func TestSprintAddRespectsEpicPriority(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "")
-	s, cfg := setupTestEnv(t)
-
-	r, _ := registry.Load(cfg.EpicsPath())
-	hi := r.AddEpic("hi", "")
-	lo := r.AddEpic("lo", "")
-	prioHi := 1
-	prioLo := 2
-	r.Epics[indexOfEpicTest(r, hi.ID)].Priority = &prioHi
-	r.Epics[indexOfEpicTest(r, lo.ID)].Priority = &prioLo
-	sHi, _ := r.AddSprint(hi.ID, "hi-1")
-	sLo, _ := r.AddSprint(lo.ID, "lo-1")
-	r.Save(cfg.EpicsPath())
-
-	if code := SprintAdd(s, cfg, sLo.ID, []string{"T-002"}); code != 0 {
-		t.Fatalf("sprint add lo: %d", code)
-	}
-	if code := SprintAdd(s, cfg, sHi.ID, []string{"T-001"}); code != 0 {
-		t.Fatalf("sprint add hi: %d", code)
-	}
-
-	entries := LoadQueue(cfg)
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 queue entries, got %d", len(entries))
-	}
-	if entries[0].ID != "T-001" {
-		t.Errorf("queue order broken: entries[0]=%s, want T-001 (high-priority epic)", entries[0].ID)
-	}
-}
-
-// I-489: findChainInsertIndex skips manual-Source entries (operator
-// pinned), so a sprint-add doesn't displace operator-curated work.
-func TestFindChainInsertIndexSkipsManual(t *testing.T) {
-	t.Setenv("AS_AGENT_ID", "")
-	s, cfg := setupTestEnv(t)
-
-	r, _ := registry.Load(cfg.EpicsPath())
-	e := r.AddEpic("e", "")
-	prio := 1
-	r.Epics[indexOfEpicTest(r, e.ID)].Priority = &prio
-	sp, _ := r.AddSprint(e.ID, "sp1")
-	r.Save(cfg.EpicsPath())
-
-	if code := QueueAdd(s, cfg, "T-003", QueueOpts{Reason: "ops"}); code != 0 {
-		t.Fatalf("queue add T-003: %d", code)
-	}
-	if code := SprintAdd(s, cfg, sp.ID, []string{"T-001"}); code != 0 {
-		t.Fatalf("sprint add: %d", code)
-	}
-
-	entries := LoadQueue(cfg)
-	manualIdx := -1
-	for i, e := range entries {
-		if e.ID == "T-003" {
-			manualIdx = i
-			break
-		}
-	}
-	if manualIdx < 0 {
-		t.Fatal("T-003 (manual) missing after sprint add")
-	}
-	if entries[manualIdx].Source == QueueSourceSprint {
-		t.Error("T-003 source got rewritten — operator origin lost")
-	}
-}
-
-// indexOfEpicTest finds an epic by ID for tests that need to mutate
-// Priority directly without exposing helpers from registry.
-func indexOfEpicTest(r *registry.Registry, id string) int {
-	for i, e := range r.Epics {
-		if e.ID == id {
-			return i
-		}
-	}
-	return -1
-}
 
 func TestQueuePruneKeepsMissingItems(t *testing.T) {
 	// If a queue entry references an item that no longer exists in the

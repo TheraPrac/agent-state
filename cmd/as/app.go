@@ -1256,11 +1256,18 @@ in-flight, run 'st release' against the active items first.
 	closeCmd := &cobra.Command{
 		Use:   "close <id> <resolution>",
 		Short: "Close an item with gate enforcement",
-		Args:  cobra.ExactArgs(2),
+		// I-1305: accept the id alone so a forgotten resolution (e.g.
+		// `st close <id> --reason "x"`) reaches command.Close and gets the
+		// helpful usage message instead of cobra's generic arg-count error.
+		Args: cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			reason, _ := cmd.Flags().GetString("reason")
 			force, _ := cmd.Flags().GetBool("force")
-			exitCode = command.Close(appStore, appCfg, args[0], args[1], command.CloseOpts{Reason: reason, Force: force})
+			resolution := ""
+			if len(args) > 1 {
+				resolution = args[1]
+			}
+			exitCode = command.Close(appStore, appCfg, args[0], resolution, command.CloseOpts{Reason: reason, Force: force})
 		},
 	}
 	closeCmd.Flags().String("reason", "", "reason for closing (required for abandon)")
@@ -1975,11 +1982,18 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			weight, _ := cmd.Flags().GetInt("weight")
-			exitCode = command.GoalCreate(appStore, appCfg, args[0], weight)
+			sc, _ := cmd.Flags().GetString("success-criterion")
+			noVal, _ := cmd.Flags().GetBool("no-validate")
+			exitCode = command.GoalCreate(appStore, appCfg, args[0], weight, command.GoalCreateOpts{
+				SuccessCriterion: sc,
+				NoValidate:       noVal,
+			})
 		},
 	}
 	goalCreateCmd.Flags().Int("weight", 0, "strategic weight 1-100 (active goals must sum to ≤100)")
 	_ = goalCreateCmd.MarkFlagRequired("weight")
+	goalCreateCmd.Flags().String("success-criterion", "", "machine-readable definition of done (required unless --no-validate)")
+	goalCreateCmd.Flags().Bool("no-validate", false, "skip success_criterion validation")
 	goalCmd.AddCommand(goalCreateCmd)
 	goalCmd.AddCommand(&cobra.Command{
 		Use:   "activate <goal-id>",
@@ -1989,14 +2003,19 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 			exitCode = command.GoalActivate(appStore, appCfg, args[0])
 		},
 	})
-	goalCmd.AddCommand(&cobra.Command{
+	goalMarkMetCmd := &cobra.Command{
 		Use:   "mark-met <goal-id>",
 		Short: "Transition a goal from active to met (terminal)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.GoalMarkMet(appStore, appCfg, args[0])
+			noVal, _ := cmd.Flags().GetBool("no-validate")
+			exitCode = command.GoalMarkMet(appStore, appCfg, args[0], command.GoalMarkMetOpts{
+				NoValidate: noVal,
+			})
 		},
-	})
+	}
+	goalMarkMetCmd.Flags().Bool("no-validate", false, "skip success_criterion check")
+	goalCmd.AddCommand(goalMarkMetCmd)
 	goalDropCmd := &cobra.Command{
 		Use:   "drop <goal-id>",
 		Short: "Transition a goal to dropped (terminal); requires --reason",

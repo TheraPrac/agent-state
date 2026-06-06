@@ -151,35 +151,6 @@ func TestQueueAdd_GoalReachableAutoApproved(t *testing.T) {
 	}
 }
 
-// --- upsertQueueSprintEntry auto-approve ---
-
-func TestSprintAdd_GoalReachableEntryAutoApproved(t *testing.T) {
-	_, s, cfg := newGoalEnv(t)
-	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
-	seedGoalFile(t, cfg, "G-001", "active", 40)
-	s = reloadStoreGoal(t, cfg)
-	if rc := ItemGoalsAdd(s, cfg, "T-001", []string{"G-001"}); rc != 0 {
-		t.Fatalf("ItemGoalsAdd rc=%d", rc)
-	}
-	s = reloadStoreGoal(t, cfg)
-
-	added, err := upsertQueueSprintEntry(cfg, s, nil, "T-001", "S-001")
-	if err != nil {
-		t.Fatalf("upsertQueueSprintEntry: %v", err)
-	}
-	if !added {
-		t.Fatal("expected entry to be added")
-	}
-
-	entries := LoadQueue(cfg)
-	if len(entries) != 1 {
-		t.Fatalf("entries = %d, want 1", len(entries))
-	}
-	if !entries[0].Approved {
-		t.Error("goal-reachable sprint entry should be auto-approved")
-	}
-}
-
 // --- Start and StackPush allow goal-reachable pending ---
 
 func TestStartAllowsGoalReachablePending(t *testing.T) {

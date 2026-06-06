@@ -497,6 +497,9 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	if agentID != "" {
 		fmt.Printf("  Assigned to: %s\n", agentID)
 	}
+	if item.Sprint != "" {
+		fmt.Printf("  sprint %s siblings discoverable via st next\n", item.Sprint)
+	}
 
 	// Emit dispatch directive so the operator knows which model tier to
 	// launch. decideTier follows the model_tier → model_tier_rec → Haiku
@@ -515,6 +518,23 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 	}
 	fmt.Printf("DISPATCH: launch session with model=%s\n", dispatchTier)
+
+	// I-1326: hint when item has no goal link — it won't appear in goal-weighted ranking.
+	// Skip for goal-type items: goals don't have parent goals.
+	if item.Type != "goal" && len(item.Goals) == 0 {
+		allGoals := s.List(store.TypeFilter("goal"))
+		var goalHints []string
+		for _, g := range allGoals {
+			if g.Status == "active" {
+				goalHints = append(goalHints, fmt.Sprintf("%s (%s)", g.ID, g.Title))
+			}
+		}
+		fmt.Fprintf(os.Stderr, "hint: %s has no goal link — it won't appear in goal-weighted ranking\n", id)
+		if len(goalHints) > 0 {
+			fmt.Fprintf(os.Stderr, "  add one: st item goals add %s <goal-id>\n", id)
+			fmt.Fprintf(os.Stderr, "  active goals: %s\n", strings.Join(goalHints, ", "))
+		}
+	}
 
 	// Auto-push onto the work stack so the Stop hook attributes per-turn
 	// metrics to this item by default. Skip with --no-push for "set up the

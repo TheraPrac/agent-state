@@ -73,35 +73,7 @@ func SprintAdd(s *store.Store, cfg *config.Config, sprintID string, itemIDs []st
 		return 1
 	}
 
-	// Auto-queue each item with Approved=false, Source=sprint. Items
-	// already in the queue (manually queued by the operator) are left
-	// alone — see upsertQueueSprintEntry comment. The insert index is
-	// computed from the epic→sprint→within-sprint chain (I-489) so
-	// high-priority epics' items land ahead of lower-priority ones by
-	// default.
-	queued := 0
-	pending := 0
-	for _, id := range itemIDs {
-		added, err := upsertQueueSprintEntry(cfg, s, r, id, sprintID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "queueing %s: %v\n", id, err)
-			return 1
-		}
-		if added {
-			queued++
-			if !IsGoalReachable(s, cfg, id) {
-				pending++
-			}
-		}
-	}
-
-	if pending > 0 {
-		fmt.Printf("Added %d item(s) to sprint %s (queued %d as pending)\n", len(itemIDs), sprintID, pending)
-	} else if queued > 0 {
-		fmt.Printf("Added %d item(s) to sprint %s (queued %d, all auto-approved)\n", len(itemIDs), sprintID, queued)
-	} else {
-		fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
-	}
+	fmt.Printf("Added %d item(s) to sprint %s\n", len(itemIDs), sprintID)
 	if err := autoSync(s, fmt.Sprintf("st sprint add: %s += %d item(s)", sprintID, len(itemIDs))); err != nil {
 		return 1
 	}

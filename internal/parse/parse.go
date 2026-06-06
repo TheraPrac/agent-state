@@ -529,6 +529,8 @@ func storeMultiline(item *model.Item, key, nestKey, content string) {
 		item.Summary = content
 	case "context":
 		item.Context = content
+	case "success_criterion":
+		item.SuccessCriterion = content
 	}
 	// I-487: SBAR multiline blocks (situation/background/assessment/
 	// recommendation) live under nestKey="sbar" with multi-line

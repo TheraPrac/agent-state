@@ -133,10 +133,56 @@ func TestGoalCreateValidatesWeight(t *testing.T) {
 	}
 	for _, tc := range cases {
 		_, s, cfg := newGoalEnv(t)
-		rc := GoalCreate(s, cfg, "Test Goal", tc.weight)
+		rc := GoalCreate(s, cfg, "Test Goal", tc.weight, GoalCreateOpts{NoValidate: true})
 		if rc != tc.wantRC {
 			t.Errorf("GoalCreate(weight=%d) rc=%d, want %d", tc.weight, rc, tc.wantRC)
 		}
+	}
+}
+
+func TestGoalCreateRequiresSuccessCriterion(t *testing.T) {
+	_, s, cfg := newGoalEnv(t)
+	// no criterion, no --no-validate → must fail
+	if rc := GoalCreate(s, cfg, "Test Goal", 10, GoalCreateOpts{}); rc != 2 {
+		t.Errorf("GoalCreate without criterion rc=%d, want 2", rc)
+	}
+	// with criterion → must succeed
+	if rc := GoalCreate(s, cfg, "Test Goal", 10, GoalCreateOpts{SuccessCriterion: "All users migrated"}); rc != 0 {
+		t.Errorf("GoalCreate with criterion rc=%d, want 0", rc)
+	}
+	// with --no-validate and no criterion → must succeed
+	_, s2, cfg2 := newGoalEnv(t)
+	if rc := GoalCreate(s2, cfg2, "Test Goal", 10, GoalCreateOpts{NoValidate: true}); rc != 0 {
+		t.Errorf("GoalCreate --no-validate rc=%d, want 0", rc)
+	}
+}
+
+func TestGoalCreateCriterionRoundtrip(t *testing.T) {
+	// Criteria containing YAML-special chars (colon, hash) must survive a
+	// write→read roundtrip without truncation. Values with embedded
+	// double-quotes follow the same pre-existing limitation as title quoting
+	// (the parser's unquote does not unescape \") and are excluded here.
+	cases := []string{
+		"revenue: $10k MRR",
+		"all P0 done # verified by QA",
+	}
+	for _, criterion := range cases {
+		t.Run(criterion, func(t *testing.T) {
+			dir, s, cfg := newGoalEnv(t)
+			_ = dir
+			rc := GoalCreate(s, cfg, "Test Goal", 10, GoalCreateOpts{SuccessCriterion: criterion})
+			if rc != 0 {
+				t.Fatalf("GoalCreate rc=%d", rc)
+			}
+			s2 := reloadStoreGoal(t, cfg)
+			goals := s2.List(store.TypeFilter("goal"))
+			if len(goals) == 0 {
+				t.Fatal("no goals after create")
+			}
+			if got := goals[0].SuccessCriterion; got != criterion {
+				t.Errorf("roundtrip: got %q, want %q", got, criterion)
+			}
+		})
 	}
 }
 
@@ -166,8 +212,8 @@ func TestGoalMarkMetTransitions(t *testing.T) {
 	seedGoalFile(t, cfg, "G-002", "draft", 20)
 	s := reloadStoreGoal(t, cfg)
 
-	// active → met: ok.
-	if rc := GoalMarkMet(s, cfg, "G-001"); rc != 0 {
+	// active → met: ok (--no-validate because seeded goal has no criterion).
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
 		t.Errorf("GoalMarkMet(active) rc=%d, want 0", rc)
 	}
 	g, _ := s.Get("G-001")
@@ -176,8 +222,23 @@ func TestGoalMarkMetTransitions(t *testing.T) {
 	}
 
 	// draft → met: must fail.
-	if rc := GoalMarkMet(s, cfg, "G-002"); rc == 0 {
+	if rc := GoalMarkMet(s, cfg, "G-002", GoalMarkMetOpts{NoValidate: true}); rc == 0 {
 		t.Error("GoalMarkMet(draft) should fail")
+	}
+}
+
+func TestGoalMarkMetRequiresSuccessCriterion(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	s := reloadStoreGoal(t, cfg)
+
+	// no success_criterion → must fail with rc=2
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{}); rc != 2 {
+		t.Errorf("GoalMarkMet without criterion rc=%d, want 2", rc)
+	}
+	// --no-validate skips the check → must succeed
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Errorf("GoalMarkMet --no-validate rc=%d, want 0", rc)
 	}
 }
 
@@ -291,7 +352,7 @@ func TestGoalMarkMet_ClearsAgentGoalFocus(t *testing.T) {
 		t.Fatalf("precondition: focus=%q, want G-001", got)
 	}
 
-	if rc := GoalMarkMet(s, cfg, "G-001"); rc != 0 {
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
 		t.Fatalf("GoalMarkMet rc=%d", rc)
 	}
 

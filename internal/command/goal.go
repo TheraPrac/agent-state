@@ -9,16 +9,28 @@ import (
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 
+// GoalCreateOpts holds optional flags for st goal create.
+type GoalCreateOpts struct {
+	SuccessCriterion string
+	NoValidate       bool
+}
+
 // GoalCreate creates a new goal with the given title and weight.
-func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) int {
+func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int, opts GoalCreateOpts) int {
 	if weight <= 0 || weight > 100 {
 		fmt.Fprintf(os.Stderr, "goal create: --weight must be 1-100 (got %d)\n", weight)
+		return 2
+	}
+
+	if opts.SuccessCriterion == "" && !opts.NoValidate {
+		fmt.Fprintf(os.Stderr, "goal create: --success-criterion is required (use --no-validate to skip)\n")
 		return 2
 	}
 
@@ -52,8 +64,18 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) in
 		model.Line{Raw: ""},
 		model.Line{Raw: fmt.Sprintf("weight: %d", weight), Key: "weight", Value: fmt.Sprintf("%d", weight)},
 		model.Line{Raw: ""},
-		model.Line{Raw: "sbar:", Key: "sbar"},
 	)
+	if opts.SuccessCriterion != "" {
+		criterionLine := "success_criterion: " + opts.SuccessCriterion
+		if strings.ContainsAny(opts.SuccessCriterion, ":`\"#") {
+			criterionLine = fmt.Sprintf("success_criterion: %q", opts.SuccessCriterion)
+		}
+		lines = append(lines,
+			model.Line{Raw: criterionLine, Key: "success_criterion", Value: opts.SuccessCriterion},
+			model.Line{Raw: ""},
+		)
+	}
+	lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
 	for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
 		lines = append(lines,
 			model.Line{Raw: "  " + key + ": |-", Key: key, Indent: 2, BlockKey: "sbar"},
@@ -64,19 +86,20 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int) in
 
 	w := weight
 	item := &model.Item{
-		ID:              id,
-		Type:            "goal",
-		Status:          "draft",
-		Title:           title,
-		Created:         now,
-		LastTouched:     now,
-		Weight:          &w,
-		WorkTracking:    make(map[string]interface{}),
-		Delivery:        make(map[string]interface{}),
-		TestingEvidence: make(map[string]interface{}),
-		TimeTracking:    make(map[string]interface{}),
-		Manifest:        make(map[string]interface{}),
-		Doc:             doc,
+		ID:               id,
+		Type:             "goal",
+		Status:           "draft",
+		Title:            title,
+		Created:          now,
+		LastTouched:      now,
+		Weight:           &w,
+		SuccessCriterion: opts.SuccessCriterion,
+		WorkTracking:     make(map[string]interface{}),
+		Delivery:         make(map[string]interface{}),
+		TestingEvidence:  make(map[string]interface{}),
+		TimeTracking:     make(map[string]interface{}),
+		Manifest:         make(map[string]interface{}),
+		Doc:              doc,
 	}
 
 	if err := s.Create(item); err != nil {
@@ -140,8 +163,13 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 	return 0
 }
 
+// GoalMarkMetOpts holds optional flags for st goal mark-met.
+type GoalMarkMetOpts struct {
+	NoValidate bool
+}
+
 // GoalMarkMet transitions a goal from active to met (terminal).
-func GoalMarkMet(s *store.Store, cfg *config.Config, id string) int {
+func GoalMarkMet(s *store.Store, cfg *config.Config, id string, opts GoalMarkMetOpts) int {
 	goal, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
@@ -155,6 +183,10 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Fprintf(os.Stderr, "goal mark-met: %s is %s (must be active)\n", id, goal.Status)
 		return 1
 	}
+	if goal.SuccessCriterion == "" && !opts.NoValidate {
+		fmt.Fprintf(os.Stderr, "goal mark-met: %s has no success_criterion — set one first or use --no-validate\n", id)
+		return 2
+	}
 
 	if err := s.Mutate(id, func(it *model.Item) error {
 		it.Status = "met"
@@ -167,6 +199,17 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string) int {
 	if err := s.Move(id); err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
+	}
+
+	_ = changelog.Append(cfg, id, changelog.Entry{
+		Op: "goal_mark_met", Field: "status",
+		OldValue: "active", NewValue: "met",
+	})
+	if opts.NoValidate {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op:     "goal_mark_met_no_validate",
+			Reason: "bypassed success_criterion gate via --no-validate",
+		})
 	}
 
 	fmt.Printf("%s marked met\n", id)
@@ -263,7 +306,11 @@ func goalListTo(w io.Writer, s *store.Store, cfg *config.Config) int {
 			if g.Weight != nil {
 				wt = fmt.Sprintf("%d", *g.Weight)
 			}
-			fmt.Fprintf(w, "  %-6s  wt:%-3s  %s\n", g.ID, wt, g.Title)
+			crit := ""
+			if status == "active" && g.SuccessCriterion == "" {
+				crit = "  ⚠ no success_criterion"
+			}
+			fmt.Fprintf(w, "  %-6s  wt:%-3s  %s%s\n", g.ID, wt, g.Title, crit)
 		}
 	}
 
