@@ -1256,11 +1256,18 @@ in-flight, run 'st release' against the active items first.
 	closeCmd := &cobra.Command{
 		Use:   "close <id> <resolution>",
 		Short: "Close an item with gate enforcement",
-		Args:  cobra.ExactArgs(2),
+		// I-1305: accept the id alone so a forgotten resolution (e.g.
+		// `st close <id> --reason "x"`) reaches command.Close and gets the
+		// helpful usage message instead of cobra's generic arg-count error.
+		Args: cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			reason, _ := cmd.Flags().GetString("reason")
 			force, _ := cmd.Flags().GetBool("force")
-			exitCode = command.Close(appStore, appCfg, args[0], args[1], command.CloseOpts{Reason: reason, Force: force})
+			resolution := ""
+			if len(args) > 1 {
+				resolution = args[1]
+			}
+			exitCode = command.Close(appStore, appCfg, args[0], resolution, command.CloseOpts{Reason: reason, Force: force})
 		},
 	}
 	closeCmd.Flags().String("reason", "", "reason for closing (required for abandon)")
