@@ -381,3 +381,179 @@ func TestGoalDrop_ClearsAgentGoalFocus(t *testing.T) {
 		t.Errorf("focus not cleared after drop: %q", got)
 	}
 }
+
+func TestGoalMarkMet_RedistributesWeightToActivePeers(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	// Closing goal has weight 10; peers are 20/30/50 → should get +2/+3/+5.
+	seedGoalFile(t, cfg, "G-001", "active", 10) // closing
+	seedGoalFile(t, cfg, "G-002", "active", 20)
+	seedGoalFile(t, cfg, "G-003", "active", 30)
+	seedGoalFile(t, cfg, "G-004", "active", 50)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	expectWeight := map[string]int{"G-002": 22, "G-003": 33, "G-004": 55}
+	for id, want := range expectWeight {
+		g, ok := s2.Get(id)
+		if !ok {
+			t.Fatalf("%s not found after redistribution", id)
+		}
+		if g.Weight == nil || *g.Weight != want {
+			got := 0
+			if g.Weight != nil {
+				got = *g.Weight
+			}
+			t.Errorf("%s weight = %d, want %d", id, got, want)
+		}
+	}
+}
+
+func TestGoalDrop_RedistributesWeight(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 10)
+	seedGoalFile(t, cfg, "G-002", "active", 20)
+	seedGoalFile(t, cfg, "G-003", "active", 30)
+	seedGoalFile(t, cfg, "G-004", "active", 50)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalDrop(s, cfg, "G-001", model.ValidDropReasons[0]); rc != 0 {
+		t.Fatalf("GoalDrop rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	expectWeight := map[string]int{"G-002": 22, "G-003": 33, "G-004": 55}
+	for id, want := range expectWeight {
+		g, _ := s2.Get(id)
+		if g.Weight == nil || *g.Weight != want {
+			got := 0
+			if g.Weight != nil {
+				got = *g.Weight
+			}
+			t.Errorf("%s weight = %d, want %d", id, got, want)
+		}
+	}
+}
+
+func TestGoalMarkMet_SingleActivePeer(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 25)
+	seedGoalFile(t, cfg, "G-002", "active", 75)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	g2, _ := s2.Get("G-002")
+	if g2.Weight == nil || *g2.Weight != 100 {
+		t.Errorf("G-002 weight = %v, want 100", g2.Weight)
+	}
+}
+
+func TestGoalMarkMet_NoActivePeers(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	seedGoalFile(t, cfg, "G-002", "draft", 60)
+	s := reloadStoreGoal(t, cfg)
+
+	// Must not crash; no redistribution to draft goal.
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	g2, _ := s2.Get("G-002")
+	if g2.Weight == nil || *g2.Weight != 60 {
+		t.Errorf("G-002 (draft) weight changed unexpectedly: %v", g2.Weight)
+	}
+}
+
+func TestGoalMarkMet_AllPeersZeroWeight(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 40)
+	seedGoalFile(t, cfg, "G-002", "active", 0)
+	s := reloadStoreGoal(t, cfg)
+
+	// Must not crash or divide by zero.
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+}
+
+func TestGoalMarkMet_WeightSumInvariant(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 30)
+	seedGoalFile(t, cfg, "G-002", "active", 40)
+	seedGoalFile(t, cfg, "G-003", "active", 30)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	// Total weight of remaining active goals must still equal the original sum (100).
+	s2 := reloadStoreGoal(t, cfg)
+	total := 0
+	for _, g := range s2.All() {
+		if g.Type == "goal" && g.Status == "active" && g.Weight != nil {
+			total += *g.Weight
+		}
+	}
+	// G-001 closed but its 30 weight redistributed to peers → total stays at 100.
+	if total != 100 {
+		t.Errorf("remaining active weight sum = %d, want 100 (redistributed weight keeps total stable)", total)
+	}
+}
+
+func TestGoalMarkMet_ZeroWeightGoalClosed(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 0)
+	seedGoalFile(t, cfg, "G-002", "active", 50)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	g2, _ := s2.Get("G-002")
+	if g2.Weight == nil || *g2.Weight != 50 {
+		t.Errorf("G-002 weight = %v, want 50 (unchanged)", g2.Weight)
+	}
+}
+
+func TestRedistributeGoalWeight_RemainderGoesToLastPeer(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	// closingWeight=10, peers wt:3 and wt:7 → floor(10*3/10)=3, last gets 10-3=7
+	// Verify last peer (G-003, sorted by ID) gets the remainder.
+	seedGoalFile(t, cfg, "G-001", "active", 10) // closing
+	seedGoalFile(t, cfg, "G-002", "active", 3)
+	seedGoalFile(t, cfg, "G-003", "active", 7)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := GoalMarkMet(s, cfg, "G-001", GoalMarkMetOpts{NoValidate: true}); rc != 0 {
+		t.Fatalf("GoalMarkMet rc=%d", rc)
+	}
+
+	s2 := reloadStoreGoal(t, cfg)
+	g2, _ := s2.Get("G-002")
+	g3, _ := s2.Get("G-003")
+	// floor(10*3/10)=3, so G-002: 3+3=6
+	if g2.Weight == nil || *g2.Weight != 6 {
+		t.Errorf("G-002 weight = %v, want 6", g2.Weight)
+	}
+	// remainder = 10-3=7, so G-003: 7+7=14
+	if g3.Weight == nil || *g3.Weight != 14 {
+		t.Errorf("G-003 weight = %v, want 14", g3.Weight)
+	}
+	// Total: 6+14=20 (original 10+3+7=20, closing freed 10)
+	total := *g2.Weight + *g3.Weight
+	if total != 20 {
+		t.Errorf("total remaining weight = %d, want 20", total)
+	}
+}

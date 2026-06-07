@@ -163,6 +163,68 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 	return 0
 }
 
+// redistributeGoalWeight proportionally adds closingWeight to all remaining
+// active goals (excluding closingID). Peers are mutated in-place; the last
+// peer absorbs any integer remainder so the total is exact. No-op when there
+// are no active peers or their total weight is zero.
+func redistributeGoalWeight(s *store.Store, cfg *config.Config, closingID string, closingWeight int) {
+	if closingWeight <= 0 {
+		return
+	}
+
+	var peers []*model.Item
+	totalPeerWeight := 0
+	for _, g := range s.All() {
+		if g.Type == "goal" && g.Status == "active" && g.ID != closingID && g.Weight != nil && *g.Weight > 0 {
+			peers = append(peers, g)
+			totalPeerWeight += *g.Weight
+		}
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+
+	if len(peers) == 0 || totalPeerWeight == 0 {
+		fmt.Printf("note: no active peers to redistribute %d weight from %s\n", closingWeight, closingID)
+		return
+	}
+
+	distributed := 0
+	updated := 0
+	for i, peer := range peers {
+		var delta int
+		if i == len(peers)-1 {
+			delta = closingWeight - distributed
+		} else {
+			delta = closingWeight * (*peer.Weight) / totalPeerWeight
+		}
+		// Always advance distributed before the mutation attempt so that a
+		// failed Mutate does not cause the last peer to absorb extra weight
+		// beyond its proportional integer remainder.
+		distributed += delta
+		if delta == 0 {
+			continue
+		}
+		peerID := peer.ID
+		oldW := *peer.Weight
+		newW := oldW + delta
+		if err := s.Mutate(peerID, func(it *model.Item) error {
+			it.Weight = &newW
+			it.Doc.SetField("weight", fmt.Sprintf("%d", newW))
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: updating weight for %s: %v\n", peerID, err)
+			continue
+		}
+		_ = changelog.Append(cfg, peerID, changelog.Entry{
+			Op: "goal_weight_redistributed", Field: "weight",
+			OldValue: fmt.Sprintf("%d", oldW), NewValue: fmt.Sprintf("%d", newW),
+			Reason: fmt.Sprintf("redistributed from %s (closed)", closingID),
+		})
+		fmt.Printf("  %s: wt %d → %d (+%d)\n", peerID, oldW, newW, delta)
+		updated++
+	}
+	fmt.Printf("redistributed %d weight from %s to %d goal(s)\n", closingWeight, closingID, updated)
+}
+
 // GoalMarkMetOpts holds optional flags for st goal mark-met.
 type GoalMarkMetOpts struct {
 	NoValidate bool
@@ -188,6 +250,11 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string, opts GoalMarkMet
 		return 2
 	}
 
+	closingWeight := 0
+	if goal.Weight != nil {
+		closingWeight = *goal.Weight
+	}
+
 	if err := s.Mutate(id, func(it *model.Item) error {
 		it.Status = "met"
 		it.Doc.SetField("status", "met")
@@ -200,6 +267,8 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string, opts GoalMarkMet
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
+
+	redistributeGoalWeight(s, cfg, id, closingWeight)
 
 	_ = changelog.Append(cfg, id, changelog.Entry{
 		Op: "goal_mark_met", Field: "status",
@@ -244,6 +313,11 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 		return 1
 	}
 
+	closingWeight := 0
+	if goal.Weight != nil {
+		closingWeight = *goal.Weight
+	}
+
 	if err := s.Mutate(id, func(it *model.Item) error {
 		it.Status = "dropped"
 		it.Doc.SetField("status", "dropped")
@@ -257,6 +331,8 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
+
+	redistributeGoalWeight(s, cfg, id, closingWeight)
 
 	fmt.Printf("%s dropped (%s)\n", id, reason)
 	if cleared, err := agent.ClearGoalFocusForAllAgents(cfg, id); err != nil {
