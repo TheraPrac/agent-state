@@ -13,6 +13,13 @@ import (
 // fullStackPlanText is what the mock claude returns to populate the
 // in-prep plan: full-stack scope + 6 ACs (above the I-180 threshold
 // of 5) so DetectFullStack fires.
+//
+// I-1364: every `- cmd:` here MUST pass ValidateACsyntax (uat.go). The Accept
+// gate (prep.go) validates ACs and `continue`s on any error, so an invalid AC
+// here makes the gate re-loop forever against a deterministic mock SelectMenu
+// (the test would hang ~600s and wedge `make test`). Keep these targeted —
+// no bare `go test` (use -run), no `make test-*`, no `npm run test` without
+// --testPathPattern.
 const fullStackPlanText = `## Approach
 Cross-cutting api + web feature.
 
@@ -33,8 +40,8 @@ Repos: theraprac-api, theraprac-web
 
 ## Acceptance Criteria
 - cmd: cd ../theraprac-api && make integration-local
-- cmd: cd ../theraprac-api && make test-unit
-- cmd: go test ./internal/handlers/...
+- cmd: cd ../theraprac-api && go test -run TestFooHandler ./internal/handlers/...
+- cmd: go test -run TestFooHandler ./internal/handlers/...
 - cmd: cd ../theraprac-web && npm run type-check
 - cmd: cd ../theraprac-web && npm run test:unit
 - cmd: cd ../theraprac-web && npx playwright test foo.spec.ts
@@ -70,7 +77,13 @@ func setupBannerEnv(t *testing.T) (*store.Store, *config.Config) {
 //
 // Output capture: stdout drives through suppressStdout; the test
 // re-captures via separate calls.
-func bannerEngine(gateChoice string) RunEngine {
+func bannerEngine(t *testing.T, gateChoice string) RunEngine {
+	t.Helper()
+	// I-1364: bound the Plan-Review menu drive. The Accept gate re-loops on AC
+	// validation errors; with this deterministic stub that would spin forever.
+	// Fail fast instead of hanging the suite if a fixture regression reintroduces
+	// an invalid AC.
+	gateCalls := 0
 	return RunEngine{
 		RunClaude: func(cwd string, args, env []string) ([]byte, int, error) {
 			step := "prep"
@@ -94,6 +107,11 @@ func bannerEngine(gateChoice string) RunEngine {
 			// gate choice when it's the Plan Review menu.
 			for _, o := range opts {
 				if strings.Contains(o.Label, "save plan and proceed") {
+					gateCalls++
+					if gateCalls > 5 {
+						t.Fatalf("Plan-Review gate drove %d times — likely an Accept-loop "+
+							"(invalid AC in fullStackPlanText failing ValidateACsyntax). I-1364.", gateCalls)
+					}
 					return gateChoice
 				}
 			}
@@ -118,7 +136,7 @@ func TestPrepFullStackBanner_AcceptSplitCreatesChildren(t *testing.T) {
 	// so absolute id assertions would be brittle — use a delta).
 	preCount := len(s.All())
 
-	engine := bannerEngine("5")
+	engine := bannerEngine(t, "5")
 	suppressStdout(t, func() {
 		_ = Prep(s, cfg, "wo-sprint", PrepOpts{}, engine)
 	})
@@ -154,7 +172,7 @@ func TestPrepFullStackBanner_DeclineRecordsKeptUnified(t *testing.T) {
 
 	preCount := len(s.All())
 
-	engine := bannerEngine("1")
+	engine := bannerEngine(t, "1")
 	suppressStdout(t, func() {
 		_ = Prep(s, cfg, "wo-sprint", PrepOpts{}, engine)
 	})
