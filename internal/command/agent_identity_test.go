@@ -47,8 +47,16 @@ func resetIdentityEnv(t *testing.T) {
 // newCfgRootedAt loads a config from <root>/.as/config.yaml. Callers must
 // have created that file first via mustTouchConfig — failure to load is a
 // test-setup error, not a runtime fallback.
+//
+// I-1371: chdir into the temp root first. config.LoadFrom sets cfg.startDir =
+// os.Getwd() (I-936, to immunize the agent-workspace.yaml marker lookup against
+// ST_ROOT redirects), and Identity() walks startDir up for that marker before
+// the per-root local-agent.yaml. Without the chdir, startDir stays inside
+// theraprac-agent-a and the walk finds the real agent-a marker, leaking
+// "agent-a" into these temp-rooted tests. t.Chdir restores the CWD at test end.
 func newCfgRootedAt(t *testing.T, root string) *config.Config {
 	t.Helper()
+	t.Chdir(root)
 	cfg, err := config.LoadFrom(filepath.Join(root, ".as", "config.yaml"))
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)

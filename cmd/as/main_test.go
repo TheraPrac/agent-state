@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -568,11 +569,7 @@ func TestFullLifecycle(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}
-	fields := strings.Fields(strings.TrimSpace(stdout))
-	if len(fields) < 2 {
-		t.Fatalf("unexpected create output: %q", stdout)
-	}
-	id := fields[1]
+	id := createdItemID(t, stdout)
 	if !strings.HasPrefix(id, "T-") {
 		t.Fatalf("unexpected ID: %q from output: %q", id, stdout)
 	}
@@ -668,7 +665,7 @@ func TestCrossCommandConsistency(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}
-	id := strings.Fields(strings.TrimSpace(stdout))[1]
+	id := createdItemID(t, stdout)
 
 	// --- Before start: item is queued ---
 
@@ -790,4 +787,28 @@ func TestUpdatePositionalStillWorks(t *testing.T) {
 	if code != 0 {
 		t.Errorf("positional update should succeed, got %d", code)
 	}
+}
+
+// createdItemID extracts the new item's id from `create` stdout, which is two
+// lines — "new item: <id>" then "Created <id> — <title>". Parsing a fixed field
+// index is brittle (the "new item:" line shifts it); take the id from that line,
+// falling back to the first T-/I-/E- token (I-1371).
+var createdIDRe = regexp.MustCompile(`^[TIE]-\S+`)
+
+func createdItemID(t *testing.T, stdout string) string {
+	t.Helper()
+	for _, line := range strings.Split(stdout, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "new item: "); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	for _, tok := range strings.Fields(stdout) {
+		if createdIDRe.MatchString(tok) {
+			return tok
+		}
+	}
+	t.Fatalf("could not parse item id from create output: %q", stdout)
+	return ""
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -490,7 +491,7 @@ func TestInProcess_FullLifecycle(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("create exit %d", code)
 	}
-	id := strings.Fields(strings.TrimSpace(stdout))[1]
+	id := createdItemIDInProc(t, stdout)
 
 	// Start
 	_, code = runInProcess(t, ws, "start", id)
@@ -521,4 +522,28 @@ func TestInProcess_FullLifecycle(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("index exit %d", code)
 	}
+}
+
+// createdItemIDInProc mirrors createdItemID (main_test.go) for the package main
+// in-process tests: `create` stdout is "new item: <id>" then "Created <id> — …",
+// so a fixed field index is brittle; take the id from the "new item:" line,
+// falling back to the first T-/I-/E- token (I-1371).
+var createdIDReInProc = regexp.MustCompile(`^[TIE]-\S+`)
+
+func createdItemIDInProc(t *testing.T, stdout string) string {
+	t.Helper()
+	for _, line := range strings.Split(stdout, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "new item: "); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	for _, tok := range strings.Fields(stdout) {
+		if createdIDReInProc.MatchString(tok) {
+			return tok
+		}
+	}
+	t.Fatalf("could not parse item id from create output: %q", stdout)
+	return ""
 }
