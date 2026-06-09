@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadEmpty(t *testing.T) {
@@ -934,5 +935,125 @@ func TestEpicGoalOmittedWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "goal:") {
 		t.Errorf("expected no 'goal:' line when GoalID is empty; got:\n%s", raw)
+	}
+}
+
+// TestSplitKVRoundTripStable (I-1331): a message containing characters that
+// yamlQuote escapes via %q (`"`, `\`, `:`, tab) must survive Save→Load intact,
+// and a second Save must be byte-identical to the first. Before the splitKV
+// fix, Load stripped only the outer quotes and left interior `\"` / `\\`
+// escapes in the value, so every round-trip grew the field by a backslash
+// layer (the inflation that ultimately tripped the over-ceiling write guard).
+func TestSplitKVRoundTripStable(t *testing.T) {
+	msgs := []string{
+		`operator said "do not brick the registry"`,
+		`windows path C:\temp\x.log mixed with "quotes"`,
+		"tab\tseparated and a colon : here",
+		`plain breadcrumb, no special chars`,
+	}
+	for _, m := range msgs {
+		path := filepath.Join(t.TempDir(), "notes.yaml")
+		r := &Registry{}
+		r.AddNote("agent-a", "sess", m)
+		if err := r.Save(path); err != nil {
+			t.Fatalf("Save(%q): %v", m, err)
+		}
+		first, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+
+		r2, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(r2.Notes) != 1 {
+			t.Fatalf("got %d notes, want 1", len(r2.Notes))
+		}
+		if r2.Notes[0].Message != m {
+			t.Errorf("message not round-tripped intact:\n got: %q\nwant: %q",
+				r2.Notes[0].Message, m)
+		}
+
+		if err := r2.Save(path); err != nil {
+			t.Fatalf("re-Save: %v", err)
+		}
+		second, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(first) != string(second) {
+			t.Errorf("round-trip not byte-stable for %q\nfirst:\n%s\nsecond:\n%s",
+				m, first, second)
+		}
+	}
+}
+
+// TestSave_NoteRmShrinkOnOversizedQuoteLadenRegistry (I-1331): the reported
+// bug. With an already-over-ceiling notes.yaml whose notes contain `"`,
+// `st note rm` (Load→RemoveNote→Save) must succeed and shrink the file. Before
+// the fix, the buggy Load inflated every remaining note on re-serialization by
+// more than the bytes the removed note freed, so the I-686 size guard refused
+// the write — locking the operator out of the drain it points them to.
+func TestSave_NoteRmShrinkOnOversizedQuoteLadenRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notes.yaml")
+
+	// Build quote-heavy notes. ~100 interior quotes/note → ~100 bytes of
+	// inflation per note per buggy round-trip, dwarfing the bytes one removed
+	// note frees, so pre-fix the re-serialized registry GREW past the on-disk
+	// size and the guard refused.
+	msg := strings.Repeat(`"`, 100) + strings.Repeat("x", 4100)
+	r := &Registry{}
+	for i := 0; i < 280; i++ {
+		r.AddNote("agent-a", "sess", msg)
+	}
+
+	// Serialize to disk in canonical Save format directly — r.Save would
+	// (correctly) refuse a FRESH over-ceiling write (the I-686 guard), which
+	// is not what this test exercises.
+	var b strings.Builder
+	b.WriteString("notes:\n")
+	for _, n := range r.Notes {
+		b.WriteString("  - id: " + n.ID + "\n")
+		b.WriteString("    timestamp: " + n.Timestamp.Format(time.RFC3339) + "\n")
+		b.WriteString("    author: " + n.Author + "\n")
+		b.WriteString("    session: " + n.Session + "\n")
+		b.WriteString("    message: " + yamlQuote(n.Message) + "\n")
+	}
+	canonical := b.String()
+	if len(canonical) <= MaxRegistryBytes {
+		t.Fatalf("test setup: need an over-ceiling registry, got %d bytes", len(canonical))
+	}
+	if err := os.WriteFile(path, []byte(canonical), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Round-trip must be loss-free (fails pre-fix: backslash residue).
+	if loaded.Notes[0].Message != msg {
+		t.Fatalf("round-trip corrupted note message (got %d bytes, want %d)",
+			len(loaded.Notes[0].Message), len(msg))
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.RemoveNote(loaded.Notes[0].ID); err != nil {
+		t.Fatalf("RemoveNote: %v", err)
+	}
+	if err := loaded.Save(path); err != nil {
+		t.Fatalf("st note rm on an oversized registry must succeed (shrinking write), got: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Errorf("file did not shrink after note rm: before=%d after=%d",
+			before.Size(), after.Size())
 	}
 }

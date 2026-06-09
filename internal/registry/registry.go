@@ -897,7 +897,23 @@ func splitKV(s string) (string, string, bool) {
 	}
 	key := strings.TrimSpace(s[:idx])
 	val := strings.TrimSpace(s[idx+1:])
-	// Strip quotes
+	// Decode symmetrically with yamlQuote. Quoted fields (title /
+	// description / message) are written with Go %q, which escapes interior
+	// `"`→`\"` and `\`→`\\`. A naive outer-quote strip would leave those
+	// escapes in the value, so the next Save re-%q-escaped an already-escaped
+	// string and the field grew a backslash layer on every Load→Save
+	// round-trip (I-1331). On an over-ceiling registry that aggregate growth
+	// could exceed the bytes freed by `st note rm`, making the I-686 size
+	// guard refuse the very shrink it points the operator to. strconv.Unquote
+	// reverses %q exactly, so the round-trip is byte-stable and a previously
+	// inflated value decodes one layer and re-saves compact (shrinking).
+	if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+		if unq, err := strconv.Unquote(val); err == nil {
+			return key, unq, true
+		}
+	}
+	// Fallback for single-quoted or legacy/malformed values (yamlQuote never
+	// emits single quotes, so this path only sees hand-authored YAML).
 	val = strings.Trim(val, `"'`)
 	return key, val, true
 }
