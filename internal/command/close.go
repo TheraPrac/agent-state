@@ -299,15 +299,21 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 				fmt.Sprintf("%d", int(workDur.Seconds())))
 		}
 		// total_duration_seconds and the wall_time fields carry the
-		// wall-clock span (close − started_at), independent of the timer.
+		// wall-clock span (completed_at − started_at), independent of the
+		// timer. Anchor on the same `now` that produced completed_at (I-514:
+		// one anchor for all span fields) and always write when started_at
+		// parses — clamp clock skew to 0 rather than omitting, so field
+		// presence keeps meaning "span recorded".
 		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
 			if t0, err := time.Parse(time.RFC3339, startedAt); err == nil {
-				if span := time.Now().Sub(t0); span > 0 {
-					item.SetNested("time_tracking", "total_duration_seconds",
-						fmt.Sprintf("%d", int(span.Seconds())))
-					item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", span.Hours()))
-					item.SetNested("time_tracking", "total_wall_time", formatDuration(span))
+				span := now.Sub(t0)
+				if span < 0 {
+					span = 0
 				}
+				item.SetNested("time_tracking", "total_duration_seconds",
+					fmt.Sprintf("%d", int(span.Seconds())))
+				item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", span.Hours()))
+				item.SetNested("time_tracking", "total_wall_time", formatDuration(span))
 			}
 		}
 

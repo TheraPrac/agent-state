@@ -24,8 +24,8 @@ import (
 func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 	env := testutil.NewEnv(t)
 
-	// Bootstrap T-003 with a started_at roughly 2 hours ago and an older created_at.
-	// Created is already set by writeItems to 2026-03-25T12:00:00; we just need started_at.
+	// Bootstrap T-003 with a started_at roughly 2 hours ago — the anchor for
+	// the wall-span fields.
 	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
 	if err := env.S.Mutate("T-003", func(it *model.Item) error {
 		it.SetNested("time_tracking", "started_at", startedAt)
@@ -166,6 +166,11 @@ func TestClose_DurationMetricsAgree(t *testing.T) {
 	}
 	if totalDur < 60*60 || totalDur > 3*60*60 {
 		t.Errorf("total_duration_seconds expected ~2h wall span, got %d", totalDur)
+	}
+	// The accumulated-only path (no running session) must also re-persist
+	// accumulated_seconds == work_duration_seconds (scrub's discriminator).
+	if acc := readIntField(closed, "time_tracking", "accumulated_seconds"); acc != workDur {
+		t.Errorf("accumulated_seconds (%d) should equal work_duration_seconds (%d) after close", acc, workDur)
 	}
 
 	// 2. wall_time_hours * 3600 agrees with total_duration_seconds within
@@ -319,5 +324,33 @@ func TestClose_ClearsSessionStartedAt(t *testing.T) {
 	sessStart, _ := getNestedField(closed, "time_tracking", "session_started_at")
 	if sessStart != "" {
 		t.Errorf("session_started_at should be cleared after close, got %q", sessStart)
+	}
+}
+
+// TestClose_SameSecondCloseKeepsSpanFields verifies that closing within the
+// same second as started_at still writes the wall-span fields (clamped, not
+// omitted) — field presence means "span recorded".
+func TestClose_SameSecondCloseKeepsSpanFields(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", time.Now().Format(time.RFC3339))
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, _ := env.S.Get("T-003")
+	if v, ok := getNestedField(closed, "time_tracking", "total_duration_seconds"); !ok || v == "" {
+		t.Error("total_duration_seconds should be written even for a same-second close")
+	}
+	if v, ok := getNestedField(closed, "time_tracking", "total_wall_time"); !ok || v == "" {
+		t.Error("total_wall_time should be written even for a same-second close")
 	}
 }
