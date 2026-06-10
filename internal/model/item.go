@@ -408,7 +408,7 @@ func (d *ParsedDocument) SetSBARBlock(s SBAR) {
 	sawDedentedProse := false
 	for endIdx < len(d.Lines) {
 		l := d.Lines[endIdx]
-		if strings.TrimSpace(l.Raw) == "---" {
+		if IsBodySeparator(l.Raw) {
 			break
 		}
 		if l.Indent == 0 && !l.IsEmpty {
@@ -976,12 +976,20 @@ func (d *ParsedDocument) SetList(key string, items []string) bool {
 	return true
 }
 
+// IsBodySeparator reports whether a raw line is the frontmatter→body
+// separator: `---` at indent 0 (trailing whitespace tolerated). A stray
+// INDENTED `---` inside a nested block (I-1382) is not a separator — the
+// check is raw-based because body lines are stored with Indent unset.
+func IsBodySeparator(raw string) bool {
+	return strings.TrimRight(raw, " \t") == "---"
+}
+
 // BodySeparatorIndex returns the index of the first "---" line (body separator),
 // or -1 if no separator exists. Used to insert new fields in the frontmatter
 // section rather than after the markdown body.
 func (d *ParsedDocument) BodySeparatorIndex() int {
 	for i, line := range d.Lines {
-		if strings.TrimSpace(line.Raw) == "---" {
+		if IsBodySeparator(line.Raw) {
 			return i
 		}
 	}
