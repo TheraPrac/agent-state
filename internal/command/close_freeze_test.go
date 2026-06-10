@@ -14,8 +14,8 @@ import (
 )
 
 // TestClose_FreezesDurationsAndLOC verifies that st close writes:
-//   - time_tracking.total_duration_seconds (closed_at - created_at)
-//   - time_tracking.work_duration_seconds (closed_at - started_at)
+//   - time_tracking.total_duration_seconds (closed_at - started_at wall span)
+//   - time_tracking.work_duration_seconds OMITTED when no session timer data (I-1335)
 //   - time_tracking.lines_added / lines_removed / lines_net / files_changed_count
 //   - time_tracking.by_repo (one line per configured repo)
 //   - work_tracking.files_changed (per-file detail)
@@ -24,8 +24,8 @@ import (
 func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 	env := testutil.NewEnv(t)
 
-	// Bootstrap T-003 with a started_at roughly 2 hours ago and an older created_at.
-	// Created is already set by writeItems to 2026-03-25T12:00:00; we just need started_at.
+	// Bootstrap T-003 with a started_at roughly 2 hours ago — the anchor for
+	// the wall-span fields.
 	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
 	if err := env.S.Mutate("T-003", func(it *model.Item) error {
 		it.SetNested("time_tracking", "started_at", startedAt)
@@ -80,14 +80,15 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 		t.Fatal("T-003 missing after close")
 	}
 
-	// Duration fields present
+	// total_duration_seconds carries the wall span (~2h since started_at).
 	totalDur := readIntField(closed, "time_tracking", "total_duration_seconds")
-	if totalDur <= 0 {
-		t.Errorf("total_duration_seconds should be > 0, got %d", totalDur)
+	if totalDur < 60*60 || totalDur > 3*60*60 {
+		t.Errorf("total_duration_seconds expected ~2h wall span, got %ds", totalDur)
 	}
-	workDur := readIntField(closed, "time_tracking", "work_duration_seconds")
-	if workDur < 60*60 || workDur > 3*60*60 {
-		t.Errorf("work_duration_seconds expected ~2h, got %ds", workDur)
+	// No session timer data was seeded — work_duration_seconds must be
+	// omitted, never the wall-clock fallback (I-1335).
+	if v, ok := getNestedField(closed, "time_tracking", "work_duration_seconds"); ok && v != "" {
+		t.Errorf("work_duration_seconds should be omitted without timer data, got %q", v)
 	}
 
 	// LOC aggregates
@@ -124,19 +125,19 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 	}
 }
 
-// TestClose_DurationMetricsAgree verifies I-514: all four duration fields
-// emitted by Close (total_duration_seconds, work_duration_seconds,
-// wall_time_hours, total_wall_time) are computed from the same wallDur and
-// agree to the second / rounding, regardless of how much queue dwell sat
-// between created and started_at.
+// TestClose_DurationMetricsAgree verifies the wall-span fields
+// (total_duration_seconds, wall_time_hours, total_wall_time) are computed
+// from the same span and agree to the second / rounding, while
+// work_duration_seconds independently carries measured timer data (I-1335).
 func TestClose_DurationMetricsAgree(t *testing.T) {
 	env := testutil.NewEnv(t)
 
-	// Seed T-003 with started_at much later than created so the previous
-	// split-anchor code would have produced wildly divergent values.
+	// Seed a 2h wall span plus 1800s of measured timer data so the two
+	// kinds of fields are visibly distinct.
 	startedAt := time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
 	if err := env.S.Mutate("T-003", func(it *model.Item) error {
 		it.SetNested("time_tracking", "started_at", startedAt)
+		it.SetNested("time_tracking", "accumulated_seconds", "1800")
 		return nil
 	}); err != nil {
 		t.Fatalf("seeding started_at: %v", err)
@@ -159,9 +160,17 @@ func TestClose_DurationMetricsAgree(t *testing.T) {
 		t.Fatalf("duration fields not written: total=%d work=%d", totalDur, workDur)
 	}
 
-	// 1. total_duration_seconds == work_duration_seconds (same anchor).
-	if totalDur != workDur {
-		t.Errorf("total_duration_seconds (%d) != work_duration_seconds (%d)", totalDur, workDur)
+	// 1. work_duration_seconds is the measured timer value, not the span.
+	if workDur != 1800 {
+		t.Errorf("work_duration_seconds = %d, want 1800 (measured)", workDur)
+	}
+	if totalDur < 60*60 || totalDur > 3*60*60 {
+		t.Errorf("total_duration_seconds expected ~2h wall span, got %d", totalDur)
+	}
+	// The accumulated-only path (no running session) must also re-persist
+	// accumulated_seconds == work_duration_seconds (scrub's discriminator).
+	if acc := readIntField(closed, "time_tracking", "accumulated_seconds"); acc != workDur {
+		t.Errorf("accumulated_seconds (%d) should equal work_duration_seconds (%d) after close", acc, workDur)
 	}
 
 	// 2. wall_time_hours * 3600 agrees with total_duration_seconds within
@@ -243,16 +252,30 @@ func TestClose_DurationAccumulatedPlusElapsed(t *testing.T) {
 
 	env.Reload(t)
 	closed, _ := env.S.Get("T-003")
-	total := readIntField(closed, "time_tracking", "total_duration_seconds")
+	work := readIntField(closed, "time_tracking", "work_duration_seconds")
 	// Expect ~360s (300 + 60); allow ±5s for clock jitter
-	if total < 355 || total > 400 {
-		t.Errorf("total_duration_seconds expected ~360 (300+60), got %d", total)
+	if work < 355 || work > 400 {
+		t.Errorf("work_duration_seconds expected ~360 (300+60), got %d", work)
+	}
+	// total carries the wall span (~2h), independent of the timer.
+	total := readIntField(closed, "time_tracking", "total_duration_seconds")
+	if total < 60*60 || total > 3*60*60 {
+		t.Errorf("total_duration_seconds expected ~2h wall span, got %d", total)
+	}
+	// The measured value is re-persisted as accumulated_seconds so closed
+	// items are self-consistent (st timer scrub's discriminator).
+	acc := readIntField(closed, "time_tracking", "accumulated_seconds")
+	if acc != work {
+		t.Errorf("accumulated_seconds (%d) should equal work_duration_seconds (%d) after close", acc, work)
 	}
 }
 
-// TestClose_DurationMigrationFallback verifies that items with only started_at
-// (no session fields) still get a best-effort wall-clock duration, NOT zero.
-func TestClose_DurationMigrationFallback(t *testing.T) {
+// TestClose_NoTimerDataOmitsWorkDuration verifies I-1335: items with only
+// started_at (no session timer fields) get the wall span in
+// total_duration_seconds but NO work_duration_seconds — the old wall-clock
+// fallback contaminated the field with garbage (e.g. I-925: 51.96h for 1.87h
+// of work).
+func TestClose_NoTimerDataOmitsWorkDuration(t *testing.T) {
 	env := testutil.NewEnv(t)
 
 	startedAt := time.Now().Add(-90 * time.Minute).Format(time.RFC3339)
@@ -272,9 +295,11 @@ func TestClose_DurationMigrationFallback(t *testing.T) {
 	env.Reload(t)
 	closed, _ := env.S.Get("T-003")
 	total := readIntField(closed, "time_tracking", "total_duration_seconds")
-	// Migration fallback should produce ~90 minutes, not zero
 	if total < 60*60 || total > 2*60*60 {
-		t.Errorf("migration fallback: total_duration_seconds expected ~5400 (90m), got %d", total)
+		t.Errorf("total_duration_seconds expected ~5400 (90m wall span), got %d", total)
+	}
+	if v, ok := getNestedField(closed, "time_tracking", "work_duration_seconds"); ok && v != "" {
+		t.Errorf("work_duration_seconds should be omitted without timer data, got %q", v)
 	}
 }
 
@@ -299,5 +324,33 @@ func TestClose_ClearsSessionStartedAt(t *testing.T) {
 	sessStart, _ := getNestedField(closed, "time_tracking", "session_started_at")
 	if sessStart != "" {
 		t.Errorf("session_started_at should be cleared after close, got %q", sessStart)
+	}
+}
+
+// TestClose_SameSecondCloseKeepsSpanFields verifies that closing within the
+// same second as started_at still writes the wall-span fields (clamped, not
+// omitted) — field presence means "span recorded".
+func TestClose_SameSecondCloseKeepsSpanFields(t *testing.T) {
+	env := testutil.NewEnv(t)
+
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "started_at", time.Now().Format(time.RFC3339))
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	if code != 0 {
+		t.Fatalf("Close exit=%d", code)
+	}
+
+	env.Reload(t)
+	closed, _ := env.S.Get("T-003")
+	if v, ok := getNestedField(closed, "time_tracking", "total_duration_seconds"); !ok || v == "" {
+		t.Error("total_duration_seconds should be written even for a same-second close")
+	}
+	if v, ok := getNestedField(closed, "time_tracking", "total_wall_time"); !ok || v == "" {
+		t.Error("total_wall_time should be written even for a same-second close")
 	}
 }

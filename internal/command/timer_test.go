@@ -176,3 +176,69 @@ func TestTimerPauseClockSkewGuard(t *testing.T) {
 		t.Errorf("accumulated_seconds should be ~0 for future start, got %d", secs)
 	}
 }
+
+func TestTimerScrubRemovesWallClockFallback(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Wall-clock-contaminated item: work_duration set, no accumulated_seconds.
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "work_duration_seconds", "187056") // 51.96h, I-925 class
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	n, err := TimerScrub(env.S, env.Cfg, false)
+	if err != nil {
+		t.Fatalf("TimerScrub: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item scrubbed, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "work_duration_seconds"); v != "" {
+		t.Errorf("work_duration_seconds should be removed, got %q", v)
+	}
+}
+
+func TestTimerScrubKeepsMeasuredValues(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Measured item: accumulated_seconds present alongside work_duration.
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "accumulated_seconds", "9374")
+		it.SetNested("time_tracking", "work_duration_seconds", "9374")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	n, err := TimerScrub(env.S, env.Cfg, false)
+	if err != nil {
+		t.Fatalf("TimerScrub: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 items scrubbed, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "work_duration_seconds"); v != "9374" {
+		t.Errorf("measured work_duration_seconds should survive scrub, got %q", v)
+	}
+}
+
+func TestTimerScrubDryRunChangesNothing(t *testing.T) {
+	env := testutil.NewEnv(t)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "work_duration_seconds", "187056")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	n, err := TimerScrub(env.S, env.Cfg, true)
+	if err != nil {
+		t.Fatalf("TimerScrub dry-run: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("dry-run should report 1 candidate, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "work_duration_seconds"); v != "187056" {
+		t.Errorf("dry-run must not modify the item, got %q", v)
+	}
+}

@@ -3219,7 +3219,26 @@ Kinds:
 			}
 		},
 	}
-	timerCmd.AddCommand(timerPauseCmd, timerResumeCmd)
+	timerScrubCmd := &cobra.Command{
+		Use:   "scrub",
+		Short: "Remove wall-clock-contaminated work_duration_seconds values (I-1335 one-time migration)",
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			n, err := command.TimerScrub(appStore, appCfg, dryRun)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 1
+				return
+			}
+			if dryRun {
+				fmt.Printf("timer scrub: %d item(s) would be scrubbed\n", n)
+			} else {
+				fmt.Printf("timer scrub: scrubbed %d item(s)\n", n)
+			}
+		},
+	}
+	timerScrubCmd.Flags().Bool("dry-run", false, "show changes without applying")
+	timerCmd.AddCommand(timerPauseCmd, timerResumeCmd, timerScrubCmd)
 	root.AddCommand(timerCmd)
 
 	root.AddCommand(newDocgenCmd())

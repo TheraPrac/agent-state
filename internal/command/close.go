@@ -261,10 +261,10 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// session_started_at is the current period's start (if the timer is
 		// running). Together they give actual work time, not wall-clock.
 		//
-		// Migration fallback: items started before this fix have neither field.
-		// Fall back to started_at wall-clock so in-flight items still get a
-		// best-effort number rather than silently emitting zero. Remove the
-		// item.Created fallback (I-1314) — it produces meaningless durations.
+		// I-1335: work_duration_seconds carries ONLY measured active time.
+		// When no session timer data exists the field is omitted (null) —
+		// never the started_at wall-clock span, which previously made
+		// measured and garbage values indistinguishable downstream.
 		var workDur time.Duration
 		haveSessionFields := false
 		{
@@ -285,23 +285,36 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 			}
 			if haveSessionFields {
 				workDur += time.Duration(accSecs) * time.Second
-			} else if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
-				if t0, err := time.Parse(time.RFC3339, startedAt); err == nil {
-					workDur = time.Now().Sub(t0)
-				}
 			}
 		}
 		item.SetNested("time_tracking", "session_started_at", "")
-		// Write duration fields when we have session fields (even if workDur rounds
-		// to 0 seconds — the timestamp fields still convey timing info and existing
-		// tests check for field presence) or when workDur is non-zero.
-		if haveSessionFields || workDur > 0 {
-			item.SetNested("time_tracking", "total_duration_seconds",
-				fmt.Sprintf("%d", int(workDur.Seconds())))
+		if haveSessionFields {
 			item.SetNested("time_tracking", "work_duration_seconds",
 				fmt.Sprintf("%d", int(workDur.Seconds())))
-			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", workDur.Hours()))
-			item.SetNested("time_tracking", "total_wall_time", formatDuration(workDur))
+			// Persist the final measured total so closed items are
+			// self-consistent: work_duration_seconds == accumulated_seconds.
+			// `st timer scrub` relies on this invariant to tell measured
+			// values from legacy wall-clock fallbacks.
+			item.SetNested("time_tracking", "accumulated_seconds",
+				fmt.Sprintf("%d", int(workDur.Seconds())))
+		}
+		// total_duration_seconds and the wall_time fields carry the
+		// wall-clock span (completed_at − started_at), independent of the
+		// timer. Anchor on the same `now` that produced completed_at (I-514:
+		// one anchor for all span fields) and always write when started_at
+		// parses — clamp clock skew to 0 rather than omitting, so field
+		// presence keeps meaning "span recorded".
+		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
+			if t0, err := time.Parse(time.RFC3339, startedAt); err == nil {
+				span := now.Sub(t0)
+				if span < 0 {
+					span = 0
+				}
+				item.SetNested("time_tracking", "total_duration_seconds",
+					fmt.Sprintf("%d", int(span.Seconds())))
+				item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", span.Hours()))
+				item.SetNested("time_tracking", "total_wall_time", formatDuration(span))
+			}
 		}
 
 		// Apply the precomputed LOC snapshot. computed outside the lock
