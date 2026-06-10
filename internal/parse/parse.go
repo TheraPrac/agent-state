@@ -146,8 +146,9 @@ func File(path string) (*model.Item, error) {
 		// ends the frontmatter: a stray indented `---` inside a nested block
 		// (I-1382: I-807/T-433 carried one inside time_tracking) must not
 		// swallow the rest of the frontmatter as body — it falls through and
-		// round-trips as a plain verbatim line with no semantics.
-		if trimmed == "---" && line.Indent == 0 {
+		// round-trips as a plain verbatim line with no semantics. The same
+		// rule guards every downstream separator scan via model.IsBodySeparator.
+		if model.IsBodySeparator(line.Raw) {
 			// Everything after this is markdown body — store remaining lines as-is
 			doc.Lines = append(doc.Lines, line)
 			for scanner.Scan() {

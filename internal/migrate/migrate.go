@@ -752,10 +752,8 @@ func extractSections(doc *model.ParsedDocument) map[string]*rawSection {
 	var current *rawSection
 
 	for _, line := range doc.Lines {
-		trimmed := strings.TrimSpace(line.Raw)
-
-		// Body separator — stop
-		if trimmed == "---" {
+		// Body separator — stop (raw-based indent-0 check, I-1382)
+		if model.IsBodySeparator(line.Raw) {
 			break
 		}
 
@@ -794,8 +792,7 @@ func extractSectionsOrdered(doc *model.ParsedDocument) []*rawSection {
 	var current *rawSection
 
 	for _, line := range doc.Lines {
-		trimmed := strings.TrimSpace(line.Raw)
-		if trimmed == "---" {
+		if model.IsBodySeparator(line.Raw) {
 			break
 		}
 
@@ -830,7 +827,7 @@ func extractBody(doc *model.ParsedDocument) []string {
 		return nil
 	}
 	for i, line := range doc.Lines {
-		if strings.TrimSpace(line.Raw) == "---" {
+		if model.IsBodySeparator(line.Raw) {
 			var body []string
 			for j := i; j < len(doc.Lines); j++ {
 				body = append(body, doc.Lines[j].Raw)

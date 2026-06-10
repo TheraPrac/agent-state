@@ -95,3 +95,48 @@ time_tracking:
 		t.Errorf("frontmatter field before separator lost: completed_at=%q", got)
 	}
 }
+
+// The doc-mutation layer must agree with the parser on what a separator is:
+// BodySeparatorIndex must skip the stray indented `---` and find the real
+// indent-0 one, so new-field insertion lands at the end of the frontmatter
+// instead of mid-time_tracking.
+func TestBodySeparatorIndexSkipsStrayIndentedLine(t *testing.T) {
+	content := `id: I-807
+type: issue
+status: done
+title: stray separator repro
+
+time_tracking:
+  completed_at: 2026-05-23T18:41:25-06:00
+    ---
+  work_duration_seconds: 17091
+---
+markdown body
+`
+	path := writeTempFile(t, content)
+	item, err := File(path)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	idx := item.Doc.BodySeparatorIndex()
+	if idx == -1 {
+		t.Fatal("BodySeparatorIndex found no separator")
+	}
+	if raw := item.Doc.Lines[idx].Raw; strings.TrimRight(raw, " \t") != "---" || strings.HasPrefix(raw, " ") {
+		t.Errorf("BodySeparatorIndex landed on %q, want the indent-0 separator", raw)
+	}
+
+	// A new top-level field must insert into the frontmatter (before the
+	// real separator), not before the stray line inside time_tracking.
+	item.Doc.SetField("sprint", "S-99")
+	out := item.Doc.String()
+	sprintIdx := strings.Index(out, "sprint: S-99")
+	workIdx := strings.Index(out, "work_duration_seconds: 17091")
+	if sprintIdx == -1 {
+		t.Fatal("SetField did not write the new field")
+	}
+	if sprintIdx < workIdx {
+		t.Errorf("new field inserted mid-time_tracking (before work_duration_seconds):\n%s", out)
+	}
+}
