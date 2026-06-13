@@ -459,6 +459,8 @@ func storeScalar(item *model.Item, key, val string) {
 		item.ClaimedAt = val
 	case "plan_approved":
 		item.PlanApproved = val == "true"
+	case "hotfix":
+		item.Hotfix = val == "true"
 	case "plan_approved_at":
 		item.PlanApprovedAt = val
 	case "plan_approved_by":

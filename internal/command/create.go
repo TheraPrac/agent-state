@@ -43,6 +43,14 @@ type CreateOpts struct {
 	EnforceGate bool // set true by the CLI; in-process callers keep false
 	NoValidate  bool // skip Layers 2+3 semantic validation; Layer 1 always runs
 	NoDedup     bool // skip semantic duplicate detection (T-437)
+
+	// IDOut, when non-nil, receives the allocated item ID the moment
+	// NextID succeeds (before any git sync or review). Lets in-process
+	// callers like `st hotfix` learn the new ID without scraping stdout
+	// or re-scanning the store (which would race concurrent peer
+	// creates). Nil for every normal caller. On the dedup-merge path no
+	// new item is allocated, so *IDOut is left untouched.
+	IDOut *string
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -180,6 +188,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "allocating ID: %v\n", err)
 		return 1
+	}
+	if opts.IDOut != nil {
+		*opts.IDOut = id
 	}
 
 	now := time.Now()

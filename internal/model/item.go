@@ -36,20 +36,29 @@ type Item struct {
 	//                       — sibling of sprint/epic at a longer horizon.
 	//                       Any name an operator uses is the arc; not
 	//                       predefined. One per item in v1.
-	ScopeClass     string // I-776: gate scope class. When set, overrides
+	ScopeClass string // I-776: gate scope class. When set, overrides
 	//                       the default required_suites with the class's
 	//                       required-suite set from cfg.Testing.ScopeClasses[name].
 	//                       Empty = use cfg.Testing.RequiredSuites (default).
-	ClaimedBy      string // session UUID that has claimed this item
-	ClaimedAt      string // RFC3339 timestamp of when claimed
-	PlanApproved   bool   // design/plan gate passed
-	DroppedReason    string // reason from ValidDropReasons; required when status==abandoned (T-414)
-	Weight           *int              // goal type only: strategic weight 1-100; active goals must sum to ≤100
-	SuccessCriterion string // goal type only
-	PlanApprovedAt   string // RFC3339 timestamp; set by `st plan approve` (I-178)
-	PlanApprovedBy   string // operator or agent ID that approved the plan (I-178)
-	PlanWrittenAt    string // RFC3339 timestamp; set by `st plan prep --write-only` on success (I-833)
-	PlanFailedAt     string // RFC3339 timestamp; set by `st plan prep --write-only` on failure (I-833)
+	ClaimedBy    string // session UUID that has claimed this item
+	ClaimedAt    string // RFC3339 timestamp of when claimed
+	PlanApproved bool   // design/plan gate passed
+	// Hotfix marks this item as an urgent-fix escape hatch. When true,
+	// the deny-capable workflow gates that resolve their active item from
+	// `st stack` fall open for it: plan-before-code, tier2-before-push,
+	// and the bash-safety direct-push-to-main block (force-push stays
+	// blocked; build/lint/typecheck pre-commit hooks are untouched). Set
+	// only via `st hotfix` so every flip is changelog-logged + git-synced
+	// — never a silent bypass. Per-item and short-lived by construction
+	// (the hotfix item closes), so the open window is naturally scoped.
+	Hotfix            bool
+	DroppedReason     string // reason from ValidDropReasons; required when status==abandoned (T-414)
+	Weight            *int   // goal type only: strategic weight 1-100; active goals must sum to ≤100
+	SuccessCriterion  string // goal type only
+	PlanApprovedAt    string // RFC3339 timestamp; set by `st plan approve` (I-178)
+	PlanApprovedBy    string // operator or agent ID that approved the plan (I-178)
+	PlanWrittenAt     string // RFC3339 timestamp; set by `st plan prep --write-only` on success (I-833)
+	PlanFailedAt      string // RFC3339 timestamp; set by `st plan prep --write-only` on failure (I-833)
 	PlanFailureReason string // short phrase describing failure; set alongside PlanFailedAt (I-833)
 
 	// List fields
@@ -232,7 +241,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
 	"weight": true, "success_criterion": true,
-	"dropped_reason": true,
+	"dropped_reason": true, "hotfix": true,
 	"plan_written_at": true, "plan_failed_at": true, "plan_failure_reason": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,

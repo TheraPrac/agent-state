@@ -527,6 +527,26 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	}
 	root.AddCommand(tagCmd)
 
+	hotfixCmd := &cobra.Command{
+		Use:   "hotfix [<id> | <title...>]",
+		Short: "Flag an item as an urgent hotfix (bypasses plan/tier2/push-to-main gates)",
+		Long: "Mark an item as a hotfix so the deny-capable workflow gates fall open for it:\n" +
+			"plan-before-code, tier2-before-push, and the direct-push-to-main block (force-push\n" +
+			"stays blocked; build/lint/typecheck pre-commit hooks are untouched). Every flip is\n" +
+			"changelog-logged and git-synced — never a silent bypass.\n\n" +
+			"  st hotfix                 list items currently in hotfix mode\n" +
+			"  st hotfix <ID>            flag an existing item\n" +
+			"  st hotfix --off <ID>      clear the flag\n" +
+			"  st hotfix <title...>      create a p0 issue with the flag set",
+		Args: cobra.ArbitraryArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			off, _ := cmd.Flags().GetBool("off")
+			exitCode = command.Hotfix(appStore, appCfg, args, command.HotfixOpts{Off: off})
+		},
+	}
+	hotfixCmd.Flags().Bool("off", false, "clear the hotfix flag on the given item")
+	root.AddCommand(hotfixCmd)
+
 	agentCmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Manage local agent identity, auth, and isolated agent workspaces",
