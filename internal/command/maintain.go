@@ -197,23 +197,47 @@ func branchExtraIsChurnOnly(root, b string, heads []prHead) bool {
 		}
 		excludes = append(excludes, strings.TrimSpace(shaOut))
 	}
-	args := append([]string{"rev-list", "--no-merges", b, "--not"}, excludes...)
-	out, err := gitOutputDir(root, args...)
+	// Non-merge orphan commits: classify their full diff.
+	nm := append([]string{"rev-list", "--no-merges", b, "--not"}, excludes...)
+	out, err := gitOutputDir(root, nm...)
 	if err != nil {
 		return false
 	}
 	for _, c := range strings.Fields(out) {
 		files, err := gitOutputDir(root, "show", "--name-only", "--format=", c)
-		if err != nil {
-			return false
+		if err != nil || hasNonChurn(files) {
+			return false // real code (or unverifiable) beyond the merge → keep
 		}
-		for _, f := range strings.Split(files, "\n") {
-			if f = strings.TrimSpace(f); f != "" && !maintainIsChurn(f) {
-				return false // real code beyond the merge → keep the branch
-			}
+	}
+	// Merge orphan commits: a clean sync-merge only brings in parent content
+	// (already in origin/main or the merged head, hence excluded above). Only an
+	// "evil merge" — changes made IN the merge itself, differing from ALL parents
+	// (e.g. a hand-edited conflict resolution) — carries unique work, and
+	// `diff-tree --cc` surfaces exactly those while staying empty for clean
+	// merges. Any non-churn there → keep, so evil-merge work is never lost.
+	mg := append([]string{"rev-list", "--merges", b, "--not"}, excludes...)
+	mout, err := gitOutputDir(root, mg...)
+	if err != nil {
+		return false
+	}
+	for _, c := range strings.Fields(mout) {
+		files, err := gitOutputDir(root, "diff-tree", "--cc", "--no-commit-id", "--name-only", "-r", c)
+		if err != nil || hasNonChurn(files) {
+			return false
 		}
 	}
 	return true
+}
+
+// hasNonChurn reports whether a newline-separated `--name-only` file list
+// contains any path that isn't machine-managed churn.
+func hasNonChurn(nameOnly string) bool {
+	for _, f := range strings.Split(nameOnly, "\n") {
+		if f = strings.TrimSpace(f); f != "" && !maintainIsChurn(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // prHead is a merged PR's head: the GitHub PR number (to fetch refs/pull/<n>/head)

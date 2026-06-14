@@ -122,6 +122,37 @@ func TestBranchMergedChurnDriftFallback(t *testing.T) {
 	}
 }
 
+// An "evil merge" — a non-churn change made INSIDE a merge commit (present in
+// neither parent) — must keep the branch, even though --no-merges would hide it.
+func TestBranchMergedEvilMergeKept(t *testing.T) {
+	root := setupMaintainRepo(t)
+	commitOn(t, root, "feat-evil", "feature.go", "real feature")
+	prSha := strings.TrimSpace(gitOutput(t, root, "rev-parse", "feat-evil"))
+	runGitTest(t, root, "push", "origin", "feat-evil:refs/pull/77/head")
+	// advance origin/main so the branch has something to merge
+	runGitTest(t, root, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(root, "mainfile.txt"), []byte("main work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-m", "advance main")
+	runGitTest(t, root, "push", "origin", "main")
+	runGitTest(t, root, "fetch", "origin", "main")
+	// evil merge: bring in main, then add a NEW non-churn file in the merge commit
+	runGitTest(t, root, "checkout", "feat-evil")
+	runGitTest(t, root, "merge", "--no-commit", "--no-ff", "origin/main")
+	if err := os.WriteFile(filepath.Join(root, "evilcode.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "--no-edit")
+	runGitTest(t, root, "checkout", "main")
+	heads := map[string][]prHead{"feat-evil": {{oid: prSha, num: "77"}}}
+	if branchMerged(root, "feat-evil", heads) {
+		t.Error("evil-merge non-churn change must keep the branch (diff-tree --cc should catch it)")
+	}
+}
+
 func TestPruneMergedBranches(t *testing.T) {
 	root := setupMaintainRepo(t)
 	runGitTest(t, root, "branch", "merged-ff", "main")
