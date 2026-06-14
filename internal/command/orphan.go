@@ -32,6 +32,11 @@ func OrphanStash(workspaceRoot, itemDir, agentID string) []string {
 		if len(line) < 4 {
 			continue
 		}
+		// Skip untracked files — git stash push exits 1 for untracked paths
+		// without --include-untracked. We only stash tracked dirty files.
+		if line[0:2] == "??" {
+			continue
+		}
 		relPath := strings.TrimSpace(line[3:])
 		if relPath == "" {
 			continue
@@ -46,13 +51,18 @@ func OrphanStash(workspaceRoot, itemDir, agentID string) []string {
 
 		label := fmt.Sprintf("st-orphan: %s owned-by:%s dropped-by:%s date:%s",
 			relPath, owner, agentID, today)
-		stashOut, stashErr := execGitOrphanCapture(workspaceRoot, "stash", "push",
+		_, stashErr := execGitOrphanCapture(workspaceRoot, "stash", "push",
 			"-m", label, "--", relPath)
 		if stashErr != nil {
 			fmt.Fprintf(os.Stderr, "orphan: failed to stash %s: %v\n", relPath, stashErr)
 			continue
 		}
-		ref := strings.TrimSpace(string(stashOut))
+		// git stash push output is a human message, not a ref. Retrieve the real ref.
+		ref := "stash@{?}"
+		if refOut, err := execGitOrphan(workspaceRoot, "stash", "list",
+			"--max-count=1", "--format=%gd"); err == nil {
+			ref = strings.TrimSpace(string(refOut))
+		}
 		stashed = append(stashed, fmt.Sprintf("  %s → %s (owned by %s)", relPath, ref, owner))
 	}
 

@@ -104,6 +104,10 @@ func TestOrphanStash_StashesUnownedFiles(t *testing.T) {
 	if !strings.Contains(stashed[0], peerRel) {
 		t.Errorf("stash should reference peer file %q; got %q", peerRel, stashed[0])
 	}
+	// The stash entry must contain a real stash ref (stash@{N}), not the git push message.
+	if !strings.Contains(stashed[0], "stash@{") {
+		t.Errorf("stash entry should contain a real stash ref (stash@{N}); got %q", stashed[0])
+	}
 
 	// The peer file should now be clean in the working tree.
 	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", peerRel).Output()
