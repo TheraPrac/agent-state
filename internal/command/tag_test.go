@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -145,6 +146,33 @@ func TestTag_GoalRm_RemovesFromGoalsField(t *testing.T) {
 	item, _ := s3.Get("T-001")
 	if sliceHas(item.Goals, "G-099") {
 		t.Errorf("G-099 still in Goals after rm: %v", item.Goals)
+	}
+}
+
+func TestTag_GoalRm_FallsBackToTagsForLegacyEntry(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	// Simulate legacy state: G-099 in tags: only (goal was placed via old code path).
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.Tags = append(it.Tags, "G-099")
+		it.Doc.SetList("tags", it.Tags)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed legacy tag: %v", err)
+	}
+
+	s2, _ := store.New(cfg)
+	if rc := Tag(s2, cfg, "T-001", "rm", "G-099"); rc != 0 {
+		t.Fatalf("rm legacy goal tag: exit %d", rc)
+	}
+
+	s3, _ := store.New(cfg)
+	item, _ := s3.Get("T-001")
+	if sliceHas(item.Tags, "G-099") {
+		t.Errorf("G-099 still in Tags after rm: %v", item.Tags)
+	}
+	if sliceHas(item.Goals, "G-099") {
+		t.Errorf("G-099 should not be in Goals: %v", item.Goals)
 	}
 }
 

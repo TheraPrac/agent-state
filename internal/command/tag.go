@@ -63,21 +63,27 @@ func tagGoal(s *store.Store, cfg *config.Config, id, action, goalID string, item
 
 	switch action {
 	case "add":
-		for _, g := range item.Goals {
-			if g == goalID {
+		for _, gid := range item.Goals {
+			if gid == goalID {
 				fmt.Fprintf(os.Stderr, "%s already has goal %q\n", id, goalID)
 				return 1
 			}
 		}
 	case "rm":
-		found := false
-		for _, g := range item.Goals {
-			if g == goalID {
-				found = true
+		inGoals := false
+		for _, gid := range item.Goals {
+			if gid == goalID {
+				inGoals = true
 				break
 			}
 		}
-		if !found {
+		if !inGoals {
+			// Fall back: goal may live in tags: from before goal-routing was added.
+			for _, t := range item.Tags {
+				if t == goalID {
+					return tagLabel(s, cfg, id, action, goalID, item)
+				}
+			}
 			fmt.Fprintf(os.Stderr, "%s does not have goal %q\n", id, goalID)
 			return 1
 		}
@@ -89,9 +95,9 @@ func tagGoal(s *store.Store, cfg *config.Config, id, action, goalID string, item
 			it.Goals = append(it.Goals, goalID)
 		case "rm":
 			var kept []string
-			for _, g := range it.Goals {
-				if g != goalID {
-					kept = append(kept, g)
+			for _, gid := range it.Goals {
+				if gid != goalID {
+					kept = append(kept, gid)
 				}
 			}
 			it.Goals = kept
