@@ -517,7 +517,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 		reason := "has no goal link"
 		if len(item.Goals) > 0 {
-			reason = "has no active goal link — all linked goals are terminal"
+			reason = "has no active goal link"
 		}
 		fmt.Fprintf(os.Stderr, "hint: %s %s — it won't appear in goal-weighted ranking\n", id, reason)
 		if len(goalHints) > 0 {
@@ -857,7 +857,7 @@ func writeWorkinfo(workDir, id, branch string, repos []string) {
 // goals behave as if unlinked for ranking purposes — I-1328.
 func hasActiveGoalLink(s *store.Store, goals []string) bool {
 	for _, gid := range goals {
-		if g, ok := s.Get(gid); ok && g.Status == "active" {
+		if g, ok := s.Get(gid); ok && g.Type == "goal" && g.Status == "active" {
 			return true
 		}
 	}

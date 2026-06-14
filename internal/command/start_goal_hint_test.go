@@ -223,11 +223,37 @@ func TestStartGoalHint_FiresWhenAllGoalsTerminal(t *testing.T) {
 		})
 	})
 
-	if !strings.Contains(stderr, "all linked goals are terminal") {
-		t.Errorf("expected terminal-goal hint; got:\n%s", stderr)
+	if !strings.Contains(stderr, "has no active goal link") {
+		t.Errorf("expected active-goal-link hint; got:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "G-active") {
 		t.Errorf("expected active goal G-active listed; got:\n%s", stderr)
+	}
+	_ = s
+}
+
+// I-1328: item linked to a draft goal fires the hint with "has no active goal link"
+// (not "all linked goals are terminal" — draft is non-terminal).
+func TestStartGoalHint_FiresWhenGoalIsDraft(t *testing.T) {
+	s, cfg := newStartGoalHintEnv(t)
+	writeTaskFixture(t, cfg, "T-001", "queued", []string{"G-draft"})
+	writeGoalFixtureHint(t, cfg, "G-draft", "draft", 40)
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			Start(s2, cfg, "T-001", StartOpts{NoPush: true})
+		})
+	})
+
+	if !strings.Contains(stderr, "has no active goal link") {
+		t.Errorf("expected active-goal-link hint for draft goal; got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "terminal") {
+		t.Errorf("hint must not claim draft goal is terminal; got:\n%s", stderr)
 	}
 	_ = s
 }
