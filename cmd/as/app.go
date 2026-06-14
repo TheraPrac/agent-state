@@ -3253,6 +3253,43 @@ Kinds:
 	maintainCmd.Flags().Bool("dry-run", false, "report what would change without doing it")
 	root.AddCommand(maintainCmd)
 
+	// T-403: st orphan — detect and stash dirty agent-state files not owned by this agent.
+	orphanCmd := &cobra.Command{
+		Use:   "orphan",
+		Short: "Manage orphan agent-state files left by crashed or foreign sessions",
+	}
+	orphanStashCmd := &cobra.Command{
+		Use:   "stash",
+		Short: "Stash dirty agent-state files not owned by --agent into named git stashes",
+		Run: func(cmd *cobra.Command, args []string) {
+			ws, _ := cmd.Flags().GetString("workspace")
+			agent, _ := cmd.Flags().GetString("agent")
+			if ws == "" {
+				ws = appCfg.Root()
+			}
+			if agent == "" {
+				agent = appCfg.AgentID()
+			}
+			command.OrphanStash(ws, appCfg.Paths.Root, agent)
+		},
+	}
+	orphanStashCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
+	orphanStashCmd.Flags().String("agent", "", "current agent ID (default: from config)")
+	orphanListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List orphan stashes created by st orphan stash",
+		Run: func(cmd *cobra.Command, args []string) {
+			ws, _ := cmd.Flags().GetString("workspace")
+			if ws == "" {
+				ws = appCfg.Root()
+			}
+			command.OrphanList(ws)
+		},
+	}
+	orphanListCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
+	orphanCmd.AddCommand(orphanStashCmd, orphanListCmd)
+	root.AddCommand(orphanCmd)
+
 	inferStageCmd := &cobra.Command{
 		Use:   "infer-stage [<id>]",
 		Short: "Infer delivery.stage from branch/PR state (forward-only)",
