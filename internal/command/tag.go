@@ -10,7 +10,21 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-// Tag adds or removes a tag on an item.
+// isGoalID reports whether s looks like a goal identifier (G- followed by digits).
+func isGoalID(s string) bool {
+	if len(s) < 3 || s[0] != 'G' || s[1] != '-' {
+		return false
+	}
+	for _, c := range s[2:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Tag adds or removes a tag on an item. Goal-shaped args (G-NNN) are routed
+// to the goals: field rather than tags:, with store validation.
 func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -28,6 +42,84 @@ func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 		return 2
 	}
 
+	if isGoalID(tag) {
+		return tagGoal(s, cfg, id, action, tag, item)
+	}
+	return tagLabel(s, cfg, id, action, tag, item)
+}
+
+// tagGoal handles 'st tag <id> add/rm G-NNN' by routing to the goals: field.
+func tagGoal(s *store.Store, cfg *config.Config, id, action, goalID string, item *model.Item) int {
+	// Validate the goal exists and is actually type="goal".
+	g, exists := s.Get(goalID)
+	if !exists {
+		fmt.Fprintf(os.Stderr, "tag %s goals: goal not found: %s\n", id, goalID)
+		return 2
+	}
+	if g.Type != "goal" {
+		fmt.Fprintf(os.Stderr, "tag %s goals: %s is not a goal (type=%s)\n", id, goalID, g.Type)
+		return 2
+	}
+
+	switch action {
+	case "add":
+		for _, g := range item.Goals {
+			if g == goalID {
+				fmt.Fprintf(os.Stderr, "%s already has goal %q\n", id, goalID)
+				return 1
+			}
+		}
+	case "rm":
+		found := false
+		for _, g := range item.Goals {
+			if g == goalID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "%s does not have goal %q\n", id, goalID)
+			return 1
+		}
+	}
+
+	if err := s.Mutate(id, func(it *model.Item) error {
+		switch action {
+		case "add":
+			it.Goals = append(it.Goals, goalID)
+		case "rm":
+			var kept []string
+			for _, g := range it.Goals {
+				if g != goalID {
+					kept = append(kept, g)
+				}
+			}
+			it.Goals = kept
+		}
+		it.Doc.SetList("goals", it.Goals)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+		return 1
+	}
+
+	switch action {
+	case "add":
+		changelog.Append(cfg, id, changelog.Entry{Op: "tag_add", Field: "goals", NewValue: goalID})
+		fmt.Printf("Goal %s added to goals: on %s (not tags:)\n", goalID, id)
+	case "rm":
+		changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: "goals", OldValue: goalID})
+		fmt.Printf("Goal %s removed from goals: on %s\n", goalID, id)
+	}
+
+	if err := autoSync(s, fmt.Sprintf("st tag %s: %s goals %s", action, id, goalID)); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// tagLabel handles the standard 'st tag <id> add/rm <label>' path (non-goal tags).
+func tagLabel(s *store.Store, cfg *config.Config, id, action, tag string, item *model.Item) int {
 	preflightErr := func() int {
 		switch action {
 		case "add":
@@ -93,3 +185,4 @@ func Tag(s *store.Store, cfg *config.Config, id, action, tag string) int {
 func updateTagsInDoc(item *model.Item) {
 	item.Doc.SetList("tags", item.Tags)
 }
+

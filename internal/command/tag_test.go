@@ -1,0 +1,194 @@
+package command
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/jfinlinson/agent-state/internal/store"
+)
+
+// tagTestEnv creates a workspace with a goal and an issue for tag routing tests.
+func tagTestEnv(t *testing.T) (*store.Store, *config.Config) {
+	t.Helper()
+	_, cfg := setupTestEnv(t)
+
+	ensureGoalsDir(t, cfg)
+	seedGoalFile(t, cfg, "G-099", "active", 10)
+
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New after seeding goal: %v", err)
+	}
+	return s, cfg
+}
+
+func TestIsGoalID(t *testing.T) {
+	cases := []struct {
+		s    string
+		want bool
+	}{
+		{"G-014", true},
+		{"G-1", true},
+		{"G-9999", true},
+		{"G-", false},
+		{"G", false},
+		{"g-014", false},
+		{"post-alpha", false},
+		{"alpha-1", false},
+		{"I-014", false},
+		{"T-014", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isGoalID(c.s); got != c.want {
+			t.Errorf("isGoalID(%q) = %v, want %v", c.s, got, c.want)
+		}
+	}
+}
+
+func TestTag_GoalAdd_RoutesToGoalsField(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	var stdout bytes.Buffer
+	r, w, _ := os.Pipe()
+	origStdout := os.Stdout
+	os.Stdout = w
+
+	rc := Tag(s, cfg, "T-001", "add", "G-099")
+
+	w.Close()
+	os.Stdout = origStdout
+	stdout.ReadFrom(r)
+	out := stdout.String()
+
+	if rc != 0 {
+		t.Fatalf("Tag add G-099 exit %d, stdout: %s", rc, out)
+	}
+	if !strings.Contains(out, "goals:") {
+		t.Errorf("output should mention goals:, got: %s", out)
+	}
+
+	s2, _ := store.New(cfg)
+	item, ok := s2.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found after tag add")
+	}
+	if !sliceHas(item.Goals, "G-099") {
+		t.Errorf("Goals = %v, want G-099", item.Goals)
+	}
+	if sliceHas(item.Tags, "G-099") {
+		t.Errorf("G-099 must not appear in Tags: %v", item.Tags)
+	}
+}
+
+func TestTag_GoalAdd_DuplicateRejected(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	if rc := Tag(s, cfg, "T-001", "add", "G-099"); rc != 0 {
+		t.Fatalf("first add: exit %d", rc)
+	}
+
+	s2, _ := store.New(cfg)
+	r, w, _ := os.Pipe()
+	origStderr := os.Stderr
+	os.Stderr = w
+	rc2 := Tag(s2, cfg, "T-001", "add", "G-099")
+	w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if rc2 == 0 {
+		t.Error("duplicate goal add should return non-zero")
+	}
+	if !strings.Contains(buf.String(), "already has goal") {
+		t.Errorf("expected 'already has goal' error, got: %s", buf.String())
+	}
+}
+
+func TestTag_GoalAdd_NonExistentGoalRejected(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	r, w, _ := os.Pipe()
+	origStderr := os.Stderr
+	os.Stderr = w
+	rc := Tag(s, cfg, "T-001", "add", "G-9999")
+	w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if rc == 0 {
+		t.Error("adding non-existent goal should return non-zero")
+	}
+	if !strings.Contains(buf.String(), "goal not found") {
+		t.Errorf("expected 'goal not found' error, got: %s", buf.String())
+	}
+}
+
+func TestTag_GoalRm_RemovesFromGoalsField(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	if rc := Tag(s, cfg, "T-001", "add", "G-099"); rc != 0 {
+		t.Fatalf("add: exit %d", rc)
+	}
+	s2, _ := store.New(cfg)
+	if rc := Tag(s2, cfg, "T-001", "rm", "G-099"); rc != 0 {
+		t.Fatalf("rm: exit %d", rc)
+	}
+
+	s3, _ := store.New(cfg)
+	item, _ := s3.Get("T-001")
+	if sliceHas(item.Goals, "G-099") {
+		t.Errorf("G-099 still in Goals after rm: %v", item.Goals)
+	}
+}
+
+func TestTag_NonGoal_StillWritesToTagsField(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	if rc := Tag(s, cfg, "T-001", "add", "post-alpha"); rc != 0 {
+		t.Fatalf("add post-alpha: exit %d", rc)
+	}
+
+	s2, _ := store.New(cfg)
+	item, _ := s2.Get("T-001")
+	if !sliceHas(item.Tags, "post-alpha") {
+		t.Errorf("post-alpha not in Tags: %v", item.Tags)
+	}
+	if sliceHas(item.Goals, "post-alpha") {
+		t.Errorf("post-alpha must not appear in Goals: %v", item.Goals)
+	}
+}
+
+func TestTag_GoalAdd_ChangelogRecordsGoalsField(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-test")
+
+	if rc := Tag(s, cfg, "T-001", "add", "G-099"); rc != 0 {
+		t.Fatalf("add: exit %d", rc)
+	}
+
+	clPath := filepath.Join(cfg.Root(), ".as", "changelog.jsonl")
+	data, err := os.ReadFile(clPath)
+	if err != nil {
+		t.Skipf("no changelog at %s: %v", clPath, err)
+	}
+	if !strings.Contains(string(data), `"goals"`) {
+		t.Errorf("changelog does not record field=goals:\n%s", string(data))
+	}
+}
+
+// sliceHas reports whether s appears in slice.
+func sliceHas(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
