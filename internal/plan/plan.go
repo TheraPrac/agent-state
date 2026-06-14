@@ -14,18 +14,19 @@ import (
 
 // Plan represents a structured implementation plan.
 type Plan struct {
-	ScopeRepos  []string   // which repos this item touches
-	Approved    bool       // user accepted the plan
-	ApprovedAt  string     // timestamp of approval
-	Rejected    bool       // user explicitly rejected the plan
-	RejectedAt  string     // timestamp of rejection
-	Approach    string     // high-level approach description
-	Steps       []string   // ordered implementation steps
-	FilesToCreate []string // new files to create
-	FilesToModify []string // existing files to change
-	ACs         []string   // acceptance criteria (cmd: prefixed)
-	Revisions   []Revision // revision history
-	RawText     string     // full plan text (fallback if parsing fails)
+	ScopeRepos     []string   // which repos this item touches
+	Approved       bool       // user accepted the plan
+	ApprovedAt     string     // timestamp of approval
+	Rejected       bool       // user explicitly rejected the plan
+	RejectedAt     string     // timestamp of rejection
+	PrepReviewedAt string     // RFC3339; set by prepItem/prepItemWriteOnly after LLM review — signals st plan approve to skip duplicate sub-agent
+	Approach       string     // high-level approach description
+	Steps          []string   // ordered implementation steps
+	FilesToCreate  []string   // new files to create
+	FilesToModify  []string   // existing files to change
+	ACs            []string   // acceptance criteria (cmd: prefixed)
+	Revisions      []Revision // revision history
+	RawText        string     // full plan text (fallback if parsing fails)
 }
 
 // Revision records a plan revision event.
@@ -253,6 +254,9 @@ func Render(p *Plan) string {
 	if p.RejectedAt != "" {
 		b.WriteString(fmt.Sprintf("rejected_at: %s\n", p.RejectedAt))
 	}
+	if p.PrepReviewedAt != "" {
+		b.WriteString(fmt.Sprintf("prep_reviewed_at: %s\n", p.PrepReviewedAt))
+	}
 	b.WriteString("---\n\n")
 
 	// Approach
@@ -391,6 +395,9 @@ func parseFrontmatter(p *Plan, text string) {
 		}
 		if strings.HasPrefix(line, "rejected_at:") {
 			p.RejectedAt = strings.TrimSpace(strings.TrimPrefix(line, "rejected_at:"))
+		}
+		if strings.HasPrefix(line, "prep_reviewed_at:") {
+			p.PrepReviewedAt = strings.TrimSpace(strings.TrimPrefix(line, "prep_reviewed_at:"))
 		}
 	}
 }

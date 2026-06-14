@@ -414,3 +414,162 @@ func TestPlanReviewWrapUpDisabledForShortCap(t *testing.T) {
 		t.Errorf("expected exactly 1 review call; got %d", reviewCalls)
 	}
 }
+
+// TestPlanReviewSkippedForPrepGeneratedPlan asserts that when the plan
+// sidecar carries a prep_reviewed_at stamp (set by prepItem or
+// prepItemWriteOnly after their LLM review pass), runPlanReview returns 0
+// without invoking the sub-agent engine. I-992.
+func TestPlanReviewSkippedForPrepGeneratedPlan(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:       "Approach.",
+		ScopeRepos:     []string{"as"},
+		ACs:            []string{"cmd: go test ./..."},
+		PrepReviewedAt: "2026-06-14T10:00:00-06:00",
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var reviewCalls int
+	var mu sync.Mutex
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+			}
+			mu.Lock()
+			reviewCalls++
+			mu.Unlock()
+			return nil, 1, errors.New("unexpected review call")
+		},
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		t.Errorf("expected exit 0 for prep-stamped plan; got %d", code)
+	}
+
+	mu.Lock()
+	calls := reviewCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Errorf("sub-agent should not be called for prep-stamped plan; called %d time(s)", calls)
+	}
+
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("PlanApproved should be true after skipping the sub-agent on a prep-stamped plan")
+	}
+}
+
+// TestPlanReviewCalledForHandAuthoredPlan asserts that a plan WITHOUT a
+// prep_reviewed_at stamp (hand-authored, no prior LLM review) still
+// invokes the sub-agent. I-992.
+func TestPlanReviewCalledForHandAuthoredPlan(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// No PrepReviewedAt — hand-authored plan.
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var reviewCalls int
+	var mu sync.Mutex
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+			}
+			mu.Lock()
+			reviewCalls++
+			mu.Unlock()
+			body, _ := json.Marshal(ClaudeResult{
+				Type: "result", Subtype: "success",
+				Result: "RECOMMENDATION: Accept",
+			})
+			return body, 0, nil
+		},
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		t.Errorf("expected exit 0; got %d", code)
+	}
+
+	mu.Lock()
+	calls := reviewCalls
+	mu.Unlock()
+	if calls == 0 {
+		t.Error("sub-agent should be called for a hand-authored plan with no prep_reviewed_at stamp")
+	}
+}
+
+// TestPlanReviewBypassFlagWithPrepStamp asserts that --bypass-review still
+// approves a prep-stamped plan without invoking the sub-agent, and that the
+// stamp does not interfere with the bypass path. I-992.
+func TestPlanReviewBypassFlagWithPrepStamp(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:       "Approach.",
+		ScopeRepos:     []string{"as"},
+		ACs:            []string{"cmd: go test ./..."},
+		PrepReviewedAt: "2026-06-14T10:00:00-06:00",
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	var reviewCalls int
+	var mu sync.Mutex
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			for _, a := range args {
+				if strings.Contains(a, "haiku") {
+					body, _ := json.Marshal(ClaudeResult{
+						Type: "result", Subtype: "success",
+						Result: `{"tier":"sonnet","reason":"test"}`,
+					})
+					return body, 0, nil
+				}
+			}
+			mu.Lock()
+			reviewCalls++
+			mu.Unlock()
+			return nil, 1, errors.New("unexpected review call")
+		},
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, BypassReview: true}); code != 0 {
+		t.Errorf("expected exit 0 with --bypass-review + prep stamp; got %d", code)
+	}
+
+	mu.Lock()
+	calls := reviewCalls
+	mu.Unlock()
+	if calls != 0 {
+		t.Errorf("sub-agent should not be called with --bypass-review; called %d time(s)", calls)
+	}
+
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("PlanApproved should be true after --bypass-review on a prep-stamped plan")
+	}
+}

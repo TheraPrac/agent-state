@@ -676,9 +676,12 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				continue // back to menu
 			}
 
-			// Accept — save plan sidecar
+			// Accept — save plan sidecar. Stamp prep_reviewed_at here (not
+			// earlier) so it is only persisted once the review has fully
+			// converged — avoids a mid-loop crash leaving a stale stamp.
 			p.Approved = true
 			p.ApprovedAt = plan.Now()
+			p.PrepReviewedAt = plan.Now()
 			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 				fmt.Fprintf(os.Stderr, "saving plan: %v\n", err)
 				return "rejected"
@@ -939,6 +942,14 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		fmt.Printf("[%s] FAILED: save report: %v\n", itemID, err)
 		stampPrepFailure(s, itemID, "save report: "+err.Error())
 		return "rejected"
+	}
+
+	// Stamp prep_reviewed_at AFTER SaveReport succeeds so the stamp is only
+	// on disk when the review is complete. A failed SaveReport leaves no stamp
+	// and st plan approve will run its own sub-agent (correct fail-safe).
+	p.PrepReviewedAt = plan.Now()
+	if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to stamp prep_reviewed_at: %v — approve will fall back to full review\n", itemID, err)
 	}
 
 	// I-833: stamp plan_written_at BEFORE the final GitSync so the field is
