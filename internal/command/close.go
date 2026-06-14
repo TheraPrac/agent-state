@@ -445,6 +445,14 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 			break
 		}
 		SaveStack(cfg, stack)
+		// I-1302: record the item we returned to (or "" if stack is now
+		// empty) so a reflexive `st pop` after close can detect the
+		// double-pop and no-op instead of silently dropping the parent.
+		returnedToID := ""
+		if len(stack) > 0 {
+			returnedToID = stack[len(stack)-1].ID
+		}
+		setCloseReturn(cfg, returnedToID)
 		if len(stack) > 0 {
 			top := stack[len(stack)-1]
 			if topItem, ok := s.Get(top.ID); ok {

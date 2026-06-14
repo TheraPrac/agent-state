@@ -267,3 +267,104 @@ func TestStackPushUnqueuedItemAllowed(t *testing.T) {
 		t.Errorf("push of unqueued item should succeed; got %d", code)
 	}
 }
+
+// I-1302: close-then-pop double-pop must no-op and warn rather than
+// silently dropping the active parent item.
+func TestStackPop_NoOpAfterClose_I1302(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Push parent (T-001), then child (T-002).
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: "parent"})
+	StackPush(s, cfg, "T-002", StackPushOpts{Reason: "child interrupt"})
+
+	// Simulate st close T-002: remove T-002 from stack, set close-return marker.
+	entries := LoadStack(cfg)
+	entries = entries[:len(entries)-1] // remove T-002 (top)
+	SaveStack(cfg, entries)
+	setCloseReturn(cfg, "T-001") // close returned to T-001
+
+	// Stack is now [T-001]. A reflexive st pop should no-op.
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			code := StackPop(s, cfg)
+			if code != 0 {
+				t.Errorf("StackPop returned %d, want 0", code)
+			}
+		})
+	})
+
+	if !strings.Contains(stderr, "already returned to T-001") {
+		t.Errorf("expected 'already returned to T-001' in stderr; got: %s", stderr)
+	}
+
+	// T-001 must still be on the stack.
+	after := LoadStack(cfg)
+	if len(after) != 1 || after[0].ID != "T-001" {
+		t.Errorf("stack after no-op pop = %v, want [T-001]", after)
+	}
+}
+
+// I-1302: a second pop (after the no-op) should execute normally.
+func TestStackPop_SecondPopExecutesNormally_I1302(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: "parent"})
+	StackPush(s, cfg, "T-002", StackPushOpts{Reason: "child"})
+
+	// Simulate close of T-002 returning to T-001.
+	entries := LoadStack(cfg)
+	entries = entries[:len(entries)-1]
+	SaveStack(cfg, entries)
+	setCloseReturn(cfg, "T-001")
+
+	// First pop: no-op (close-return guard fires, marker cleared).
+	captureStderrStr(t, func() {
+		captureStdout(t, func() { StackPop(s, cfg) })
+	})
+
+	// Second pop: marker is gone; must actually pop T-001.
+	captureStdout(t, func() { StackPop(s, cfg) })
+
+	after := LoadStack(cfg)
+	if len(after) != 0 {
+		t.Errorf("stack after second pop = %v, want empty", after)
+	}
+}
+
+// I-1302: marker must survive an intervening push+pop so the guard still
+// fires when the reflexive close-pop arrives after a legitimate detour.
+func TestStackPop_MarkerSurvivesInterveningPop_I1302(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: "parent"})
+	StackPush(s, cfg, "T-002", StackPushOpts{Reason: "child"})
+
+	// Simulate close of T-002 returning to T-001.
+	entries := LoadStack(cfg)
+	entries = entries[:len(entries)-1] // remove T-002
+	SaveStack(cfg, entries)
+	setCloseReturn(cfg, "T-001")
+
+	// An intervening push of T-002 (new blocker) and pop of it.
+	StackPush(s, cfg, "T-002", StackPushOpts{Reason: "new blocker"})
+	captureStdout(t, func() { StackPop(s, cfg) }) // pops T-002; marker must NOT be consumed
+
+	// Stack is [T-001]. Now the reflexive close-pop must still no-op.
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			code := StackPop(s, cfg)
+			if code != 0 {
+				t.Errorf("StackPop returned %d, want 0", code)
+			}
+		})
+	})
+
+	if !strings.Contains(stderr, "already returned to T-001") {
+		t.Errorf("guard must fire after intervening push+pop; got stderr: %s", stderr)
+	}
+
+	after := LoadStack(cfg)
+	if len(after) != 1 || after[0].ID != "T-001" {
+		t.Errorf("stack after guarded no-op = %v, want [T-001]", after)
+	}
+}
