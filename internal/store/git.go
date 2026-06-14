@@ -19,8 +19,11 @@ import (
 )
 
 // gitLockWaiterTimeout is how long a waiter spins before giving up on the
-// .st-git.lock. With network ops bounded at gitNetworkTimeout (60s) the
-// holder cannot keep the lock longer than ~60s, so 60s waiter is safe.
+// .st-git.lock. The holder (GitSync) can hold the lock across multiple
+// sequential network ops (pull + push + retries + verifyPushLanded), so
+// the worst-case hold time is several minutes. 60s is a pragmatic
+// interactive-command patience threshold, not a guarantee; a waiter may
+// spuriously time out during a legitimate slow push-with-retries.
 const gitLockWaiterTimeout = 60 * time.Second
 
 // gitNetworkTimeout is the hard deadline for git operations that talk to a
@@ -73,9 +76,15 @@ func acquireGitLockTimeout(dir string, timeout time.Duration) (func(), error) {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
 			// Stamp holder identity so waiters can name who holds the lock.
-			f.Truncate(0)
-			f.Seek(0, 0)
-			fmt.Fprintf(f, "pid=%d cmd=%s", os.Getpid(), strings.Join(os.Args, " "))
+			// Check Truncate and Seek errors: if either fails (e.g. on an NFS
+			// mount), skip the write entirely so no stale content from the
+			// previous holder is left in the file to mislead a timed-out
+			// waiter's hint. Diagnostic-only; locking correctness is unaffected.
+			if terr := f.Truncate(0); terr == nil {
+				if _, serr := f.Seek(0, 0); serr == nil {
+					fmt.Fprintf(f, "pid=%d cmd=%s", os.Getpid(), strings.Join(os.Args, " "))
+				}
+			}
 			return func() {
 				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 				f.Close()
@@ -890,9 +899,10 @@ func verifyPushLanded(root string) error {
 	// Refresh the remote-tracking ref so the ancestor test reflects the
 	// remote's true state, not a stale snapshot. A fetch failure is itself
 	// a reason we cannot certify the sync — surface its stderr verbatim
-	// (consistent with the gitCapture "surface WHY" principle, not a bare
-	// "exit status 1").
-	if fetchErr, err := gitCapture(root, "fetch", "origin", "main"); err != nil {
+	// (I-684 / "surface WHY" principle). runNetGitCapture adds the 60s
+	// deadline + SSH keepalive so a stalled network op here cannot hold
+	// .st-git.lock indefinitely (I-1411).
+	if fetchErr, err := runNetGitCapture(root, "fetch", "origin", "main"); err != nil {
 		detail := strings.TrimSpace(fetchErr)
 		if detail == "" {
 			detail = err.Error()
@@ -1260,7 +1270,9 @@ func RefreshWorkspace(cfg *config.Config) RefreshResult {
 
 	// 3. Pull. ff-only refuses if uncommitted changes conflict with
 	// the merge or any other non-ff condition surfaces — surface as Blocked.
-	if err := gitCmdQuiet(root, "pull", "--ff-only"); err != nil {
+	// runNetGit adds the 60s deadline + SSH keepalive so a stalled network
+	// op here cannot hold .st-git.lock indefinitely (I-1411).
+	if err := runNetGit(root, "pull", "--ff-only"); err != nil {
 		return RefreshResult{Outcome: RefreshBlocked, Err: err}
 	}
 

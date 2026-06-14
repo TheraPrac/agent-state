@@ -142,7 +142,9 @@ func TestMutateLockTimeout(t *testing.T) {
 
 	hold := make(chan struct{})
 	released := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = s.Mutate("T-001", func(item *model.Item) error {
 			close(hold)
 			<-released
@@ -157,6 +159,7 @@ func TestMutateLockTimeout(t *testing.T) {
 
 	err := s.Mutate("T-001", func(item *model.Item) error { return nil })
 	close(released)
+	<-done // wait for goroutine to complete its Mutate before TempDir cleanup
 	if !errors.Is(err, ErrLockTimeout) {
 		t.Errorf("err = %v, want ErrLockTimeout", err)
 	}
