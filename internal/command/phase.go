@@ -34,6 +34,21 @@ func PhaseStart(s *store.Store, cfg *config.Config, id, phase string) int {
 	}
 	now := time.Now().Format(time.RFC3339)
 	if err := s.Mutate(id, func(item *model.Item) error {
+		// Auto-close any in-progress phase before starting the new one so its
+		// ended_at is stamped rather than orphaned.
+		if prior := activePhase(item); prior != "" && prior != phase {
+			existing := readByPhase(item, prior)
+			if existing.Phase == "" {
+				existing.Phase = prior
+			}
+			existing.EndedAt = now
+			line := formatByPhaseLine(existing)
+			if !updateListLine(item, "time_tracking", "by_phase",
+				func(raw string) bool { return byPhaseLineMatches(raw, prior) },
+				line) {
+				item.Doc.AppendToNestedList("time_tracking", "by_phase", line)
+			}
+		}
 		item.SetNested("time_tracking", "active_phase", phase)
 		seedByPhase(item, phase, now)
 		return nil
@@ -63,16 +78,23 @@ func PhaseDone(s *store.Store, cfg *config.Config, id string) int {
 	}
 	now := time.Now().Format(time.RFC3339)
 	if err := s.Mutate(id, func(item *model.Item) error {
+		// Re-read active_phase from the fresh locked item to avoid a TOCTOU
+		// race: the outer s.Get snapshot may be stale if a concurrent PhaseStart
+		// ran between s.Get and Mutate acquiring the file lock.
+		currentPhase := activePhase(item)
+		if currentPhase == "" {
+			return fmt.Errorf("no active phase on %s", id)
+		}
 		item.SetNested("time_tracking", "active_phase", "")
 		// Stamp ended_at on the by_phase entry without crediting a new turn.
-		existing := readByPhase(item, phase)
+		existing := readByPhase(item, currentPhase)
 		if existing.Phase == "" {
-			existing.Phase = phase
+			existing.Phase = currentPhase
 		}
 		existing.EndedAt = now
 		line := formatByPhaseLine(existing)
 		if !updateListLine(item, "time_tracking", "by_phase",
-			func(raw string) bool { return byPhaseLineMatches(raw, phase) },
+			func(raw string) bool { return byPhaseLineMatches(raw, currentPhase) },
 			line) {
 			item.Doc.AppendToNestedList("time_tracking", "by_phase", line)
 		}

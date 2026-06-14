@@ -139,6 +139,38 @@ func TestSessionLogRoutesToActivePhase(t *testing.T) {
 	}
 }
 
+// TestPhaseStartAutoClosesPrior verifies that starting a new phase while another
+// is active stamps the prior phase's ended_at (rather than leaving it orphaned)
+// and moves active_phase to the new phase. Guards the phase.go auto-close path.
+func TestPhaseStartAutoClosesPrior(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	if rc := PhaseStart(s, cfg, "T-001", "plan"); rc != 0 {
+		t.Fatalf("PhaseStart(plan) = %d", rc)
+	}
+	// Start "code" without an intervening PhaseDone — the prior "plan" phase
+	// must be auto-closed.
+	if rc := PhaseStart(s, cfg, "T-001", "code"); rc != 0 {
+		t.Fatalf("PhaseStart(code) = %d", rc)
+	}
+
+	item, _ := s.Get("T-001")
+	if got := activePhase(item); got != "code" {
+		t.Errorf("activePhase = %q, want %q", got, "code")
+	}
+	prior := readByPhase(item, "plan")
+	if prior.EndedAt == "" {
+		t.Error("prior phase 'plan' should have ended_at stamped after auto-close")
+	}
+	cur := readByPhase(item, "code")
+	if cur.StartedAt == "" {
+		t.Error("new phase 'code' should have started_at set")
+	}
+	if cur.EndedAt != "" {
+		t.Errorf("new phase 'code' should not be closed yet, ended_at = %q", cur.EndedAt)
+	}
+}
+
 // TestPhaseParityInteractiveVsRun verifies that by_phase entries have identical schema
 // regardless of execution path. Both items go through PhaseStart + SessionLog + PhaseDone.
 func TestPhaseParityInteractiveVsRun(t *testing.T) {

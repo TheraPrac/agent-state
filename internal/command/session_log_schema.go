@@ -487,15 +487,19 @@ func upsertByPhase(item *model.Item, phase string, t realTokens, processMs int64
 	}
 }
 
-// seedByPhase creates the by_phase line for `phase` if absent, setting only
-// started_at — it does NOT credit a turn or any tokens. Used by PhaseStart.
+// seedByPhase seeds the by_phase entry for `phase`, setting started_at to now.
+// If a prior completed entry exists (EndedAt non-empty — phase was run before
+// and closed), started_at is reset to now and EndedAt is cleared so the second
+// run window is not anchored to the first run's start. Used by PhaseStart.
 func seedByPhase(item *model.Item, phase, now string) {
 	existing := readByPhase(item, phase)
 	if existing.Phase == "" {
 		existing.Phase = phase
 	}
-	if existing.StartedAt == "" {
+	if existing.StartedAt == "" || existing.EndedAt != "" {
+		// First start, or restarting a previously-completed phase: begin a fresh window.
 		existing.StartedAt = now
+		existing.EndedAt = ""
 	}
 
 	line := formatByPhaseLine(existing)
@@ -556,6 +560,12 @@ func readListAggregate[T any](item *model.Item, listKey, target string, parse fu
 			}
 		case "by_phase":
 			if byPhaseLineMatches(entry, target) {
+				return parse(entry)
+			}
+		default:
+			// Unknown list type: fall back to the canonical leading-label convention
+			// (all *LineMatches functions key on the first colon-delimited token).
+			if idx := strings.Index(entry, ":"); idx > 0 && entry[:idx] == target {
 				return parse(entry)
 			}
 		}

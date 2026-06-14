@@ -391,10 +391,13 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 
 	// I-591: write estimated_hours when provided.
 	if opts.EstimatedHours > 0 {
-		_ = s.Mutate(id, func(it *model.Item) error {
+		if err := s.Mutate(id, func(it *model.Item) error {
 			it.SetNested("time_tracking", "estimated_hours", fmt.Sprintf("%.2f", opts.EstimatedHours))
 			return nil
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "create: failed to write estimated_hours on %s: %v\n", id, err)
+			return 1
+		}
 	}
 
 	// Record in changelog
