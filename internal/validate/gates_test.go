@@ -890,3 +890,71 @@ func TestGateNoHintForUntaggedMissingSuite(t *testing.T) {
 		}
 	}
 }
+
+// --- TestGateReviewEvidencePassed ---
+
+func testItemWithReviewEvidence(ev string) *model.Item {
+	item := testItem("T-001", "active")
+	if ev != "" {
+		item.Doc.SetField("review_evidence", ev)
+	}
+	return item
+}
+
+func TestGateReviewEvidencePassedMissing(t *testing.T) {
+	// No review_evidence field → soft-pass (legacy items without review).
+	item := testItemWithReviewEvidence("")
+	result := evalReviewEvidencePassed(item)
+	if !result.Passed {
+		t.Errorf("missing review_evidence: want pass (soft enforcement), got fail: %s", result.Message)
+	}
+}
+
+func TestGateReviewEvidencePassedPass(t *testing.T) {
+	item := testItemWithReviewEvidence("pass abc1234 2026-06-14T10:00:00-06:00 evidence:s3://bucket/key.gz")
+	result := evalReviewEvidencePassed(item)
+	if !result.Passed {
+		t.Errorf("pass verdict: want pass, got fail: %s", result.Message)
+	}
+}
+
+func TestGateReviewEvidencePassedFail(t *testing.T) {
+	item := testItemWithReviewEvidence("fail abc1234 2026-06-14T10:00:00-06:00 evidence:")
+	result := evalReviewEvidencePassed(item)
+	if result.Passed {
+		t.Errorf("fail verdict: want gate fail, got pass")
+	}
+	if !strings.Contains(result.Message, "re-run") {
+		t.Errorf("fail message should include re-run hint: %s", result.Message)
+	}
+}
+
+func TestGateReviewEvidencePassedViaEvaluateGates(t *testing.T) {
+	cfg := testConfig()
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "review_evidence_passed"}},
+	}
+
+	item := testItemWithReviewEvidence("pass abc1234 2026-06-14T10:00:00-06:00 evidence:")
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if !GatesPassed(results) {
+		t.Error("review_evidence_passed gate: should pass with 'pass ...' evidence")
+	}
+}
+
+func TestGateReviewEvidencePassedFailsViaEvaluateGates(t *testing.T) {
+	cfg := testConfig()
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "review_evidence_passed"}},
+	}
+
+	item := testItemWithReviewEvidence("fail abc1234 2026-06-14T10:00:00-06:00 evidence:")
+	allItems := map[string]*model.Item{"T-001": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if GatesPassed(results) {
+		t.Error("review_evidence_passed gate: should fail with 'fail ...' evidence")
+	}
+}
