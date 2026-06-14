@@ -3071,21 +3071,12 @@ Kinds:
 		Use:   "show",
 		Short: "Print active agents, pending mail, and coordination rules",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			windowStr, _ := cmd.Flags().GetString("mail-window")
-			window := 7 * 24 * time.Hour // default: 7 days for interactive sessions
-			if windowStr != "" {
-				parsed, err := time.ParseDuration(windowStr)
-				if err != nil {
-					return fmt.Errorf("invalid --mail-window %q: %w", windowStr, err)
-				}
-				window = parsed
-			}
-			os.Exit(command.CoordinationShow(appStore, appCfg, window))
-			return nil
+		Run: func(cmd *cobra.Command, args []string) {
+			window, _ := cmd.Flags().GetDuration("mail-window")
+			exitCode = command.CoordinationShow(appStore, appCfg, appCfg.AgentID(), window)
 		},
 	}
-	coordinationShowCmd.Flags().String("mail-window", "", "how far back to look for pending mail (default: 7*24h; pass 30m to match st run behavior)")
+	coordinationShowCmd.Flags().Duration("mail-window", 7*24*time.Hour, "how far back to look for pending mail (default: 7*24h; pass 30m to match st run behavior)")
 	coordinationCmd.AddCommand(coordinationShowCmd)
 	root.AddCommand(coordinationCmd)
 

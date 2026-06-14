@@ -44,8 +44,12 @@ func buildCoordinationBlock(s *store.Store, cfg *config.Config, selfAgentID, sel
 // mail + coordination rules) to stdout using the given mail window. Returns
 // 0 on success. I-568: called by the session-start hook so every
 // interactive Claude session sees peer state without requiring st run.
-func CoordinationShow(s *store.Store, cfg *config.Config, mailWindow time.Duration) int {
-	block := buildCoordinationBlockWithWindow(s, cfg, cfg.AgentID(), "", mailWindow)
+//
+// selfAgentID is passed explicitly (rather than resolved internally) so
+// callers can inject a test identity without mutating the environment.
+// T-314 testability contract.
+func CoordinationShow(s *store.Store, cfg *config.Config, selfAgentID string, mailWindow time.Duration) int {
+	block := buildCoordinationBlockWithWindow(s, cfg, selfAgentID, "", mailWindow)
 	fmt.Print(block)
 	return 0
 }
@@ -59,11 +63,22 @@ func buildCoordinationBlockWithWindow(s *store.Store, cfg *config.Config, selfAg
 	b.WriteString("\n\n## Active Agents\n")
 	writeActiveAgents(&b, s, cfg, selfAgentID, selfItemID)
 
-	b.WriteString(fmt.Sprintf("\n## Recent Mail (last %s, unconsumed)\n", mailWindow.Round(time.Minute)))
+	b.WriteString(fmt.Sprintf("\n## Recent Mail (last %s, unconsumed)\n", formatMailWindow(mailWindow)))
 	writeRecentMailAndConsume(&b, cfg, selfAgentID, mailWindow)
 
 	b.WriteString(coordinationRulesText)
 	return b.String()
+}
+
+// formatMailWindow renders a duration as a concise human-readable label
+// for the Recent Mail section header. Produces "N min" for sub-hour
+// values (matching the original "last 30 min" label for defaultMailWindow)
+// and "Nh" for hour-aligned values.
+func formatMailWindow(d time.Duration) string {
+	if d < time.Hour {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
 // writeActiveAgents enumerates live agent registrations and the item
