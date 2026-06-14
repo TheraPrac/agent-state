@@ -148,15 +148,16 @@ func TestDispatch_DryRun_NoDispatchable(t *testing.T) {
 	os.Setenv("AS_SESSION_ID", "sess-dispatch")
 	defer os.Unsetenv("AS_SESSION_ID")
 
-	// No approved plans → nothing dispatchable.
-	out := captureStdout(t, func() {
-		rc := Dispatch(s, cfg, DispatchOpts{Parallelism: 2, DryRun: true})
-		if rc == 0 {
-			t.Error("Dispatch with no dispatchable items should fail")
-		}
+	// No approved plans → nothing dispatchable (message goes to stderr).
+	var rc int
+	errOut := captureStderrStr(t, func() {
+		rc = Dispatch(s, cfg, DispatchOpts{Parallelism: 2, DryRun: true})
 	})
-	if !strings.Contains(out, "nothing dispatchable") {
-		t.Errorf("expected 'nothing dispatchable' message; got: %q", out)
+	if rc == 0 {
+		t.Error("Dispatch with no dispatchable items should fail")
+	}
+	if !strings.Contains(errOut, "nothing dispatchable") {
+		t.Errorf("expected 'nothing dispatchable' message on stderr; got: %q", errOut)
 	}
 }
 
@@ -304,9 +305,13 @@ func TestDispatch_SpawnFailureReleasesClaimAndContinues(t *testing.T) {
 		return 0 // succeed
 	}
 
+	var rc int
 	captureStdout(t, func() {
-		Dispatch(s, cfg, DispatchOpts{Parallelism: 2})
+		rc = Dispatch(s, cfg, DispatchOpts{Parallelism: 2})
 	})
+	if rc != 0 {
+		t.Errorf("Dispatch returned %d, want 0 (one spawn succeeded)", rc)
+	}
 
 	// The first item's claim should be released after the spawn failure.
 	// We can't predict which item was first, but at most one should still

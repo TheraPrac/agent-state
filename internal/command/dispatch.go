@@ -51,9 +51,12 @@ func Claim(s *store.Store, cfg *config.Config, itemID string) int {
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrAlreadyClaimed) {
-			it, _ := s.Get(itemID)
-			fmt.Fprintf(os.Stderr, "claim: %s is claimed by live session %s (since %s)\n",
-				itemID, it.ClaimedBy, it.ClaimedAt)
+			if it, ok := s.Get(itemID); ok {
+				fmt.Fprintf(os.Stderr, "claim: %s is claimed by live session %s (since %s)\n",
+					itemID, it.ClaimedBy, it.ClaimedAt)
+			} else {
+				fmt.Fprintf(os.Stderr, "claim: %s is claimed (owner no longer readable)\n", itemID)
+			}
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "claim: writing %s: %v\n", itemID, err)
@@ -117,6 +120,10 @@ func Dispatch(s *store.Store, cfg *config.Config, opts DispatchOpts) int {
 		return 1
 	}
 
+	// Sweep dead agents and stale claims before picking, so items orphaned by
+	// crashed sessions appear dispatchable (mirrors Coordinate's primeClaimState call).
+	primeClaimState(s, cfg)
+
 	// Pick up to N items, serialised, tracking occupied IDs and in-flight
 	// conflict classes so selectNextExcluding is consistent across picks.
 	occupied := map[string]bool{}
@@ -132,7 +139,7 @@ func Dispatch(s *store.Store, cfg *config.Config, opts DispatchOpts) int {
 		item, why := selectNextExcluding(cfg, occupied, inflightClasses)
 		if item == nil {
 			if len(picks) == 0 {
-				fmt.Printf("dispatch: nothing dispatchable (%s)\n", why)
+				fmt.Fprintf(os.Stderr, "dispatch: nothing dispatchable (%s)\n", why)
 				return 1
 			}
 			// Fewer than requested — not an error; just fewer items in queue.
