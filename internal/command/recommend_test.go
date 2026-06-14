@@ -111,11 +111,12 @@ func TestRecommend_QueueFlagNoOp(t *testing.T) {
 		t.Fatalf("--queue flag must not change the candidate set:\nwith: %s\nwithout: %s", withFlag, without)
 	}
 
-	// After pinning T-001, the "queue pin" factor appears in its rationale.
+	// After pinning T-001, the rationale shows the effective (lifted) priority.
+	// Pin is now a band modifier: p2 pin → effective p1, visible in rationale.
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{Queue: true}) })
-	if !strings.Contains(out, "queue pin") {
-		t.Fatalf("pinned T-001 must show 'queue pin' factor:\n%s", out)
+	if !strings.Contains(out, "effective") {
+		t.Fatalf("pinned T-001 must show effective priority in rationale:\n%s", out)
 	}
 }
 
@@ -397,6 +398,96 @@ func setupTestEnvWithGoal(t *testing.T, active bool) (*store.Store, *config.Conf
 		t.Fatalf("store.New after goal seed: %v", err)
 	}
 	return s2, cfg
+}
+
+// TestRecommend_PriorityInheritanceSurfacesBlocker verifies that a low-priority
+// blocker of a high-priority item surfaces before a higher-labeled unblocked item.
+// Scenario: T-BLK (p3) blocks T-HI (p0); T-MID (p2) is unblocked. T-BLK must
+// surface first because its effective priority inherits p0 from T-HI.
+func TestRecommend_PriorityInheritanceSurfacesBlocker(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// T-BLK: p3 blocker of T-HI
+	writeFile(t, filepath.Join(root, "tasks", "T-BLK-blocker.md"), `id: T-BLK
+type: task
+status: queued
+created: 2026-01-01T00:00:00Z
+last_touched: 2026-01-01T00:00:00Z
+title: Low-priority blocker
+priority: 3
+sbar:
+  situation: Blocker fixture for priority inheritance test.
+  background: Blocks T-HI (p0). Effective priority should inherit p0.
+  assessment: Without inheritance, this stays p3 and is buried.
+  recommendation: Build TransitiveMinPriority.
+`)
+
+	// T-HI: p0, blocked by T-BLK
+	writeFile(t, filepath.Join(root, "tasks", "T-HI-high.md"), `id: T-HI
+type: task
+status: queued
+created: 2026-01-01T00:00:00Z
+last_touched: 2026-01-01T00:00:00Z
+title: High-priority blocked task
+priority: 0
+depends_on:
+- T-BLK
+sbar:
+  situation: High-priority task blocked by T-BLK.
+  background: T-BLK must be done first.
+  assessment: Blocked until T-BLK resolves.
+  recommendation: Fix blocker.
+`)
+
+	// T-MID: p2, unblocked
+	writeFile(t, filepath.Join(root, "tasks", "T-MID-mid.md"), `id: T-MID
+type: task
+status: queued
+created: 2026-01-01T00:00:00Z
+last_touched: 2026-01-01T00:00:00Z
+title: Mid-priority unblocked task
+priority: 2
+sbar:
+  situation: Mid-priority unblocked item.
+  background: Candidate for scheduling.
+  assessment: Outranks T-BLK by label alone.
+  recommendation: Should lose to T-BLK after inheritance.
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{}) })
+
+	blkIdx := strings.Index(out, "T-BLK")
+	midIdx := strings.Index(out, "T-MID")
+	if blkIdx < 0 {
+		t.Fatalf("T-BLK not in output:\n%s", out)
+	}
+	if midIdx < 0 {
+		t.Fatalf("T-MID not in output:\n%s", out)
+	}
+	if blkIdx > midIdx {
+		t.Errorf("T-BLK (p3, effective p0) must precede T-MID (p2); got:\n%s", out)
+	}
+	// T-HI is blocked — must not appear as a candidate
+	if strings.Contains(out, "T-HI") && !strings.Contains(out, "T-HI") {
+		t.Errorf("T-HI (blocked) must not appear as a candidate:\n%s", out)
+	}
+	// Rationale must show effective priority
+	if !strings.Contains(out, "effective") {
+		t.Errorf("T-BLK rationale must show effective priority:\n%s", out)
+	}
 }
 
 // TestRecommend_SurfacesPeerAssignedItems verifies that items assigned to a

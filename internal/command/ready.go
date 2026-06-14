@@ -23,8 +23,11 @@ func Ready(s *store.Store, cfg *config.Config, opts ReadyOpts) int {
 	sprints := loadSprintInfo(cfg, g)
 	cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
 	leverage, names := unblockLeverage(g, cands)
-	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), loadQueuePins(cfg), time.Now())
+	pins := loadQueuePins(cfg)
+	priorityOverrides := buildPriorityOverrides(g, cands, pins)
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
 	enrichUnblockDetail(recs, names)
+	enrichPriorityDetail(recs, priorityOverrides, g.Items)
 
 	// Apply type/tag filters on the ranked slice, then apply limit.
 	var filtered []coordinator.Recommendation

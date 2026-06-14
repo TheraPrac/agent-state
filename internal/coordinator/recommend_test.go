@@ -175,65 +175,63 @@ func TestRecommend_GoalWeightZeroWhenMapEmpty(t *testing.T) {
 	}
 }
 
-// Queue-pin tests (T-461).
+// Priority override tests (T-467): pin is now a band modifier applied upstream;
+// the coordinator receives priorityOverrides map[string]int instead of a pin set.
 
-// A pinned item gets the "queue-pin" factor and floats to the top within
-// its priority band.
-func TestRecommend_PinBoostsWithinPriorityBand(t *testing.T) {
+// An item with a lower effective priority override beats a same-label item.
+func TestRecommend_PriorityOverrideWins(t *testing.T) {
 	a := &model.Item{ID: "T-A", Priority: pInt(2), Created: refNow}
 	b := &model.Item{ID: "T-B", Priority: pInt(2), Created: refNow}
-	// T-B is pinned; should beat T-A within p2.
-	pinned := map[string]bool{"T-B": true}
-	recs := Recommend([]*model.Item{a, b}, nil, nil, nil, pinned, refNow)
+	// T-B has an effective priority of p1 (e.g. queue-pinned p2 → p1 band).
+	overrides := map[string]int{"T-B": 1}
+	recs := Recommend([]*model.Item{a, b}, nil, nil, nil, overrides, refNow)
 	if got := ids(recs); got[0] != "T-B" {
-		t.Fatalf("pin should lead in-band: got %v, want T-B first", got)
+		t.Fatalf("priority override should lead: got %v, want T-B first", got)
 	}
-	// Rationale must include "queue pin".
-	if !strings.Contains(recs[0].Rationale(), "queue pin") {
-		t.Errorf("pinned item rationale must include 'queue pin', got: %q", recs[0].Rationale())
-	}
-}
-
-// A pin cannot override the priority primary key: a p1 item always beats a
-// pinned p2 item.
-func TestRecommend_PinCannotCrossPriorityBand(t *testing.T) {
-	lo := &model.Item{ID: "T-LO", Priority: pInt(1), Created: refNow}
-	hi := &model.Item{ID: "T-HI", Priority: pInt(2), Created: refNow}
-	// T-HI is pinned but has lower priority — T-LO must still win.
-	pinned := map[string]bool{"T-HI": true}
-	recs := Recommend([]*model.Item{hi, lo}, nil, nil, nil, pinned, refNow)
-	if got := ids(recs); got[0] != "T-LO" {
-		t.Fatalf("priority must dominate over pin: got %v, want T-LO first", got)
-	}
-	// T-LO has no pin factor.
-	if strings.Contains(recs[0].Rationale(), "queue pin") {
-		t.Errorf("unpinned winner must not show queue-pin: %q", recs[0].Rationale())
+	if recs[0].Priority != 1 {
+		t.Errorf("Recommendation.Priority should reflect effective value: got %d, want 1", recs[0].Priority)
 	}
 }
 
-// A nil pinned map contributes no boost.
+// A priority override can cross priority bands: a p2 item overridden to p1
+// ties with a native p1 item and falls through to score/ID ordering.
+func TestRecommend_PriorityOverrideTiesNativePriority(t *testing.T) {
+	native := &model.Item{ID: "T-LO", Priority: pInt(1), Created: refNow}
+	lifted := &model.Item{ID: "T-HI", Priority: pInt(2), Created: refNow}
+	// T-HI overridden to p1 — ties with T-LO on effective priority; ID wins.
+	overrides := map[string]int{"T-HI": 1}
+	recs := Recommend([]*model.Item{lifted, native}, nil, nil, nil, overrides, refNow)
+	got := ids(recs)
+	// Both at effective p1; "T-HI" < "T-LO" alphabetically → T-HI wins tiebreak.
+	if got[0] != "T-HI" {
+		t.Fatalf("ID tiebreak within effective-priority tie: got %v, want T-HI first", got)
+	}
+}
+
+// A nil priorityOverrides map has no effect on scoring.
 func TestRecommend_NilPinMapNoBoost(t *testing.T) {
 	a := &model.Item{ID: "T-A", Priority: pInt(2), Created: refNow}
 	r1 := Recommend([]*model.Item{a}, nil, nil, nil, nil, refNow)
-	r2 := Recommend([]*model.Item{a}, nil, nil, nil, map[string]bool{}, refNow)
+	r2 := Recommend([]*model.Item{a}, nil, nil, nil, map[string]int{}, refNow)
 	if r1[0].Score != r2[0].Score {
-		t.Fatalf("nil vs empty pinned map must produce same score: %v vs %v", r1[0].Score, r2[0].Score)
+		t.Fatalf("nil vs empty overrides must produce same score: %v vs %v", r1[0].Score, r2[0].Score)
 	}
 	if strings.Contains(r1[0].Rationale(), "queue pin") {
-		t.Errorf("unpin rationale must not contain 'queue pin': %q", r1[0].Rationale())
+		t.Errorf("no-override rationale must not contain 'queue pin': %q", r1[0].Rationale())
 	}
 }
 
-// A pinned item tops its band even when an unpinned competitor has high
-// unblock leverage that exceeds pinWeight in raw score.
-func TestRecommend_PinBeatsHighLeverage(t *testing.T) {
-	pinned := &model.Item{ID: "T-PIN", Priority: pInt(2), Created: refNow}
+// Priority override beats high unblock leverage: effective priority is the
+// primary sort key, so a lower-override item wins regardless of score delta.
+func TestRecommend_PriorityOverrideBeatsHighLeverage(t *testing.T) {
+	lifted := &model.Item{ID: "T-LFT", Priority: pInt(2), Created: refNow}
 	heavy := &model.Item{ID: "T-HVY", Priority: pInt(2), Created: refNow}
-	// T-HVY unblocks 3 items at unblockWeight=10 each → score=30 > pinWeight=20.
-	recs := Recommend([]*model.Item{heavy, pinned},
-		map[string]int{"T-HVY": 3}, nil, nil, map[string]bool{"T-PIN": true}, refNow)
-	if got := ids(recs); got[0] != "T-PIN" {
-		t.Fatalf("pin must top band even against high leverage: got %v, want T-PIN first", got)
+	// T-LFT overridden to p1; T-HVY unblocks 3 items (score=30) but stays p2.
+	overrides := map[string]int{"T-LFT": 1}
+	recs := Recommend([]*model.Item{heavy, lifted},
+		map[string]int{"T-HVY": 3}, nil, nil, overrides, refNow)
+	if got := ids(recs); got[0] != "T-LFT" {
+		t.Fatalf("priority override must win over high leverage: got %v, want T-LFT first", got)
 	}
 }
 

@@ -67,13 +67,11 @@ const (
 	sprintWeight     = 5.0  // × completion fraction of its ACTIVE sprint (≤ 5)
 	agePerDay        = 0.05 // per day since Created, capped → ≤ 1.5
 	ageCapDays       = 30.0
-	goalWeightFactor = 0.5  // per weight-point contributed by item's active goals; per-item
-	//                          accumulation is uncapped (an item in multiple goals sums their
-	//                          weights). The comment "max +50" assumed single-goal membership
-	//                          — see loadGoalWeights for the actual bound.
-	pinWeight       = 20.0 // operator queue-pin boost: floats pinned items to the top within
-	//                         their priority band, but does NOT override the priority primary key.
-	maxRationaleIDs = 3    // how many unblocked-item IDs to name before "+k"
+	goalWeightFactor = 0.5 // per weight-point contributed by item's active goals; per-item
+	//                         accumulation is uncapped (an item in multiple goals sums their
+	//                         weights). The comment "max +50" assumed single-goal membership
+	//                         — see loadGoalWeights for the actual bound.
+	maxRationaleIDs = 3 // how many unblocked-item IDs to name before "+k"
 )
 
 func resolvePriority(item *model.Item) int {
@@ -87,17 +85,16 @@ func resolvePriority(item *model.Item) int {
 // id unblocks (computed by the shell from the dep graph). sprints maps an
 // item's Sprint id to its SprintInfo. goalWeights[id] is the sum of active
 // Goal.weight values for every goal the item belongs to (built by the shell
-// from item.Goals; nil or missing key → zero contribution). pinned is the set
-// of operator-pinned item IDs from queue.yaml (Source != "sprint"); a nil map
-// means no pins are active. Pinned items receive a pinWeight score boost,
-// floating them to the top within their priority band — priority (the
-// lexicographic primary key) is never overridden by a pin. now anchors the
-// age factor (passed in, not time.Now(), so tests are deterministic). The
-// returned slice is stably ordered: priority asc, then composite score desc,
-// then ID asc.
+// from item.Goals; nil or missing key → zero contribution). priorityOverrides
+// maps item IDs to their effective priority, computed by the shell via
+// transitive dependency inheritance and queue-pin band modifiers — when
+// present, the override value is used as the primary sort key instead of the
+// item's own label. now anchors the age factor (passed in, not time.Now(), so
+// tests are deterministic). The returned slice is stably ordered: effective
+// priority asc, then composite score desc, then ID asc.
 func Recommend(cands []*model.Item, leverage map[string]int,
 	sprints map[string]SprintInfo, goalWeights map[string]float64,
-	pinned map[string]bool, now time.Time) []Recommendation {
+	priorityOverrides map[string]int, now time.Time) []Recommendation {
 
 	recs := make([]Recommendation, 0, len(cands))
 	for _, it := range cands {
@@ -105,6 +102,9 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 			continue
 		}
 		pri := resolvePriority(it)
+		if ov, ok := priorityOverrides[it.ID]; ok {
+			pri = ov
+		}
 		factors := []Factor{
 			{Name: "priority", Points: 0, Detail: fmt.Sprintf("priority p%d", pri)},
 		}
@@ -149,16 +149,6 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 			})
 		}
 
-		// Queue pin — operator has explicitly boosted this item via queue.yaml.
-		// Floats the item to the top within its priority band; does not override
-		// the priority primary key.
-		if pinned[it.ID] {
-			score += pinWeight
-			factors = append(factors, Factor{
-				Name: "queue-pin", Points: pinWeight, Detail: "queue pin",
-			})
-		}
-
 		// Age — bounded anti-starvation tiebreak, always shown.
 		days := 0.0
 		if !it.Created.IsZero() {
@@ -186,16 +176,6 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 	sort.SliceStable(recs, func(i, j int) bool {
 		if recs[i].Priority != recs[j].Priority {
 			return recs[i].Priority < recs[j].Priority // lower p = better
-		}
-		// Pin is a guaranteed top-of-band elevation: any pinned item beats any
-		// unpinned item within the same priority band, regardless of score.
-		// This is separate from pinWeight (which appears in the rationale so the
-		// boost is inspectable) — the sort ensures the guarantee holds even when
-		// an unpinned item has high unblock leverage exceeding pinWeight.
-		pi := pinned[recs[i].Item.ID]
-		pj := pinned[recs[j].Item.ID]
-		if pi != pj {
-			return pi // pinned wins
 		}
 		if recs[i].Score != recs[j].Score {
 			return recs[i].Score > recs[j].Score // higher composite = better

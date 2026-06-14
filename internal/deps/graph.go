@@ -83,6 +83,38 @@ func (g *Graph) IsResolved(id string) bool {
 	return false
 }
 
+// TransitiveMinPriority returns min(ownPriority, min priority of all
+// transitively unblocked non-terminal items). Lower number = higher rank.
+// A p3 item that unblocks a p0 item returns 0, so it surfaces before
+// unrelated p2 items. Cycle-safe via visited set.
+func (g *Graph) TransitiveMinPriority(id string, ownPriority int) int {
+	best := ownPriority
+	visited := map[string]bool{id: true}
+	queue := []string{id}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, downID := range g.Blocks[cur] {
+			if visited[downID] {
+				continue
+			}
+			visited[downID] = true
+			if g.IsResolved(downID) {
+				continue
+			}
+			down, ok := g.Items[downID]
+			if !ok {
+				continue
+			}
+			if p := priorityOf(down); p < best {
+				best = p
+			}
+			queue = append(queue, downID)
+		}
+	}
+	return best
+}
+
 // IsBlocked returns true if the item has unresolved dependencies.
 func (g *Graph) IsBlocked(id string) bool {
 	for _, depID := range g.DependsOn[id] {

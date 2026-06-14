@@ -156,6 +156,73 @@ func TestIsStageAtOrPast(t *testing.T) {
 	}
 }
 
+// TransitiveMinPriority tests (T-467)
+
+func TestTransitiveMinPriority_NoUnblocks(t *testing.T) {
+	p2 := 2
+	items := map[string]*model.Item{
+		"T-A": {ID: "T-A", Type: "task", Status: "queued", Priority: &p2},
+	}
+	g := Build(items, config.Defaults())
+	if got := g.TransitiveMinPriority("T-A", 2); got != 2 {
+		t.Errorf("no unblocked items: got %d, want 2", got)
+	}
+}
+
+func TestTransitiveMinPriority_DirectUnblock(t *testing.T) {
+	p3, p1 := 3, 1
+	items := map[string]*model.Item{
+		"T-A": {ID: "T-A", Type: "task", Status: "queued", Priority: &p3},
+		"T-B": {ID: "T-B", Type: "task", Status: "queued", Priority: &p1, DependsOn: []string{"T-A"}},
+	}
+	g := Build(items, config.Defaults())
+	// T-A unblocks T-B (p1) → effective = min(3, 1) = 1
+	if got := g.TransitiveMinPriority("T-A", 3); got != 1 {
+		t.Errorf("direct unblock: got %d, want 1", got)
+	}
+}
+
+func TestTransitiveMinPriority_TransitiveChain(t *testing.T) {
+	p3, p2, p0 := 3, 2, 0
+	items := map[string]*model.Item{
+		"T-A": {ID: "T-A", Type: "task", Status: "queued", Priority: &p3},
+		"T-B": {ID: "T-B", Type: "task", Status: "queued", Priority: &p2, DependsOn: []string{"T-A"}},
+		"T-C": {ID: "T-C", Type: "task", Status: "queued", Priority: &p0, DependsOn: []string{"T-B"}},
+	}
+	g := Build(items, config.Defaults())
+	// T-A → T-B → T-C(p0): effective = min(3, 2, 0) = 0
+	if got := g.TransitiveMinPriority("T-A", 3); got != 0 {
+		t.Errorf("transitive chain: got %d, want 0", got)
+	}
+}
+
+func TestTransitiveMinPriority_CycleSafe(t *testing.T) {
+	p2 := 2
+	items := map[string]*model.Item{
+		"T-A": {ID: "T-A", Type: "task", Status: "queued", Priority: &p2, DependsOn: []string{"T-B"}},
+		"T-B": {ID: "T-B", Type: "task", Status: "queued", Priority: &p2, DependsOn: []string{"T-A"}},
+	}
+	g := Build(items, config.Defaults())
+	// Cycle A↔B: must not infinite-loop; own priority returned
+	got := g.TransitiveMinPriority("T-A", 2)
+	if got != 2 {
+		t.Errorf("cycle-safe: got %d, want 2", got)
+	}
+}
+
+func TestTransitiveMinPriority_TerminalExcluded(t *testing.T) {
+	p3, p0 := 3, 0
+	items := map[string]*model.Item{
+		"T-A": {ID: "T-A", Type: "task", Status: "queued", Priority: &p3},
+		"T-B": {ID: "T-B", Type: "task", Status: "done", Priority: &p0, DependsOn: []string{"T-A"}},
+	}
+	g := Build(items, config.Defaults())
+	// T-B is done (terminal) — its priority should not be inherited
+	if got := g.TransitiveMinPriority("T-A", 3); got != 3 {
+		t.Errorf("terminal excluded: got %d, want 3", got)
+	}
+}
+
 func containsStr(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {

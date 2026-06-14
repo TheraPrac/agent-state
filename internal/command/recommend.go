@@ -75,9 +75,12 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 	sprints := loadSprintInfo(cfg, g)
 	cands := recommendCandidates(s, cfg, g, opts, sprints)
 	leverage, names := unblockLeverage(g, cands)
+	pins := loadQueuePins(cfg)
+	priorityOverrides := buildPriorityOverrides(g, cands, pins)
 
-	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), loadQueuePins(cfg), time.Now())
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
 	enrichUnblockDetail(recs, names)
+	enrichPriorityDetail(recs, priorityOverrides, g.Items)
 
 	if len(recs) > top {
 		recs = recs[:top]
@@ -245,6 +248,57 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 	}
 
 	return cands
+}
+
+// itemPriority resolves the priority of an item, defaulting to 2.
+func itemPriority(it *model.Item) int {
+	if it.Priority != nil {
+		return *it.Priority
+	}
+	return 2
+}
+
+// buildPriorityOverrides computes effective priority for each candidate by
+// walking the dependency graph transitively (priority inheritance) and applying
+// queue-pin as a bounded band modifier (+1 toward p0, floored at 0). Only
+// items whose effective priority differs from their own label are included in
+// the returned map, keeping the coordinator's scoring loop clean.
+func buildPriorityOverrides(g *deps.Graph, cands []*model.Item, pins map[string]bool) map[string]int {
+	overrides := map[string]int{}
+	for _, it := range cands {
+		own := itemPriority(it)
+		eff := g.TransitiveMinPriority(it.ID, own)
+		if pins[it.ID] && eff > 0 {
+			eff--
+		}
+		if eff != own {
+			overrides[it.ID] = eff
+		}
+	}
+	return overrides
+}
+
+// enrichPriorityDetail rewrites the "priority" factor detail when an item's
+// effective priority was inherited from a downstream dependency or lifted by a
+// queue pin, so the rationale is transparent about what drove the rank.
+func enrichPriorityDetail(recs []coordinator.Recommendation, overrides map[string]int, items map[string]*model.Item) {
+	for i := range recs {
+		id := recs[i].Item.ID
+		eff, ok := overrides[id]
+		if !ok {
+			continue
+		}
+		it := items[id]
+		if it == nil {
+			continue
+		}
+		own := itemPriority(it)
+		for j := range recs[i].Factors {
+			if recs[i].Factors[j].Name == "priority" {
+				recs[i].Factors[j].Detail = fmt.Sprintf("priority p%d (effective p%d)", own, eff)
+			}
+		}
+	}
 }
 
 // unblockLeverage counts, for each candidate, how many downstream items it
