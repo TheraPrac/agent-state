@@ -205,3 +205,52 @@ func TestStartGoalHint_SilentForGoalTypeItem(t *testing.T) {
 		t.Errorf("goal-type item should not receive goal-link hint; got:\n%s", stderr)
 	}
 }
+
+// I-1328: item linked only to a terminal (met/dropped) goal must fire the hint.
+func TestStartGoalHint_FiresWhenAllGoalsTerminal(t *testing.T) {
+	s, cfg := newStartGoalHintEnv(t)
+	writeTaskFixture(t, cfg, "T-001", "queued", []string{"G-met"})
+	writeGoalFixtureHint(t, cfg, "G-met", "met", 40)
+	writeGoalFixtureHint(t, cfg, "G-active", "active", 30)
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			Start(s2, cfg, "T-001", StartOpts{NoPush: true})
+		})
+	})
+
+	if !strings.Contains(stderr, "all linked goals are terminal") {
+		t.Errorf("expected terminal-goal hint; got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "G-active") {
+		t.Errorf("expected active goal G-active listed; got:\n%s", stderr)
+	}
+	_ = s
+}
+
+// I-1328: item with one active and one terminal goal must NOT fire the hint.
+func TestStartGoalHint_SilentWhenMixedActiveAndTerminalGoals(t *testing.T) {
+	s, cfg := newStartGoalHintEnv(t)
+	writeTaskFixture(t, cfg, "T-001", "queued", []string{"G-met", "G-active"})
+	writeGoalFixtureHint(t, cfg, "G-met", "met", 40)
+	writeGoalFixtureHint(t, cfg, "G-active", "active", 30)
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			Start(s2, cfg, "T-001", StartOpts{NoPush: true})
+		})
+	})
+
+	if strings.Contains(stderr, "goal link") {
+		t.Errorf("should not hint when at least one goal is active; got:\n%s", stderr)
+	}
+	_ = s
+}
