@@ -1624,6 +1624,40 @@ var _ io.Reader = (*bytes.Reader)(nil) // keep io import live
 
 // --- I-997: scope_repos guard on --run path ---
 
+// TestTestRecordRunProceedsWhenRequiredEvidenceSet verifies that a suite whose
+// testing_evidence is "required" (set by st pr) is never auto-skipped by the
+// scope_repos guard — the "required" marker takes precedence.
+func TestTestRecordRunProceedsWhenRequiredEvidenceSet(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+	// Suite's repo is NOT in scope_repos, but it has been triggered by st pr.
+	cfg.Testing.ScopeSuites["web_e2e"] = config.ScopeSuiteConfig{Command: "make e2e"}
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "web_e2e", "required")
+		it.Doc.SetField("scope_repos", "theraprac-api")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	called := false
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			called = true
+			return []byte("ok"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+	code := TestRecord(s, cfg, "T-003", "web_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !called {
+		t.Error("RunCmd not called — 'required' evidence should override scope_repos guard")
+	}
+}
+
 // TestTestRecordRunSkipsWhenNotInScopeRepos verifies that --run auto-skips a suite
 // whose target repo is absent from the item's scope_repos.
 func TestTestRecordRunSkipsWhenNotInScopeRepos(t *testing.T) {

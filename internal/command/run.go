@@ -2975,11 +2975,13 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 		return sr
 	}
 
-	// Find missing required suites
+	// Find missing required suites. Accept "pass" (executed) and "auto-skip:"
+	// (system-determined not applicable, e.g. not in scope_repos) — mirrors
+	// the same check in validate/gates.go:219.
 	var missing []string
 	for name := range requiredSuites {
 		val := getEvidence("required_suites", name)
-		if !strings.HasPrefix(val, "pass") {
+		if !strings.HasPrefix(val, "pass") && !strings.HasPrefix(val, "auto-skip:") {
 			missing = append(missing, name)
 		}
 	}
@@ -3021,7 +3023,7 @@ func executeVerifyTests(s *store.Store, cfg *config.Config, itemID string) StepR
 		var stillMissing []string
 		for name := range requiredSuites {
 			val := getEvidence("required_suites", name)
-			if !strings.HasPrefix(val, "pass") {
+			if !strings.HasPrefix(val, "pass") && !strings.HasPrefix(val, "auto-skip:") {
 				stillMissing = append(stillMissing, name)
 			}
 		}

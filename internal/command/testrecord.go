@@ -150,7 +150,10 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	if opts.Run {
 		if repoStr, ok := item.Doc.GetField("scope_repos"); ok && repoStr != "" {
 			suiteRepo := autoScopeRepo(suite)
-			if suiteRepo != "" && !inScopeRepos(repoStr, suiteRepo) {
+			// Don't auto-skip if the suite was triggered by st pr (evidence == "required") —
+			// that marker means the suite must run for this PR regardless of scope_repos.
+			currentEv, _ := getNestedField(item, "testing_evidence", suite)
+			if suiteRepo != "" && !inScopeRepos(repoStr, suiteRepo) && currentEv != "required" {
 				ev := "auto-skip: not in scope_repos: " + suiteRepo
 				nowStr := time.Now().Format(time.RFC3339)
 				if err := s.Mutate(id, func(it *model.Item) error {
@@ -1215,12 +1218,7 @@ func runWithLockAwareRetry(suite string, injected bool, runFn func() ([]byte, in
 
 // inScopeRepos reports whether repo is listed in the comma-separated scopeReposStr.
 func inScopeRepos(scopeReposStr, repo string) bool {
-	for _, r := range strings.Split(scopeReposStr, ",") {
-		if strings.TrimSpace(r) == repo {
-			return true
-		}
-	}
-	return false
+	return matchInList(repo, scopeReposStr)
 }
 
 func shellQuote(s string) string {
