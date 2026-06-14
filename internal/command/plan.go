@@ -67,6 +67,9 @@ type PlanApproveOpts struct {
 	// reviewed). I-752: added after I-738 hung 53min on the unbounded
 	// sub-agent. The validator gates (SBAR, AC verifiability) still run.
 	BypassReview bool
+	// I-591: RequireEstimate blocks approval when the item has no
+	// time_tracking.estimated_hours set (or the value is zero/missing).
+	RequireEstimate bool
 }
 
 // PlanApprove marks an item's plan as approved. Sets PlanApproved=true,
@@ -118,6 +121,16 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 	// sidecar's acceptance criteria fail the verifiability check. The
 	// flag is preserved here purely for that AC gate — its SBAR role
 	// from I-149 is gone (the SBAR check now runs unconditionally).
+	// I-591: estimate gate — block approval when RequireEstimate is set and the
+	// item has no estimated_hours (or the value is zero).
+	if opts.RequireEstimate && readFloatField(item, "time_tracking", "estimated_hours") <= 0 {
+		fmt.Fprintf(os.Stderr,
+			"%s: estimate gate failed — no time_tracking.estimated_hours set; "+
+				"run `st update %s time_tracking estimated_hours <hours>` or re-create with --estimate, then re-approve.\n",
+			id, id)
+		return 2
+	}
+
 	sbarApplies := item.Type == "task" || item.Type == "issue"
 	if sbarApplies {
 		if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
