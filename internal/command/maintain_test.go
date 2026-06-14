@@ -56,9 +56,26 @@ func TestBranchMerged(t *testing.T) {
 	if branchMerged(root, "feature-x", nil) {
 		t.Error("feature-x has an unmerged commit; should NOT be merged")
 	}
-	// mergedPR signal makes an otherwise-unmerged branch prunable (squash case).
-	if !branchMerged(root, "feature-x", map[string]bool{"feature-x": true}) {
-		t.Error("feature-x should be merged when gh reports its PR merged")
+	// Squash case: gh reports feature-x's CURRENT tip as a merged PR head.
+	tip := strings.TrimSpace(gitOutput(t, root, "rev-parse", "feature-x"))
+	if !branchMerged(root, "feature-x", map[string][]string{"feature-x": {tip}}) {
+		t.Error("feature-x should be merged when its tip matches a merged PR head")
+	}
+}
+
+// Regression for the name-reuse data-loss bug: a NEW branch that reuses a
+// previously-merged name but carries different commits must NOT be treated as
+// merged just because the name appears in gh's merged-PR list.
+func TestBranchMergedRejectsReusedName(t *testing.T) {
+	root := setupMaintainRepo(t)
+	commitOn(t, root, "reused-name", "new.txt", "fresh unmerged work")
+	tip := strings.TrimSpace(gitOutput(t, root, "rev-parse", "reused-name"))
+	oldMergedOID := strings.Repeat("a", 40) // a DIFFERENT (historical) head sha
+	if tip == oldMergedOID {
+		t.Fatal("precondition: tips must differ")
+	}
+	if branchMerged(root, "reused-name", map[string][]string{"reused-name": {oldMergedOID}}) {
+		t.Error("a reused name with different commits must NOT be considered merged")
 	}
 }
 
@@ -70,7 +87,7 @@ func TestPruneMergedBranches(t *testing.T) {
 	commitOn(t, root, "feature-x", "f.txt", "x") // unmerged
 	// on main (so the current-branch skip doesn't hide merged-ff)
 
-	pruneMergedBranches(root, MaintainOpts{DryRun: false})
+	pruneMergedBranches(root, nil, MaintainOpts{DryRun: false})
 
 	branches := localBranches(t, root)
 	if strings.Contains(branches, "merged-ff") {
@@ -94,7 +111,7 @@ func TestPruneSkipsCurrentBranch(t *testing.T) {
 	// by pruneMergedBranches (returnToCleanMain handles the checked-out case).
 	runGitTest(t, root, "checkout", "-b", "merged-current", "main")
 
-	pruneMergedBranches(root, MaintainOpts{DryRun: false})
+	pruneMergedBranches(root, nil, MaintainOpts{DryRun: false})
 
 	if !strings.Contains(localBranches(t, root), "merged-current") {
 		t.Error("the current branch must never be deleted out from under us")
@@ -105,7 +122,7 @@ func TestPruneDryRunMutatesNothing(t *testing.T) {
 	root := setupMaintainRepo(t)
 	runGitTest(t, root, "branch", "merged-ff", "main")
 
-	pruneMergedBranches(root, MaintainOpts{DryRun: true})
+	pruneMergedBranches(root, nil, MaintainOpts{DryRun: true})
 
 	if !strings.Contains(localBranches(t, root), "merged-ff") {
 		t.Error("dry-run must not delete branches")
@@ -123,7 +140,7 @@ func TestReturnToCleanMainChurnOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	returnToCleanMain(root, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "main" {
 		t.Errorf("should return to main when only churn is dirty; on %q", cur)
@@ -138,7 +155,7 @@ func TestReturnToCleanMainKeepsRealWIP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	returnToCleanMain(root, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "merged-current" {
 		t.Errorf("must stay on the branch when non-churn WIP is present; on %q", cur)
@@ -150,7 +167,7 @@ func TestReturnToCleanMainSkipsUnmergedBranch(t *testing.T) {
 	commitOn(t, root, "feature-x", "f.txt", "x")
 	runGitTest(t, root, "checkout", "feature-x") // unmerged, checked out
 
-	returnToCleanMain(root, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "feature-x" {
 		t.Errorf("must not yank the agent off an active unmerged branch; on %q", cur)
