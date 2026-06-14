@@ -1621,3 +1621,153 @@ func readBackTestSummary(t *testing.T, backend evidence.Backend, id, suite strin
 }
 
 var _ io.Reader = (*bytes.Reader)(nil) // keep io import live
+
+// --- I-997: scope_repos guard on --run path ---
+
+// TestTestRecordRunProceedsWhenRequiredEvidenceSet verifies that a suite whose
+// testing_evidence is "required" (set by st pr) is never auto-skipped by the
+// scope_repos guard — the "required" marker takes precedence.
+func TestTestRecordRunProceedsWhenRequiredEvidenceSet(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+	// Suite's repo is NOT in scope_repos, but it has been triggered by st pr.
+	cfg.Testing.ScopeSuites["web_e2e"] = config.ScopeSuiteConfig{Command: "make e2e"}
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "web_e2e", "required")
+		it.Doc.SetField("scope_repos", "theraprac-api")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	called := false
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			called = true
+			return []byte("ok"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+	code := TestRecord(s, cfg, "T-003", "web_e2e", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !called {
+		t.Error("RunCmd not called — 'required' evidence should override scope_repos guard")
+	}
+}
+
+// TestTestRecordRunSkipsWhenNotInScopeRepos verifies that --run auto-skips a suite
+// whose target repo is absent from the item's scope_repos.
+func TestTestRecordRunSkipsWhenNotInScopeRepos(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	// Item only touches theraprac-infra; api_lint targets theraprac-api.
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.Doc.SetField("scope_repos", "theraprac-infra")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+	}
+	code := TestRecord(s, cfg, "T-003", "api_lint", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0 (auto-skip should succeed)", code)
+	}
+	item, _ := s.Get("T-003")
+	ev, _ := getNestedField(item, "testing_evidence", "api_lint")
+	if !strings.HasPrefix(ev, "auto-skip:") || !strings.Contains(ev, "theraprac-api") {
+		t.Errorf("evidence = %q, want auto-skip: not in scope_repos: theraprac-api", ev)
+	}
+}
+
+// TestTestRecordRunProceedsWhenInScopeRepos verifies that --run proceeds normally
+// when the suite's repo is present in scope_repos.
+func TestTestRecordRunProceedsWhenInScopeRepos(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.Doc.SetField("scope_repos", "theraprac-api")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	called := false
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			called = true
+			return []byte("ok"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+	code := TestRecord(s, cfg, "T-003", "api_lint", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !called {
+		t.Error("RunCmd not called — suite repo is in scope_repos, should proceed to testRunMode")
+	}
+}
+
+// TestTestRecordRunProceedsWhenScopeReposEmpty verifies backward compatibility:
+// when scope_repos is absent, --run proceeds for all suites.
+func TestTestRecordRunProceedsWhenScopeReposEmpty(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+	// No scope_repos set on T-003.
+	called := false
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			called = true
+			return []byte("ok"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+	code := TestRecord(s, cfg, "T-003", "api_lint", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !called {
+		t.Error("RunCmd not called — no scope_repos should not skip any suite")
+	}
+}
+
+// TestTestRecordRunProceedsForSuiteWithNoRepoMapping verifies that a suite whose
+// name has no known prefix mapping (autoScopeRepo returns "") is never auto-skipped,
+// even when scope_repos is set.
+func TestTestRecordRunProceedsForSuiteWithNoRepoMapping(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	evDir := t.TempDir()
+	cfg.Testing.ScopeSuites["custom_check"] = config.ScopeSuiteConfig{Command: "echo custom"}
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("testing_evidence", "custom_check", "required")
+		it.Doc.SetField("scope_repos", "theraprac-infra")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	called := false
+	opts := TestRecordOpts{
+		Run:        true,
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+		RunCmd: func(command string) ([]byte, int, error) {
+			called = true
+			return []byte("ok"), 0, nil
+		},
+		Backend: &evidence.LocalBackend{Dir: evDir},
+	}
+	code := TestRecord(s, cfg, "T-003", "custom_check", opts)
+	if code != 0 {
+		t.Fatalf("returned %d, want 0", code)
+	}
+	if !called {
+		t.Error("RunCmd not called — suite with no repo mapping should never auto-skip")
+	}
+}

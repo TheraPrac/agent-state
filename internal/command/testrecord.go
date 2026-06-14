@@ -144,7 +144,36 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	// Get SHA from the repo this suite targets, not cwd
 	sha := getSHAForSuite(cfg, id, suite, suiteCmd, opts)
 
+	// I-997: scope_repos guard (--run only). When the item declares scope_repos,
+	// auto-skip any suite whose target repo is not listed — prevents Tier 1 suites
+	// from firing for repos the item never touches.
 	if opts.Run {
+		if repoStr, ok := item.Doc.GetField("scope_repos"); ok && repoStr != "" {
+			suiteRepo := autoScopeRepo(suite)
+			// Don't auto-skip if the suite was triggered by st pr (evidence == "required") —
+			// that marker means the suite must run for this PR regardless of scope_repos.
+			currentEv, _ := getNestedField(item, "testing_evidence", suite)
+			if suiteRepo != "" && !inScopeRepos(repoStr, suiteRepo) && currentEv != "required" {
+				ev := "auto-skip: not in scope_repos: " + suiteRepo
+				nowStr := time.Now().Format(time.RFC3339)
+				if err := s.Mutate(id, func(it *model.Item) error {
+					it.SetNested("testing_evidence", suite, ev)
+					it.Doc.SetField("last_touched", nowStr)
+					return nil
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+					return 1
+				}
+				changelog.Append(cfg, id, changelog.Entry{
+					Op: "test_skipped", Field: "testing_evidence." + suite, NewValue: ev,
+				})
+				fmt.Printf("auto-skipped %s on %s: not in scope_repos: %s\n", suite, id, suiteRepo)
+				if err := autoSync(s, fmt.Sprintf("st test skip: %s %s", id, suite)); err != nil {
+					return 1
+				}
+				return 0
+			}
+		}
 		return testRunMode(s, cfg, id, suite, suiteCmd, sha, item, opts)
 	}
 	return testRecordOnly(s, cfg, id, suite, sha, item)
@@ -1185,6 +1214,11 @@ func runWithLockAwareRetry(suite string, injected bool, runFn func() ([]byte, in
 	combined.WriteString("\n--- I-802 retry boundary (above: first attempt, lock-shaped; below: retry) ---\n")
 	combined.Write(output2)
 	return lockAwareRetryResult{Output: combined.Bytes(), ExitCode: exitCode2, RunErr: runErr2, Retried: true}
+}
+
+// inScopeRepos reports whether repo is listed in the comma-separated scopeReposStr.
+func inScopeRepos(scopeReposStr, repo string) bool {
+	return matchInList(repo, scopeReposStr)
 }
 
 func shellQuote(s string) string {
