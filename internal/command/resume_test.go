@@ -462,14 +462,15 @@ func TestResumeNextActionFromPlanFiles(t *testing.T) {
 	if !strings.Contains(out, "as/internal/command/resume.go") {
 		t.Errorf("first FilesToModify entry missing from Next action:\n%s", out)
 	}
-	// Next action must appear after the Plan section.
+	// Next action must appear BEFORE the Plan section (forward directive precedes
+	// backward narrative — I-690 design principle).
 	pi := strings.Index(out, "## Plan")
 	ni := strings.Index(out, "## Next action")
 	if pi < 0 || ni < 0 {
 		t.Fatalf("Plan or Next action section missing: pi=%d ni=%d", pi, ni)
 	}
-	if ni <= pi {
-		t.Errorf("Next action must come after Plan: plan=%d next_action=%d", pi, ni)
+	if ni >= pi {
+		t.Errorf("Next action must come before Plan: next_action=%d plan=%d", ni, pi)
 	}
 }
 
@@ -568,7 +569,7 @@ func TestSisterRepoBranches(t *testing.T) {
 	cfg.Worktree.ParentDir = parent
 	cfg.ResetAgentRootCache()
 
-	branches := sisterRepoBranches(cfg, []string{"repo-a", "repo-b"})
+	branches := sisterRepoBranches(cfg, "T-385", []string{"repo-a", "repo-b"})
 	if len(branches) != 2 {
 		t.Fatalf("expected 2 branch entries, got %d: %+v", len(branches), branches)
 	}

@@ -117,7 +117,7 @@ func Resume(s *store.Store, cfg *config.Config, opts ResumeOpts) int {
 	// state across all repos without manual `git branch` invocations.
 	var branches []branchInfo
 	if loadedPlan != nil {
-		branches = sisterRepoBranches(cfg, loadedPlan.ScopeRepos)
+		branches = sisterRepoBranches(cfg, id, loadedPlan.ScopeRepos)
 	}
 
 	fmt.Print(renderResume(cfg, item, entries, sessionID, planBody, planNote, audit, rs, branches, loadedPlan))
@@ -318,7 +318,7 @@ func renderResume(cfg *config.Config, item *model.Item, entries []changelog.Entr
 			if br.Dirty {
 				state = "dirty"
 			}
-			fmt.Fprintf(&b, "  %-24s %s  (%s)\n", br.Repo, br.Branch, state)
+			fmt.Fprintf(&b, "  %-24.24s %s  (%s)\n", br.Repo, br.Branch, state)
 		}
 		b.WriteString("\n")
 	}
@@ -339,6 +339,15 @@ func renderResume(cfg *config.Config, item *model.Item, entries []changelog.Entr
 			fmt.Fprintf(&b, "  → %s\n", n)
 		}
 		b.WriteString("\n")
+	}
+
+	// (2e) Next action — synthesized from plan+stage. Placed alongside ## Next
+	// so the forward directive appears before the backward narrative, consistent
+	// with the design principle: "a resuming session needs the forward directive
+	// before the backward narrative" (I-690).
+	if next := synthesizeNextAction(item, p); next != "" {
+		b.WriteString("## Next action\n")
+		fmt.Fprintf(&b, "  → %s\n\n", next)
 	}
 
 	scoped := filterSession(entries, sessionID)
@@ -460,13 +469,6 @@ func renderResume(cfg *config.Config, item *model.Item, entries []changelog.Entr
 	} else {
 		b.WriteString("## ⚠️  PLAN " + planNote + "\n")
 		b.WriteString("  Resume cannot fold in the plan body — author/repair .plans/" + item.ID + ".md, then re-run `st resume " + item.ID + "`.\n\n")
-	}
-
-	// Next-action synthesis: derive the most concrete "what to do next" from
-	// the plan body + item stage so a cold session can act immediately.
-	if next := synthesizeNextAction(item, p); next != "" {
-		b.WriteString("## Next action\n")
-		fmt.Fprintf(&b, "  → %s\n\n", next)
 	}
 
 	b.WriteString("---\n")
@@ -715,13 +717,17 @@ func indent(s, pad string) string {
 }
 
 // sisterRepoBranches resolves the current branch and dirty state for each
-// repo in scopeRepos using the main checkout (not a worktree). Silent per
-// repo on git errors so a missing or uninitialized repo doesn't block the
-// rest of the output.
-func sisterRepoBranches(cfg *config.Config, scopeRepos []string) []branchInfo {
+// repo in scopeRepos. Prefers the item's worktree clone (which carries the
+// feature branch) over the main checkout so that a cold resume sees the actual
+// branch the work is on, not the stale main-checkout branch. Falls back to the
+// main checkout when no worktree exists for the item. Silent per repo on git
+// errors so a missing or uninitialized repo doesn't block the rest of the output.
+func sisterRepoBranches(cfg *config.Config, itemID string, scopeRepos []string) []branchInfo {
 	var out []branchInfo
 	for _, repo := range scopeRepos {
-		dir := resolveRepoDir(cfg, repo)
+		// Prefer worktree clone (where the feature branch is checked out) over
+		// main checkout (which typically stays on main during development).
+		dir := resolveRepoDirForItem(cfg, itemID, repo)
 		if dir == "" || !isGitDir(dir) {
 			continue
 		}
@@ -730,6 +736,9 @@ func sisterRepoBranches(cfg *config.Config, scopeRepos []string) []branchInfo {
 			continue
 		}
 		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			branch = "(detached HEAD)"
+		}
 		dirty := false
 		if status, serr := runGit(dir, "status", "--porcelain"); serr == nil {
 			dirty = strings.TrimSpace(status) != ""
