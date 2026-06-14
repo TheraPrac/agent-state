@@ -50,15 +50,15 @@ func TestBranchMerged(t *testing.T) {
 	// unmerged: has a commit not in origin/main.
 	commitOn(t, root, "feature-x", "f.txt", "x")
 
-	if !branchMerged(root, "merged-ff", nil) {
+	if !branchMerged(root, "merged-ff", nil, nil) {
 		t.Error("merged-ff should be detected as merged (ancestor of origin/main)")
 	}
-	if branchMerged(root, "feature-x", nil) {
+	if branchMerged(root, "feature-x", nil, nil) {
 		t.Error("feature-x has an unmerged commit; should NOT be merged")
 	}
 	// Squash case: gh reports feature-x's CURRENT tip as a merged PR head.
 	tip := strings.TrimSpace(gitOutput(t, root, "rev-parse", "feature-x"))
-	if !branchMerged(root, "feature-x", map[string][]prHead{"feature-x": {{oid: tip}}}) {
+	if !branchMerged(root, "feature-x", map[string][]prHead{"feature-x": {{oid: tip}}}, nil) {
 		t.Error("feature-x should be merged when its tip matches a merged PR head")
 	}
 }
@@ -74,7 +74,7 @@ func TestBranchMergedRejectsReusedName(t *testing.T) {
 	if tip == oldMergedOID {
 		t.Fatal("precondition: tips must differ")
 	}
-	if branchMerged(root, "reused-name", map[string][]prHead{"reused-name": {{oid: oldMergedOID, num: "999"}}}) {
+	if branchMerged(root, "reused-name", map[string][]prHead{"reused-name": {{oid: oldMergedOID, num: "999"}}}, nil) {
 		t.Error("a reused name with different commits must NOT be considered merged")
 	}
 }
@@ -102,7 +102,7 @@ func TestBranchMergedChurnDriftFallback(t *testing.T) {
 	runGitTest(t, root, "add", "-A")
 	runGitTest(t, root, "commit", "-m", "st sync: agent-state")
 	runGitTest(t, root, "checkout", "main")
-	if !branchMerged(root, "feat-drift", heads) {
+	if !branchMerged(root, "feat-drift", heads, nil) {
 		t.Error("drifted branch with only churn beyond its merged PR head should be prunable")
 	}
 
@@ -117,7 +117,7 @@ func TestBranchMergedChurnDriftFallback(t *testing.T) {
 	// Same merged PR head (prSha, already at refs/pull/42/head); the branch
 	// drifted past it with REAL code.
 	heads2 := map[string][]prHead{"feat-drift2": {{oid: prSha, num: "42"}}}
-	if branchMerged(root, "feat-drift2", heads2) {
+	if branchMerged(root, "feat-drift2", heads2, nil) {
 		t.Error("drifted branch with real code beyond its merged PR head must be kept")
 	}
 }
@@ -148,8 +148,58 @@ func TestBranchMergedEvilMergeKept(t *testing.T) {
 	runGitTest(t, root, "commit", "--no-edit")
 	runGitTest(t, root, "checkout", "main")
 	heads := map[string][]prHead{"feat-evil": {{oid: prSha, num: "77"}}}
-	if branchMerged(root, "feat-evil", heads) {
+	if branchMerged(root, "feat-evil", heads, nil) {
 		t.Error("evil-merge non-churn change must keep the branch (diff-tree --cc should catch it)")
+	}
+}
+
+// A branch with NO merged PR but named for a terminal (done) item is prunable
+// ONLY when it carries only churn beyond origin/main. Real code → kept (the work
+// may not have landed even though the item closed). Non-terminal item → kept.
+func TestBranchMergedDoneItemFallback(t *testing.T) {
+	root := setupMaintainRepo(t)
+	done := map[string]bool{"I-500": true}
+	if err := os.MkdirAll(filepath.Join(root, "agent-state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// churn-only + item done → prunable
+	runGitTest(t, root, "checkout", "-b", "fix/I-500-foo", "main")
+	if err := os.WriteFile(filepath.Join(root, "agent-state", "x.md"), []byte("churn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-m", "st sync: agent-state")
+	runGitTest(t, root, "checkout", "main")
+	if !branchMerged(root, "fix/I-500-foo", nil, done) {
+		t.Error("done-item churn-only branch should be prunable")
+	}
+
+	// real code + item done → kept (a closed item can still leave unmerged work)
+	runGitTest(t, root, "checkout", "-b", "fix/I-500-bar", "main")
+	if err := os.WriteFile(filepath.Join(root, "real.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-m", "fix: real unmerged work")
+	runGitTest(t, root, "checkout", "main")
+	if branchMerged(root, "fix/I-500-bar", nil, done) {
+		t.Error("done-item branch with real code must be kept")
+	}
+
+	// churn-only but item NOT terminal → kept (no merge proof)
+	runGitTest(t, root, "checkout", "-b", "fix/I-777-baz", "main")
+	if err := os.MkdirAll(filepath.Join(root, "agent-state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agent-state", "y.md"), []byte("churn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, root, "add", "-A")
+	runGitTest(t, root, "commit", "-m", "st sync: agent-state")
+	runGitTest(t, root, "checkout", "main")
+	if branchMerged(root, "fix/I-777-baz", nil, done) {
+		t.Error("churn-only branch whose item is NOT terminal must be kept")
 	}
 }
 
@@ -161,7 +211,7 @@ func TestPruneMergedBranches(t *testing.T) {
 	commitOn(t, root, "feature-x", "f.txt", "x") // unmerged
 	// on main (so the current-branch skip doesn't hide merged-ff)
 
-	pruneMergedBranches(root, nil, MaintainOpts{DryRun: false})
+	pruneMergedBranches(root, nil, nil, MaintainOpts{DryRun: false})
 
 	branches := localBranches(t, root)
 	if strings.Contains(branches, "merged-ff") {
@@ -185,7 +235,7 @@ func TestPruneSkipsCurrentBranch(t *testing.T) {
 	// by pruneMergedBranches (returnToCleanMain handles the checked-out case).
 	runGitTest(t, root, "checkout", "-b", "merged-current", "main")
 
-	pruneMergedBranches(root, nil, MaintainOpts{DryRun: false})
+	pruneMergedBranches(root, nil, nil, MaintainOpts{DryRun: false})
 
 	if !strings.Contains(localBranches(t, root), "merged-current") {
 		t.Error("the current branch must never be deleted out from under us")
@@ -196,7 +246,7 @@ func TestPruneDryRunMutatesNothing(t *testing.T) {
 	root := setupMaintainRepo(t)
 	runGitTest(t, root, "branch", "merged-ff", "main")
 
-	pruneMergedBranches(root, nil, MaintainOpts{DryRun: true})
+	pruneMergedBranches(root, nil, nil, MaintainOpts{DryRun: true})
 
 	if !strings.Contains(localBranches(t, root), "merged-ff") {
 		t.Error("dry-run must not delete branches")
@@ -214,7 +264,7 @@ func TestReturnToCleanMainChurnOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "main" {
 		t.Errorf("should return to main when only churn is dirty; on %q", cur)
@@ -229,7 +279,7 @@ func TestReturnToCleanMainKeepsRealWIP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "merged-current" {
 		t.Errorf("must stay on the branch when non-churn WIP is present; on %q", cur)
@@ -241,7 +291,7 @@ func TestReturnToCleanMainSkipsUnmergedBranch(t *testing.T) {
 	commitOn(t, root, "feature-x", "f.txt", "x")
 	runGitTest(t, root, "checkout", "feature-x") // unmerged, checked out
 
-	returnToCleanMain(root, nil, MaintainOpts{DryRun: false})
+	returnToCleanMain(root, nil, nil, MaintainOpts{DryRun: false})
 
 	if cur := currentBranch(root); cur != "feature-x" {
 		t.Errorf("must not yank the agent off an active unmerged branch; on %q", cur)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -46,10 +47,29 @@ func Maintain(s *store.Store, cfg *config.Config, opts MaintainOpts) int {
 		return 0
 	}
 	mergedPR := mergedPRHeads(root)
-	pruneMergedBranches(root, mergedPR, opts)
-	returnToCleanMain(root, mergedPR, opts)
+	// Item-status signal: a branch named for a terminal (done/archived/closed)
+	// st item whose work concluded but which never matched a merged PR (the work
+	// landed under a different branch name, or via squash). Combined with the
+	// churn-only check this prunes those safely — item-done alone is NOT enough,
+	// since a closed item can still leave a real unmerged commit behind.
+	doneItems := map[string]bool{}
+	for id, it := range s.All() {
+		if cfg.IsTerminalStatus(it.Type, it.Status) {
+			doneItems[id] = true
+		}
+	}
+	pruneMergedBranches(root, mergedPR, doneItems, opts)
+	returnToCleanMain(root, mergedPR, doneItems, opts)
 	return 0
 }
+
+// branchItemID extracts a leading st item id (I-123 / T-123 / G-123) from a
+// branch name, e.g. "fix/I-759-managed-files-write-gate" → "I-759". "" if none.
+func branchItemID(branch string) string {
+	return itemIDRe.FindString(branch)
+}
+
+var itemIDRe = regexp.MustCompile(`[IGT]-[0-9]+`)
 
 // maintainChurnPrefixes are machine-managed / regenerated paths whose presence
 // in a dirty tree is never real WIP — safe to leave behind a branch switch.
@@ -89,7 +109,7 @@ func reapStashes(root string, opts MaintainOpts) {
 
 // ── Phase 2: merged-branch prune ────────────────────────────────────────────
 
-func pruneMergedBranches(root string, mergedPR map[string][]prHead, opts MaintainOpts) {
+func pruneMergedBranches(root string, mergedPR map[string][]prHead, doneItems map[string]bool, opts MaintainOpts) {
 	cur := currentBranch(root)
 	if cur == "HEAD" {
 		// Detached HEAD: there's no "current branch" to protect by name, so don't
@@ -107,7 +127,7 @@ func pruneMergedBranches(root string, mergedPR map[string][]prHead, opts Maintai
 		if b == "" || b == "main" || b == "master" || b == cur {
 			continue // never the current branch, never main/master
 		}
-		if !branchMerged(root, b, mergedPR) {
+		if !branchMerged(root, b, mergedPR, doneItems) {
 			continue // unmerged → could be peer/in-flight work; leave it
 		}
 		if opts.DryRun {
@@ -148,12 +168,21 @@ func pruneRemoteBranch(root, b string) {
 // Requiring the tip to match the merged head OID is what makes name reuse safe: a
 // later branch that reuses a merged name but carries new commits has a different
 // tip, matches nothing, and is kept.
-func branchMerged(root, b string, mergedPR map[string][]prHead) bool {
+func branchMerged(root, b string, mergedPR map[string][]prHead, doneItems map[string]bool) bool {
 	if gitCmdDirQuiet(root, "merge-base", "--is-ancestor", b, "origin/main") == nil {
 		return true
 	}
 	heads := mergedPR[b]
 	if len(heads) == 0 {
+		// No merged PR under this name. If the branch is named for a TERMINAL st
+		// item (work concluded) and carries only churn beyond origin/main, the
+		// work landed elsewhere (renamed branch / squash) and nothing real is on
+		// the branch — safe to prune. The churn-only check is load-bearing: a
+		// done item can still leave a real unmerged commit (e.g. a code-review fix
+		// pushed after the item closed), and that branch must be kept.
+		if id := branchItemID(b); id != "" && doneItems[id] {
+			return branchExtraIsChurnOnly(root, b, nil)
+		}
 		return false
 	}
 	tipOut, err := gitOutputDir(root, "rev-parse", b)
@@ -281,12 +310,12 @@ func mergedPRHeads(root string) map[string][]prHead {
 // I-1313 case that makes a manual `git checkout main` fail). It never discards
 // real WIP: any non-churn dirty path aborts, and the stash it parks is dropped
 // only after re-confirming it holds nothing but churn.
-func returnToCleanMain(root string, mergedPR map[string][]prHead, opts MaintainOpts) {
+func returnToCleanMain(root string, mergedPR map[string][]prHead, doneItems map[string]bool, opts MaintainOpts) {
 	cur := currentBranch(root)
 	if cur == "" || cur == "main" || cur == "master" || cur == "HEAD" {
 		return // not on a deletable branch (incl. detached HEAD)
 	}
-	if !branchMerged(root, cur, mergedPR) {
+	if !branchMerged(root, cur, mergedPR, doneItems) {
 		return // active unmerged work — leave the agent where they are
 	}
 	if !dirtyTreeIsAllChurn(root) {
