@@ -18,8 +18,22 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 )
 
-// gitLockTimeout is how long to wait for the git lock before giving up.
-const gitLockTimeout = 15 * time.Second
+// gitLockWaiterTimeout is how long a waiter spins before giving up on the
+// .st-git.lock. With network ops bounded at gitNetworkTimeout (60s) the
+// holder cannot keep the lock longer than ~60s, so 60s waiter is safe.
+const gitLockWaiterTimeout = 60 * time.Second
+
+// gitNetworkTimeout is the hard deadline for git operations that talk to a
+// remote (pull, push, fetch). Combined with gitSSHCommand's keepalive
+// options this ensures a dead TCP link releases the lock within ~60s.
+const gitNetworkTimeout = 60 * time.Second
+
+// gitSSHCommand is set via GIT_SSH_COMMAND on every network-facing git
+// call. ConnectTimeout=10 limits the initial handshake; ServerAliveInterval
+// + ServerAliveCountMax=3 disconnect a silent connection after 30s.
+// Together with gitNetworkTimeout these prevent a hung ssh from holding
+// .st-git.lock indefinitely and stalling all agent syncs (I-1411).
+const gitSSHCommand = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
 
 // autoStageSubdirs is the I-575 list of agent-state subdirectories whose
 // untracked files SHOULD be picked up automatically by GitSync. This is
@@ -35,26 +49,46 @@ var autoStageSubdirs = []string{".plans"}
 
 // acquireGitLock takes an exclusive file lock on a .st-git.lock file
 // in the item directory. Returns an unlock function. If the lock can't
-// be acquired within gitLockTimeout, returns an error.
+// be acquired within gitLockWaiterTimeout, returns an error that names
+// the holding process (PID + argv written to the lock file on acquire).
 func acquireGitLock(dir string) (func(), error) {
+	return acquireGitLockTimeout(dir, gitLockWaiterTimeout)
+}
+
+// acquireGitLockTimeout is the parameterised implementation of
+// acquireGitLock. The separate function lets tests use short timeouts
+// without modifying package-level constants.
+func acquireGitLockTimeout(dir string, timeout time.Duration) (func(), error) {
 	lockPath := filepath.Join(dir, ".st-git.lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
+	// O_RDWR so the holder can write PID info and a timed-out waiter can
+	// read it back (O_WRONLY would prevent the seek+read on timeout).
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 
-	deadline := time.Now().Add(gitLockTimeout)
+	start := time.Now()
+	deadline := start.Add(timeout)
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
+			// Stamp holder identity so waiters can name who holds the lock.
+			f.Truncate(0)
+			f.Seek(0, 0)
+			fmt.Fprintf(f, "pid=%d cmd=%s", os.Getpid(), strings.Join(os.Args, " "))
 			return func() {
 				syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 				f.Close()
 			}, nil
 		}
 		if time.Now().After(deadline) {
+			hint := ""
+			f.Seek(0, 0)
+			if info, rerr := io.ReadAll(f); rerr == nil && len(strings.TrimSpace(string(info))) > 0 {
+				hint = " (holder: " + strings.TrimSpace(string(info)) + ")"
+			}
 			f.Close()
-			return nil, fmt.Errorf("git lock timeout after %s (another st process is syncing)", gitLockTimeout)
+			return nil, fmt.Errorf("git lock timeout after %s%s", time.Since(start).Round(time.Second), hint)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -100,7 +134,9 @@ func GitPull(cfg *config.Config) error {
 	//   - uncommitted working-tree changes conflict with files the
 	//     merge would touch.
 	// In either case we silently skip; the next sync will reconcile.
-	_ = gitCmdQuiet(root, "pull", "--ff-only")
+	// runNetGit applies a 60s deadline + SSH keepalive so a stalled
+	// network op cannot hold .st-git.lock indefinitely (I-1411).
+	_ = runNetGit(root, "pull", "--ff-only")
 
 	// Restore locked item files if the pull changed them.
 	restoreLockedItems(lockedSnapshots)
@@ -549,9 +585,10 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 
 	// Pre-pull: fetch and integrate remote changes before committing.
 	// Snapshot locked items so the pull can't overwrite active work.
+	// runNetGit applies a 60s deadline + SSH keepalive (I-1411).
 	if s.cfg.Git.AutoPush {
 		snap := snapshotLockedItems(s.cfg, root)
-		_ = gitCmdQuiet(root, "pull", "--ff-only")
+		_ = runNetGit(root, "pull", "--ff-only")
 		restoreLockedItems(snap)
 	}
 
@@ -924,7 +961,8 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 		// I-684: capture stderr so a persistent rejection's error carries
 		// the remote's reason (GH001 / pre-receive declined), not just
 		// "exit status 1".
-		pushErr, err := gitCapture(root, "push", "origin", "refs/heads/main:refs/heads/main")
+		// I-1411: runNetGitCapture applies a 60s deadline + SSH keepalive.
+		pushErr, err := runNetGitCapture(root, "push", "origin", "refs/heads/main:refs/heads/main")
 		if err == nil {
 			return nil
 		}
@@ -974,7 +1012,8 @@ func (s *Store) pushWithRetry(root string, maxRetries int) error {
 // auto-overwrite a peer's edit.
 func (s *Store) replayCommitOnFetchedMain(root string) error {
 	// 1. Fetch origin/main (no working-tree mutation).
-	if err := gitCmdQuiet(root, "fetch", "origin", "main"); err != nil {
+	// I-1411: runNetGit applies a 60s deadline + SSH keepalive.
+	if err := runNetGit(root, "fetch", "origin", "main"); err != nil {
 		return fmt.Errorf("fetch origin main: %w", err)
 	}
 
@@ -1249,6 +1288,35 @@ func gitCmdContext(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	return cmd.Run()
+}
+
+// runNetGit runs a git command that touches the network (pull, push, fetch)
+// with a hard process deadline and SSH keepalive options (I-1411). A dead TCP
+// link cannot hold .st-git.lock for more than gitNetworkTimeout.
+func runNetGit(dir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+gitSSHCommand)
+	return cmd.Run()
+}
+
+// runNetGitCapture is the capturing analogue of runNetGit, mirroring
+// gitCapture: streams stdout/stderr to the operator live while also
+// capturing stderr so the returned error carries the remote's reason text
+// (I-684). Used for push, which may emit remote: error: GH001 messages.
+func runNetGitCapture(dir string, args ...string) (stderr string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_SSH_COMMAND="+gitSSHCommand)
+	cmd.Stdout = os.Stdout
+	var buf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err = cmd.Run()
+	return strings.TrimSpace(buf.String()), err
 }
 
 func gitCmd(dir string, args ...string) error {

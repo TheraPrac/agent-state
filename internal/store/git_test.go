@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -61,6 +63,44 @@ func initGitRepo(t *testing.T, dir string) {
 	git("config", "user.name", "Test")
 	git("add", "-A")
 	git("commit", "-m", "initial")
+}
+
+func TestAcquireGitLockWritesPID(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := acquireGitLockTimeout(dir, time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer unlock()
+
+	content, err := os.ReadFile(filepath.Join(dir, ".st-git.lock"))
+	if err != nil {
+		t.Fatalf("read lock file: %v", err)
+	}
+	want := fmt.Sprintf("pid=%d", os.Getpid())
+	if !strings.Contains(string(content), want) {
+		t.Errorf("lock file %q does not contain %q", string(content), want)
+	}
+}
+
+func TestAcquireGitLockTimesOutWithHolderInfo(t *testing.T) {
+	dir := t.TempDir()
+	// Goroutine A acquires and holds the lock.
+	unlock, err := acquireGitLockTimeout(dir, time.Second)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer unlock()
+
+	// Goroutine B times out and should report the holder's PID.
+	_, err = acquireGitLockTimeout(dir, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	want := fmt.Sprintf("pid=%d", os.Getpid())
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("timeout error %q does not name holder PID %q", err.Error(), want)
+	}
 }
 
 func TestGitSyncDisabled(t *testing.T) {
