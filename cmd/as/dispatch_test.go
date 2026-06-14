@@ -81,6 +81,38 @@ func TestQueueAutoApproveCommandWired(t *testing.T) {
 	t.Fatal("st queue command must be registered on the root cobra command")
 }
 
+// TestClaimCommandWired verifies `st claim` is registered (T-384).
+func TestClaimCommandWired(t *testing.T) {
+	app := newApp(t.TempDir())
+	for _, cmd := range app.Commands() {
+		if cmd.Name() == "claim" {
+			return
+		}
+	}
+	t.Fatal("st claim command must be registered on the root cobra command")
+}
+
+// TestDispatchCommandWired verifies `st dispatch` is registered with its
+// required flags (T-384).
+func TestDispatchCommandWired(t *testing.T) {
+	app := newApp(t.TempDir())
+	for _, cmd := range app.Commands() {
+		if cmd.Name() == "dispatch" {
+			if f := cmd.Flags().Lookup("parallelism"); f == nil {
+				t.Fatal("st dispatch must have --parallelism flag")
+			}
+			if f := cmd.Flags().Lookup("dry-run"); f == nil {
+				t.Fatal("st dispatch must have --dry-run flag")
+			}
+			if f := cmd.Flags().Lookup("budget"); f == nil {
+				t.Fatal("st dispatch must have --budget flag")
+			}
+			return
+		}
+	}
+	t.Fatal("st dispatch command must be registered on the root cobra command")
+}
+
 // I-504 (review fix): the cobra dispatch decision is a pure helper
 // — exercise it directly so the routing invariant is covered
 // without spinning up a full cobra root. This file lives in package

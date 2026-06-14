@@ -1225,6 +1225,62 @@ in-flight, run 'st release' against the active items first.
 		"backoff cap for the idle supervision cadence")
 	root.AddCommand(coordinateCmd)
 
+	// --- Claim (T-384) ---
+	// Lightweight CAS claim primitive: stamps claimed_by/claimed_at on an item
+	// without starting a worktree or changing status. Used by `st dispatch` and
+	// any script that wants to reserve an item before spawning a session.
+	claimCmd := &cobra.Command{
+		Use:   "claim <id>",
+		Short: "Stamp a session claim on an item (no worktree, no status change)",
+		Long: "Stamp claimed_by/claimed_at on an item using the same CAS Mutate\n" +
+			"guard as `st start`, but without creating a worktree or changing\n" +
+			"the item's status. Requires AS_SESSION_ID. Exits 0 on success,\n" +
+			"1 on a live-session conflict, 2 on bad args.",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Claim(appStore, appCfg, args[0])
+		},
+	}
+	root.AddCommand(claimCmd)
+
+	// --- Dispatch (T-384) ---
+	// One-shot N-item fan-out launcher: picks up to --parallelism items from
+	// the recommend queue (respecting C1 conflict exclusions and the
+	// coordinator.yaml parallelism_cap), claims each via the CAS guard, then
+	// spawns each as a budget-capped detached worker. Unlike `st coordinate`
+	// it does NOT supervise — it is a single-shot launcher only.
+	dispatchCmd := &cobra.Command{
+		Use:   "dispatch",
+		Short: "Pick N queue items, claim them, and spawn N budget-capped workers",
+		Long: "One-shot conductor: pick up to --parallelism items from the\n" +
+			"recommend queue, claim each with a Mutate-CAS guard, and spawn\n" +
+			"each as a budget-capped detached worker (via `st spawn`). Respects\n" +
+			"the coordinator.yaml parallelism_cap as an upper bound.\n\n" +
+			"Unlike `st coordinate`, dispatch does NOT supervise workers after\n" +
+			"launch — use `st watch` or `st tui` to aggregate their progress\n" +
+			"and `st coordinate` for a supervised supervisor loop.\n\n" +
+			"--dry-run shows picks and spawn plans without claiming or launching.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			n, _ := cmd.Flags().GetInt("parallelism")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			budget, _ := cmd.Flags().GetFloat64("budget")
+			exitCode = command.Dispatch(appStore, appCfg, command.DispatchOpts{
+				Parallelism:    n,
+				DryRun:         dryRun,
+				BudgetOverride: budget,
+			})
+		},
+	}
+	dispatchCmd.Flags().Int("parallelism", 1,
+		"number of items to pick and spawn (capped by coordinator.yaml parallelism_cap)")
+	dispatchCmd.Flags().Bool("dry-run", false,
+		"show picks and spawn plans; claim and launch nothing")
+	dispatchCmd.Flags().Float64("budget", 0,
+		"LOWER the per-item USD cap for spawned workers (forwarded to `st spawn`; "+
+			"a value above the coordinator.yaml cap is rejected)")
+	root.AddCommand(dispatchCmd)
+
 	// --- Workflow commands ---
 
 	startCmd := &cobra.Command{
@@ -3449,7 +3505,9 @@ var commandGroupAssignments = map[string]string{
 	"classify":   "autonomy",
 	"decide":     "autonomy",
 	"red":        "autonomy",
+	"claim":      "autonomy",
 	"coordinate": "autonomy",
+	"dispatch":   "autonomy",
 	"run":        "autonomy",
 	"advance":    "autonomy",
 	"spawn":      "autonomy",
