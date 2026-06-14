@@ -1065,7 +1065,6 @@ func reconcileOrphanWorktrees(s *store.Store, cfg *config.Config, opts Reconcile
 		baseDirs = append(baseDirs, legacy)
 	}
 
-	seen := map[string]bool{}
 	cleaned := 0
 	for _, baseDir := range baseDirs {
 		entries, err := os.ReadDir(baseDir)
@@ -1081,10 +1080,6 @@ func reconcileOrphanWorktrees(s *store.Store, cfg *config.Config, opts Reconcile
 				continue
 			}
 			id := entry.Name()
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
 			item, ok := s.Get(id)
 			if !ok {
 				continue
@@ -1097,7 +1092,7 @@ func reconcileOrphanWorktrees(s *store.Store, cfg *config.Config, opts Reconcile
 				cleaned++
 				continue
 			}
-			if ok, retained := TryAutoFinishWorktree(cfg, id); ok {
+			if wtCleaned, retained := TryAutoFinishWorktree(cfg, id); wtCleaned {
 				fmt.Printf("  pruned orphan worktree: %s (status: %s)\n", id, item.Status)
 				cleaned++
 			} else if retained {
