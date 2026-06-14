@@ -2,12 +2,14 @@ package command
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
 )
 
 // testResumeCfg returns a minimal config for renderResume unit tests that
@@ -102,7 +104,7 @@ func TestRenderResume_GapBannerFirstAndDecisionsVerbatim(t *testing.T) {
 	}
 	gap := tapeAudit{gap: true, message: "branch has 3 commits but 1 on tape — 2 uncaptured."}
 
-	out := renderResume(cfg, item, entries, "sess-1", "# Plan\nDo the thing.", "", gap, remoteState{})
+	out := renderResume(cfg, item, entries, "sess-1", "# Plan\nDo the thing.", "", gap, remoteState{}, nil, nil)
 
 	// Gap banner must precede the State/Decisions sections — a record that
 	// looks complete but is not must be impossible to miss.
@@ -152,7 +154,7 @@ func TestRenderResume_UnverifiedNeverReadsAsClean(t *testing.T) {
 	item := &model.Item{ID: "T-1", Title: "x", Type: "task", Status: "active"}
 	out := renderResume(cfg, item, nil, "", "", "NOT FOUND — expected .plans/T-1.md", tapeAudit{
 		verified: false, message: "no resolvable git worktree — exec tape is UNVERIFIED.",
-	}, remoteState{})
+	}, remoteState{}, nil, nil)
 	if !strings.Contains(out, "UNVERIFIED") {
 		t.Errorf("unverified audit must surface loudly, not as clean:\n%s", out)
 	}
@@ -166,7 +168,7 @@ func TestRenderResume_VerifiedPathRendersCleanBannerFirst(t *testing.T) {
 	item := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active"}
 	out := renderResume(cfg, item, nil, "", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{
 		verified: true, message: `branch "b": 3 commit(s), 3 on the recorded exec tape — consistent.`,
-	}, remoteState{})
+	}, remoteState{}, nil, nil)
 	if !strings.Contains(out, "✓ Execution tape verified against ground truth") {
 		t.Errorf("verified audit must render the clean banner:\n%s", out)
 	}
@@ -196,7 +198,7 @@ func TestRenderResume_PlanAndNextRendered(t *testing.T) {
 		},
 	}
 	out := renderResume(cfg, item, nil, "", "# I-690 Plan\nDo the renderer fix.", "",
-		tapeAudit{verified: true, message: "consistent."}, remoteState{})
+		tapeAudit{verified: true, message: "consistent."}, remoteState{}, nil, nil)
 
 	si := strings.Index(out, "## State")
 	ni := strings.Index(out, "## Next")
@@ -227,7 +229,7 @@ func TestRenderResume_MissingPlanIsLoudNotSilent(t *testing.T) {
 	item := &model.Item{ID: "I-690", Title: "x", Type: "issue", Status: "active"}
 	out := renderResume(cfg, item, nil, "", "",
 		"NOT FOUND — expected /ws/.plans/I-690.md",
-		tapeAudit{verified: true, message: "consistent."}, remoteState{})
+		tapeAudit{verified: true, message: "consistent."}, remoteState{}, nil, nil)
 
 	if !strings.Contains(out, "## ⚠️  PLAN NOT FOUND — expected /ws/.plans/I-690.md") {
 		t.Errorf("missing plan must render a loud ⚠️ block:\n%s", out)
@@ -295,7 +297,7 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 			Kind: changelog.KindDecision, Source: changelog.SourceStructured, Reason: "a real fork"},
 		{Timestamp: "2026-05-19T10:10:00-06:00", Op: "start", SessionID: "s2", Kind: changelog.KindTransition},
 	}
-	out := renderResume(cfg, item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, entries, "s2", "", "NOT FOUND — expected .plans/I-679.md", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
 	bi := strings.Index(out, "PREVIOUS SESSION DID NOT FINALIZE")
 	si := strings.Index(out, "## State")
 	if bi < 0 {
@@ -306,7 +308,7 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 	}
 	// s1 finalized cleanly ⇒ banner must vanish.
 	fin := changelog.Entry{Timestamp: "2026-05-19T10:06:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition}
-	if strings.Contains(renderResume(cfg, item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}), "PREVIOUS SESSION DID NOT FINALIZE") {
+	if strings.Contains(renderResume(cfg, item, append(entries, fin), "s2", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil), "PREVIOUS SESSION DID NOT FINALIZE") {
 		t.Errorf("a finalized prior session must NOT show the killed banner")
 	}
 	// Mid-session resume (only the live session s9, activity, no marker):
@@ -314,7 +316,7 @@ func TestRenderResume_KilledSessionBannerIsLoudAndEarly(t *testing.T) {
 	mid := &model.Item{ID: "I-679", Title: "x", Type: "issue", Status: "active", Sessions: []string{"s9"}}
 	midOut := renderResume(cfg, mid, []changelog.Entry{
 		{Timestamp: "2026-05-19T11:00:00-06:00", Op: "commit", SessionID: "s9", NewValue: "d", Kind: changelog.KindExec},
-	}, "s9", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	}, "s9", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
 	if strings.Contains(midOut, "PREVIOUS SESSION DID NOT FINALIZE") {
 		t.Errorf("healthy mid-session resume must NOT fire the killed banner:\n%s", midOut)
 	}
@@ -332,7 +334,7 @@ func TestRenderResume_HighConfidenceExtractedIsInlineNotConfirmed(t *testing.T) 
 			Reason: "agent-scoped resolution"},
 		{Timestamp: "2026-05-19T10:01:00-06:00", Op: sessionFinalizedOp, SessionID: "s1", Kind: changelog.KindTransition},
 	}
-	out := renderResume(cfg, item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, entries, "s1", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
 	if !strings.Contains(out, "[extracted, confidence 0.85] agent-scoped resolution") {
 		t.Errorf("high-confidence extracted must render inline as a fact:\n%s", out)
 	}
@@ -351,7 +353,7 @@ func TestResumeRendersRemoteStateSection(t *testing.T) {
 		prState: "OPEN",
 		prURLs:  []string{"https://github.com/org/repo/pull/42"},
 	}
-	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, rs)
+	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, rs, nil, nil)
 
 	if !strings.Contains(out, "## Remote state") {
 		t.Errorf("open PR must render a Remote state section:\n%s", out)
@@ -382,9 +384,207 @@ func TestResumeRendersRemoteStateSection(t *testing.T) {
 func TestResumeNoRemoteStateSectionWhenNoPR(t *testing.T) {
 	cfg := testResumeCfg(t)
 	item := &model.Item{ID: "I-876", Title: "x", Type: "issue", Status: "active"}
-	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
 	if strings.Contains(out, "## Remote state") {
 		t.Errorf("no PR ⇒ Remote state section must not appear:\n%s", out)
+	}
+}
+
+// TestResumeShowsSisterRepoBranches verifies that renderResume emits a
+// ## Branches section when branchInfo entries are provided, listing each repo,
+// its branch, and clean/dirty state.
+func TestResumeShowsSisterRepoBranches(t *testing.T) {
+	cfg := testResumeCfg(t)
+	item := &model.Item{ID: "T-385", Title: "x", Type: "task", Status: "active"}
+	branches := []branchInfo{
+		{Repo: "as", Branch: "feat/T-385-self-driving", Dirty: true},
+		{Repo: "theraprac-workspace", Branch: "main", Dirty: false},
+	}
+	out := renderResume(cfg, item, nil, "", "# Plan\nstuff.", "",
+		tapeAudit{verified: true, message: "ok"}, remoteState{}, branches, nil)
+
+	if !strings.Contains(out, "## Branches") {
+		t.Fatalf("## Branches section missing:\n%s", out)
+	}
+	if !strings.Contains(out, "feat/T-385-self-driving") {
+		t.Errorf("branch name missing from Branches section:\n%s", out)
+	}
+	if !strings.Contains(out, "dirty") {
+		t.Errorf("dirty state missing from Branches section:\n%s", out)
+	}
+	if !strings.Contains(out, "theraprac-workspace") || !strings.Contains(out, "clean") {
+		t.Errorf("clean repo entry missing:\n%s", out)
+	}
+	// Branches must appear after State and before Plan.
+	si := strings.Index(out, "## State")
+	bi := strings.Index(out, "## Branches")
+	pi := strings.Index(out, "## Plan")
+	if si < 0 || bi < 0 || pi < 0 {
+		t.Fatalf("State/Branches/Plan sections missing: si=%d bi=%d pi=%d", si, bi, pi)
+	}
+	if !(si < bi && bi < pi) {
+		t.Errorf("ordering must be State < Branches < Plan: state=%d branches=%d plan=%d", si, bi, pi)
+	}
+}
+
+// TestResumeNoBranchesSectionWhenEmpty verifies that no ## Branches section
+// appears when no branchInfo entries are provided.
+func TestResumeNoBranchesSectionWhenEmpty(t *testing.T) {
+	cfg := testResumeCfg(t)
+	item := &model.Item{ID: "T-1", Title: "x", Type: "task", Status: "active"}
+	out := renderResume(cfg, item, nil, "", "", "x",
+		tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
+	if strings.Contains(out, "## Branches") {
+		t.Errorf("## Branches must not appear when branches is nil/empty:\n%s", out)
+	}
+}
+
+// TestResumeNextActionFromPlanFiles verifies that renderResume synthesizes a
+// "## Next action" line from the plan's FilesToModify list + item stage.
+func TestResumeNextActionFromPlanFiles(t *testing.T) {
+	cfg := testResumeCfg(t)
+	item := &model.Item{
+		ID: "T-385", Title: "x", Type: "task", Status: "active",
+		Delivery: map[string]interface{}{"stage": "coding"},
+	}
+	p := &plan.Plan{
+		FilesToModify: []string{
+			"as/internal/command/resume.go",
+			"theraprac-workspace/claude-config/hooks/session-start.sh",
+		},
+	}
+	out := renderResume(cfg, item, nil, "", "# Plan\ndo things.", "",
+		tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, p)
+
+	if !strings.Contains(out, "## Next action") {
+		t.Fatalf("## Next action section missing:\n%s", out)
+	}
+	if !strings.Contains(out, "as/internal/command/resume.go") {
+		t.Errorf("first FilesToModify entry missing from Next action:\n%s", out)
+	}
+	// Next action must appear BEFORE the Plan section (forward directive precedes
+	// backward narrative — I-690 design principle).
+	pi := strings.Index(out, "## Plan")
+	ni := strings.Index(out, "## Next action")
+	if pi < 0 || ni < 0 {
+		t.Fatalf("Plan or Next action section missing: pi=%d ni=%d", pi, ni)
+	}
+	if ni >= pi {
+		t.Errorf("Next action must come before Plan: next_action=%d plan=%d", ni, pi)
+	}
+}
+
+// TestResumeNextActionNoEmitWhenNoPlan: without a plan, ## Next action must
+// not appear.
+func TestResumeNextActionNoEmitWhenNoPlan(t *testing.T) {
+	cfg := testResumeCfg(t)
+	item := &model.Item{
+		ID: "T-1", Title: "x", Type: "task", Status: "active",
+		Delivery: map[string]interface{}{"stage": "coding"},
+	}
+	out := renderResume(cfg, item, nil, "", "", "x",
+		tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
+	if strings.Contains(out, "## Next action") {
+		t.Errorf("## Next action must not appear when plan is nil:\n%s", out)
+	}
+}
+
+// TestSynthesizeNextAction covers the stage-dispatch logic directly.
+func TestSynthesizeNextAction(t *testing.T) {
+	modifyPlan := &plan.Plan{FilesToModify: []string{"foo/bar.go", "baz.go"}}
+	createPlan := &plan.Plan{FilesToCreate: []string{"new.go"}}
+	stepPlan := &plan.Plan{Steps: []string{"Run migrations", "Deploy"}}
+
+	cases := []struct {
+		stage string
+		p     *plan.Plan
+		want  string
+	}{
+		{"coding", modifyPlan, "coding → edit foo/bar.go"},
+		{"code", modifyPlan, "coding → edit foo/bar.go"},
+		{"coding", createPlan, "coding → create new.go"},
+		{"coding", stepPlan, "coding → Run migrations"},
+		{"coding", &plan.Plan{}, "coding → (read plan for files to edit)"},
+		{"tests", modifyPlan, "tests → run test suite and fix failures"},
+		{"uat", modifyPlan, "uat → run `st uat T-1`"},
+		{"pr", modifyPlan, "pr → open pull request (gh pr create ...)"},
+		{"pr_open", modifyPlan, "pr → open pull request (gh pr create ...)"},
+		{"pr-open", modifyPlan, "pr → open pull request (gh pr create ...)"},
+		{"merge", modifyPlan, "merge → merge the open PR"},
+		{"unknown_stage", modifyPlan, "unknown_stage → (read plan for next step)"},
+		{"", modifyPlan, ""},
+		{"coding", nil, ""},
+	}
+	for _, c := range cases {
+		item := &model.Item{ID: "T-1", Delivery: map[string]interface{}{"stage": c.stage}}
+		got := synthesizeNextAction(item, c.p)
+		if got != c.want {
+			t.Errorf("stage=%q: got %q, want %q", c.stage, got, c.want)
+		}
+	}
+}
+
+// TestSisterRepoBranches verifies that sisterRepoBranches resolves git state
+// for repos that exist as real git directories.
+func TestSisterRepoBranches(t *testing.T) {
+	// Set up two fake git repos in a temp parent dir.
+	parent := t.TempDir()
+	repo1 := filepath.Join(parent, "repo-a")
+	repo2 := filepath.Join(parent, "repo-b")
+	for _, repo := range []string{repo1, repo2} {
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := runGit(repo, "init", "-b", "main"); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+		if _, err := runGit(repo, "config", "user.email", "test@test"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runGit(repo, "config", "user.name", "Test"); err != nil {
+			t.Fatal(err)
+		}
+		// Need at least one commit for branch --show-current to work on older git.
+		f := filepath.Join(repo, "README")
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runGit(repo, "add", "README"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runGit(repo, "commit", "-m", "init"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Dirty repo-b: add an untracked file.
+	if err := os.WriteFile(filepath.Join(repo2, "dirty.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cfg := setupTestEnv(t)
+	// Point the config's parent dir at our temp parent so resolveRepoDir finds the repos.
+	if cfg.Worktree == nil {
+		cfg.Worktree = &config.WorktreeConfig{}
+	}
+	cfg.Worktree.ParentDir = parent
+	cfg.ResetAgentRootCache()
+
+	branches := sisterRepoBranches(cfg, "T-385", []string{"repo-a", "repo-b"})
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 branch entries, got %d: %+v", len(branches), branches)
+	}
+	byRepo := map[string]branchInfo{}
+	for _, b := range branches {
+		byRepo[b.Repo] = b
+	}
+	if byRepo["repo-a"].Branch != "main" {
+		t.Errorf("repo-a: got branch %q, want main", byRepo["repo-a"].Branch)
+	}
+	if byRepo["repo-a"].Dirty {
+		t.Errorf("repo-a should be clean")
+	}
+	if byRepo["repo-b"].Dirty == false {
+		t.Errorf("repo-b should be dirty (has untracked file)")
 	}
 }
 
