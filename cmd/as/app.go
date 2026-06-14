@@ -2381,6 +2381,28 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 	uatCmd.Flags().String("item", "", "Limit scan to a specific item ID")
 	root.AddCommand(uatCmd)
 
+	reviewCmd := &cobra.Command{
+		Use:   "review <id>",
+		Short: "Run autonomous code review against bugbot rules and record evidence",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.Review(appStore, appCfg, args[0], command.ReviewOpts{
+				Engine: command.DefaultRunEngine(),
+			})
+		},
+	}
+	root.AddCommand(reviewCmd)
+
+	reviewCheckCmd := &cobra.Command{
+		Use:   "review-check <id>",
+		Short: "Verify review_evidence: SHA match and passing verdict",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ReviewCheck(appStore, appCfg, args[0], command.ReviewCheckOpts{})
+		},
+	}
+	root.AddCommand(reviewCheckCmd)
+
 	mergeCmd := &cobra.Command{
 		Use:   "merge <id>",
 		Short: "Verify gates and merge PR",

@@ -69,6 +69,8 @@ func evaluateGate(item *model.Item, gate config.GateConfig, cfg *config.Config, 
 		return evalAgentAssigned(item, cfg)
 	case "manifest_exists":
 		return evalManifestExists(item)
+	case "review_evidence_passed":
+		return evalReviewEvidencePassed(item)
 	default:
 		return GateResult{Passed: false, Gate: gate.Type, Message: fmt.Sprintf("unknown gate type: %s", gate.Type)}
 	}
@@ -303,4 +305,27 @@ func indexOf(slice []string, val string) int {
 		}
 	}
 	return -1
+}
+
+// evalReviewEvidencePassed checks the review_evidence field on the item.
+// When the field is absent the gate passes (soft enforcement: items that
+// predate `st review` or are not code-bearing can still close). When the
+// field is present it must start with "pass"; any other value blocks close.
+func evalReviewEvidencePassed(item *model.Item) GateResult {
+	ev := ""
+	if item.Doc != nil {
+		ev, _ = item.Doc.GetField("review_evidence")
+	}
+	if ev == "" {
+		// Field absent — pass (soft: allows legacy items without review evidence).
+		return GateResult{Passed: true, Gate: "review_evidence_passed"}
+	}
+	if strings.HasPrefix(ev, "pass") {
+		return GateResult{Passed: true, Gate: "review_evidence_passed"}
+	}
+	return GateResult{
+		Passed:  false,
+		Gate:    "review_evidence_passed",
+		Message: fmt.Sprintf("review did not pass: %s — re-run `st review <id>`", ev),
+	}
 }
