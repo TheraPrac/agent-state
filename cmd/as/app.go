@@ -3135,6 +3135,23 @@ Kinds:
 	reconcileCmd.Flags().Bool("dry-run", false, "show updates without applying")
 	root.AddCommand(reconcileCmd)
 
+	maintainCmd := &cobra.Command{
+		Use:   "maintain",
+		Short: "Self-service git hygiene: reap stashes, prune merged branches, return to clean main",
+		Long: "Keeps the workspace clone tidy so the operator stops doing it by hand:\n" +
+			"  • reap redundant git stashes (archives unique code as tags)\n" +
+			"  • prune provably-merged feature branches (local + remote)\n" +
+			"  • return to a clean main when left on an already-merged branch\n\n" +
+			"Only ever touches provably-safe things (merged branches, churn-only dirty\n" +
+			"trees) and never blocks — safe to run unattended from session-start.",
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			exitCode = command.Maintain(appStore, appCfg, command.MaintainOpts{DryRun: dryRun})
+		},
+	}
+	maintainCmd.Flags().Bool("dry-run", false, "report what would change without doing it")
+	root.AddCommand(maintainCmd)
+
 	inferStageCmd := &cobra.Command{
 		Use:   "infer-stage [<id>]",
 		Short: "Infer delivery.stage from branch/PR state (forward-only)",
@@ -3394,6 +3411,7 @@ var commandGroupAssignments = map[string]string{
 
 	// Maintenance
 	"index":     "maintenance",
+	"maintain":  "maintenance",
 	"migrate":   "maintenance",
 	"reconcile": "maintenance",
 	"sync":      "maintenance",
