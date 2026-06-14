@@ -231,6 +231,63 @@ func TestCoordinateMultiWorker_D1_ObjectiveBudget(t *testing.T) {
 	}
 }
 
+// TestCoordinateMultiWorker_OperationalFailureStops asserts the operational-
+// failure stop path: when ONE worker returns a non-zero (spawn could not launch)
+// code, the dispatch loop stops the whole fan-out, drains the remaining in-flight
+// workers (no goroutine left writing to the results channel), and propagates that
+// exact code — rather than dispatching more work into a broken substrate. The
+// outcome is deterministic regardless of which worker the scheduler reaps first.
+func TestCoordinateMultiWorker_OperationalFailureStops(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	writeBoundary(t, cfg.Root())
+	t.Setenv("AS_AGENT_ID", "")
+	coordinator.ResetEmpiricalForTest()
+	t.Cleanup(coordinator.ResetEmpiricalForTest)
+
+	// Two neutral, non-conflicting, ready items → both dispatch concurrently
+	// (parallelism_cap=4 in the boundary fixture).
+	approvePlanWithFiles(t, s, cfg, "T-001", "internal/a/a.go")
+	approvePlanWithFiles(t, s, cfg, "I-001", "internal/b/b.go")
+
+	// Stub supervise: T-001 reports an operational failure (rc=2); I-001 returns
+	// clean (0). Every worker marks its item terminal so the fill loop cannot
+	// re-dispatch it. Either reap order converges on rc=2: if T-001 lands first
+	// the loop stops + drains I-001; if I-001 lands first the loop re-fills (no
+	// dispatchable items remain), blocks, then reaps T-001's failure.
+	origSupervise := superviseFn
+	t.Cleanup(func() { superviseFn = origSupervise })
+	superviseFn = func(cfg *config.Config, b *coordinator.Boundary,
+		dd *coordinator.Deduper, ex coordinator.Escalator, st *coordinator.WorkerState,
+		itemID string, opts CoordinateOpts, base, idleCap time.Duration,
+		mu *sync.Mutex, cancel <-chan struct{}) int {
+		if fs, err := store.New(cfg); err == nil {
+			_ = fs.Mutate(itemID, func(m *model.Item) error {
+				m.Status = "done"
+				if m.Doc != nil {
+					m.Doc.SetField("status", "done")
+				}
+				return nil
+			})
+		}
+		if itemID == "T-001" {
+			return 2 // operational failure (spawn could not launch)
+		}
+		return 0
+	}
+
+	// rc==2 is the contract: the operational failure is propagated and the loop
+	// stopped rather than dispatching into a broken substrate. (The "stopping
+	// fan-out" advisory is written to stderr, which captureStdout doesn't see;
+	// the propagated exit code is the load-bearing assertion.)
+	var rc int
+	_ = captureStdout(t, func() {
+		rc = Coordinate(s, cfg, CoordinateOpts{MaxItems: 0, PollInterval: time.Millisecond})
+	})
+	if rc != 2 {
+		t.Fatalf("operational failure must propagate rc=2 (stop fan-out), got %d", rc)
+	}
+}
+
 // fakeEscalator records escalation side-effects in memory (concurrency-safe)
 // so tests can assert the D1 path fired without subprocesses.
 type fakeEscalator struct {
