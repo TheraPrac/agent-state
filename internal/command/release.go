@@ -21,6 +21,20 @@ func Release(s *store.Store, cfg *config.Config, id string) int {
 		return 1
 	}
 
+	// I-1439: goals are not releasable work items. `release` resets an
+	// item from its type's ActiveStatus back to StartStatus — for a goal
+	// that silently demotes active→draft, clobbering a lifecycle the
+	// operator manages explicitly. Refuse and point at the goal verbs.
+	// (reconcileStaleActive also skips goals; this is the direct-call
+	// guard + defense-in-depth.)
+	if item.Type == "goal" {
+		fmt.Fprintf(os.Stderr,
+			"%s is a goal — `release` does not apply (it would demote active→draft).\n"+
+				"  Use the goal lifecycle:  st goal drop %s  |  st goal mark-met %s  |  st goal activate %s\n",
+			id, id, id, id)
+		return 1
+	}
+
 	// I-408: an item can land in a "stuck active" state (assigned/claim
 	// cleared by hand, status still active) — that's exactly what this
 	// PR is fixing. Allow release to proceed when status is the type's

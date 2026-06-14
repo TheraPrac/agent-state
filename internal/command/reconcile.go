@@ -938,6 +938,15 @@ func reconcileStaleActive(s *store.Store, cfg *config.Config, opts ReconcileOpts
 		if !ok {
 			continue
 		}
+		// I-1439: a goal's "active" is a lifecycle state (managed by
+		// `st goal activate/drop/mark-met`), NOT a work-item active claim.
+		// Goals never have a worktree or open PR, so without this skip the
+		// stale-active sweep released every active goal back to draft on
+		// each session-start reconcile — silently reverting the operator's
+		// goal activations.
+		if item.Type == "goal" {
+			continue
+		}
 		if item.Status != tc.ActiveStatus {
 			continue
 		}
