@@ -385,6 +385,131 @@ func seedBySession(item *model.Item, sid, projectDir, now string) {
 	}
 }
 
+// byPhaseAggregate captures per-phase running totals. Phase is one of the
+// canonical names ("plan", "code", "test", "pr-fix"). StartedAt is set by
+// PhaseStart and is sticky; EndedAt advances on every SessionLog accrual and
+// is finalised by PhaseDone. Wall time can be computed as EndedAt - StartedAt.
+type byPhaseAggregate struct {
+	Phase     string
+	StartedAt string
+	EndedAt   string
+	Turns     int
+	Tokens    realTokens
+	Ms        int64
+}
+
+// formatByPhaseLine produces "<phase>: started_at=<ts> ended_at=<ts> turns=N <tokens_blob> ms=N".
+func formatByPhaseLine(a byPhaseAggregate) string {
+	return fmt.Sprintf("%s: started_at=%s ended_at=%s turns=%d %s ms=%d",
+		a.Phase, a.StartedAt, a.EndedAt, a.Turns, formatRealTokensBlob(a.Tokens), a.Ms)
+}
+
+// byPhaseLineMatches returns true if a list entry's leading "<phase>:" matches.
+func byPhaseLineMatches(raw, phase string) bool {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "- ")
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		return trimmed[:idx] == phase
+	}
+	return false
+}
+
+// parseByPhaseLine inverts formatByPhaseLine.
+func parseByPhaseLine(entry string) byPhaseAggregate {
+	var a byPhaseAggregate
+	colon := strings.IndexByte(entry, ':')
+	if colon < 0 {
+		return a
+	}
+	a.Phase = entry[:colon]
+	rest := strings.TrimSpace(entry[colon+1:])
+	for _, tok := range strings.Fields(rest) {
+		eq := strings.IndexByte(tok, '=')
+		if eq < 0 {
+			continue
+		}
+		key, val := tok[:eq], tok[eq+1:]
+		switch key {
+		case "started_at":
+			a.StartedAt = val
+		case "ended_at":
+			a.EndedAt = val
+		case "turns":
+			fmt.Sscanf(val, "%d", &a.Turns)
+		case "ms":
+			fmt.Sscanf(val, "%d", &a.Ms)
+		case "input":
+			fmt.Sscanf(val, "%d", &a.Tokens.Input)
+		case "output":
+			fmt.Sscanf(val, "%d", &a.Tokens.Output)
+		case "cache_read":
+			fmt.Sscanf(val, "%d", &a.Tokens.CacheRead)
+		case "cache_creation_5m":
+			fmt.Sscanf(val, "%d", &a.Tokens.CacheCreation5m)
+		case "cache_creation_1h":
+			fmt.Sscanf(val, "%d", &a.Tokens.CacheCreation1h)
+		}
+	}
+	return a
+}
+
+// readByPhase returns the aggregate for `phase`, or the zero value if absent.
+func readByPhase(item *model.Item, phase string) byPhaseAggregate {
+	return readListAggregate(item, "by_phase", phase, func(entry string) byPhaseAggregate {
+		return parseByPhaseLine(entry)
+	})
+}
+
+// upsertByPhase accumulates a turn's metrics into the named phase bucket. If
+// the phase has no started_at yet (first call for this phase), `now` seeds it.
+// ended_at always advances to `now`. Turns and token/ms counters accumulate.
+func upsertByPhase(item *model.Item, phase string, t realTokens, processMs int64, now string) {
+	if phase == "" {
+		return
+	}
+	existing := readByPhase(item, phase)
+	if existing.Phase == "" {
+		existing.Phase = phase
+	}
+	if existing.StartedAt == "" {
+		existing.StartedAt = now
+	}
+	existing.EndedAt = now
+	existing.Turns++
+	existing.Tokens = existing.Tokens.add(t)
+	existing.Ms += processMs
+
+	line := formatByPhaseLine(existing)
+	if !updateListLine(item, "time_tracking", "by_phase",
+		func(raw string) bool { return byPhaseLineMatches(raw, phase) },
+		line) {
+		item.Doc.AppendToNestedList("time_tracking", "by_phase", line)
+	}
+}
+
+// seedByPhase seeds the by_phase entry for `phase`, setting started_at to now.
+// If a prior completed entry exists (EndedAt non-empty — phase was run before
+// and closed), started_at is reset to now and EndedAt is cleared so the second
+// run window is not anchored to the first run's start. Used by PhaseStart.
+func seedByPhase(item *model.Item, phase, now string) {
+	existing := readByPhase(item, phase)
+	if existing.Phase == "" {
+		existing.Phase = phase
+	}
+	if existing.StartedAt == "" || existing.EndedAt != "" {
+		// First start, or restarting a previously-completed phase: begin a fresh window.
+		existing.StartedAt = now
+		existing.EndedAt = ""
+	}
+
+	line := formatByPhaseLine(existing)
+	if !updateListLine(item, "time_tracking", "by_phase",
+		func(raw string) bool { return byPhaseLineMatches(raw, phase) },
+		line) {
+		item.Doc.AppendToNestedList("time_tracking", "by_phase", line)
+	}
+}
+
 // readListAggregate is a generic helper for the by_step / by_session walk:
 // scans time_tracking.<key> list entries, finds the one whose payload matches,
 // and runs the supplied parser on it. Returns the zero value if no match.
@@ -431,6 +556,16 @@ func readListAggregate[T any](item *model.Item, listKey, target string, parse fu
 			}
 		case "by_session":
 			if bySessionLineMatches(entry, target) {
+				return parse(entry)
+			}
+		case "by_phase":
+			if byPhaseLineMatches(entry, target) {
+				return parse(entry)
+			}
+		default:
+			// Unknown list type: fall back to the canonical leading-label convention
+			// (all *LineMatches functions key on the first colon-delimited token).
+			if idx := strings.Index(entry, ":"); idx > 0 && entry[:idx] == target {
 				return parse(entry)
 			}
 		}

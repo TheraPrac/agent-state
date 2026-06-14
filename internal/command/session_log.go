@@ -343,6 +343,10 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		writeRealTokens(item, readRealTokens(item).add(rt))
 		upsertByStep(item, payload.Step, rt, payload.ProcessMs)
 		upsertBySession(item, payload.SessionID, payload.ProjectDir, capturedNow, rt)
+		// I-591: route metrics to the active phase when one is set.
+		if phase := activePhase(item); phase != "" {
+			upsertByPhase(item, phase, rt, payload.ProcessMs, capturedNow)
+		}
 
 		return nil
 	}); err != nil {

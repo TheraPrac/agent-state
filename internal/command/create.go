@@ -51,6 +51,12 @@ type CreateOpts struct {
 	// creates). Nil for every normal caller. On the dedup-merge path no
 	// new item is allocated, so *IDOut is left untouched.
 	IDOut *string
+
+	// I-591: estimate gate. EstimatedHours is written to
+	// time_tracking.estimated_hours on the new item. When RequireEstimate
+	// is true and EstimatedHours <= 0, the create is rejected.
+	EstimatedHours float64
+	RequireEstimate bool
 }
 
 func Create(s *store.Store, cfg *config.Config, itemType, title string, opts CreateOpts) int {
@@ -71,6 +77,12 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 				"  tech-debt               -> 3 + tag tech-debt\n"+
 				"  low|minor               -> 4")
 		return 2
+	}
+
+	// I-591: estimate gate — reject when --require-estimate is set but no hours given.
+	if opts.RequireEstimate && opts.EstimatedHours <= 0 {
+		fmt.Fprintln(os.Stderr, "create: --require-estimate is set but --estimate is missing or zero; provide --estimate <hours>")
+		return 1
 	}
 
 	// I-406: priority must be 0-4. Cobra defaults the flag to 2 (medium)
@@ -374,6 +386,17 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			if err := r.Save(cfg.EpicsPath()); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not save registry: %v\n", err)
 			}
+		}
+	}
+
+	// I-591: write estimated_hours when provided.
+	if opts.EstimatedHours > 0 {
+		if err := s.Mutate(id, func(it *model.Item) error {
+			it.SetNested("time_tracking", "estimated_hours", fmt.Sprintf("%.2f", opts.EstimatedHours))
+			return nil
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "create: failed to write estimated_hours on %s: %v\n", id, err)
+			return 1
 		}
 	}
 

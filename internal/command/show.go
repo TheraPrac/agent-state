@@ -329,27 +329,48 @@ func renderTimeTracking(w io.Writer, item *modelItemRef) {
 		fmt.Fprintf(w, "    code:  %s (+%d / -%d across %d files)\n",
 			formatLOC(linesAdded-linesRemoved), linesAdded, linesRemoved, filesChanged)
 	}
-	// by_model storage now contains provider/model keys for new entries, while
-	// preserving historical model-only rows.
+
+	// I-591: estimate vs actual.
+	estimatedHours := readFloatField(item, "time_tracking", "estimated_hours")
+	if estimatedHours > 0 {
+		fmt.Fprintf(w, "    estimated: %.1fh\n", estimatedHours)
+		if totalSec > 0 {
+			actualHours := float64(totalSec) / 3600
+			pct := actualHours / estimatedHours * 100
+			fmt.Fprintf(w, "    actual:    %s (%.0f%% of estimate)\n",
+				formatDuration(time.Duration(totalSec)*time.Second), pct)
+		}
+	}
+
+	// by_model and by_phase rendering.
 	if wm := item.Doc; wm != nil {
 		var inBlock bool
 		var inTT bool
+		var blockKey string
 		for _, line := range wm.Lines {
 			if line.Indent == 0 && line.Key != "" {
 				inTT = line.Key == "time_tracking"
 				inBlock = false
+				blockKey = ""
 				continue
 			}
 			if !inTT {
 				continue
 			}
-			if line.Indent == 2 && line.Key == "by_model" {
-				fmt.Fprintln(w, "    by_provider_model:")
+			if line.Indent == 2 && (line.Key == "by_model" || line.Key == "by_phase") {
+				switch line.Key {
+				case "by_model":
+					fmt.Fprintln(w, "    by_provider_model:")
+				case "by_phase":
+					fmt.Fprintln(w, "    by_phase:")
+				}
 				inBlock = true
+				blockKey = line.Key
 				continue
 			}
-			if line.Indent <= 2 && line.Key != "" && line.Key != "by_model" {
+			if line.Indent <= 2 && line.Key != "" && line.Key != blockKey {
 				inBlock = false
+				blockKey = ""
 				continue
 			}
 			if inBlock {

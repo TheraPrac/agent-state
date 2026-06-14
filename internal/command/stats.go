@@ -51,6 +51,10 @@ type timeStats struct {
 	TotalLinesRemoved int                   `json:"total_lines_removed"`
 	TotalFilesChanged int                   `json:"total_files_changed"`
 	ByModel           map[string]modelTotal `json:"by_model,omitempty"`
+	// I-591: estimate calibration — only for closed items with both fields.
+	EstimatedItems     int     `json:"estimated_items,omitempty"`
+	TotalEstimatedHrs  float64 `json:"total_estimated_hours,omitempty"`
+	TotalActualHrs     float64 `json:"total_actual_hours,omitempty"`
 }
 
 type modelTotal struct {
@@ -183,6 +187,13 @@ func renderTimeStats(w io.Writer, t *timeStats) {
 				formatTokens(p.v.RegInput), formatTokens(p.v.RegOutput))
 		}
 	}
+	// I-591: estimate calibration section.
+	if t.EstimatedItems > 0 {
+		avgEst := t.TotalEstimatedHrs / float64(t.EstimatedItems)
+		avgAct := t.TotalActualHrs / float64(t.EstimatedItems)
+		fmt.Fprintf(w, "  Estimate calibration: %d items  avg estimate %.1fh  avg actual %.1fh\n",
+			t.EstimatedItems, avgEst, avgAct)
+	}
 }
 
 // computeTimeStats walks all items and sums the SessionLog time_tracking
@@ -222,6 +233,17 @@ func computeTimeStats(s *store.Store) *timeStats {
 		out.TotalLinesAdded += readIntField(item, "time_tracking", "lines_added")
 		out.TotalLinesRemoved += readIntField(item, "time_tracking", "lines_removed")
 		out.TotalFilesChanged += readIntField(item, "time_tracking", "files_changed_count")
+
+		// I-591: calibration — closed items with both estimated_hours and total_duration_seconds.
+		if item.Status == "done" || item.Status == "archived" {
+			estHrs := readFloatField(item, "time_tracking", "estimated_hours")
+			totalSec := readIntField(item, "time_tracking", "total_duration_seconds")
+			if estHrs > 0 && totalSec > 0 {
+				out.EstimatedItems++
+				out.TotalEstimatedHrs += estHrs
+				out.TotalActualHrs += float64(totalSec) / 3600
+			}
+		}
 
 		// Per-model lines
 		if item.Doc != nil {

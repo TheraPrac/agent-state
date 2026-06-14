@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,8 +17,28 @@ import (
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/mail"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// workerResult reports a finished worker's item and terminal exit code back to
+// the dispatch loop over the results channel. rc==0 is any clean stop (done OR
+// escalated — an escalation is the loop doing its job); non-zero is an
+// operational spawn failure that should stop the whole fan-out.
+type workerResult struct {
+	itemID string
+	rc     int
+}
+
+// activeSlot tracks one in-flight worker for the dispatcher: the item, the
+// per-objective cost baseline captured at dispatch (so D1 spend is a delta,
+// not item-lifetime rollup), and the C1 conflict classes its plan touches (so
+// later picks never dispatch a conflicting item concurrently — T-364).
+type activeSlot struct {
+	itemID          string
+	startCostUSD    float64
+	conflictClasses []string
+}
 
 // `st coordinate` (T-363): the Shape-3 coordinator loop. This file is the
 // IMPERATIVE SHELL — it wires the pure decision core (internal/coordinator)
@@ -80,55 +101,194 @@ func Coordinate(s *store.Store, cfg *config.Config, opts CoordinateOpts) int {
 	}
 
 	dd := coordinator.NewDeduper()
-	ex := &cmdEscalator{cfg: cfg, boundary: b}
+	ex := escalatorFor(cfg, b)
 
 	// Populate empirical cost baselines from the archive once at startup (T-383).
 	coordinator.LoadEmpiricalBaselines(s.List(store.StatusFilter("done")), b)
 
-	processed := 0
-	for opts.MaxItems == 0 || processed < maxItems {
+	// --- Dry run: single-shot, side-effect-free (unchanged from T-363) ---
+	if opts.DryRun {
 		item, why := selectNext(s, cfg)
 		if item == nil {
 			fmt.Printf("coordinate: no eligible item (%s)\n", why)
 			return 0
 		}
+		fmt.Println("DRY RUN — nothing launched, supervised, or escalated")
+		fmt.Printf("boundary:    %s\n", bPath)
+		fmt.Printf("  respawn_limit=%d per_item=$%g per_objective=$%g stuck_x=%g parallelism=%d dedupe=%dm\n",
+			b.RespawnLimit, b.PerItemUSD, b.PerObjectiveUSD, b.StuckMultiplier, b.ParallelismCap, b.DedupeWindowMin)
+		fmt.Printf("picked:      %s — %s\n", item.ID, item.Title)
+		fmt.Printf("why:         %s\n", why)
+		key := coordinator.CostBinKey(item)
+		n := coordinator.EmpiricalSamplesForBin(key)
+		costSrc := "heuristic"
+		if n > 0 {
+			costSrc = fmt.Sprintf("empirical N=%d", n)
+		}
+		fmt.Printf("size-class:  %s wall-clock · $%g cost [%s] (D2 cost-based; stuck at ≥ %g×)\n",
+			coordinator.SizeClassBaseline(item),
+			coordinator.SizeClassCostBaseline(item), costSrc, b.StuckMultiplier)
+		fmt.Println("next:        st spawn " + item.ID + spawnBudgetSuffix(opts.BudgetOverride))
+		return 0
+	}
 
-		if opts.DryRun {
-			fmt.Println("DRY RUN — nothing launched, supervised, or escalated")
-			fmt.Printf("boundary:    %s\n", bPath)
-			fmt.Printf("  respawn_limit=%d per_item=$%g per_objective=$%g stuck_x=%g parallelism=%d dedupe=%dm\n",
-				b.RespawnLimit, b.PerItemUSD, b.PerObjectiveUSD, b.StuckMultiplier, b.ParallelismCap, b.DedupeWindowMin)
-			fmt.Printf("picked:      %s — %s\n", item.ID, item.Title)
-			fmt.Printf("why:         %s\n", why)
-			key := coordinator.CostBinKey(item)
-			n := coordinator.EmpiricalSamplesForBin(key)
-			costSrc := "heuristic"
-			if n > 0 {
-				costSrc = fmt.Sprintf("empirical N=%d", n)
+	// --- Concurrent fan-out: maintain up to parallelism_cap in-flight workers ---
+	//
+	// Concurrency-safety (T-364): the supervise loop reads via per-call fresh
+	// stores (freshItem) and the dispatch read path (selectNextExcluding) also
+	// reads a fresh store, so a peer goroutine's claim/completion is reflected
+	// without racing the in-memory parent store. The genuinely shared mutable
+	// state is process-global and is serialized by `mu`: worker spawn (git
+	// worktree creation on the shared repo + the lock-free agent-registry
+	// write) and escalation Fire (deduper map + escalator issue create/diff).
+	parCap := b.ParallelismCap
+	if parCap < 1 {
+		parCap = 1
+	}
+
+	// mu serializes the two operations that touch PROCESS-GLOBAL shared state:
+	// Spawn (git index + agent registry) and coordinator.Fire (deduper map +
+	// escalator). Both are brief/rare; worker execution runs unserialized.
+	var mu sync.Mutex
+	cancel := make(chan struct{})
+	var cancelOnce sync.Once
+	stopAll := func() { cancelOnce.Do(func() { close(cancel) }) }
+
+	results := make(chan workerResult, parCap*2)
+	active := map[string]*activeSlot{}
+	dispatched := 0
+	completedSpendUSD := 0.0
+	var lastSkip string
+
+	// canDispatch caps total dispatches. --once is always exactly one (it must
+	// not fan out to the cap even if MaxItems is left unbounded); otherwise
+	// MaxItems==0 means unbounded and any positive value is the hard cap.
+	canDispatch := func() bool {
+		if opts.Once {
+			return dispatched < 1
+		}
+		return opts.MaxItems == 0 || dispatched < maxItems
+	}
+
+	for {
+		// Fill idle slots up to the cap with non-conflicting, unclaimed work.
+		for len(active) < parCap && canDispatch() {
+			occupied := make(map[string]bool, len(active))
+			var inflightClasses []string
+			for id, slot := range active {
+				occupied[id] = true
+				inflightClasses = append(inflightClasses, slot.conflictClasses...)
 			}
-			fmt.Printf("size-class:  %s wall-clock · $%g cost [%s] (D2 cost-based; stuck at ≥ %g×)\n",
-				coordinator.SizeClassBaseline(item),
-				coordinator.SizeClassCostBaseline(item), costSrc, b.StuckMultiplier)
-			fmt.Println("next:        st spawn " + item.ID + spawnBudgetSuffix(opts.BudgetOverride))
+			item, why := selectNextExcluding(cfg, occupied, inflightClasses)
+			if item == nil {
+				lastSkip = why
+				break
+			}
+			slot := &activeSlot{
+				itemID:          item.ID,
+				startCostUSD:    costUSDOf(cfg, item.ID),
+				conflictClasses: loadConflictClasses(cfg, item.ID),
+			}
+			active[item.ID] = slot
+			dispatched++
+			fmt.Printf("coordinate: dispatch rationale — %s\n", why)
+			st := &coordinator.WorkerState{
+				Item:         item.ID,
+				SizeClass:    coordinator.SizeClassBaseline(item),     // kept for C2 wedge threshold
+				CostBaseline: coordinator.SizeClassCostBaseline(item), // T-365: cost-based D2
+			}
+			itemID := item.ID
+			go func() {
+				rc := superviseFn(cfg, b, dd, ex, st, itemID, opts, base, idleCap, &mu, cancel)
+				results <- workerResult{itemID: itemID, rc: rc}
+			}()
+		}
+
+		// Quiescent: nothing in flight and nothing dispatchable → done.
+		if len(active) == 0 {
+			if lastSkip != "" {
+				// The fill loop found nothing dispatchable — surface WHY.
+				fmt.Printf("coordinate: no eligible item (%s)\n", lastSkip)
+			} else {
+				// Stopped because the dispatch budget (--once / --max-items)
+				// is exhausted, not because the queue is empty.
+				fmt.Printf("coordinate: dispatch budget reached (%d item(s) processed)\n", dispatched)
+			}
 			return 0
 		}
 
-		fmt.Printf("coordinate: dispatch rationale — %s\n", why)
-		st := &coordinator.WorkerState{
-			Item:         item.ID,
-			SizeClass:    coordinator.SizeClassBaseline(item),     // kept for C2 wedge threshold
-			CostBaseline: coordinator.SizeClassCostBaseline(item), // T-365: cost-based D2
+		// Block until one worker reaches a terminal state.
+		res := <-results
+		slot := active[res.itemID]
+		delete(active, res.itemID)
+
+		// Operational spawn failure: stop dispatching, cancel + drain the rest,
+		// surface the failure code.
+		if res.rc != 0 {
+			fmt.Fprintf(os.Stderr, "coordinate: worker %s failed (rc=%d) — stopping fan-out\n", res.itemID, res.rc)
+			stopAll()
+			drainResults(results, active)
+			return res.rc
 		}
-		rc := superviseItem(s, cfg, b, dd, ex, st, item.ID, opts, base, idleCap)
-		if rc != 0 {
-			return rc
+
+		// Fold this worker's spend into the cumulative objective total.
+		if slot != nil {
+			if d := costUSDOf(cfg, res.itemID) - slot.startCostUSD; d > 0 {
+				completedSpendUSD += d
+			}
 		}
-		processed++
+
+		// D1: per-objective cumulative budget across ALL workers (completed +
+		// live). Escalate-not-exceed (contract §7-D1): stop everything the
+		// moment the cap is crossed.
+		//
+		// "Objective" = this coordinator run (all items it dispatches). Per-goal
+		// / per-sprint budget partitioning is the cross-objective concern (C3),
+		// explicitly operator-only and out of T-364 scope; for the MVP a single
+		// run is one objective. The check fires at completion boundaries, so
+		// in-flight spend can briefly exceed the cap before the next worker
+		// returns — acceptable for an escalate-not-exceed stop.
+		objective := completedSpendUSD + objectiveSpendUSD(cfg, active)
+		if b.PerObjectiveUSD > 0 && objective >= b.PerObjectiveUSD {
+			fmt.Printf("coordinate: per-objective spend $%.2f ≥ cap $%g — D1 escalate, stopping all workers\n",
+				objective, b.PerObjectiveUSD)
+			stopAll()
+			for id := range active {
+				killWorker(cfg, id)
+			}
+			esc := coordinator.Escalation{
+				Predicate: coordinator.PredicateD1,
+				Item:      res.itemID,
+				Reason: fmt.Sprintf("Cumulative per-objective spend $%.2f reached the $%g cap across %d dispatched worker(s); coordinator stopped fan-out rather than exceed the boundary (contract §7-D1).",
+					objective, b.PerObjectiveUSD, dispatched),
+				At: time.Now(),
+			}
+			mu.Lock()
+			fr := coordinator.Fire(esc, b, dd, ex, time.Now())
+			mu.Unlock()
+			reportFire(esc.Item, esc, fr)
+			drainResults(results, active)
+			return 0
+		}
+
+		// --once: a single dispatch + its terminal stop is the whole run.
 		if opts.Once {
-			break
+			stopAll()
+			drainResults(results, active)
+			return 0
 		}
 	}
-	return 0
+}
+
+// drainResults waits for every still-active worker to report in, discarding
+// the codes — used after the loop has decided to stop (D1 budget or an
+// operational failure) and has signalled cancellation. Guarantees no goroutine
+// is left writing to the results channel after Coordinate returns.
+func drainResults(results <-chan workerResult, active map[string]*activeSlot) {
+	for len(active) > 0 {
+		r := <-results
+		delete(active, r.itemID)
+	}
 }
 
 // selectNext derives the top-ranked eligible item from item properties
@@ -139,6 +299,32 @@ func Coordinate(s *store.Store, cfg *config.Config, opts CoordinateOpts) int {
 // silently drop. Returns (nil, reason) when nothing qualifies (never an
 // opaque empty — that blindness is what §1 removes).
 func selectNext(s *store.Store, cfg *config.Config) (*model.Item, string) {
+	// Single-shot / dry-run pick: read the in-memory store the caller built at
+	// Coordinate entry (current as of startup; a dry run launches nothing, so
+	// no concurrent worker can stale it). No exclusions.
+	return selectFrom(s, cfg, nil, nil)
+}
+
+// selectNextExcluding is the concurrency-aware dispatch pick (T-364). It reads
+// a FRESH store each call — never the shared in-memory parent — so it (a) does
+// not race goroutine Spawns that mutate their own stores, (b) correctly drops
+// items a peer worker just completed (committed to disk), and (c) sees fresh
+// claim state. Exclusions skip in-flight items and C1-conflicting candidates.
+func selectNextExcluding(cfg *config.Config, occupied map[string]bool, inflightClasses []string) (*model.Item, string) {
+	fs, err := store.New(cfg)
+	if err != nil {
+		return nil, fmt.Sprintf("store unreadable: %v", err)
+	}
+	return selectFrom(fs, cfg, occupied, inflightClasses)
+}
+
+// selectFrom is the shared scoring+filtering core. It runs the same recommend
+// pipeline selectNext always has, then drops candidates without an approved
+// plan (I-491), candidates already in flight (occupied), and candidates whose
+// plan's C1 conflict classes overlap an in-flight worker's (serialize the same
+// OpenAPI/migration surface instead of running concurrently — T-364). Returns
+// (nil, reason) when nothing is dispatchable.
+func selectFrom(s *store.Store, cfg *config.Config, occupied map[string]bool, inflightClasses []string) (*model.Item, string) {
 	g := deps.Build(s.All(), cfg)
 	sprints := loadSprintInfo(cfg, g)
 	cands := recommendCandidates(s, cfg, g, RecommendOpts{}, sprints)
@@ -149,13 +335,66 @@ func selectNext(s *store.Store, cfg *config.Config) (*model.Item, string) {
 	pins := loadQueuePins(cfg)
 	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), pins, time.Now())
 	enrichUnblockDetail(recs, names)
+	serialized := 0
 	for _, r := range recs {
 		if !r.Item.PlanApproved {
 			continue // I-491: autonomous dispatch requires an approved plan
 		}
+		if occupied[r.Item.ID] {
+			continue // already in flight
+		}
+		if coordinator.C1Conflicts(inflightClasses, loadConflictClasses(cfg, r.Item.ID)) {
+			serialized++
+			continue // C1: defer until the conflicting in-flight worker finishes
+		}
 		return r.Item, r.Rationale()
 	}
-	return nil, fmt.Sprintf("%d candidate(s) ready but none have an approved plan (I-491)", len(recs))
+	if serialized > 0 {
+		return nil, fmt.Sprintf("%d planned candidate(s) deferred — C1-conflicting with an in-flight worker (same OpenAPI/migration surface)", serialized)
+	}
+	return nil, fmt.Sprintf("%d candidate(s) ready but none have an approved plan (I-491) or all are in flight", len(recs))
+}
+
+// loadConflictClasses returns the C1 conflict classes an item's approved plan
+// touches (empty if no plan / unreadable). Used to serialize concurrent
+// workers that would otherwise collide on the OpenAPI contract or migration
+// changelog.
+func loadConflictClasses(cfg *config.Config, itemID string) []string {
+	p, err := plan.Load(cfg.PlansDir(), itemID)
+	if err != nil || p == nil {
+		return nil
+	}
+	return coordinator.ConflictSensitivePaths(p)
+}
+
+// costUSDOf is the indirection seam for reading an item's current AI spend.
+// Defaults to currentCostUSD (fresh disk read); tests override it to script
+// per-item spend deterministically without plumbing nested time_tracking
+// values onto disk. Used by every per-objective (D1) cost read.
+var costUSDOf = currentCostUSD
+
+// currentCostUSD reads an item's current rolled-up AI spend from a fresh store
+// (the same ai_cost_usd source coordinator.SampleProgress uses for D2). 0 if
+// the item can't be read.
+func currentCostUSD(cfg *config.Config, itemID string) float64 {
+	it := freshItem(cfg, itemID)
+	if it == nil {
+		return 0
+	}
+	return coordinator.SampleProgress(cfg, it).AICostUSD
+}
+
+// objectiveSpendUSD sums each live worker's burn since dispatch (current cost
+// minus the slot's captured baseline, floored at 0). The dispatch loop adds
+// this to the completed-worker total for the D1 per-objective budget check.
+func objectiveSpendUSD(cfg *config.Config, slots map[string]*activeSlot) float64 {
+	var sum float64
+	for id, slot := range slots {
+		if d := costUSDOf(cfg, id) - slot.startCostUSD; d > 0 {
+			sum += d
+		}
+	}
+	return sum
 }
 
 
@@ -179,23 +418,80 @@ const startupGrace = 90 * time.Second
 // Returns a process exit code: 0 on any clean stop (done OR escalated —
 // an escalation is the loop doing its job, not an error), non-zero only
 // on an operational failure (spawn could not launch at all).
-func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
+// escalatorFor builds the production escalator (cmdEscalator, which reuses the
+// real `st` binary for gate-aware issue creation). It is a package var so tests
+// can inject a fake escalator and exercise the D1 fan-out escalation path
+// without execing subprocesses — the same testability rationale the Escalator
+// interface was introduced for.
+var escalatorFor = func(cfg *config.Config, b *coordinator.Boundary) coordinator.Escalator {
+	return &cmdEscalator{cfg: cfg, boundary: b}
+}
+
+// superviseFn is the indirection seam the dispatch loop calls. It defaults to
+// the real superviseItem; tests override it with a fast fake so the concurrent
+// dispatch / D1-budget / C1-serialization logic can be exercised under the
+// race detector WITHOUT forking real `claude` workers (the real superviseItem
+// is proven by live-verify, per the T-363 precedent — its poll loop assumes a
+// genuinely registered OS worker that a unit test cannot faithfully fork).
+var superviseFn = superviseItem
+
+func superviseItem(cfg *config.Config, b *coordinator.Boundary,
 	dd *coordinator.Deduper, ex coordinator.Escalator, st *coordinator.WorkerState,
-	itemID string, opts CoordinateOpts, base, idleCap time.Duration) int {
+	itemID string, opts CoordinateOpts, base, idleCap time.Duration,
+	mu *sync.Mutex, cancel <-chan struct{}) int {
 
 	extraCtx := "" // empty on the first attempt; set on respawn-with-context
 	for {
+		// Honor a coordinator-wide stop (D1 budget / peer failure) BEFORE
+		// (re)spawning — otherwise a worker that just broke out of the supervise
+		// loop to respawn would launch a NEW worker after the dispatch loop
+		// already killed everything, orphaning a budget-burning process past the
+		// boundary the stop exists to enforce.
+		select {
+		case <-cancel:
+			return 0
+		default:
+		}
+
 		// --- (re)spawn ---
 		baseItem := freshItem(cfg, itemID)
 		if baseItem == nil {
 			fmt.Fprintf(os.Stderr, "coordinate: %s vanished from the store before spawn\n", itemID)
 			return 1
 		}
-		if rc := Spawn(s, cfg, SpawnOpts{
+		// Each worker spawns through its OWN in-memory store, but Spawn→Start is
+		// NOT fully isolated: it mutates process-global resources — the shared
+		// git index (`git worktree add` on the main repo) and the agent registry
+		// (a lock-free read-then-write of the next worker suffix). Concurrent
+		// Spawns would collide on .git/index.lock and clobber each other's
+		// registration files. So serialize the whole Spawn under the shared
+		// mutex: worktree creation + launch is brief (seconds), while the
+		// worker EXECUTION that follows runs fully concurrent (T-364).
+		gs, err := store.New(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "coordinate: %s store init failed before spawn: %v\n", itemID, err)
+			return 1
+		}
+		mu.Lock()
+		// Re-check cancel under the lock: the dispatch loop closes cancel
+		// (stopAll) BEFORE taking mu for the D1 Fire, so any worker that was
+		// blocked here waiting on mu will see the stop and bail rather than
+		// launch a process after the budget already tripped. (A worker already
+		// mid-Spawn when cancel closes cannot be caught — its per-item cap still
+		// bounds the overrun.)
+		select {
+		case <-cancel:
+			mu.Unlock()
+			return 0
+		default:
+		}
+		rc := Spawn(gs, cfg, SpawnOpts{
 			Item:           itemID,
 			BudgetOverride: opts.BudgetOverride,
 			ExtraContext:   extraCtx,
-		}); rc != 0 {
+		})
+		mu.Unlock()
+		if rc != 0 {
 			fmt.Fprintf(os.Stderr, "coordinate: spawn %s failed (rc=%d) — nothing supervised\n", itemID, rc)
 			return rc
 		}
@@ -236,6 +532,15 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 	superviseLoop:
 		for {
 			time.Sleep(interval)
+			// Coordinator-wide stop (D1 budget crossed or a peer worker hit an
+			// operational failure): exit promptly WITHOUT respawning, so the
+			// kill the loop just issued is not undone by this worker's own
+			// respawn-with-context path (T-364).
+			select {
+			case <-cancel:
+				return 0
+			default:
+			}
 			// Reap any exited worker FIRST so PID-liveness is truthful.
 			// command.Spawn forks the worker then Process.Release()s it;
 			// the short-lived `st spawn` path reparents to init (reaped
@@ -314,7 +619,13 @@ func superviseItem(s *store.Store, cfg *config.Config, b *coordinator.Boundary,
 					FailSig:   lastSig,
 					At:        time.Now(),
 				}
+				// Serialize Fire across concurrent workers: it mutates the
+				// shared deduper map and drives the escalator's create-then-
+				// diff issue-ID resolution, neither of which is concurrency
+				// safe (T-364).
+				mu.Lock()
 				res := coordinator.Fire(esc, b, dd, ex, time.Now())
+				mu.Unlock()
 				reportFire(itemID, esc, res)
 				return 0 // escalation IS a clean stop (contract §7)
 			}

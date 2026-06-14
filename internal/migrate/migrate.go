@@ -175,6 +175,24 @@ func detectChanges(item *model.Item, cfg *config.Config) []Change {
 	if _, ok := sections["delivery"]; !ok && cfg.Delivery != nil {
 		changes = append(changes, Change{Type: "add_field", Detail: "add delivery: section"})
 	}
+
+	// I-591: time_tracking.estimated_hours default.
+	if s, ok := sections["time_tracking"]; ok {
+		hasEst := false
+		for _, line := range s.lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "estimated_hours:") {
+				hasEst = true
+				break
+			}
+		}
+		if !hasEst {
+			changes = append(changes, Change{
+				Type:   "add_field",
+				Detail: "add time_tracking.estimated_hours: 0 (I-591 default)",
+			})
+		}
+	}
 	if _, ok := sections["doc_changes"]; !ok {
 		changes = append(changes, Change{Type: "add_field", Detail: "add doc_changes: field"})
 	}
@@ -269,6 +287,8 @@ func Canonical(item *model.Item, cfg *config.Config) string {
 	// Rewrite legacy time/cost tracking field names in place before emission.
 	// Keeps existing items compatible with the SessionLog schema.
 	rewriteLegacyMetrics(sections)
+	// I-591: add estimated_hours: 0 to existing time_tracking blocks.
+	addEstimateDefaults(sections)
 
 	b := &builder{
 		item:     item,
@@ -671,6 +691,25 @@ var legacyMetricDrops = map[string]bool{
 // rewriteLegacyMetrics mutates time_tracking and work_tracking sections in
 // place, renaming legacy keys and dropping superseded ones. Idempotent:
 // running twice on an already-migrated item is a no-op.
+// addEstimateDefaults injects `estimated_hours: 0` into a time_tracking block
+// that exists but lacks the field. This is the I-591 migration backfill.
+func addEstimateDefaults(sections map[string]*rawSection) {
+	s, ok := sections["time_tracking"]
+	if !ok {
+		return
+	}
+	for _, line := range s.lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "estimated_hours:") {
+			return // already present
+		}
+	}
+	// Insert after the header line (s.lines[0] = "time_tracking:") so the field
+	// lands inside the block, not before the block header.
+	rest := make([]string, len(s.lines)-1)
+	copy(rest, s.lines[1:])
+	s.lines = append(s.lines[:1], append([]string{"  estimated_hours: 0"}, rest...)...)
+}
+
 func rewriteLegacyMetrics(sections map[string]*rawSection) {
 	for _, name := range []string{"time_tracking"} {
 		s, ok := sections[name]

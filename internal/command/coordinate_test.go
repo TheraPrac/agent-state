@@ -4,11 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/coordinator"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/jfinlinson/agent-state/internal/store"
 )
 
 // boundaryFixture is a minimal-but-real coordinator.yaml written into the
@@ -76,6 +80,175 @@ func TestSelectNext(t *testing.T) {
 		t.Error("a skip must come with a reason (no opaque empty)")
 	}
 }
+
+// approvePlanWithFiles seeds an approved plan sidecar whose FilesToModify
+// declare the given paths, and flips the item's PlanApproved flag — so the
+// item is dispatch-eligible and carries a known C1 conflict signature.
+func approvePlanWithFiles(t *testing.T, s *store.Store, cfg *config.Config, id string, files ...string) {
+	t.Helper()
+	if err := plan.Save(cfg.PlansDir(), id, &plan.Plan{
+		Approach:      "test plan",
+		ScopeRepos:    []string{"as"},
+		ACs:           []string{"cmd: go test ./..."},
+		FilesToModify: files,
+	}); err != nil {
+		t.Fatalf("save plan %s: %v", id, err)
+	}
+	// Persist plan_approved to the underlying doc (not just the struct field):
+	// the store serializes item.Doc, and selectNextExcluding reads a FRESH
+	// store from disk, so an in-memory-only struct mutation would not be seen.
+	if err := s.Mutate(id, func(m *model.Item) error {
+		m.PlanApproved = true
+		if m.Doc != nil {
+			m.Doc.SetField("plan_approved", "true")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("approve plan %s: %v", id, err)
+	}
+}
+
+func TestSelectNextExcluding(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// Two ready, unblocked, unassigned candidates. T-001 touches the OpenAPI
+	// surface (C1 class "openapi"); I-001 is neutral. Assertions are
+	// ranking-agnostic — only the exclusion behaviour is under test.
+	approvePlanWithFiles(t, s, cfg, "T-001", "api/openapi/api.yaml")
+	approvePlanWithFiles(t, s, cfg, "I-001", "internal/foo/bar.go")
+
+	// No exclusions → some planned candidate is dispatchable.
+	top, why := selectNextExcluding(cfg, nil, nil)
+	if top == nil {
+		t.Fatalf("no-exclusion pick = nil (%s), want a dispatchable item", why)
+	}
+
+	// Occupy the top pick → the OTHER planned candidate is returned.
+	other, why := selectNextExcluding(cfg, map[string]bool{top.ID: true}, nil)
+	if other == nil || other.ID == top.ID {
+		t.Fatalf("occupied pick = %v (%s), want the other candidate (not %s)", other, why, top.ID)
+	}
+
+	// An in-flight worker already holds the OpenAPI surface → T-001 (also
+	// OpenAPI) must be deferred; I-001 (neutral) is the only dispatchable pick.
+	it, why := selectNextExcluding(cfg, nil, []string{"openapi"})
+	if it == nil || it.ID != "I-001" {
+		t.Fatalf("C1-conflict pick = %v (%s), want I-001 (T-001 deferred on openapi)", it, why)
+	}
+
+	// Both occupied → nil + a non-empty reason (no opaque blank).
+	it, why = selectNextExcluding(cfg, map[string]bool{"T-001": true, "I-001": true}, nil)
+	if it != nil {
+		t.Fatalf("all-occupied pick = %s, want nil", it.ID)
+	}
+	if why == "" {
+		t.Error("a no-dispatch result must carry a reason (no opaque blank)")
+	}
+}
+
+// TestCoordinateMultiWorker_D1_ObjectiveBudget drives the concurrent fan-out
+// loop with a stubbed worker that burns a fixed cost per item, and asserts the
+// loop stops via a single D1 escalation once cumulative per-objective spend
+// crosses the cap. The stubbed superviseFn lets the real dispatch /
+// accounting / escalation path run under -race without forking workers.
+func TestCoordinateMultiWorker_D1_ObjectiveBudget(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	writeBoundary(t, cfg.Root()) // per_objective cap = $150, parallelism_cap = 4
+	t.Setenv("AS_AGENT_ID", "")
+	coordinator.ResetEmpiricalForTest()
+	t.Cleanup(coordinator.ResetEmpiricalForTest)
+
+	// Two neutral, non-conflicting, ready items → both dispatch concurrently
+	// (parallelism_cap=4 in the boundary fixture).
+	approvePlanWithFiles(t, s, cfg, "T-001", "internal/a/a.go")
+	approvePlanWithFiles(t, s, cfg, "I-001", "internal/b/b.go")
+
+	// Scripted per-item spend (cost seam): $80 each. Two workers → $160
+	// cumulative ≥ the $150 per_objective cap → D1.
+	var costMu sync.Mutex
+	costs := map[string]float64{}
+	origCost := costUSDOf
+	t.Cleanup(func() { costUSDOf = origCost })
+	costUSDOf = func(_ *config.Config, id string) float64 {
+		costMu.Lock()
+		defer costMu.Unlock()
+		return costs[id]
+	}
+
+	// A 2-worker barrier makes the test deterministic regardless of goroutine
+	// scheduling: neither stub returns until BOTH have recorded their spend, so
+	// when the loop processes the first completion both costs are visible and
+	// the D1 threshold is unambiguously crossed.
+	var ready sync.WaitGroup
+	ready.Add(2)
+	origSupervise := superviseFn
+	t.Cleanup(func() { superviseFn = origSupervise })
+	superviseFn = func(cfg *config.Config, b *coordinator.Boundary,
+		dd *coordinator.Deduper, ex coordinator.Escalator, st *coordinator.WorkerState,
+		itemID string, opts CoordinateOpts, base, idleCap time.Duration,
+		mu *sync.Mutex, cancel <-chan struct{}) int {
+		costMu.Lock()
+		costs[itemID] = 80
+		costMu.Unlock()
+		// Mark the item terminal so it is not re-picked if the loop fills again.
+		if fs, err := store.New(cfg); err == nil {
+			_ = fs.Mutate(itemID, func(m *model.Item) error {
+				m.Status = "done"
+				if m.Doc != nil {
+					m.Doc.SetField("status", "done")
+				}
+				return nil
+			})
+		}
+		ready.Done()
+		ready.Wait() // barrier: both workers have recorded spend before either returns
+		return 0
+	}
+
+	// Inject a fake escalator so Fire records the D1 escalation in-memory
+	// instead of execing `st create`.
+	fe := &fakeEscalator{}
+	origEsc := escalatorFor
+	t.Cleanup(func() { escalatorFor = origEsc })
+	escalatorFor = func(cfg *config.Config, b *coordinator.Boundary) coordinator.Escalator {
+		return fe
+	}
+
+	var rc int
+	out := captureStdout(t, func() {
+		rc = Coordinate(s, cfg, CoordinateOpts{MaxItems: 0, PollInterval: time.Millisecond})
+	})
+	if rc != 0 {
+		t.Fatalf("D1 stop must return 0 (escalation is a clean stop), got %d\n%s", rc, out)
+	}
+	if fe.fileBlockerCalls != 1 {
+		t.Errorf("want exactly one D1 FileBlocker call, got %d\n%s", fe.fileBlockerCalls, out)
+	}
+	if fe.lastPredicate != coordinator.PredicateD1 {
+		t.Errorf("escalation predicate = %q, want D1\n%s", fe.lastPredicate, out)
+	}
+	if !strings.Contains(out, "per-objective spend") || !strings.Contains(out, "D1 escalate") {
+		t.Errorf("output must announce the D1 stop, got:\n%s", out)
+	}
+}
+
+// fakeEscalator records escalation side-effects in memory (concurrency-safe)
+// so tests can assert the D1 path fired without subprocesses.
+type fakeEscalator struct {
+	mu               sync.Mutex
+	fileBlockerCalls int
+	lastPredicate    coordinator.Predicate
+}
+
+func (f *fakeEscalator) FileBlocker(e coordinator.Escalation) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fileBlockerCalls++
+	f.lastPredicate = e.Predicate
+	return "I-999", nil
+}
+func (f *fakeEscalator) Log(e coordinator.Escalation, issueID string) error  { return nil }
+func (f *fakeEscalator) Mail(e coordinator.Escalation, issueID string) error { return nil }
+func (f *fakeEscalator) Notify(e coordinator.Escalation) error               { return nil }
 
 func TestCoordinateBoundaryMissingHardFails(t *testing.T) {
 	s, cfg := setupTestEnv(t)

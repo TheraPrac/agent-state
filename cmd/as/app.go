@@ -386,6 +386,8 @@ To list goals with weights use:
 				exitCode = 2
 				return
 			}
+			estimateHrs, _ := cmd.Flags().GetFloat64("estimate")
+			requireEst, _ := cmd.Flags().GetBool("require-estimate")
 			exitCode = command.Create(appStore, appCfg, args[0], title, command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
 				Goals:          goals,
@@ -396,6 +398,8 @@ To list goals with weights use:
 				EnforceGate:    true,
 				NoValidate:     noValidate,
 				NoDedup:        noDedup,
+				EstimatedHours: estimateHrs,
+				RequireEstimate: requireEst,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
 				// (tests, migrations) leave Engine zero and skip the review.
@@ -424,6 +428,8 @@ To list goals with weights use:
 	createCmd.Flags().String("sbar-recommendation", "", "SBAR recommendation field (proposed fix, scoped enough to action)")
 	createCmd.Flags().Bool("no-validate", false, "skip Layer-2+3 LLM semantic validation (Layer 1 always runs)")
 	createCmd.Flags().Bool("no-dedup", false, "skip semantic duplicate detection (T-437)")
+	createCmd.Flags().Float64("estimate", 0, "I-591: estimated wall hours for this item (written to time_tracking.estimated_hours)")
+	createCmd.Flags().Bool("require-estimate", false, "I-591: reject if --estimate is not provided")
 	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
 	root.AddCommand(createCmd)
 
@@ -1167,19 +1173,23 @@ in-flight, run 'st release' against the active items first.
 	// applies the B1/C2/D2 stall heuristics against the .as/coordinator.yaml
 	// autonomy boundary, and on any contract-§7 predicate emits a deduped,
 	// substrate-durable escalation and STOPS rather than exceed the
-	// boundary. Single in-flight worker; parallelism_cap is a hard ceiling
-	// (concurrent fan-out is T-364).
+	// boundary. T-364: maintains up to parallelism_cap concurrent workers,
+	// serializing C1 semantic conflicts (same OpenAPI/migration surface) and
+	// stopping all workers on the D1 per-objective budget cap.
 	coordinateCmd := &cobra.Command{
 		Use:   "coordinate",
-		Short: "Pick the next queue item, spawn a budget-capped worker, and supervise it",
-		Long: "Pick the next approved/unblocked queue item, spawn ONE\n" +
-			"budget-capped reasoning worker (via `st spawn`), supervise it\n" +
-			"through the observability substrate (registry PID / session\n" +
-			"JSONL / changelog — never worker self-report), apply the\n" +
-			"B1/C2/D2 stall heuristics against theraprac-workspace/.as/\n" +
-			"coordinator.yaml, and on any contract-§7 predicate file a\n" +
-			"deduped, dependency-linked blocker + durable record and STOP\n" +
-			"rather than exceed the autonomy boundary.\n\n" +
+		Short: "Pick next queue items, spawn budget-capped workers up to parallelism_cap, and supervise them",
+		Long: "Pick the next approved/unblocked queue items and spawn up to\n" +
+			"parallelism_cap budget-capped reasoning workers (via `st spawn`)\n" +
+			"concurrently, supervising each through the observability substrate\n" +
+			"(registry PID / session JSONL / changelog — never worker self-\n" +
+			"report) and applying the B1/C2/D2 stall heuristics against\n" +
+			"theraprac-workspace/.as/coordinator.yaml. C1 semantic conflicts\n" +
+			"(two items on the same OpenAPI/migration surface) are serialized,\n" +
+			"not run in parallel. On any contract-§7 predicate it files a\n" +
+			"deduped, dependency-linked blocker + durable record and STOPS\n" +
+			"rather than exceed the boundary; crossing the D1 per-objective\n" +
+			"budget cap stops all in-flight workers.\n\n" +
 			"--dry-run resolves the boundary + the next pick and prints the\n" +
 			"would-be plan, launching/escalating nothing (contract §11 read-only).",
 		Args: cobra.NoArgs,
@@ -2726,16 +2736,19 @@ rates. I-180.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			strict, _ := cmd.Flags().GetBool("strict")
 			bypassReview, _ := cmd.Flags().GetBool("bypass-review")
+			requireEst, _ := cmd.Flags().GetBool("require-estimate")
 			engine := command.DefaultRunEngine()
 			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{
-				Strict:       strict,
-				Engine:       &engine,
-				BypassReview: bypassReview,
+				Strict:          strict,
+				Engine:          &engine,
+				BypassReview:    bypassReview,
+				RequireEstimate: requireEst,
 			})
 		},
 	}
 	planApproveCmd.Flags().Bool("strict", false, "deprecated alias — AC verifiability gate now fires unconditionally (I-710); flag preserved for CI back-compat")
 	planApproveCmd.Flags().Bool("bypass-review", false, "skip the I-710 plan-review sub-agent (operator escape hatch when the sub-agent is broken or the plan has been manually reviewed) — I-752")
+	planApproveCmd.Flags().Bool("require-estimate", false, "I-591: block approval unless time_tracking.estimated_hours is set (> 0)")
 	planResetCmd := &cobra.Command{
 		Use:   "reset <id>",
 		Short: "Revoke plan approval; same plan body, needs re-approval",
@@ -2891,6 +2904,38 @@ st plan approve <id> separately (which runs the full review sub-agent).`,
 	planWriteCmd.Flags().Bool("self-approve", false, "after writing, run static gates (SBAR+AC) and auto-approve if they pass (no review sub-agent)")
 
 	planCmd.AddCommand(planApproveCmd, planResetCmd, planInvalidateCmd, planCheckCmd, planShowCmd, planPrepCmd, planWriteCmd)
+
+	// I-591: st phase — per-phase time tracking
+	phaseCmd := &cobra.Command{
+		Use:   "phase",
+		Short: "Manage per-phase time tracking (plan, code, test, pr-fix)",
+	}
+	phaseStartCmd := &cobra.Command{
+		Use:   "start <id> <phase>",
+		Short: "Begin a named phase (plan|code|test|pr-fix) on the given item",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PhaseStart(appStore, appCfg, args[0], args[1])
+		},
+	}
+	phaseDoneCmd := &cobra.Command{
+		Use:   "done <id>",
+		Short: "End the currently active phase on the given item",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PhaseDone(appStore, appCfg, args[0])
+		},
+	}
+	phaseStatusCmd := &cobra.Command{
+		Use:   "status <id>",
+		Short: "Print the currently active phase on the given item",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.PhaseStatus(appStore, appCfg, args[0])
+		},
+	}
+	phaseCmd.AddCommand(phaseStartCmd, phaseDoneCmd, phaseStatusCmd)
+	root.AddCommand(phaseCmd)
 	root.AddCommand(planCmd)
 
 	filesCmd := &cobra.Command{
