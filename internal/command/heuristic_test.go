@@ -106,7 +106,7 @@ func TestResumeShowsHeuristics(t *testing.T) {
 	}
 
 	item := &model.Item{ID: "I-804", Title: "heuristic test", Type: "issue", Status: "active"}
-	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{})
+	out := renderResume(cfg, item, nil, "", "", "x", tapeAudit{verified: true, message: "ok"}, remoteState{}, nil, nil)
 
 	if !strings.Contains(out, "## Heuristics") {
 		t.Errorf("resume output should contain ## Heuristics section:\n%s", out)
