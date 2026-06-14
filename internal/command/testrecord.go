@@ -114,6 +114,10 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	// changes the suite is applicable and the skip is rejected as before.
 	if opts.Skip != "" {
 		if isRequired {
+			if item.ScopeClass != "" {
+				fmt.Fprintf(os.Stderr, "cannot skip required suite %q on class item — class suites must always run (use --run or --auto)\n", suite)
+				return 1
+			}
 			repo := autoScopeRepo(suite)
 			notApplicable := false
 			if repo != "" && cfg.Worktree != nil {
@@ -126,6 +130,8 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 			if !notApplicable {
 				if repo == "" {
 					fmt.Fprintf(os.Stderr, "cannot skip required suite %q — no repo mapping (use --auto or --run instead)\n", suite)
+				} else if cfg.Worktree == nil {
+					fmt.Fprintf(os.Stderr, "cannot skip required suite %q — worktree not configured, cannot verify repo diff (use --run or --auto)\n", suite)
 				} else {
 					fmt.Fprintf(os.Stderr, "cannot skip required suite %q — repo %s has changes (use --auto or --run instead)\n", suite, repo)
 				}

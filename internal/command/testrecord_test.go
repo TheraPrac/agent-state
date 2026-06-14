@@ -1809,6 +1809,79 @@ func TestTestRecord_SkipRequiredSuite_NotApplicable_I1304(t *testing.T) {
 	}
 }
 
+// I-1304: --skip on a class-required suite must be rejected even when the
+// suite's repo has no diff. Before the ScopeClass guard was added to the
+// --skip path, a class item with cfg.Worktree != nil and no repo changes
+// would silently accept the skip — violating the class-suite invariant.
+func TestTestRecord_SkipRequiredSuite_ClassItem_Rejected_I1304(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
+		"workspace-config": {
+			RequiredSuites: map[string]config.SuiteConfig{
+				"workspace_test": {Command: "bash run.sh"},
+			},
+		},
+	}
+	// Worktree configured with temp dir — detectTouchedRepos returns empty map
+	// (no real git repos). Pre-fix this made notApplicable=true and skip accepted.
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		Repos:   []string{"as"},
+		RepoMap: map[string]string{"as": "as"},
+		BaseDir: t.TempDir(),
+	}
+
+	if err := s.Mutate("T-003", func(it *model.Item) error {
+		it.ScopeClass = "workspace-config"
+		it.Doc.SetField("scope_class", "workspace-config")
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-003: %v", err)
+	}
+
+	opts := testRecordOpts()
+	opts.Skip = "no workspace changes"
+
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
+			if code == 0 {
+				t.Error("TestRecord should reject --skip on class-required suite even when repo has no diff")
+			}
+		})
+	})
+	if !strings.Contains(stderr, "class item") {
+		t.Errorf("expected 'class item' in error message; got: %s", stderr)
+	}
+}
+
+// I-1304: when cfg.Worktree is nil (worktree not configured), the rejection
+// message should say "worktree not configured" — not "repo has changes" (which
+// is factually wrong since no diff check was performed).
+func TestTestRecord_SkipRequiredSuite_WorktreeNil_ClearMessage_I1304(t *testing.T) {
+	s, cfg := setupPRTestEnv(t)
+	// cfg.Worktree is nil by default from setupPRTestEnv.
+
+	opts := testRecordOpts()
+	opts.Skip = "no api changes"
+
+	var stderrOut string
+	captureStdout(t, func() {
+		stderrOut = captureStderrStr(t, func() {
+			code := TestRecord(s, cfg, "T-003", "api_lint", opts)
+			if code == 0 {
+				t.Error("TestRecord should reject --skip when worktree is not configured")
+			}
+		})
+	})
+	if strings.Contains(stderrOut, "has changes") {
+		t.Errorf("rejection message should not claim 'has changes' when worktree unconfigured; got: %s", stderrOut)
+	}
+	if !strings.Contains(stderrOut, "worktree not configured") {
+		t.Errorf("expected 'worktree not configured' in error message; got: %s", stderrOut)
+	}
+}
+
 // I-1304: --skip on a required suite must be rejected when the suite's repo
 // cannot be determined (suite has no repo prefix mapping) — we can't confirm
 // not-applicable without a repo to check.

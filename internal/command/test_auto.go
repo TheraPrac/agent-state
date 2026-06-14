@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jfinlinson/agent-state/internal/changelog"
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
@@ -117,6 +118,9 @@ func autoRecordSkips(s *store.Store, cfg *config.Config, id string, item *model.
 			fmt.Fprintf(os.Stderr, "recording auto-skip for %s: %v\n", name, err)
 			return 1
 		}
+		changelog.Append(cfg, id, changelog.Entry{
+			Op: "test_skipped", Field: "testing_evidence." + name, NewValue: ev,
+		})
 		skipped = append(skipped, name)
 	}
 	if len(skipped) > 0 {
