@@ -60,6 +60,7 @@ func Maintain(s *store.Store, cfg *config.Config, opts MaintainOpts) int {
 	}
 	pruneMergedBranches(root, mergedPR, doneItems, opts)
 	returnToCleanMain(root, mergedPR, doneItems, opts)
+	auditChangelogSizes(cfg.ChangelogDir())
 	return 0
 }
 
@@ -390,6 +391,37 @@ func stashIsAllChurn(root string) bool {
 		}
 	}
 	return any
+}
+
+// ── Phase 4: changelog size audit ───────────────────────────────────────────
+
+const changelogWarnBytes int64 = 10 * 1024 * 1024 // 10 MB
+
+// auditChangelogSizes scans dir for changelog files that exceed changelogWarnBytes
+// and prints a warning for each. Informational only — never modifies anything.
+func auditChangelogSizes(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // dir absent or unreadable — not an error condition
+	}
+	var warned int
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.Size() >= changelogWarnBytes {
+			fmt.Printf("  changelog: %s is %.1f MB — consider manual cleanup\n",
+				e.Name(), float64(info.Size())/(1024*1024))
+			warned++
+		}
+	}
+	if warned > 0 {
+		fmt.Printf("  changelog: %d oversized file(s) found — investigate with: du -sh %s/*.log | sort -rh | head\n", warned, dir)
+	}
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
