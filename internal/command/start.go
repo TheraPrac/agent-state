@@ -504,9 +504,10 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	}
 	fmt.Printf("DISPATCH: launch session with model=%s\n", dispatchTier)
 
-	// I-1326: hint when item has no goal link — it won't appear in goal-weighted ranking.
+	// I-1326/I-1328: hint when item has no active goal link — it won't appear
+	// in goal-weighted ranking. Also fires when all linked goals are terminal.
 	// Skip for goal-type items: goals don't have parent goals.
-	if item.Type != "goal" && len(item.Goals) == 0 {
+	if item.Type != "goal" && !hasActiveGoalLink(s, item.Goals) {
 		allGoals := s.List(store.TypeFilter("goal"))
 		var goalHints []string
 		for _, g := range allGoals {
@@ -514,7 +515,11 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 				goalHints = append(goalHints, fmt.Sprintf("%s (%s)", g.ID, g.Title))
 			}
 		}
-		fmt.Fprintf(os.Stderr, "hint: %s has no goal link — it won't appear in goal-weighted ranking\n", id)
+		reason := "has no goal link"
+		if len(item.Goals) > 0 {
+			reason = "has no active goal link"
+		}
+		fmt.Fprintf(os.Stderr, "hint: %s %s — it won't appear in goal-weighted ranking\n", id, reason)
 		if len(goalHints) > 0 {
 			fmt.Fprintf(os.Stderr, "  add one: st item goals add %s <goal-id>\n", id)
 			fmt.Fprintf(os.Stderr, "  active goals: %s\n", strings.Join(goalHints, ", "))
@@ -845,4 +850,16 @@ func writeWorkinfo(workDir, id, branch string, repos []string) {
 		b.WriteString(fmt.Sprintf("  - %s\n", r))
 	}
 	os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// hasActiveGoalLink reports true when at least one goal in goals resolves to
+// an item with status "active". Items linked only to terminal (met/dropped)
+// goals behave as if unlinked for ranking purposes — I-1328.
+func hasActiveGoalLink(s *store.Store, goals []string) bool {
+	for _, gid := range goals {
+		if g, ok := s.Get(gid); ok && g.Type == "goal" && g.Status == "active" {
+			return true
+		}
+	}
+	return false
 }
