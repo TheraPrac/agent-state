@@ -108,8 +108,11 @@ type Item struct {
 	// duplicate key silently drops the earlier value and the file looks
 	// clean to schema validation; `st check` reads this to fail loud
 	// (I-1439). Populated by parse.File; empty for well-formed files.
-	// Block-scalar and code-fence body lines are excluded by construction
-	// (the parser consumes them before the top-level key branch).
+	// Properly-indented block-scalar and ```fence body lines are excluded
+	// (the parser consumes them before the top-level key branch); a
+	// dedented block-terminating line (the I-487 signature) is recorded
+	// but not flagged, so a healthy dedented-SBAR file is never called
+	// corrupt.
 	DuplicateTopLevelKeys []string
 }
 

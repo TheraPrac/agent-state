@@ -71,6 +71,13 @@ func File(path string) (*model.Item, error) {
 		raw := scanner.Text()
 		line := model.Line{Raw: raw}
 
+		// I-1439: true only for the line that terminates an open block
+		// scalar by dedenting to a low indent. Such a line is the I-487
+		// dedent-corruption signature — it may be block prose that merely
+		// looks like `<key>: value` rather than a real field — so it is
+		// recorded as `seen` but NOT flagged as a duplicate.
+		blockEndedThisLine := false
+
 		// Classify the line
 		trimmed := strings.TrimSpace(raw)
 		line.IsEmpty = trimmed == ""
@@ -125,6 +132,7 @@ func File(path string) (*model.Item, error) {
 			// Block ended — store the accumulated content
 			storeMultiline(item, currentKey, nestKey, currentBlock)
 			inBlock = false
+			blockEndedThisLine = true
 			currentBlock = ""
 
 			// Re-run fence detection: the line that ended the block may
@@ -256,17 +264,21 @@ func File(path string) (*model.Item, error) {
 				// I-1439: a canonical top-level key seen twice is
 				// duplicate-key corruption (the parser keeps only the last
 				// value, silently dropping schema data — the I-089 class).
-				// Only genuine indent-0 key declarations reach here — list
-				// items, block-scalar bodies, and ```fence bodies all
-				// `continue` above, so this never flags prose/code inside a
-				// block (e.g. T-304's ```yaml fence). Scoped to
-				// CanonicalTopLevelKeys: a repeated NON-schema key (e.g. an
-				// acceptance_criteria list written as bare `cmd:` lines —
-				// the separate I-691 legacy-format class) drops no schema
-				// field and is out of scope here.
+				// Properly-indented block-scalar bodies and ```fence bodies
+				// `continue` above, so they never reach here. The one
+				// remaining ambiguity is a block scalar whose body is
+				// DEDENTED to a low indent (the I-487 signature): such a
+				// line terminates the block and falls through here. We still
+				// record it as `seen` (so a genuine later duplicate is
+				// caught) but do NOT flag it as a duplicate, because it may
+				// be block prose that merely looks like `<key>:` rather than
+				// a real second field — flagging it would call a healthy
+				// dedented-SBAR file corrupt. Scoped to CanonicalTopLevelKeys:
+				// a repeated NON-schema key (e.g. the bare-`cmd:` legacy AC
+				// format, I-691) drops no schema field and is out of scope.
 				if model.CanonicalTopLevelKeys[key] {
 					if seenTopLevel[key] {
-						if !dupSeen[key] {
+						if !blockEndedThisLine && !dupSeen[key] {
 							dupSeen[key] = true
 							dupTopLevel = append(dupTopLevel, key)
 						}

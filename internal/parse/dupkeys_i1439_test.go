@@ -77,3 +77,52 @@ cmd: go test ./...
 		t.Errorf("non-canonical duplicate (cmd) must not flag; got %v", item.DuplicateTopLevelKeys)
 	}
 }
+
+func TestParseIgnoresDedentedBlockKeyLookalike(t *testing.T) {
+	// I-487 signature: an UNFENCED block-scalar body dedented to column 0
+	// containing a line that looks like a canonical key (`status:`). The
+	// dedent terminates the block and the line falls into the key branch,
+	// but it must NOT be flagged as a duplicate — the file is healthy
+	// dedented prose, not duplicate-key corruption.
+	content := `id: I-7
+type: task
+status: queued
+sbar:
+  recommendation: |-
+    Design note about the workflow.
+status: blocked is just dedented prose, not a field
+last_touched_by: agent-a
+`
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if len(item.DuplicateTopLevelKeys) != 0 {
+		t.Errorf("dedented block prose must not flag as duplicate; got %v", item.DuplicateTopLevelKeys)
+	}
+}
+
+func TestParseDetectsDuplicateAfterBlockScalar(t *testing.T) {
+	// Guard against the false negative the dedent-suppression could
+	// introduce: a genuine duplicate whose FIRST occurrence terminates a
+	// block scalar must still be caught on its SECOND (non-block-ending)
+	// occurrence. Here last_touched_by ends the sbar block, then recurs.
+	content := `id: I-8
+type: task
+status: done
+sbar:
+  recommendation: |-
+    prose body of the recommendation.
+last_touched_by: agent-a
+delivery:
+  stage: closed
+last_touched_by: agent-b
+`
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if got := item.DuplicateTopLevelKeys; len(got) != 1 || got[0] != "last_touched_by" {
+		t.Errorf("genuine duplicate after a block scalar must be caught; got %v", got)
+	}
+}
