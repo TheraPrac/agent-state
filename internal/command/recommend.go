@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jfinlinson/agent-state/internal/agent"
@@ -105,6 +106,11 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 
 	if len(recs) == 0 {
 		fmt.Fprintln(w, "No recommendable items (none workable in scope).")
+		// I-1435: surface peer-assigned items so the operator knows why
+		// the list is empty rather than seeing a confusing blank output.
+		if peers := peerAssignedReady(g, cfg.AgentID()); len(peers) > 0 {
+			printPeerNote(w, peers)
+		}
 		return 0
 	}
 	if opts.Brief && !opts.JSON {
@@ -116,7 +122,44 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 		fmt.Fprintf(w, "%-8s p%d  %s\n", r.Item.ID, r.Priority, r.Item.Title)
 		fmt.Fprintf(w, "      why: %s\n", r.Rationale())
 	}
+	// I-1435: append peer note after results so agents know what's unavailable.
+	if peers := peerAssignedReady(g, cfg.AgentID()); len(peers) > 0 {
+		printPeerNote(w, peers)
+	}
 	return 0
+}
+
+// peerAssignedReady returns items that are unblocked and in a workable
+// start status but have been assigned to a different agent. These are
+// excluded from normal recommendation but surfaced as a note so agents
+// understand why the effective candidate set is smaller than expected.
+func peerAssignedReady(g *deps.Graph, agentID string) []*model.Item {
+	var peers []*model.Item
+	for id, item := range g.Items {
+		if item.AssignedTo == "" || item.AssignedTo == agentID {
+			continue
+		}
+		tc, ok := g.Cfg.Types[item.Type]
+		if !ok || item.Status != tc.StartStatus {
+			continue
+		}
+		if g.IsBlocked(id) {
+			continue
+		}
+		peers = append(peers, item)
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+	return peers
+}
+
+// printPeerNote writes a one-line footer listing peer-assigned items.
+func printPeerNote(w io.Writer, peers []*model.Item) {
+	parts := make([]string, 0, len(peers))
+	for _, p := range peers {
+		parts = append(parts, fmt.Sprintf("%s [%s]", p.ID, p.AssignedTo))
+	}
+	fmt.Fprintf(w, "(%d item(s) not shown — assigned to peers: %s)\n",
+		len(peers), strings.Join(parts, ", "))
 }
 
 // recommendCandidates resolves the candidate set from item properties:

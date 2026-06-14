@@ -376,9 +376,13 @@ func TestStartAssignedToOther(t *testing.T) {
 	os.Setenv("AS_AGENT_ID", "agent-b")
 	defer os.Unsetenv("AS_AGENT_ID")
 
-	// T-001 is queued and unassigned, but let's assign it first
-	item, _ := s.Get("T-001")
-	item.AssignedTo = "agent-a"
+	// Write assigned_to directly to disk so the fresh re-read in Start()
+	// (I-1435) sees the peer assignment rather than the in-memory value.
+	p, _ := s.Path("T-001")
+	content, _ := os.ReadFile(p)
+	updated := strings.ReplaceAll(string(content),
+		"last_touched:", "assigned_to: agent-a\nlast_touched:")
+	os.WriteFile(p, []byte(updated), 0644)
 
 	code := Start(s, cfg, "T-001", StartOpts{})
 	if code != 1 {

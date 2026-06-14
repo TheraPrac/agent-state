@@ -14,6 +14,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/deps"
 	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/jfinlinson/agent-state/internal/parse"
 	"github.com/jfinlinson/agent-state/internal/session"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -134,10 +135,26 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// can find a free item that the registry would have flagged as taken.
 	primeClaimState(s, cfg)
 
+	// I-1435: pull the latest from remote before reading the item so the
+	// peer-assignment check below sees fresh state. Without this, an agent
+	// whose local store was loaded before a peer pushed assigned_to could
+	// slip past the ownership gate. Best-effort: if the pull fails or the
+	// re-read fails, fall through to the in-memory value — the push-time
+	// guard is the backstop.
+	store.GitPull(cfg)
+
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
 		return 1
+	}
+
+	// Re-read from disk to pick up any assigned_to written by a peer after
+	// our store was loaded into memory.
+	if path, hasPath := s.Path(id); hasPath {
+		if fresh, err := parse.File(path); err == nil {
+			item = fresh
+		}
 	}
 
 	// Check: must be in start status
@@ -170,7 +187,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	identity := cfg.Identity()
 	agentID := identity.ID
 	if item.AssignedTo != "" && item.AssignedTo != agentID {
-		fmt.Fprintf(os.Stderr, "%s is assigned to %s — use `as release %s` first\n", id, item.AssignedTo, id)
+		fmt.Fprintf(os.Stderr, "%s is assigned to %s — use `st release %s` first\n", id, item.AssignedTo, id)
 		return 1
 	}
 

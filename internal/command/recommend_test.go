@@ -398,3 +398,50 @@ func setupTestEnvWithGoal(t *testing.T, active bool) (*store.Store, *config.Conf
 	}
 	return s2, cfg
 }
+
+// TestRecommend_SurfacesPeerAssignedItems verifies that items assigned to a
+// peer agent are surfaced as a footnote rather than silently dropped (I-1435).
+func TestRecommend_SurfacesPeerAssignedItems(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	root := cfg.Root()
+
+	writeFile(t, filepath.Join(root, "tasks", "T-005-peer-owned.md"), `id: T-005
+type: task
+status: queued
+created: 2026-01-01T10:00:00-06:00
+last_touched: 2026-01-01T10:00:00-06:00
+assigned_to: agent-peer
+priority: 0
+
+completed: null
+
+title: Peer-owned task
+
+sbar:
+  situation: Peer-owned task fixture for I-1435 test.
+  background: Tests that peer-assigned items appear in the footnote.
+  assessment: Should not appear as a normal candidate.
+  recommendation: Test only.
+`)
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	var rc int
+	out := captureStdout(t, func() { rc = Recommend(s2, cfg, RecommendOpts{}) })
+	if rc != 0 {
+		t.Fatalf("Recommend returned %d\n%s", rc, out)
+	}
+	if !strings.Contains(out, "not shown") {
+		t.Errorf("output must contain peer-assigned footnote; got:\n%s", out)
+	}
+	if !strings.Contains(out, "agent-peer") {
+		t.Errorf("footnote must name the peer agent; got:\n%s", out)
+	}
+	if !strings.Contains(out, "T-005") {
+		t.Errorf("footnote must name the peer-assigned item; got:\n%s", out)
+	}
+	_ = s
+}
