@@ -68,6 +68,21 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 
 	// Validate each item
 	for id, item := range s.All() {
+		// I-1439: fail loud on duplicate top-level frontmatter keys. The
+		// parser is last-value-wins, so a stray second `blocks:`/`goals:`
+		// (e.g. from a peer-merge conflict or a hand edit) silently drops
+		// the earlier value and the file otherwise passes schema validation.
+		// parse.File flags these without false-positiving on block-scalar /
+		// ```fence bodies. Not auto-fixed — which value is authoritative
+		// needs human judgment (`st migrate` re-serializes keep-last).
+		if len(item.DuplicateTopLevelKeys) > 0 {
+			issues++
+			if !quiet {
+				fmt.Printf("  \033[31m✗\033[0m %s: duplicate top-level key(s) %v — frontmatter is corrupt (parser keeps only the last value); fix by hand or `st migrate %s`\n",
+					id, item.DuplicateTopLevelKeys, id)
+			}
+		}
+
 		// Schema validation (includes type-specific required fields)
 		r := validate.Item(item, cfg)
 		for _, e := range r.Errors {

@@ -101,6 +101,16 @@ type Item struct {
 
 	// The full parsed document (for roundtrip fidelity)
 	Doc *ParsedDocument
+
+	// DuplicateTopLevelKeys is a parse-derived diagnostic (NOT a schema
+	// field, never serialized): the set of top-level frontmatter keys
+	// that appeared more than once. The parser is last-value-wins, so a
+	// duplicate key silently drops the earlier value and the file looks
+	// clean to schema validation; `st check` reads this to fail loud
+	// (I-1439). Populated by parse.File; empty for well-formed files.
+	// Block-scalar and code-fence body lines are excluded by construction
+	// (the parser consumes them before the top-level key branch).
+	DuplicateTopLevelKeys []string
 }
 
 // SBAR is the four-section composite content of an item. Each field

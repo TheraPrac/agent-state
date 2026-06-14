@@ -56,6 +56,17 @@ func File(path string) (*model.Item, error) {
 		currentMapItem map[string]string
 	)
 
+	// I-1439: track top-level frontmatter keys to fail loud on duplicates.
+	// The parser is last-value-wins, so a duplicate key silently overwrites
+	// and the file parses as if clean. seenTopLevel records keys observed at
+	// the indent-0 key branch (block-scalar and code-fence bodies are
+	// consumed earlier and never reach it, so dedented prose / ```yaml
+	// fences like T-304's do not count); dupTopLevel collects each
+	// duplicated key once, in first-duplicate order.
+	seenTopLevel := map[string]bool{}
+	dupSeen := map[string]bool{}
+	var dupTopLevel []string
+
 	for scanner.Scan() {
 		raw := scanner.Text()
 		line := model.Line{Raw: raw}
@@ -242,6 +253,28 @@ func File(path string) (*model.Item, error) {
 			line.Value = val
 
 			if line.Indent == 0 {
+				// I-1439: a canonical top-level key seen twice is
+				// duplicate-key corruption (the parser keeps only the last
+				// value, silently dropping schema data — the I-089 class).
+				// Only genuine indent-0 key declarations reach here — list
+				// items, block-scalar bodies, and ```fence bodies all
+				// `continue` above, so this never flags prose/code inside a
+				// block (e.g. T-304's ```yaml fence). Scoped to
+				// CanonicalTopLevelKeys: a repeated NON-schema key (e.g. an
+				// acceptance_criteria list written as bare `cmd:` lines —
+				// the separate I-691 legacy-format class) drops no schema
+				// field and is out of scope here.
+				if model.CanonicalTopLevelKeys[key] {
+					if seenTopLevel[key] {
+						if !dupSeen[key] {
+							dupSeen[key] = true
+							dupTopLevel = append(dupTopLevel, key)
+						}
+					} else {
+						seenTopLevel[key] = true
+					}
+				}
+
 				// Flush any pending list
 				if len(currentList) > 0 && currentKey != "" {
 					storeList(item, currentKey, nestKey, currentList)
@@ -342,6 +375,7 @@ func File(path string) (*model.Item, error) {
 	}
 
 	item.Doc = doc
+	item.DuplicateTopLevelKeys = dupTopLevel
 	return item, nil
 }
 
