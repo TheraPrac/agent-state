@@ -207,6 +207,31 @@ func ValidatePlan(p *plan.Plan) []Violation {
 			Message:  "scope_repos is empty — list every repo this plan touches (as, theraprac-api, theraprac-web, theraprac-infra) in the frontmatter or `## Scope` section",
 		})
 	}
+	// T-394: require ## Tests, ## Out-of-scope, and ## Risks sections.
+	tests := strings.TrimSpace(p.Tests)
+	if scaffoldApproach[strings.ToLower(tests)] {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan.tests",
+			Message:  "## Tests section is missing or empty — describe what tests cover this work (unit, integration, e2e, or 'None — existing coverage sufficient: <reason>')",
+		})
+	}
+	outOfScope := strings.TrimSpace(p.OutOfScope)
+	if outOfScope == "" {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan.out_of_scope",
+			Message:  "## Out-of-scope section is missing — list out-of-scope items as linked issues (I-XXX: description), or write 'None' to explicitly acknowledge no out-of-scope work",
+		})
+	}
+	risks := strings.TrimSpace(p.Risks)
+	if scaffoldApproach[strings.ToLower(risks)] {
+		out = append(out, Violation{
+			Severity: SeverityError,
+			Field:    "plan.risks",
+			Message:  "## Risks section is missing or empty — list risks and mitigations, or write 'None — low-risk change: <reason>'",
+		})
+	}
 	out = append(out, ValidateACList(p.ACs)...)
 	return out
 }

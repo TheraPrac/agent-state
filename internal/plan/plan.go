@@ -21,6 +21,9 @@ type Plan struct {
 	RejectedAt     string     // timestamp of rejection
 	PrepReviewedAt string     // RFC3339; set by prepItem/prepItemWriteOnly after LLM review — signals st plan approve to skip duplicate sub-agent
 	Approach       string     // high-level approach description
+	Tests          string     // T-394: what tests cover this plan
+	OutOfScope     string     // T-394: explicitly acknowledged out-of-scope items
+	Risks          string     // T-394: risks and mitigations
 	Steps          []string   // ordered implementation steps
 	FilesToCreate  []string   // new files to create
 	FilesToModify  []string   // existing files to change
@@ -206,6 +209,15 @@ func Parse(text string) (*Plan, error) {
 	if v, ok := sections["Approach"]; ok {
 		p.Approach = strings.TrimSpace(v)
 	}
+	if v, ok := sections["Tests"]; ok {
+		p.Tests = strings.TrimSpace(v)
+	}
+	if v, ok := sections["Out-of-scope"]; ok {
+		p.OutOfScope = strings.TrimSpace(v)
+	}
+	if v, ok := sections["Risks"]; ok {
+		p.Risks = strings.TrimSpace(v)
+	}
 	if v, ok := sections["Scope"]; ok && len(p.ScopeRepos) == 0 {
 		p.ScopeRepos = parseScopeRepos(v)
 	}
@@ -263,6 +275,27 @@ func Render(p *Plan) string {
 	if p.Approach != "" {
 		b.WriteString("## Approach\n")
 		b.WriteString(p.Approach)
+		b.WriteString("\n\n")
+	}
+
+	// Tests
+	if p.Tests != "" {
+		b.WriteString("## Tests\n")
+		b.WriteString(p.Tests)
+		b.WriteString("\n\n")
+	}
+
+	// Out-of-scope
+	if p.OutOfScope != "" {
+		b.WriteString("## Out-of-scope\n")
+		b.WriteString(p.OutOfScope)
+		b.WriteString("\n\n")
+	}
+
+	// Risks
+	if p.Risks != "" {
+		b.WriteString("## Risks\n")
+		b.WriteString(p.Risks)
 		b.WriteString("\n\n")
 	}
 

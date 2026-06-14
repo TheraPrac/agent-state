@@ -165,6 +165,9 @@ title: Done task
 			Approach:   "Fixture plan for tests.",
 			ScopeRepos: []string{"as"},
 			ACs:        []string{"cmd: go test ./..."},
+			Tests:      "Covered by existing test suite.",
+			OutOfScope: "None",
+			Risks:      "Low risk.",
 		}); err != nil {
 			t.Fatalf("seeding sidecar for %s: %v", id, err)
 		}

@@ -413,6 +413,74 @@ func TestParseList_PreservesInnerBackticks(t *testing.T) {
 	}
 }
 
+// T-394: ## Tests, ## Out-of-scope, and ## Risks sections parse and round-trip.
+func TestParseSectionsTests_OutOfScope_Risks(t *testing.T) {
+	md := `---
+scope_repos: [as]
+plan_approved: false
+---
+
+## Approach
+Real approach.
+
+## Tests
+Unit tests in quality_plan_test.go.
+
+## Out-of-scope
+None
+
+## Risks
+Low risk confined to quality.go.
+
+## Acceptance Criteria
+- cmd: go test ./...
+`
+	p, err := Parse(md)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Tests != "Unit tests in quality_plan_test.go." {
+		t.Errorf("Tests = %q, want 'Unit tests in quality_plan_test.go.'", p.Tests)
+	}
+	if p.OutOfScope != "None" {
+		t.Errorf("OutOfScope = %q, want 'None'", p.OutOfScope)
+	}
+	if p.Risks != "Low risk confined to quality.go." {
+		t.Errorf("Risks = %q, want 'Low risk confined to quality.go.'", p.Risks)
+	}
+}
+
+func TestRenderIncludesTests_OutOfScope_Risks(t *testing.T) {
+	p := &Plan{
+		Approach:   "Real approach.",
+		Tests:      "Unit tests in quality_plan_test.go.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}
+	rendered := Render(p)
+	for _, want := range []string{"## Tests\n", "## Out-of-scope\n", "## Risks\n"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("Render output missing %q; output:\n%s", want, rendered)
+		}
+	}
+	// Round-trip: parse the rendered output and check fields survive.
+	p2, err := Parse(rendered)
+	if err != nil {
+		t.Fatalf("Parse(Render(...)): %v", err)
+	}
+	if p2.Tests != p.Tests {
+		t.Errorf("Tests round-trip: got %q, want %q", p2.Tests, p.Tests)
+	}
+	if p2.OutOfScope != p.OutOfScope {
+		t.Errorf("OutOfScope round-trip: got %q, want %q", p2.OutOfScope, p.OutOfScope)
+	}
+	if p2.Risks != p.Risks {
+		t.Errorf("Risks round-trip: got %q, want %q", p2.Risks, p.Risks)
+	}
+}
+
 // I-767: DeleteReport removes the .report.md sidecar; idempotent.
 func TestDeleteReportRemovesReport(t *testing.T) {
 	dir := t.TempDir()

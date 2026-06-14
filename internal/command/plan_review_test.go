@@ -122,6 +122,9 @@ func TestPlanApproveStrictFlagAcceptedAsNoopForACs(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -144,6 +147,9 @@ func TestPlanCheckBlocksOnNonVerifiableACs(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -178,6 +184,9 @@ func TestPlanApproveRunsPlanReviewSubAgent(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -211,6 +220,9 @@ func TestPlanApproveSkipsReviewWhenEngineNil(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -301,6 +313,9 @@ func TestPlanApproveAcceptsOnAutoFixCapExhaustion(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -337,6 +352,9 @@ func TestPlanReviewAutoFixTimeoutPropagated(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -416,6 +434,9 @@ func TestPlanApproveAutoFixFailureRefusesApproval(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -461,6 +482,9 @@ func TestPlanApproveAcceptWithNotesExhaustionPersistsNotes(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}

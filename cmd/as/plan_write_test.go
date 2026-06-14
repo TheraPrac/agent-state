@@ -15,8 +15,9 @@ import (
 )
 
 // validPlanBody returns a minimal plan body that satisfies
-// quality.ValidatePlan (Approach non-empty, scope_repos present,
-// at least one verifiable AC).
+// quality.ValidatePlan (Approach, Tests, Out-of-scope, Risks non-empty,
+// scope_repos present, at least one verifiable AC). T-394 added the
+// new required sections.
 func validPlanBody() string {
 	return `---
 scope_repos: [as]
@@ -25,6 +26,15 @@ scope_repos: [as]
 ## Approach
 Add the PlanWrite command to internal/command/plan.go and wire it
 under planCmd in cmd/as/app.go.
+
+## Tests
+Unit tests in cmd/as/plan_write_test.go covering write and self-approve paths.
+
+## Out-of-scope
+None
+
+## Risks
+Low-risk change confined to cmd/as plumbing.
 
 ## Acceptance criteria
 - cmd: go build ./...

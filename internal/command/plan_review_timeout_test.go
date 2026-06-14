@@ -63,6 +63,9 @@ func TestPlanReviewBypassFlag(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -120,6 +123,9 @@ func TestPlanReviewDefaultFirstPassCap(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -182,6 +188,9 @@ func TestPlanReviewWrapUpSkippedOnCleanPass(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -226,6 +235,9 @@ func TestPlanReviewWrapUpYieldsVerdict(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -428,6 +440,9 @@ func TestPlanReviewSkippedForPrepGeneratedPlan(t *testing.T) {
 		ScopeRepos:     []string{"as"},
 		ACs:            []string{"cmd: go test ./..."},
 		PrepReviewedAt: "2026-06-14T10:00:00-06:00",
+		Tests:          "Covered by existing test suite.",
+		OutOfScope:     "None",
+		Risks:          "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -481,6 +496,9 @@ func TestPlanReviewCalledForHandAuthoredPlan(t *testing.T) {
 		Approach:   "Approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
@@ -533,6 +551,9 @@ func TestPlanReviewBypassFlagWithPrepStamp(t *testing.T) {
 		ScopeRepos:     []string{"as"},
 		ACs:            []string{"cmd: go test ./..."},
 		PrepReviewedAt: "2026-06-14T10:00:00-06:00",
+		Tests:          "Covered by existing test suite.",
+		OutOfScope:     "None",
+		Risks:          "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}

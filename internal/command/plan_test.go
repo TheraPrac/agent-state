@@ -396,6 +396,9 @@ func TestPlanApproveStampsLinkedPlansFromSidecar(t *testing.T) {
 		Approach:   "Test approach.",
 		ScopeRepos: []string{"as"},
 		ACs:        []string{"cmd: echo ok"},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
 	}); err != nil {
 		t.Fatalf("seeding sidecar: %v", err)
 	}

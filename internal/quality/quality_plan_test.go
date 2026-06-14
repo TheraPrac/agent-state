@@ -10,6 +10,9 @@ import (
 func TestValidatePlan_PassesOnPopulated(t *testing.T) {
 	p := &plan.Plan{
 		Approach:   "Real approach paragraph describing the work.",
+		Tests:      "Unit tests in quality_plan_test.go covering all new rules.",
+		OutOfScope: "None",
+		Risks:      "Low-risk change confined to quality.go validation logic.",
 		ScopeRepos: []string{"as"},
 		ACs: []string{
 			"cmd: go test ./...",
@@ -18,6 +21,116 @@ func TestValidatePlan_PassesOnPopulated(t *testing.T) {
 	}
 	if v := ValidatePlan(p); len(v) != 0 {
 		t.Errorf("expected no violations on populated plan, got %d: %v", len(v), v)
+	}
+}
+
+// T-394: ## Tests section required.
+func TestValidatePlan_FlagsMissingTests(t *testing.T) {
+	p := &plan.Plan{
+		Approach:   "Real approach.",
+		Tests:      "",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}
+	v := ValidatePlan(p)
+	if !HasError(v) {
+		t.Fatalf("expected error on missing Tests section; got %v", v)
+	}
+	found := false
+	for _, vi := range v {
+		if vi.Field == "plan.tests" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected violation on plan.tests; got %v", v)
+	}
+}
+
+func TestValidatePlan_FlagsScaffoldTests(t *testing.T) {
+	for _, scaffold := range []string{"TODO", "TBD", "N/A", "none"} {
+		t.Run(scaffold, func(t *testing.T) {
+			p := &plan.Plan{
+				Approach:   "Real approach.",
+				Tests:      scaffold,
+				OutOfScope: "None",
+				Risks:      "Low risk.",
+				ScopeRepos: []string{"as"},
+				ACs:        []string{"cmd: go test ./..."},
+			}
+			v := ValidatePlan(p)
+			if !HasError(v) {
+				t.Errorf("expected error on scaffold Tests %q; got %v", scaffold, v)
+			}
+		})
+	}
+}
+
+// T-394: ## Out-of-scope section required (may be "None").
+func TestValidatePlan_FlagsMissingOutOfScope(t *testing.T) {
+	p := &plan.Plan{
+		Approach:   "Real approach.",
+		Tests:      "Unit tests.",
+		OutOfScope: "",
+		Risks:      "Low risk.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}
+	v := ValidatePlan(p)
+	if !HasError(v) {
+		t.Fatalf("expected error on missing Out-of-scope section; got %v", v)
+	}
+	found := false
+	for _, vi := range v {
+		if vi.Field == "plan.out_of_scope" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected violation on plan.out_of_scope; got %v", v)
+	}
+}
+
+func TestValidatePlan_AcceptsNoneOutOfScope(t *testing.T) {
+	p := &plan.Plan{
+		Approach:   "Real approach.",
+		Tests:      "Unit tests.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}
+	for _, vi := range ValidatePlan(p) {
+		if vi.Field == "plan.out_of_scope" {
+			t.Errorf("'None' Out-of-scope should be accepted; got violation: %v", vi)
+		}
+	}
+}
+
+// T-394: ## Risks section required.
+func TestValidatePlan_FlagsMissingRisks(t *testing.T) {
+	p := &plan.Plan{
+		Approach:   "Real approach.",
+		Tests:      "Unit tests.",
+		OutOfScope: "None",
+		Risks:      "",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+	}
+	v := ValidatePlan(p)
+	if !HasError(v) {
+		t.Fatalf("expected error on missing Risks section; got %v", v)
+	}
+	found := false
+	for _, vi := range v {
+		if vi.Field == "plan.risks" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected violation on plan.risks; got %v", v)
 	}
 }
 
