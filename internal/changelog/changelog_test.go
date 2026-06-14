@@ -153,6 +153,75 @@ func TestAppendCreatesDir(t *testing.T) {
 	}
 }
 
+func TestSnapshotDedup(t *testing.T) {
+	cfg := testCfg(t)
+
+	// First snapshot: should be written.
+	if _, err := Snapshot(cfg, "T-001", "plan_review", "content-v1"); err != nil {
+		t.Fatalf("first Snapshot: %v", err)
+	}
+	entries, _ := Read(cfg, "T-001")
+	if len(entries) != 1 {
+		t.Fatalf("after first snapshot: got %d entries, want 1", len(entries))
+	}
+
+	// Identical content: should be deduped (no write).
+	if _, err := Snapshot(cfg, "T-001", "plan_review", "content-v1"); err != nil {
+		t.Fatalf("duplicate Snapshot: %v", err)
+	}
+	entries, _ = Read(cfg, "T-001")
+	if len(entries) != 1 {
+		t.Errorf("after duplicate snapshot: got %d entries, want 1 (dedup should skip)", len(entries))
+	}
+
+	// Different content: should be written.
+	if _, err := Snapshot(cfg, "T-001", "plan_review", "content-v2"); err != nil {
+		t.Fatalf("changed Snapshot: %v", err)
+	}
+	entries, _ = Read(cfg, "T-001")
+	if len(entries) != 2 {
+		t.Errorf("after changed snapshot: got %d entries, want 2", len(entries))
+	}
+}
+
+func TestSnapshotDedupDifferentField(t *testing.T) {
+	cfg := testCfg(t)
+	// Same content but different field names must both be written.
+	Snapshot(cfg, "T-001", "plan_review", "same-content")
+	Snapshot(cfg, "T-001", "plan_approve", "same-content")
+	entries, _ := Read(cfg, "T-001")
+	if len(entries) != 2 {
+		t.Errorf("different fields with same content: got %d entries, want 2", len(entries))
+	}
+}
+
+func TestAppendSizeGuard(t *testing.T) {
+	cfg := testCfg(t)
+
+	// Pre-seed the log file with more than sizeGuardBytes of data.
+	path := filepath.Join(cfg.ChangelogDir(), "T-001.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := f.Write(make([]byte, sizeGuardBytes+1)); err != nil {
+		t.Fatalf("write seed data: %v", err)
+	}
+	f.Close()
+
+	sizeBefore, _ := os.Stat(path)
+
+	// Append should be a no-op (size guard fires).
+	if err := Append(cfg, "T-001", Entry{Op: "update", Field: "title", NewValue: "x"}); err != nil {
+		t.Fatalf("Append under size guard returned error: %v", err)
+	}
+
+	sizeAfter, _ := os.Stat(path)
+	if sizeAfter.Size() != sizeBefore.Size() {
+		t.Errorf("size guard did not block write: before=%d after=%d", sizeBefore.Size(), sizeAfter.Size())
+	}
+}
+
 func TestEntryFormat(t *testing.T) {
 	tests := []struct {
 		name  string

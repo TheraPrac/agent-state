@@ -1,6 +1,7 @@
 package command
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,6 +326,47 @@ func TestPorcelainPath(t *testing.T) {
 		if got := porcelainPath(line); got != want {
 			t.Errorf("porcelainPath(%q)=%q want %q", line, got, want)
 		}
+	}
+}
+
+func TestAuditChangelogSizes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small file: below the warning threshold.
+	small := filepath.Join(dir, "T-001.log")
+	if err := os.WriteFile(small, make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Large file: above the warning threshold.
+	large := filepath.Join(dir, "T-002.log")
+	f, err := os.Create(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(make([]byte, changelogWarnBytes+1)); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Capture stdout to verify output.
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	auditChangelogSizes(dir)
+
+	w.Close()
+	os.Stdout = old
+	var buf strings.Builder
+	io.Copy(&buf, r)
+	out := buf.String()
+
+	if !strings.Contains(out, "T-002.log") {
+		t.Errorf("expected warning for T-002.log; got: %q", out)
+	}
+	if strings.Contains(out, "T-001.log") {
+		t.Errorf("T-001.log is small — should not appear in output; got: %q", out)
 	}
 }
 

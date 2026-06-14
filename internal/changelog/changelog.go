@@ -127,6 +127,17 @@ func (e Entry) EffectiveKind() Kind {
 // When set, all Append calls include this session ID automatically.
 var ActiveSessionID string
 
+const (
+	// sizeGuardBytes is the per-item changelog size cap. Entries are dropped
+	// (with a stderr warning) once the file reaches this size, bounding the
+	// blast radius of a runaway snapshot loop (I-1454).
+	sizeGuardBytes int64 = 20 * 1024 * 1024
+
+	// tailReadBytes is the window scanned from the file tail when deduplicating
+	// snapshot entries. Large enough to hold several full item YAML snapshots.
+	tailReadBytes int64 = 128 * 1024
+)
+
 // Append adds an entry to the changelog for the given item ID.
 func Append(cfg *config.Config, id string, entry Entry) error {
 	if entry.Timestamp == "" {
@@ -151,6 +162,15 @@ func Append(cfg *config.Config, id string, entry Entry) error {
 	}
 
 	path := filepath.Join(dir, id+".log")
+
+	// Size guard: once a file exceeds sizeGuardBytes, drop subsequent entries
+	// rather than letting a runaway loop fill the disk (I-1454).
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() >= sizeGuardBytes {
+		fmt.Fprintf(os.Stderr, "st: changelog size guard: %s exceeds %d MB — entry dropped\n",
+			filepath.Base(path), sizeGuardBytes/(1024*1024))
+		return nil
+	}
+
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
@@ -243,9 +263,67 @@ func readFile(path string) ([]Entry, error) {
 	return entries, nil
 }
 
+// tailSnapshotContent reads up to tailReadBytes from the tail of path and
+// returns the NewValue of the last snapshot entry matching field.
+// Returns ("", false) when the file doesn't exist or no matching entry is found.
+func tailSnapshotContent(path, field string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", false
+	}
+
+	start := info.Size() - tailReadBytes
+	partial := start > 0
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return "", false
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", false
+	}
+
+	lines := strings.Split(string(data), "\n")
+	if partial && len(lines) > 0 {
+		lines = lines[1:] // first line may be truncated JSON at the seek boundary; skip it
+	}
+
+	var last string
+	found := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		if e.Op == "snapshot" && e.Field == field {
+			last = e.NewValue
+			found = true
+		}
+	}
+	return last, found
+}
+
 // Snapshot records the full document state before a subprocess step.
 // Returns the snapshot content for later diff comparison.
+// Dedup: if the last snapshot for stepName has identical content, the write is
+// skipped to prevent runaway loops from inflating the changelog (I-1454).
 func Snapshot(cfg *config.Config, id, stepName, content string) (string, error) {
+	path := filepath.Join(cfg.ChangelogDir(), id+".log")
+	if last, found := tailSnapshotContent(path, stepName); found && last == content {
+		return content, nil // identical to previous snapshot — skip
+	}
 	entry := Entry{
 		Op:       "snapshot",
 		Field:    stepName,
