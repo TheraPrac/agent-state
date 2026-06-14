@@ -1167,19 +1167,23 @@ in-flight, run 'st release' against the active items first.
 	// applies the B1/C2/D2 stall heuristics against the .as/coordinator.yaml
 	// autonomy boundary, and on any contract-§7 predicate emits a deduped,
 	// substrate-durable escalation and STOPS rather than exceed the
-	// boundary. Single in-flight worker; parallelism_cap is a hard ceiling
-	// (concurrent fan-out is T-364).
+	// boundary. T-364: maintains up to parallelism_cap concurrent workers,
+	// serializing C1 semantic conflicts (same OpenAPI/migration surface) and
+	// stopping all workers on the D1 per-objective budget cap.
 	coordinateCmd := &cobra.Command{
 		Use:   "coordinate",
-		Short: "Pick the next queue item, spawn a budget-capped worker, and supervise it",
-		Long: "Pick the next approved/unblocked queue item, spawn ONE\n" +
-			"budget-capped reasoning worker (via `st spawn`), supervise it\n" +
-			"through the observability substrate (registry PID / session\n" +
-			"JSONL / changelog — never worker self-report), apply the\n" +
-			"B1/C2/D2 stall heuristics against theraprac-workspace/.as/\n" +
-			"coordinator.yaml, and on any contract-§7 predicate file a\n" +
-			"deduped, dependency-linked blocker + durable record and STOP\n" +
-			"rather than exceed the autonomy boundary.\n\n" +
+		Short: "Pick next queue items, spawn budget-capped workers up to parallelism_cap, and supervise them",
+		Long: "Pick the next approved/unblocked queue items and spawn up to\n" +
+			"parallelism_cap budget-capped reasoning workers (via `st spawn`)\n" +
+			"concurrently, supervising each through the observability substrate\n" +
+			"(registry PID / session JSONL / changelog — never worker self-\n" +
+			"report) and applying the B1/C2/D2 stall heuristics against\n" +
+			"theraprac-workspace/.as/coordinator.yaml. C1 semantic conflicts\n" +
+			"(two items on the same OpenAPI/migration surface) are serialized,\n" +
+			"not run in parallel. On any contract-§7 predicate it files a\n" +
+			"deduped, dependency-linked blocker + durable record and STOPS\n" +
+			"rather than exceed the boundary; crossing the D1 per-objective\n" +
+			"budget cap stops all in-flight workers.\n\n" +
 			"--dry-run resolves the boundary + the next pick and prints the\n" +
 			"would-be plan, launching/escalating nothing (contract §11 read-only).",
 		Args: cobra.NoArgs,
