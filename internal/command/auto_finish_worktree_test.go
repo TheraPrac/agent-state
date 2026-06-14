@@ -8,6 +8,47 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 )
 
+// TestTryAutoFinishWorktreeReadsWorkinfo — extra repos registered via
+// `st worktree add` live in .workinfo but NOT in cfg.Worktree.Repos.
+// TryAutoFinishWorktree must read .workinfo so those repos are included
+// in the safety pre-check and are not silently deleted by os.RemoveAll.
+func TestTryAutoFinishWorktreeReadsWorkinfo(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"repo-a"}, // repo-b is NOT in global config
+	}
+
+	// Worktree dir under legacy path (inside temp dir).
+	wtDir := filepath.Join(cfg.Root(), "worktrees", "T-001")
+	// Create repo-b — an extra repo added via st worktree add, present in
+	// .workinfo but absent from cfg.Worktree.Repos.
+	repoB := filepath.Join(wtDir, "repo-b")
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Write .workinfo listing both repo-a and repo-b.
+	workinfo := "name: T-001\nbranch: fix/T-001\nrepos:\n- repo-a\n- repo-b\n"
+	if err := os.WriteFile(filepath.Join(wtDir, ".workinfo"), []byte(workinfo), 0o644); err != nil {
+		t.Fatalf("WriteFile .workinfo: %v", err)
+	}
+
+	// TryAutoFinishWorktree must discover repo-b via .workinfo and include
+	// it in the safety check. Because repo-b is not a real git checkout,
+	// git worktree remove fails → retained=true (not cleaned).
+	// Before the fix, TryAutoFinishWorktree would skip repo-b entirely
+	// and call os.RemoveAll, silently destroying its contents.
+	cleaned, _ := TryAutoFinishWorktree(cfg, "T-001")
+	if cleaned {
+		t.Error("workinfo fix: got cleaned=true — extra repo-b was not checked and wtDir was removed; want retained")
+	}
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		t.Error("workinfo fix: wtDir was removed despite repo-b having uncommitted work (not a real git checkout)")
+	}
+}
+
 // TestTryAutoFinishWorktreeDisabled — when worktree integration is off,
 // the helper must be a silent no-op. Returning anything truthy here
 // would cause Close() to print spurious "also finished worktree" lines

@@ -267,10 +267,19 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 		wtDir = legacy
 	}
 
+	// Use .workinfo repo list if present (covers repos added via st worktree add);
+	// fall back to the global config list. Mirrors Finish() lines 71-74 — without
+	// this, extra repos bypass the uncommitted-changes guard and are silently
+	// deleted by os.RemoveAll below.
+	reposToCheck := cfg.Worktree.Repos
+	if wi, err := readWorkinfo(wtDir); err == nil && len(wi.Repos) > 0 {
+		reposToCheck = wi.Repos
+	}
+
 	// Pre-check: any repo with uncommitted or unpushed work blocks the
 	// auto path entirely — we never want to drop in-flight code on the
 	// floor when the operator's intent was just to close the item.
-	for _, repo := range cfg.Worktree.Repos {
+	for _, repo := range reposToCheck {
 		repoDir := filepath.Join(wtDir, repo)
 		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 			continue
@@ -288,7 +297,7 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 	// Clean — remove each per-repo worktree + delete its branch.
 	// Mirrors finish.go's cleanup loop minus the --force fallback (auto
 	// path never forces; partial failure stays as retention).
-	for _, repo := range cfg.Worktree.Repos {
+	for _, repo := range reposToCheck {
 		repoDir := filepath.Join(wtDir, repo)
 		if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 			continue

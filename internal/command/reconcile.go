@@ -67,6 +67,7 @@ func (o *ReconcileOpts) s3Check() func(string) bool {
 // 3: pr_open → merged (via gh pr view)
 // 4: completed items → archive/ (move files)
 // 5: regenerate index.md
+// 11: orphan worktree cleanup — prune worktree dirs for terminal items
 func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	var updates int
 
@@ -148,6 +149,11 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	if !opts.DryRun {
 		Index(s, cfg)
 	}
+
+	// Phase 11: Prune orphan worktrees (terminal items with worktrees on disk)
+	fmt.Println("Phase 11: Orphan worktree cleanup")
+	n = reconcileOrphanWorktrees(s, cfg, opts)
+	updates += n
 
 	// Summary
 	if opts.DryRun {
@@ -1037,4 +1043,62 @@ func formatStaleAge(d time.Duration) string {
 		return fmt.Sprintf("%dd", days)
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// reconcileOrphanWorktrees scans cfg.WorktreeBase() and cfg.WorktreeBaseLegacy()
+// for subdirectories whose name matches an item ID that is already terminal.
+// For each match, attempts TryAutoFinishWorktree. If the worktree is retained
+// (uncommitted or unpushed work), prints a warning so the operator can handle
+// it manually. Returns the number of worktrees cleaned.
+func reconcileOrphanWorktrees(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return 0
+	}
+
+	// Scan both the current worktree base and the legacy pre-I-407 location
+	// so stranded worktrees from before the per-agent worktree move are caught.
+	var baseDirs []string
+	if base := cfg.WorktreeBase(); base != "" {
+		baseDirs = append(baseDirs, base)
+	}
+	if legacy := cfg.WorktreeBaseLegacy(); legacy != "" && legacy != cfg.WorktreeBase() {
+		baseDirs = append(baseDirs, legacy)
+	}
+
+	cleaned := 0
+	for _, baseDir := range baseDirs {
+		entries, err := os.ReadDir(baseDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "reconcile: reading worktree base %s: %v\n", baseDir, err)
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			id := entry.Name()
+			item, ok := s.Get(id)
+			if !ok {
+				continue
+			}
+			if !cfg.IsTerminalStatus(item.Type, item.Status) {
+				continue
+			}
+			if opts.DryRun {
+				fmt.Printf("  [dry-run] would prune orphan worktree: %s (status: %s)\n", id, item.Status)
+				cleaned++
+				continue
+			}
+			if wtCleaned, retained := TryAutoFinishWorktree(cfg, id); wtCleaned {
+				fmt.Printf("  pruned orphan worktree: %s (status: %s)\n", id, item.Status)
+				cleaned++
+			} else if retained {
+				fmt.Printf("  warning: orphan worktree %s retained — uncommitted/unpushed work; run `st finish %s --force` to force-clean\n", id, id)
+			}
+		}
+	}
+	return cleaned
 }
