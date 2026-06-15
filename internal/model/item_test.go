@@ -370,6 +370,52 @@ func TestItemSetNestedSyncsMapAndDoc(t *testing.T) {
 	}
 }
 
+// TestSetNestedFieldInsertMultiLine reproduces I-668: both insert branches of
+// SetNestedField must emit valid YAML when the value contains newlines.
+func TestSetNestedFieldInsertMultiLine(t *testing.T) {
+	t.Run("child-not-found", func(t *testing.T) {
+		doc := &ParsedDocument{
+			Lines: []Line{
+				{Raw: "id: T-001", Key: "id", Value: "T-001"},
+				{Raw: "sbar:", Key: "sbar"},
+				{Raw: "  situation: existing", Key: "situation", Value: "existing", Indent: 2, BlockKey: "sbar"},
+			},
+		}
+		doc.SetNestedField("sbar.background", "line1\nline2")
+		got := doc.String()
+		// A bare newline inside a scalar is invalid YAML — the block body
+		// lines must be separate indented lines under a `key: |-` header.
+		if strings.Contains(got, "background: line1\nline2") {
+			t.Errorf("raw newline in scalar: output is invalid YAML:\n%s", got)
+		}
+		if !strings.Contains(got, "background: |-") {
+			t.Errorf("expected block-scalar header 'background: |-' in:\n%s", got)
+		}
+		if !strings.Contains(got, "    line1") || !strings.Contains(got, "    line2") {
+			t.Errorf("expected indented block body lines in:\n%s", got)
+		}
+	})
+
+	t.Run("parent-not-found", func(t *testing.T) {
+		doc := &ParsedDocument{
+			Lines: []Line{
+				{Raw: "id: T-001", Key: "id", Value: "T-001"},
+			},
+		}
+		doc.SetNestedField("new_parent.new_child", "alpha\nbeta")
+		got := doc.String()
+		if strings.Contains(got, "new_child: alpha\nbeta") {
+			t.Errorf("raw newline in scalar: output is invalid YAML:\n%s", got)
+		}
+		if !strings.Contains(got, "new_child: |-") {
+			t.Errorf("expected block-scalar header 'new_child: |-' in:\n%s", got)
+		}
+		if !strings.Contains(got, "    alpha") || !strings.Contains(got, "    beta") {
+			t.Errorf("expected indented block body lines in:\n%s", got)
+		}
+	})
+}
+
 func TestParsedDocumentSetFieldIgnoresNested(t *testing.T) {
 	doc := &ParsedDocument{
 		Lines: []Line{

@@ -625,13 +625,13 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 	if parentIdx < 0 {
 		// Parent not found — insert parent + child before body separator
 		parentLine := Line{Raw: parent + ":", Key: parent}
-		childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+		childLines := buildNestedScalarOrBlock(parent, child, value, 2, "")
 		if idx := d.BodySeparatorIndex(); idx >= 0 {
 			tail := make([]Line, len(d.Lines[idx:]))
 			copy(tail, d.Lines[idx:])
-			d.Lines = append(d.Lines[:idx], append([]Line{parentLine, childLine}, tail...)...)
+			d.Lines = append(d.Lines[:idx], append(append([]Line{parentLine}, childLines...), tail...)...)
 		} else {
-			d.Lines = append(d.Lines, parentLine, childLine)
+			d.Lines = append(append(d.Lines, parentLine), childLines...)
 		}
 		return false
 	}
@@ -681,10 +681,10 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 		}
 		insertIdx++
 	}
-	childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+	childLines := buildNestedScalarOrBlock(parent, child, value, 2, "")
 	tail := make([]Line, len(d.Lines[insertIdx:]))
 	copy(tail, d.Lines[insertIdx:])
-	d.Lines = append(d.Lines[:insertIdx], append([]Line{childLine}, tail...)...)
+	d.Lines = append(d.Lines[:insertIdx], append(childLines, tail...)...)
 	return false
 }
 
