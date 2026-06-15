@@ -394,6 +394,18 @@ func TestSetNestedFieldInsertMultiLine(t *testing.T) {
 		if !strings.Contains(got, "    line1") || !strings.Contains(got, "    line2") {
 			t.Errorf("expected indented block body lines in:\n%s", got)
 		}
+		// GetNestedField must reconstruct the value from block-body lines.
+		val, ok := doc.GetNestedField("sbar.background")
+		if !ok || val != "line1\nline2" {
+			t.Errorf("GetNestedField round-trip: got %q ok=%v, want %q true", val, ok, "line1\nline2")
+		}
+		// RemoveNestedField must clean up body lines, not just the header.
+		doc.RemoveNestedField("sbar.background")
+		for _, l := range doc.Lines {
+			if l.IsBlock && l.BlockKey == "background" {
+				t.Errorf("orphaned block-body line after RemoveNestedField: %q", l.Raw)
+			}
+		}
 	})
 
 	t.Run("parent-not-found", func(t *testing.T) {
@@ -412,6 +424,16 @@ func TestSetNestedFieldInsertMultiLine(t *testing.T) {
 		}
 		if !strings.Contains(got, "    alpha") || !strings.Contains(got, "    beta") {
 			t.Errorf("expected indented block body lines in:\n%s", got)
+		}
+		val, ok := doc.GetNestedField("new_parent.new_child")
+		if !ok || val != "alpha\nbeta" {
+			t.Errorf("GetNestedField round-trip: got %q ok=%v, want %q true", val, ok, "alpha\nbeta")
+		}
+		doc.RemoveNestedField("new_parent.new_child")
+		for _, l := range doc.Lines {
+			if l.IsBlock && l.BlockKey == "new_child" {
+				t.Errorf("orphaned block-body line after RemoveNestedField: %q", l.Raw)
+			}
 		}
 	})
 }
