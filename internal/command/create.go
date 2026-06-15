@@ -40,9 +40,10 @@ type CreateOpts struct {
 	// the scaffold is replaced with real content. EnforceGate runs Layer-1
 	// validation (ValidateSBAR + ValidateSBARLength) before any git commit.
 	Situation, Background, Assessment, Recommendation string
-	EnforceGate bool // set true by the CLI; in-process callers keep false
-	NoValidate  bool // skip Layers 2+3 semantic validation; Layer 1 always runs
-	NoDedup     bool // skip semantic duplicate detection (T-437)
+	EnforceGate  bool   // set true by the CLI; in-process callers keep false
+	NoValidate   bool   // skip Layers 2+3 semantic validation; Layer 1 always runs
+	NoDedup      bool   // skip semantic duplicate detection (T-437)
+	EvidenceSkip string // I-756: bypass empirical-claim check with a reason (audit-logged)
 
 	// IDOut, when non-nil, receives the allocated item ID the moment
 	// NextID succeeds (before any git sync or review). Lets in-process
@@ -148,6 +149,23 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 				}
 			}
 			return 1
+		}
+	}
+
+	// I-756: Empirical-claim guard on sbar.background. Detects observation-shaped
+	// sentences without evidence pointers. Bypass: --evidence-skip "<reason>".
+	if opts.EnforceGate && (itemType == "task" || itemType == "issue") {
+		if opts.EvidenceSkip != "" {
+			logEvidenceSkip(cfg, "", opts.EvidenceSkip)
+		} else {
+			ecItem := &model.Item{SBAR: model.SBAR{Background: opts.Background}}
+			if evs := quality.ValidateBackgroundEvidenceClaims(ecItem); len(evs) > 0 {
+				fmt.Fprintln(os.Stderr, "create: sbar.background contains unsourced empirical claims:")
+				for _, v := range evs {
+					fmt.Fprintf(os.Stderr, "  %s\n", v.Message)
+				}
+				return 1
+			}
 		}
 	}
 

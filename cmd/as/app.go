@@ -385,6 +385,7 @@ To list goals with weights use:
 			recommendation, _ := cmd.Flags().GetString("sbar-recommendation")
 			noValidate, _ := cmd.Flags().GetBool("no-validate")
 			noDedup, _ := cmd.Flags().GetBool("no-dedup")
+			createEvidenceSkip, _ := cmd.Flags().GetString("evidence-skip")
 			// Support --title as an alternative to the positional title arg.
 			titleFlag, _ := cmd.Flags().GetString("title")
 			var title string
@@ -409,6 +410,7 @@ To list goals with weights use:
 				EnforceGate:    true,
 				NoValidate:     noValidate,
 				NoDedup:        noDedup,
+				EvidenceSkip:   createEvidenceSkip,
 				EstimatedHours: estimateHrs,
 				RequireEstimate: requireEst,
 				// I-588: wire the run engine so post-create spawns the
@@ -439,6 +441,7 @@ To list goals with weights use:
 	createCmd.Flags().String("sbar-recommendation", "", "SBAR recommendation field (proposed fix, scoped enough to action)")
 	createCmd.Flags().Bool("no-validate", false, "skip Layer-2+3 LLM semantic validation (Layer 1 always runs)")
 	createCmd.Flags().Bool("no-dedup", false, "skip semantic duplicate detection (T-437)")
+	createCmd.Flags().String("evidence-skip", "", "I-756: bypass empirical-claim check on sbar.background with a stated reason (audit-logged)")
 	createCmd.Flags().Float64("estimate", 0, "I-591: estimated wall hours for this item (written to time_tracking.estimated_hours)")
 	createCmd.Flags().Bool("require-estimate", false, "I-591: reject if --estimate is not provided")
 	// T-382: post-create launcher flag removed. Use `st update <id> sbar --stdin` post-create.
@@ -493,14 +496,16 @@ fields, and the SBAR composite stay on the single-field paths.`,
 				return
 			}
 
+			evidenceSkip, _ := cmd.Flags().GetString("evidence-skip")
+			updateOpts := command.UpdateOpts{EvidenceSkip: evidenceSkip}
 			field := args[1]
 			switch {
 			case stdinFlag:
-				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
+				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin, updateOpts)
 			case len(args) >= 3:
-				exitCode = command.Update(appStore, appCfg, id, field, args[2], command.UpdateModeValue)
+				exitCode = command.Update(appStore, appCfg, id, field, args[2], command.UpdateModeValue, updateOpts)
 			case command.StdinIsPiped():
-				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin)
+				exitCode = command.Update(appStore, appCfg, id, field, "", command.UpdateModeStdin, updateOpts)
 			default:
 				// T-382: every "no value, no --stdin" path now
 				// refuses (was: sbar opened $EDITOR via the
@@ -519,7 +524,30 @@ fields, and the SBAR composite stay on the single-field paths.`,
 		},
 	}
 	updateCmd.Flags().Bool("stdin", false, "read value from stdin")
+	updateCmd.Flags().String("evidence-skip", "", "I-756: bypass empirical-claim check on sbar.background with a stated reason (audit-logged)")
 	root.AddCommand(updateCmd)
+
+	sbarEvidenceAuditCmd := &cobra.Command{
+		Use:   "sbar-evidence-audit [--sprint <slug>] [--all]",
+		Short: "Report sbar.background sentences with observation-shaped claims and no evidence pointer",
+		Long: "Walks open items (or a sprint slice) and prints a punch list of any\n" +
+			"sbar.background sentences that look like empirical observations but lack\n" +
+			"a cited source (URL, test-run ref, UUID, DB read, etc.).\n\n" +
+			"Read-only — no writes, no enforcement. Use --evidence-skip on st create/update\n" +
+			"to bypass the gate for an individual item with a stated reason.",
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			sprint, _ := cmd.Flags().GetString("sprint")
+			all, _ := cmd.Flags().GetBool("all")
+			exitCode = command.SbarEvidenceAudit(appStore, appCfg, command.SbarEvidenceAuditOpts{
+				Sprint: sprint,
+				All:    all,
+			})
+		},
+	}
+	sbarEvidenceAuditCmd.Flags().String("sprint", "", "filter to items in this sprint slug")
+	sbarEvidenceAuditCmd.Flags().Bool("all", false, "include closed/archived items (default: open only)")
+	root.AddCommand(sbarEvidenceAuditCmd)
 
 	checkCmd := &cobra.Command{
 		Use:   "check",
