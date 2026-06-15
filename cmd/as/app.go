@@ -3334,6 +3334,28 @@ Kinds:
 	maintainCmd.Flags().Bool("dry-run", false, "report what would change without doing it")
 	root.AddCommand(maintainCmd)
 
+	// I-367: st pricing — manage the Claude model pricing table.
+	pricingCmd := &cobra.Command{
+		Use:   "pricing",
+		Short: "Manage the Claude model pricing table",
+	}
+	pricingRefreshCmd := &cobra.Command{
+		Use:   "refresh",
+		Short: "Fetch Anthropic pricing and update table.go",
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			sanityPct, _ := cmd.Flags().GetFloat64("sanity-pct")
+			exitCode = command.PricingRefresh(appCfg, command.PricingRefreshOpts{
+				DryRun:    dryRun,
+				SanityPct: sanityPct,
+			})
+		},
+	}
+	pricingRefreshCmd.Flags().Bool("dry-run", false, "show diff without writing")
+	pricingRefreshCmd.Flags().Float64("sanity-pct", 50, "max allowed %% rate change before filing an issue")
+	pricingCmd.AddCommand(pricingRefreshCmd)
+	root.AddCommand(pricingCmd)
+
 	// T-403: st orphan — detect and stash dirty agent-state files not owned by this agent.
 	orphanCmd := &cobra.Command{
 		Use:   "orphan",
@@ -3635,6 +3657,7 @@ var commandGroupAssignments = map[string]string{
 	"index":     "maintenance",
 	"maintain":  "maintenance",
 	"migrate":   "maintenance",
+	"pricing":   "maintenance",
 	"reconcile": "maintenance",
 	"sync":      "maintenance",
 	"cache":     "maintenance",

@@ -2,7 +2,10 @@ package pricing
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -174,6 +177,58 @@ func TestKnownModels_IncludesCurrentGeneration(t *testing.T) {
 		if !have[m] {
 			t.Errorf("KnownModels() missing required entry %q", m)
 		}
+	}
+}
+
+func TestKnownRates_ReturnsCopy(t *testing.T) {
+	rates := KnownRates()
+	// Must contain at least the three current-gen models
+	for _, m := range []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"} {
+		if _, ok := rates[m]; !ok {
+			t.Errorf("KnownRates() missing %q", m)
+		}
+	}
+	// Mutating the returned map must not affect the package-level table
+	rates["claude-opus-4-7"] = Rate{Input: 99}
+	r2, _ := Lookup("claude-opus-4-7")
+	if r2.Input == 99 {
+		t.Error("KnownRates() returned the live table instead of a copy")
+	}
+}
+
+func TestRenderTable_RoundTrip(t *testing.T) {
+	original := KnownRates()
+	src := RenderTable(original)
+
+	// Must be valid Go source
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, "table.go", src, 0)
+	if err != nil {
+		t.Fatalf("RenderTable() produced invalid Go: %v\nsource:\n%s", err, src)
+	}
+
+	// Must include the package declaration and var table
+	if !strings.Contains(src, "package pricing") {
+		t.Error("RenderTable() missing package declaration")
+	}
+	if !strings.Contains(src, "var table = map[string]Rate{") {
+		t.Error("RenderTable() missing var table declaration")
+	}
+
+	// Every model from the original table must appear in the output
+	for model := range original {
+		if !strings.Contains(src, model) {
+			t.Errorf("RenderTable() missing model %q", model)
+		}
+	}
+}
+
+func TestRenderTable_EmptyTable(t *testing.T) {
+	src := RenderTable(map[string]Rate{})
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, "table.go", src, 0)
+	if err != nil {
+		t.Fatalf("RenderTable({}) produced invalid Go: %v", err)
 	}
 }
 
