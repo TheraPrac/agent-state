@@ -1130,6 +1130,13 @@ func buildPrepPrompt(cfg *config.Config, itemID string, item *model.Item) string
 	b.WriteString("ACs should be fast to verify — use targeted test runs (specific spec files), not full suite runs.\n")
 	b.WriteString("For new features, name the test function that WILL exist after implementation.\n\n")
 	b.WriteString("Do NOT ask permission — explore, analyze, set fields, and print the plan.\n")
+	b.WriteString("\nMETA-NOTE PROHIBITION: Do NOT write meta-narrative about st-CLI behavior,\n")
+	b.WriteString("field routing, or clobber/restore events inside ANY plan section (## Approach,\n")
+	b.WriteString("## Implementation Steps, ## Acceptance Criteria, ## Files to Create/Modify,\n")
+	b.WriteString("## Tests, ## Out-of-scope, ## Risks). If you discover st-CLI quirks, deprecated\n")
+	b.WriteString("paths, or unexpected routing during exploration, surface them in your REPORT's\n")
+	b.WriteString("REMAINING CONCERNS section only — the plan body must contain implementation\n")
+	b.WriteString("content exclusively, never st-CLI operational observations.\n")
 
 	return b.String()
 }

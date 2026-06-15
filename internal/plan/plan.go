@@ -231,7 +231,7 @@ func Parse(text string) (*Plan, error) {
 		p.FilesToModify = parseList(v)
 	}
 	if v, ok := sections["Acceptance Criteria"]; ok {
-		p.ACs = parseList(v)
+		p.ACs = sanitizeACs(parseList(v))
 	}
 	if v, ok := sections["Revision History"]; ok {
 		for _, line := range parseList(v) {
@@ -513,4 +513,25 @@ func parseList(text string) []string {
 // Now returns a formatted timestamp for use in revision history.
 func Now() string {
 	return time.Now().Format(time.RFC3339)
+}
+
+// sanitizeACs filters the parsed AC list, keeping only entries that begin
+// with "cmd:" (the required prefix for verifiable acceptance criteria).
+// Non-conforming entries are dropped and reported to stderr — they are
+// typically meta-notes that leaked from the plan-prep sub-agent's narrative
+// (I-763). Returning a clean list prevents such text from tripping the
+// I-589 AC-verifiability gate at plan-approve time.
+func sanitizeACs(items []string) []string {
+	var clean []string
+	for _, item := range items {
+		if strings.HasPrefix(item, "cmd:") {
+			clean = append(clean, item)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"plan: stripped non-cmd: AC entry (likely sub-agent meta-note — I-763): %q\n",
+				item,
+			)
+		}
+	}
+	return clean
 }

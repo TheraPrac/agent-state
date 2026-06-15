@@ -500,3 +500,63 @@ func TestDeleteReportRemovesReport(t *testing.T) {
 		t.Errorf("DeleteReport on missing report should be a no-op; got %v", err)
 	}
 }
+
+func TestSanitizeACs(t *testing.T) {
+	t.Run("all_valid_passes_through", func(t *testing.T) {
+		in := []string{"cmd: go test ./...", "cmd: go vet ./..."}
+		got := sanitizeACs(in)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 items, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("non_cmd_bullet_stripped", func(t *testing.T) {
+		// I-763 regression: sub-agent meta-note leaks as AC bullet
+		in := []string{
+			"cmd: go build ./...",
+			"Note: while probing I clobbered sbar.background and restored it",
+		}
+		// Redirect stderr to suppress expected warning output during test
+		old := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+		got := sanitizeACs(in)
+		w.Close()
+		os.Stderr = old
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+
+		if len(got) != 1 {
+			t.Fatalf("expected 1 item, got %d: %v", len(got), got)
+		}
+		if got[0] != "cmd: go build ./..." {
+			t.Errorf("wrong item kept: %q", got[0])
+		}
+		if !strings.Contains(buf.String(), "I-763") {
+			t.Error("expected stderr warning to mention I-763")
+		}
+	})
+
+	t.Run("mixed_keeps_only_cmd_entries", func(t *testing.T) {
+		old := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stderr = w
+		got := sanitizeACs([]string{
+			"cmd: make install",
+			"Plan set; summary content lives in sbar.assessment",
+			"cmd: go test ./internal/plan/...",
+		})
+		w.Close()
+		os.Stderr = old
+		if len(got) != 2 {
+			t.Fatalf("expected 2 items, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("empty_input_returns_nil", func(t *testing.T) {
+		got := sanitizeACs(nil)
+		if got != nil {
+			t.Errorf("expected nil for nil input, got %v", got)
+		}
+	})
+}
