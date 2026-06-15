@@ -1217,9 +1217,12 @@ func loadI807Store(t *testing.T, asDir string) *Store {
 func TestGitSync_RefusesPushOnMain_WhenNonStateFileDirty(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
 
-	// Modify the tracked non-state file → tracked-modified entry.
+	// Modify the tracked non-state file and explicitly stage it.
+	// I-1472: gate now only fires on staged (index-dirty) non-state entries;
+	// working-tree-only modifications no longer block (peer-file false-alarm fix).
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho modified\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	// Mutate an item to give GitSync something legitimate to commit.
 	s := loadI807Store(t, asDir)
@@ -1240,6 +1243,37 @@ func TestGitSync_RefusesPushOnMain_WhenNonStateFileDirty(t *testing.T) {
 	}
 	if !strings.Contains(msg, "ST_SYNC_ALLOW_MAIN") {
 		t.Errorf("error must mention the override env var; got: %q", msg)
+	}
+}
+
+// TestGitSync_AllowsPushOnMain_WhenNonStateFileUnstagedOnly — peer agents'
+// uncommitted (working-tree-only) edits to shared hook/doc files must NOT
+// block st sync. I-1472: gate skips entries where code[0]==' ' (index clean).
+func TestGitSync_AllowsPushOnMain_WhenNonStateFileUnstagedOnly(t *testing.T) {
+	workspace, asDir := setupI807Workspace(t, true)
+
+	// Modify the tracked non-state file but do NOT stage it — simulates a
+	// peer agent's uncommitted edit visible in the shared workspace checkout.
+	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
+		[]byte("#!/bin/sh\necho peer-wip\n"), 0755)
+
+	// Mutate an item to give GitSync something to commit.
+	s := loadI807Store(t, asDir)
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("agent-h: update T-001 (peer file unstaged)"); err != nil {
+		t.Fatalf("GitSync must succeed when non-state file is working-tree-only dirty: %v", err)
+	}
+
+	// Verify the peer's hook modification was NOT committed.
+	out, err := exec.Command("git", "-C", workspace, "show", "--name-only", "--format=", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git show HEAD: %v", err)
+	}
+	if strings.Contains(string(out), "claude-config") {
+		t.Errorf("peer's unstaged hook file must not appear in the commit; got:\n%s", out)
 	}
 }
 
@@ -1279,8 +1313,12 @@ func TestGitSync_RefusesPushOnFeatureBranch_WhenNonStateFileDirty(t *testing.T) 
 
 	gitRun(t, workspace, "checkout", "-b", "fix/I-765-test")
 
+	// Modify and explicitly stage the non-state file.
+	// I-1472: gate fires only on staged entries; unstaged working-tree changes
+	// from peer agents no longer block (see TestGitSync_AllowsPushOnMain_WhenNonStateFileUnstagedOnly).
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho modified-on-feature\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	s := loadI807Store(t, asDir)
 	item, _ := s.Get("T-001")
@@ -1607,8 +1645,11 @@ func TestGitSync_RefusesPushOnMain_StrandedLocalNonStateCommit(t *testing.T) {
 // the gate would have fired, AND the line names the offender list.
 func TestGitSync_OverrideAuditNamesOffenders(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
+	// Stage the non-state file so the gate (and override audit) fires.
+	// I-1472: gate only fires on staged (index-dirty) entries.
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho dirty\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
 
@@ -1694,8 +1735,10 @@ func TestGitSync_OverrideSilentWhenGateWouldNotFire(t *testing.T) {
 func TestGitSync_RefusesPushOnFeatureBranch_WhenAllowMainOverrideSet(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
 	gitRun(t, workspace, "checkout", "-b", "fix/I-765-allow-main-scope-test")
+	// Stage the non-state file — I-1472: gate fires only on staged entries.
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho feature-with-allow-main\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	t.Setenv("ST_SYNC_ALLOW_MAIN", "1")
 
@@ -1776,8 +1819,10 @@ title: Existing
 // string matching the message.
 func TestGitSync_RefusalErrorIsSentinel(t *testing.T) {
 	workspace, asDir := setupI807Workspace(t, true)
+	// Stage the non-state file — I-1472: gate fires only on staged entries.
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho sentinel\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	s := loadI807Store(t, asDir)
 	item, _ := s.Get("T-001")
@@ -1808,8 +1853,10 @@ func TestGitSync_RefusesPushOnDetachedHEADAtOriginMain(t *testing.T) {
 	// Detach HEAD onto the same commit.
 	gitRun(t, workspace, "checkout", "--detach", "HEAD")
 
+	// Stage the non-state file — I-1472: gate fires only on staged entries.
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho detached\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	s := loadI807Store(t, asDir)
 	item, _ := s.Get("T-001")
@@ -1845,9 +1892,11 @@ func TestGitSync_RefusesPushOnDetachedHEADAwayFromOriginMain(t *testing.T) {
 	gitRun(t, workspace, "commit", "-m", "divergent")
 	gitRun(t, workspace, "checkout", "--detach", "HEAD")
 
-	// New non-state edit on the detached HEAD.
+	// New non-state edit on the detached HEAD — staged so the gate fires.
+	// I-1472: gate skips working-tree-only (unstaged) entries; stage explicitly.
 	os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho detached-edit\n"), 0755)
+	gitRun(t, workspace, "add", "claude-config/hooks/foo.sh")
 
 	s := loadI807Store(t, asDir)
 	item, _ := s.Get("T-001")

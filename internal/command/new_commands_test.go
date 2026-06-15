@@ -1038,8 +1038,9 @@ func TestFinishWithWorktreeConfig(t *testing.T) {
 	repoDir := filepath.Join(wtDir, "repo-a")
 	os.MkdirAll(repoDir, 0755)
 
-	// Dry run
-	code := Finish(s, cfg, "T-001", FinishOpts{DryRun: true})
+	// Dry run — use Force to skip safety checks (repo-a is not a real git
+	// checkout; I-1469 correctly returns 1 for non-git dirs without --force).
+	code := Finish(s, cfg, "T-001", FinishOpts{DryRun: true, Force: true})
 	if code != 0 {
 		t.Errorf("Finish dry-run returned %d, want 0", code)
 	}

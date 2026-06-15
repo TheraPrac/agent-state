@@ -115,10 +115,14 @@ func TestSync_AllowNonStateFlag_BypassesGate(t *testing.T) {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
 
-	// Dirty the tracked non-state file.
+	// Modify and stage the tracked non-state file.
+	// I-1472: gate fires only on staged (index-dirty) entries.
 	if err := os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho modified-by-command-test\n"), 0755); err != nil {
 		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "add", "claude-config/hooks/foo.sh").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
 	}
 
 	// Precondition: gate must refuse without the flag.

@@ -119,10 +119,14 @@ sbar:
 func TestAutoSyncGateRefusalReturnsSentinel(t *testing.T) {
 	workspace, s, _ := setupGateWorkspace(t)
 
-	// Dirty the tracked non-state file to trigger the gate.
+	// Modify and stage the tracked non-state file to trigger the gate.
+	// I-1472: gate fires only on staged (index-dirty) entries.
 	if err := os.WriteFile(filepath.Join(workspace, "claude-config", "hooks", "foo.sh"),
 		[]byte("#!/bin/sh\necho modified\n"), 0755); err != nil {
 		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "add", "claude-config/hooks/foo.sh").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
 	}
 
 	var returned error

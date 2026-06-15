@@ -443,9 +443,13 @@ func checkNonStateGate(root string) error {
 		}
 		code := tok[:2]
 		path := tok[3:]
-		// Skip pure-untracked (`git add -u` won't stage them; flagging
-		// would regress I-442's peer-WIP protection).
-		if code == "??" {
+		// Skip pure-untracked and working-tree-only modifications.
+		// `??` files are skipped so untracked peer WIP (I-442) is safe.
+		// `code[0] == ' '` (index clean, working-tree dirty) is skipped
+		// because `git add -u -- .` is scoped to agent-state/ and will
+		// never stage files outside that prefix; blocking on them fires
+		// false alarms for peer agents' uncommitted edits. I-1472.
+		if code == "??" || code[0] == ' ' {
 			continue
 		}
 		// Rename / copy: -z format puts the OLD path in the next token
@@ -601,11 +605,13 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		restoreLockedItems(snap)
 	}
 
-	// Stage tracked-modified files anywhere in the item-dir. I-442's
-	// canonical-clone bleed protection (peer-WIP at the WORKSPACE-clone
-	// root: `.as/sessions/`, `.claude/`, build artifacts) is preserved
-	// because `git add -u` only touches already-tracked paths.
-	if err := gitCmd(root, "add", "-u"); err != nil {
+	// Stage tracked-modified files within agent-state/ only. The `-- .`
+	// pathspec scopes `-u` to the CWD (root = agent-state/), preventing
+	// modern Git's unscoped `git add -u` from accidentally staging
+	// tracked-modified files outside agent-state/ (e.g. peer agents'
+	// uncommitted hook edits). I-1472. I-442's peer-WIP protection for
+	// untracked files is unchanged — `-u` still ignores `??` paths.
+	if err := gitCmd(root, "add", "-u", "--", "."); err != nil {
 		return fmt.Errorf("git add -u: %w", err)
 	}
 
