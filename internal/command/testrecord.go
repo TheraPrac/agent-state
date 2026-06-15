@@ -489,6 +489,11 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 
 	// If test failed, record failure and stop
 	if exitCode != 0 {
+		// I-1474: if all failures are pre-existing on main, pass the gate.
+		if rc := applyBaselineCheck(cfg, s, id, suite, output, sha, logURI, retryTag, envTag, now); rc >= 0 {
+			return rc
+		}
+
 		ev := fmt.Sprintf("fail%s%s %s %s evidence:%s", retryTag, envTag, sha, now.Format(time.RFC3339), logURI)
 		_ = s.Mutate(id, func(it *model.Item) error {
 			it.SetNested("testing_evidence", suite, ev)

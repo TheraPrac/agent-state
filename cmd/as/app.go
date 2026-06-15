@@ -1681,6 +1681,23 @@ Example:
 	testRecordCmd.Flags().String("skip", "", "mark a scope suite as intentionally skipped with the given reason (scope suites only)")
 	testRecordCmd.Flags().String("agent", "", "agent workspace/runtime to target when executing a suite")
 	testRecordCmd.Flags().Bool("auto", false, "detect changed files and run all applicable Tier 1+2 suites automatically")
+
+	// I-1474: baseline subcommands for managing known-failing test sets on main.
+	testBaselineCmd := &cobra.Command{
+		Use:   "baseline",
+		Short: "Manage known-failing test baselines (compare feature-branch failures against main)",
+	}
+	testBaselineRefreshCmd := &cobra.Command{
+		Use:   "refresh <suite>",
+		Short: "Run suite on main checkout and record failing tests as the baseline",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.TestBaselineRefresh(appCfg, args[0])
+		},
+	}
+	testBaselineCmd.AddCommand(testBaselineRefreshCmd)
+	testRecordCmd.AddCommand(testBaselineCmd)
+
 	root.AddCommand(testRecordCmd)
 
 	revertCmd := &cobra.Command{
