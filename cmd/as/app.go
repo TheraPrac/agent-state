@@ -1360,15 +1360,21 @@ in-flight, run 'st release' against the active items first.
 		Run: func(cmd *cobra.Command, args []string) {
 			reason, _ := cmd.Flags().GetString("reason")
 			force, _ := cmd.Flags().GetBool("force")
+			skipTier2, _ := cmd.Flags().GetBool("skip-tier2-revalidation")
 			resolution := ""
 			if len(args) > 1 {
 				resolution = args[1]
 			}
-			exitCode = command.Close(appStore, appCfg, args[0], resolution, command.CloseOpts{Reason: reason, Force: force})
+			exitCode = command.Close(appStore, appCfg, args[0], resolution, command.CloseOpts{
+				Reason:                reason,
+				Force:                 force,
+				SkipTier2Revalidation: skipTier2,
+			})
 		},
 	}
 	closeCmd.Flags().String("reason", "", "reason for closing (required for abandon)")
 	closeCmd.Flags().Bool("force", false, "bypass gate checks")
+	closeCmd.Flags().Bool("skip-tier2-revalidation", false, "skip close-time recomputation of applicable scope suites (use when worktree is absent or push gate already enforced)")
 	root.AddCommand(closeCmd)
 
 	classifyCmd := &cobra.Command{
