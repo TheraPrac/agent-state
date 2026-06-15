@@ -2,7 +2,6 @@ package command
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/quality"
@@ -47,9 +46,9 @@ func SbarEvidenceAudit(s *store.Store, cfg *config.Config, opts SbarEvidenceAudi
 		return 0
 	}
 
-	fmt.Fprintf(os.Stderr, "sbar-evidence-audit: %d unsourced empirical claim(s) found:\n\n", len(findings))
+	fmt.Printf("sbar-evidence-audit: %d unsourced empirical claim(s) found:\n\n", len(findings))
 	for _, f := range findings {
-		fmt.Fprintf(os.Stderr, "  %s  %s\n", f.id, f.message)
+		fmt.Printf("  %s  %s\n", f.id, f.message)
 	}
 	return 1
 }

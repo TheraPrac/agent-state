@@ -122,4 +122,15 @@ Likely causes: MarkClaimSubmitted / MarkClaimAcceptedByID SQL missing updates.
 			t.Fatalf("expected no violations with log evidence, got %v", vs)
 		}
 	})
+
+	t.Run("uuid_in_different_sentence_does_not_ground_section", func(t *testing.T) {
+		// A UUID that is merely a tenant/row reference in a separate sentence
+		// does not ground empirical claims elsewhere in the section.
+		bg := "Tenant ea94525e-54ce-11f1-a4d6-336a9172a5ed had a sync issue. " +
+			"Final persisted claim state was wrong."
+		vs := quality.ValidateBackgroundEvidenceClaims(item(bg))
+		if len(vs) == 0 {
+			t.Fatal("expected violation: UUID in different sentence should not ground empirical claim")
+		}
+	})
 }

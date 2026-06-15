@@ -47,9 +47,15 @@ var hypothesisMarkerREs = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bseems?\b`),
 }
 
-// evidencePointerREs indicate the sentence (or adjacent context)
-// carries a citation that grounds the observation.
-var evidencePointerREs = []*regexp.Regexp{
+// sectionEvidencePointerREs are strong explicit citations that ground the
+// entire background section. If any of these match anywhere in the background,
+// all claims in it are considered sourced.
+//
+// UUID is intentionally absent here — a UUID embedded in background prose
+// (e.g. a tenant-ID reference or a dependency ID) does not prove that the
+// surrounding empirical claims are sourced. UUIDs ground only the specific
+// sentence they appear in (see sentenceUUIDRE below).
+var sectionEvidencePointerREs = []*regexp.Regexp{
 	regexp.MustCompile(`https?://`),
 	regexp.MustCompile(`(?i)\btest\s+run\b`),
 	regexp.MustCompile(`(?i)\b(DB|database)\s+(query|read|result)\b`),
@@ -58,17 +64,22 @@ var evidencePointerREs = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bpr\s*#\d+\b`),
 	regexp.MustCompile(`(?i)\bgrep\s+(output|result)\b`),
 	regexp.MustCompile(`(?i)\bquery\s+result\b`),
-	regexp.MustCompile(`(?i)\bS3.archived\b`),
+	regexp.MustCompile(`(?i)\bS3\.archived\b`),
 	regexp.MustCompile(`(?i)\bdirect\s+(DB|database)\s+read\b`),
 	regexp.MustCompile(`(?i)\blog\s+(line|output|entry)\b`),
-	// UUIDs often anchor a specific row observation
-	regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`),
 }
+
+// sentenceUUIDRE matches a UUID and grounds the specific sentence it appears
+// in (e.g. "tenant ea94525e-... showed 6 rows" is anchored to a real row).
+var sentenceUUIDRE = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// reSentenceSplit splits text into sentence-like fragments.
+var reSentenceSplit = regexp.MustCompile(`[.!?\n]+`)
 
 // splitSentences splits text into sentence-like spans on `.`, `!`, `?`, or newline.
 // Fragments shorter than 10 chars are dropped (headings, bullets, etc.).
 func splitSentences(text string) []string {
-	parts := regexp.MustCompile(`[.!?\n]+`).Split(text, -1)
+	parts := reSentenceSplit.Split(text, -1)
 	var out []string
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
@@ -95,6 +106,12 @@ func matchesAny(text string, res []*regexp.Regexp) bool {
 // Hypothesis-marked sentences (likely/probably/suspect/[hypothesis]/…) are
 // exempt — they are conjectural, not stated observations.
 //
+// Whole-section shortcut: if a strong explicit citation (URL, test run,
+// DB read, etc.) appears anywhere in the background, the whole section is
+// considered grounded. This handles a single citation at the top or bottom
+// covering all claims in a paragraph. UUID does NOT trigger the shortcut —
+// it grounds only the specific sentence it appears in.
+//
 // I-756.
 func ValidateBackgroundEvidenceClaims(item *model.Item) []Violation {
 	background := strings.TrimSpace(item.SBAR.Background)
@@ -102,11 +119,8 @@ func ValidateBackgroundEvidenceClaims(item *model.Item) []Violation {
 		return nil
 	}
 
-	// Check the full background for any evidence pointer — if found, the whole
-	// section is grounded enough; skip sentence-level scan. This handles the
-	// common case of a single citation at the top or bottom of a paragraph that
-	// covers all claims in it.
-	if matchesAny(background, evidencePointerREs) {
+	// Whole-section shortcut: a strong citation anywhere grounds the section.
+	if matchesAny(background, sectionEvidencePointerREs) {
 		return nil
 	}
 
@@ -117,6 +131,11 @@ func ValidateBackgroundEvidenceClaims(item *model.Item) []Violation {
 			continue
 		}
 		if !matchesAny(sent, empiricalClaimREs) {
+			continue
+		}
+		// Per-sentence evidence: a strong citation OR a UUID in the same
+		// sentence grounds this specific claim.
+		if matchesAny(sent, sectionEvidencePointerREs) || sentenceUUIDRE.MatchString(sent) {
 			continue
 		}
 		out = append(out, Violation{
@@ -135,8 +154,9 @@ func ValidateBackgroundEvidenceClaims(item *model.Item) []Violation {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(runes[:n]) + "…"
 }

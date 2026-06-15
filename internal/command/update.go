@@ -176,7 +176,7 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 	// summary writes were common via `--stdin` and editor mode; this
 	// path keeps them working.
 	if field == "summary" {
-		return updateSummaryShim(s, cfg, id, value, mode)
+		return updateSummaryShim(s, cfg, id, value, mode, uopts)
 	}
 
 	// I-406: priority must be 0-4. Reject explicit out-of-range values
@@ -781,7 +781,7 @@ func truncateForChangelog(s string) string {
 // `oldValue` is captured INSIDE the Mutate closure (under flock) per
 // the T-304 purity rule, so a concurrent peer-agent write does not
 // produce a stale changelog OldValue.
-func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mode UpdateMode) int {
+func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mode UpdateMode, uopts UpdateOpts) int {
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
@@ -798,6 +798,20 @@ func updateSummaryShim(s *store.Store, cfg *config.Config, id, value string, mod
 		value = strings.TrimRight(string(data), "\n")
 		if value == "" {
 			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
+			return 1
+		}
+	}
+
+	// I-756: empirical-claim guard on the resolved value (after stdin is read).
+	if uopts.EvidenceSkip != "" {
+		logEvidenceSkip(cfg, id, uopts.EvidenceSkip)
+	} else {
+		ecItem := &model.Item{SBAR: model.SBAR{Background: value}}
+		if evs := quality.ValidateBackgroundEvidenceClaims(ecItem); len(evs) > 0 {
+			fmt.Fprintln(os.Stderr, "update: sbar.background contains unsourced empirical claims:")
+			for _, v := range evs {
+				fmt.Fprintf(os.Stderr, "  %s\n", v.Message)
+			}
 			return 1
 		}
 	}

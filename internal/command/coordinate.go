@@ -812,7 +812,7 @@ func (c *cmdEscalator) FileBlocker(e coordinator.Escalation) (string, error) {
 		"sbar.assessment":     as,
 		"sbar.recommendation": rec,
 	} {
-		if _, err := c.stRun(val, "update", id, field, "--stdin"); err != nil {
+		if _, err := c.stRun(val, "update", id, field, "--stdin", "--evidence-skip", "auto-filed by Shape-3 coordinator (T-363)"); err != nil {
 			return id, fmt.Errorf("filed %s but SBAR %s failed: %w", id, field, err)
 		}
 	}
