@@ -1,6 +1,7 @@
 package command
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
@@ -23,6 +24,7 @@ func TestAutoScopeRepo(t *testing.T) {
 		{"web_e2e", "theraprac-web"},
 		{"infra_validate", "theraprac-infra"},
 		{"workspace_test", "as"},
+		{"as_unit", "as"},        // as_ prefix — same repo as workspace_
 		{"live_acceptance", ""},  // no prefix match
 		{"unknown_suite", ""},
 	}
@@ -295,5 +297,71 @@ func TestAutoGlobMatch_MultiStarFalsePositive(t *testing.T) {
 	// But "src/lib/hooks/useFoo.ts" SHOULD match
 	if !autoGlobMatch("src/**/hooks/useFoo.ts", "src/lib/hooks/useFoo.ts") {
 		t.Error("false negative: src/lib/hooks/useFoo.ts should match src/**/hooks/useFoo.ts")
+	}
+}
+
+// --- autoRecordSkips scope-suite coverage (I-1465) ---
+
+func makeAutoRecordSkipsConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"api_unit": {Command: "make test-unit"},
+		},
+		ScopeSuites: map[string]config.ScopeSuiteConfig{
+			"as_unit":         {Command: "go test ./..."},
+			"live_acceptance": {Command: "true"},
+		},
+	}
+	return cfg
+}
+
+// Scope suite for an unchanged repo must be auto-skipped so UAT doesn't block.
+func TestAutoRecordSkips_SkipsScopeSuiteForUnchangedRepo(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Testing = makeAutoRecordSkipsConfig().Testing
+
+	// as repo has no changes — as_unit should be auto-skipped.
+	touched := map[string][]string{
+		"theraprac-api": {"internal/billing/client.go"},
+	}
+
+	if code := autoRecordSkips(s, cfg, "T-001", &model.Item{}, touched); code != 0 {
+		t.Fatalf("autoRecordSkips returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	ev, ok := getNestedField(item, "testing_evidence", "as_unit")
+	if !ok || !strings.HasPrefix(ev, "auto-skip: no files changed in as") {
+		t.Errorf("as_unit testing_evidence = %q, want auto-skip prefix", ev)
+	}
+	// live_acceptance must never be auto-skipped.
+	if _, ok := getNestedField(item, "testing_evidence", "live_acceptance"); ok {
+		t.Error("live_acceptance must not be auto-skipped")
+	}
+}
+
+// Scope suite for a changed repo must NOT be auto-skipped — it should run.
+func TestAutoRecordSkips_DoesNotSkipScopeSuiteForChangedRepo(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Testing = makeAutoRecordSkipsConfig().Testing
+
+	// as repo changed — as_unit must run, not be skipped.
+	touched := map[string][]string{
+		"as": {"internal/command/test_auto.go"},
+	}
+
+	if code := autoRecordSkips(s, cfg, "T-001", &model.Item{}, touched); code != 0 {
+		t.Fatalf("autoRecordSkips returned %d, want 0", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if _, ok := getNestedField(item, "testing_evidence", "as_unit"); ok {
+		t.Error("as_unit must not be auto-skipped when as repo has changes")
+	}
+	// api_unit (required, api unchanged) must still be skipped.
+	ev, ok := getNestedField(item, "testing_evidence", "api_unit")
+	if !ok || !strings.HasPrefix(ev, "auto-skip:") {
+		t.Errorf("api_unit testing_evidence = %q, want auto-skip (required, api unchanged)", ev)
 	}
 }

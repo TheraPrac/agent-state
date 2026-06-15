@@ -92,23 +92,19 @@ func AutoTest(s *store.Store, cfg *config.Config, id string, opts TestRecordOpts
 }
 
 // autoRecordSkips writes "auto-skip: no files changed in <repo>" evidence for
-// each required suite whose repo had no changes in this worktree. This allows
-// the testing_complete gate to pass without running suites that don't apply.
-// Unlike user --skip, auto-skip is a system determination — it bypasses the
-// user-skip guard in TestRecord intentionally.
+// each required or scope suite whose repo had no changes in this worktree. This
+// allows the testing_complete gate to pass without running suites that don't
+// apply. Unlike user --skip, auto-skip is a system determination — it bypasses
+// the user-skip guard in TestRecord intentionally.
 func autoRecordSkips(s *store.Store, cfg *config.Config, id string, item *model.Item, touched map[string][]string) int {
 	if item.ScopeClass != "" {
 		// Class items have a fixed required-suite set; no auto-skip applies.
 		return 0
 	}
-	requiredSuites, _ := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
 	now := time.Now().Format(time.RFC3339)
 	var skipped []string
-	for name := range requiredSuites {
-		repo := autoScopeRepo(name)
-		if _, changed := touched[repo]; changed || repo == "" {
-			continue // suite applies (will run) or prefix unmapped (don't auto-skip)
-		}
+
+	recordSkip := func(name, repo string) bool {
 		ev := fmt.Sprintf("auto-skip: no files changed in %s", repo)
 		if err := s.Mutate(id, func(it *model.Item) error {
 			it.SetNested("testing_evidence", name, ev)
@@ -116,13 +112,45 @@ func autoRecordSkips(s *store.Store, cfg *config.Config, id string, item *model.
 			return nil
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "recording auto-skip for %s: %v\n", name, err)
-			return 1
+			return false
 		}
 		changelog.Append(cfg, id, changelog.Entry{
 			Op: "test_skipped", Field: "testing_evidence." + name, NewValue: ev,
 		})
 		skipped = append(skipped, name)
+		return true
 	}
+
+	requiredSuites, _ := cfg.Testing.RequiredSuitesFor(item.ScopeClass)
+	for name := range requiredSuites {
+		repo := autoScopeRepo(name)
+		if _, changed := touched[repo]; changed || repo == "" {
+			continue // suite applies (will run) or prefix unmapped (don't auto-skip)
+		}
+		if !recordSkip(name, repo) {
+			return 1
+		}
+	}
+
+	// Scope suites: auto-skip any suite whose scoped repo has no changes.
+	// Suites with trigger patterns but no prefix mapping (repo == "") are
+	// omitted silently — no UAT gate pressure for those.
+	for name := range cfg.Testing.ScopeSuites {
+		if name == "live_acceptance" {
+			continue // manual gate — never auto-skipped
+		}
+		repo := autoScopeRepo(name)
+		if repo == "" {
+			continue // prefix unmapped — can't determine applicability
+		}
+		if _, changed := touched[repo]; changed {
+			continue // repo changed — suite will run (or trigger didn't match, but not our call)
+		}
+		if !recordSkip(name, repo) {
+			return 1
+		}
+	}
+
 	if len(skipped) > 0 {
 		sort.Strings(skipped)
 		fmt.Printf("[auto] auto-skipped (no repo changes): %s\n", strings.Join(skipped, ", "))
@@ -230,7 +258,7 @@ func autoScopeRepo(suiteName string) string {
 		return "theraprac-web"
 	case "infra":
 		return "theraprac-infra"
-	case "workspace":
+	case "workspace", "as":
 		return "as"
 	default:
 		return ""
