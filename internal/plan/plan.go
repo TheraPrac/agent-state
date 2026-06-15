@@ -503,6 +503,15 @@ func parseList(text string) []string {
 		for len(line) > 2 && line[0] == '`' && line[len(line)-1] == '`' {
 			line = line[1 : len(line)-1]
 		}
+		// If the loop above couldn't strip (line ends with prose annotation
+		// rather than `` ` ``), extract the content of the first backtick
+		// pair. Handles plan-prep output like "`foo/bar.go` (Config edit)"
+		// or "`foo/bar.go` — adds helper". I-764.
+		if len(line) > 1 && line[0] == '`' {
+			if end := strings.IndexByte(line[1:], '`'); end >= 0 {
+				line = strings.TrimSpace(line[1 : end+1])
+			}
+		}
 		if line != "" {
 			items = append(items, line)
 		}

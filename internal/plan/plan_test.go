@@ -560,3 +560,55 @@ func TestSanitizeACs(t *testing.T) {
 		}
 	})
 }
+
+func TestParseListBacktickPaths(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string // full list text (one item per line)
+		want  []string
+	}{
+		{
+			name:  "bare_path_unchanged",
+			input: "- internal/plan/plan.go",
+			want:  []string{"internal/plan/plan.go"},
+		},
+		{
+			name:  "backtick_wrapped_path_stripped",
+			input: "- `internal/plan/plan.go`",
+			want:  []string{"internal/plan/plan.go"},
+		},
+		{
+			name:  "backtick_path_with_parenthesized_annotation",
+			input: "- `internal/plan/plan.go` (parseList function)",
+			want:  []string{"internal/plan/plan.go"},
+		},
+		{
+			name:  "backtick_path_with_em_dash_prose",
+			input: "- `internal/plan/plan.go` — adds sanitizeACs helper",
+			want:  []string{"internal/plan/plan.go"},
+		},
+		{
+			name:  "non_path_plain_string_unchanged",
+			input: "- go test ./internal/plan/...",
+			want:  []string{"go test ./internal/plan/..."},
+		},
+		{
+			name:  "multiple_entries_mixed",
+			input: "- `internal/foo.go` (Config edit)\n- internal/bar.go\n- `internal/baz.go`",
+			want:  []string{"internal/foo.go", "internal/bar.go", "internal/baz.go"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseList(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len mismatch: got %d %v, want %d %v", len(got), got, len(tc.want), tc.want)
+			}
+			for i, w := range tc.want {
+				if got[i] != w {
+					t.Errorf("[%d] got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
