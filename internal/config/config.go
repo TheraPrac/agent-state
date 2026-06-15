@@ -228,6 +228,7 @@ type SuiteConfig struct {
 type ScopeSuiteConfig struct {
 	Command       string
 	Triggers      []string // file glob patterns that activate this suite
+	RepoTrigger   string   // repo name (e.g. "theraprac-api") — suite applicable when that repo has any changed files
 	Artifacts     []string // glob patterns for artifacts to upload after execution
 	PostDeployCmd string   // command to run post-deploy verification (e.g., E2E against dev)
 	PostMergeCmd  string   // command to run post-merge verification against merged main (I-696, e.g., full local E2E)
@@ -1329,7 +1330,7 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			}
 			// val == "" means this is a section header (suite name), levels tracks it
 		case "scope_suites":
-			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" && key != "post_merge" {
+			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" && key != "post_merge" && key != "repo_trigger" {
 				// Simple format
 				cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
 			} else if val != "" {
@@ -1343,6 +1344,8 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 					sc.PostDeployCmd = val
 				case "post_merge":
 					sc.PostMergeCmd = val
+				case "repo_trigger":
+					sc.RepoTrigger = val
 				}
 				cfg.Testing.ScopeSuites[suiteName] = sc
 			}

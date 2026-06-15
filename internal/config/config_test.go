@@ -682,6 +682,63 @@ testing:
 	}
 }
 
+// T-393: repo_trigger parses into ScopeSuiteConfig.RepoTrigger and does not
+// corrupt the suite name map (was treated as a simple-format suite name before
+// the exclusion was added).
+func TestScopeSuiteRepoTrigger(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(`paths:
+  root: .
+
+testing:
+  enabled: true
+  scope_suites:
+    api_integration:
+      command: cd ../theraprac-api && make integration-local
+      repo_trigger: theraprac-api
+    web_e2e:
+      command: cd ../theraprac-web && scripts/e2e-local.sh run
+      triggers: [src/app/**, src/components/**]
+`), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// repo_trigger must not create a spurious "repo_trigger" suite entry.
+	if _, spurious := cfg.Testing.ScopeSuites["repo_trigger"]; spurious {
+		t.Error("repo_trigger was parsed as a suite name — should be a ScopeSuiteConfig field")
+	}
+
+	// api_integration must have RepoTrigger set.
+	api, ok := cfg.Testing.ScopeSuites["api_integration"]
+	if !ok {
+		t.Fatal("api_integration scope suite not found")
+	}
+	if api.RepoTrigger != "theraprac-api" {
+		t.Errorf("api_integration.RepoTrigger = %q, want %q", api.RepoTrigger, "theraprac-api")
+	}
+	if api.Command != "cd ../theraprac-api && make integration-local" {
+		t.Errorf("api_integration.Command = %q", api.Command)
+	}
+
+	// web_e2e must still have Triggers and no RepoTrigger.
+	web, ok := cfg.Testing.ScopeSuites["web_e2e"]
+	if !ok {
+		t.Fatal("web_e2e scope suite not found")
+	}
+	if web.RepoTrigger != "" {
+		t.Errorf("web_e2e.RepoTrigger = %q, want empty", web.RepoTrigger)
+	}
+	if len(web.Triggers) != 2 {
+		t.Errorf("web_e2e.Triggers = %v, want 2 items", web.Triggers)
+	}
+}
+
 // I-407: WorktreeBase places <id> dirs under the agent root (one level
 // up from the workspace), not inside the workspace itself. Workspace is
 // symlinked across agents (I-418); placing worktrees in the workspace

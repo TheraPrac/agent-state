@@ -21,9 +21,16 @@ import (
 type CloseOpts struct {
 	Reason string
 	Force  bool // bypass gate enforcement
+	// SkipTier2Revalidation skips close-time recomputation of applicable scope
+	// suites from the current diff (--skip-tier2-revalidation flag). Use only
+	// when the worktree is unavailable or the agent is confident the push-gate
+	// already enforced the correct set.
+	SkipTier2Revalidation bool
 	// FilesOpts is passed to the LOC freeze step. Tests inject fake git/resolve
 	// here; production callers leave it zero (real git + real worktree discovery).
 	FilesOpts FilesOpts
+	// ScopeCheckOpts is passed to closeScopeSuiteCheck. Tests inject fakes here.
+	ScopeCheckOpts CloseScopeCheckOpts
 }
 
 // webE2EScopeSkipped reports whether the web_e2e scope suite was
@@ -185,6 +192,16 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// Gate enforcement — skip for abandon/declined since those bypass gates
 	// by design. (wontfix is rejected earlier per I-433.)
 	if !opts.Force && resolution != "abandoned" && resolution != "declined" {
+		// T-393: close-time mirror of the push-gate Tier 2 check. Recompute
+		// applicable scope suites from the current HEAD diff in the worktree
+		// and reject close when any applicable suite has no recorded evidence.
+		scopeOpts := opts.ScopeCheckOpts
+		scopeOpts.Skip = scopeOpts.Skip || opts.SkipTier2Revalidation
+		if msg := closeScopeSuiteCheck(item, cfg, scopeOpts); msg != "" {
+			fmt.Fprintln(os.Stderr, msg)
+			return 1
+		}
+
 		results := validate.EvaluateGates(item, "close", cfg, s.All())
 		if !validate.GatesPassed(results) {
 			failure := validate.FirstFailure(results)
