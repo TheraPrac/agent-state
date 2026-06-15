@@ -10,8 +10,8 @@ import (
 
 // ClaudeMdFinding describes one bloat-pattern hit in CLAUDE.md.
 //
-// I-736: the same pattern set as theraprac-workspace/scripts/claude-md-audit.sh
-// and theraprac-workspace/claude-config/hooks/claude-md-bloat-guard.sh, ported
+// I-736: the same pattern set as scripts/claude-md-audit.sh
+// and claude-config/hooks/claude-md-bloat-guard.sh, ported
 // to Go so st check can surface drift at session-start (warnings, not failures).
 type ClaudeMdFinding struct {
 	Line    int    // 1-indexed line number, or 0 for whole-file findings (size)

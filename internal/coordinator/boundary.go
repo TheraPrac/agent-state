@@ -7,7 +7,7 @@
 // STOPS rather than exceeding the boundary.
 //
 // This file is the boundary loader: the typed read of
-// theraprac-workspace/.as/coordinator.yaml (the §11 autonomy boundary).
+// .as/coordinator.yaml (the §11 autonomy boundary).
 // The coordinator READS it and NEVER writes it (contract §11).
 //
 // LOAD-BEARING (contract §11/§13): the as repo carries no YAML dependency

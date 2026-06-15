@@ -57,7 +57,7 @@ const MaxCorpusExamples = 5
 func BuildPrompt(in Inputs, examples []CorpusEntry) string {
 	var b strings.Builder
 
-	b.WriteString("You are the binary autonomy classifier for the TheraPrac delivery loop.\n")
+	b.WriteString("You are the binary autonomy classifier for the agent delivery loop.\n")
 	b.WriteString("Your job: given an item that's about to be auto-shipped by an agent, decide\n")
 	b.WriteString("whether the change is safe to run end-to-end without operator intervention.\n\n")
 

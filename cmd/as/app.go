@@ -1132,7 +1132,7 @@ in-flight, run 'st release' against the active items first.
 		Long: "Launch a detached, budget-capped, JSONL-observable reasoning\n" +
 			"worker (`claude -p`, resolved binary) that drives <item> through\n" +
 			"the full CLAUDE.md delivery loop. The per-item budget is read from\n" +
-			"theraprac-workspace/.as/coordinator.yaml (never spawned uncapped);\n" +
+			".as/coordinator.yaml (never spawned uncapped);\n" +
 			"the autonomy boundary there governs the worker via the existing\n" +
 			"per-worker enforcement hooks. Observe with `st watch` /\n" +
 			"`st transcript <item>`.\n\n" +
@@ -1195,7 +1195,7 @@ in-flight, run 'st release' against the active items first.
 			"concurrently, supervising each through the observability substrate\n" +
 			"(registry PID / session JSONL / changelog — never worker self-\n" +
 			"report) and applying the B1/C2/D2 stall heuristics against\n" +
-			"theraprac-workspace/.as/coordinator.yaml. C1 semantic conflicts\n" +
+			".as/coordinator.yaml. C1 semantic conflicts\n" +
 			"(two items on the same OpenAPI/migration surface) are serialized,\n" +
 			"not run in parallel. On any contract-§7 predicate it files a\n" +
 			"deduped, dependency-linked blocker + durable record and STOPS\n" +
@@ -1387,8 +1387,9 @@ delivery loop) or red (stop and surface to operator). Verdict and
 reason are persisted under the item's classification.* fields.
 
 Evaluation order:
-  1. Static deny-list (theraprac-infra/state/, RBAC handlers, IAM/
-     secrets terraform, *.pem/*.key) — any match forces red.
+  1. Static deny-list (IAM/secrets terraform, *.pem/*.key) plus
+     project-specific path prefixes from classify.deny_path_prefixes
+     in .as/config.yaml — any match forces red.
   2. Cached prior verdict (cache key = sha256(inputs)) — skipped with
      --force.
   3. LLM judge — a one-shot ` + "`claude -p`" + ` subprocess that emits a
@@ -1553,7 +1554,7 @@ The worktree is created on the item's existing branch (read from .workinfo)
 and appended to .workinfo so st finish cleans it up automatically.
 
 Example:
-  st worktree add I-456 theraprac-api   # add api worktree to a web-only item`,
+  st worktree add I-456 my-repo   # add a repo worktree to an existing item`,
 		Args: cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			exitCode = command.WorktreeAdd(appStore, appCfg, args[0], args[1])

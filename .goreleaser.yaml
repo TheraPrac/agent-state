@@ -1,0 +1,48 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: st
+    main: ./cmd/as
+    binary: st
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/jfinlinson/agent-state/internal/buildinfo.Commit={{.Commit}}
+      - -X github.com/jfinlinson/agent-state/internal/buildinfo.Built={{.Date}}
+
+archives:
+  - id: st
+    name_template: "st_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+    - title: Bug Fixes
+      regexp: "^fix"
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^chore: bump"
+      - "^Merge"

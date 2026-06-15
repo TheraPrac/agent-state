@@ -1152,3 +1152,46 @@ func TestAgentRootCachesResult(t *testing.T) {
 		// ResetAgentRootCache does invalidate, not the specific value.)
 	}
 }
+
+// TestClassifyConfig_ParsesDenyPatterns verifies that classify.deny_path_prefixes
+// and classify.deny_basename_globs are parsed from config.yaml (block-list form).
+func TestClassifyConfig_ParsesDenyPatterns(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	configContent := `project:
+  name: classify-test
+classify:
+  deny_path_prefixes:
+    - infra/state/
+    - internal/auth/
+  deny_basename_globs:
+    - private_*.tf
+`
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(configContent), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Classify == nil {
+		t.Fatal("cfg.Classify is nil; want ClassifyConfig populated")
+	}
+	wantPrefixes := []string{"infra/state/", "internal/auth/"}
+	if len(cfg.Classify.DenyPathPrefixes) != len(wantPrefixes) {
+		t.Fatalf("DenyPathPrefixes = %v; want %v", cfg.Classify.DenyPathPrefixes, wantPrefixes)
+	}
+	for i, p := range wantPrefixes {
+		if cfg.Classify.DenyPathPrefixes[i] != p {
+			t.Errorf("DenyPathPrefixes[%d] = %q; want %q", i, cfg.Classify.DenyPathPrefixes[i], p)
+		}
+	}
+	wantGlobs := []string{"private_*.tf"}
+	if len(cfg.Classify.DenyBasenameGlobs) != len(wantGlobs) {
+		t.Fatalf("DenyBasenameGlobs = %v; want %v", cfg.Classify.DenyBasenameGlobs, wantGlobs)
+	}
+	if cfg.Classify.DenyBasenameGlobs[0] != "private_*.tf" {
+		t.Errorf("DenyBasenameGlobs[0] = %q; want private_*.tf", cfg.Classify.DenyBasenameGlobs[0])
+	}
+}

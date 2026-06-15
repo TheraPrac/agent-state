@@ -55,15 +55,13 @@ func (p DenyPattern) Matches(path string) bool {
 	return false
 }
 
-// HardRedPatterns is the production deny-list. Keep narrow: only paths
-// where the cost of a wrong "green" verdict is materially worse than
-// the cost of a wrong "red" verdict (security-critical, destructive,
-// or irreversible). Adding a pattern is a one-way ratchet — operators
-// will quickly notice if everything trips red.
+// HardRedPatterns is the generic deny-list applied to every project.
+// Project-specific path prefixes belong in .as/config.yaml under
+// classify.deny_path_prefixes — they are merged at classify time by
+// command/classify.go so the overall deny-list = HardRedPatterns + cfg.Classify.
+// Keep narrow: only patterns where the cost of a wrong "green" verdict is
+// materially worse than the cost of a wrong "red" verdict.
 var HardRedPatterns = []DenyPattern{
-	{PathPrefix: "theraprac-infra/state/", Reason: "terraform state files — never modified outside an apply"},
-	{PathPrefix: "theraprac-api/internal/auth/", Reason: "RBAC auth handlers — security-critical"},
-	{PathPrefix: "theraprac-api/internal/access/", Reason: "RBAC access enforcement — security-critical"},
 	{BasenameGlob: "iam_*.tf", Reason: "IAM terraform — credentials and permissions"},
 	{BasenameGlob: "secrets_*.tf", Reason: "secrets terraform — production credentials"},
 	{BasenameGlob: "secrets-manifest.yaml", Reason: "secrets manifest"},

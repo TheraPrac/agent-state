@@ -29,23 +29,29 @@ func fixedNow() time.Time {
 	return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 }
 
-// TestDenyList_PathPrefixMatch covers each PathPrefix entry in the
-// production deny-list — every prefix should hard-red.
+// TestDenyList_PathPrefixMatch verifies that project-specific path prefixes
+// added via config.ClassifyConfig work when passed directly to Match.
+// HardRedPatterns no longer contains project-specific PathPrefix entries;
+// those belong in .as/config.yaml → ClassifyConfig.DenyPathPrefixes.
 func TestDenyList_PathPrefixMatch(t *testing.T) {
+	projectPatterns := []DenyPattern{
+		{PathPrefix: "infra/state/", Reason: "terraform state files"},
+		{PathPrefix: "internal/auth/", Reason: "auth handlers — security-critical"},
+	}
+
 	cases := []struct {
 		name string
 		file string
 		want string // expected matching label, empty = no match expected
 	}{
-		{"terraform state", "theraprac-infra/state/dev.tfstate", "theraprac-infra/state/"},
-		{"auth handler", "theraprac-api/internal/auth/middleware.go", "theraprac-api/internal/auth/"},
-		{"access handler", "theraprac-api/internal/access/rbac.go", "theraprac-api/internal/access/"},
-		{"unrelated api file", "theraprac-api/internal/billing/stripe.go", ""},
-		{"web file", "theraprac-web/src/app/page.tsx", ""},
+		{"terraform state", "infra/state/dev.tfstate", "infra/state/"},
+		{"auth handler", "internal/auth/middleware.go", "internal/auth/"},
+		{"unrelated file", "internal/billing/stripe.go", ""},
+		{"web file", "src/app/page.tsx", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Match([]string{tc.file}, HardRedPatterns)
+			got := Match([]string{tc.file}, projectPatterns)
 			if tc.want == "" {
 				if got != nil {
 					t.Errorf("Match(%q) = %s; want no match", tc.file, got.Label())
@@ -98,19 +104,20 @@ func TestDenyList_BasenameGlobMatch(t *testing.T) {
 }
 
 // TestDenyList_MultipleFilesFirstMatchWins verifies that Match returns
-// the first matching pattern when several files trip the list.
+// the first (file, pattern) pair that matches — files are iterated first,
+// then patterns within each file.
 func TestDenyList_MultipleFilesFirstMatchWins(t *testing.T) {
 	files := []string{
-		"theraprac-api/internal/billing/stripe.go",  // no match
-		"theraprac-api/internal/auth/middleware.go", // matches "theraprac-api/internal/auth/"
-		"theraprac-infra/state/dev.tfstate",         // would match too, but auth/ comes first in files
+		"internal/billing/app.go",  // no match
+		"infra/aws/iam_admin.tf",   // matches iam_*.tf (first matching file)
+		"infra/keys/prod.pem",      // would also match *.pem, but iam_admin.tf wins first
 	}
 	got := Match(files, HardRedPatterns)
 	if got == nil {
 		t.Fatal("Match = nil; want a match")
 	}
-	if got.Label() != "theraprac-api/internal/auth/" {
-		t.Errorf("Match label = %s; want theraprac-api/internal/auth/", got.Label())
+	if got.Label() != "iam_*.tf" {
+		t.Errorf("Match label = %s; want iam_*.tf", got.Label())
 	}
 }
 
@@ -124,7 +131,7 @@ func TestClassifier_DenyListShortCircuit(t *testing.T) {
 	in := Inputs{
 		ItemID:       "T-345",
 		Title:        "test",
-		TouchedFiles: []string{"theraprac-infra/state/dev.tfstate"},
+		TouchedFiles: []string{"infra/keys/prod.pem"},
 	}
 	res, err := c.Classify(in, Result{}, false)
 	if err != nil {
@@ -268,11 +275,11 @@ func TestClassifier_DenyListWinsOverCachedGreen(t *testing.T) {
 
 	in := Inputs{
 		ItemID:       "T-345",
-		TouchedFiles: []string{"theraprac-infra/state/dev.tfstate"},
+		TouchedFiles: []string{"infra/keys/prod.pem"},
 	}
 	cached := Result{
 		Verdict:      VerdictGreen,
-		Reason:       "cached green from before deny-list added this prefix",
+		Reason:       "cached green from before deny-list added this pattern",
 		InputHash:    in.Hash(),
 		ClassifiedBy: "model",
 	}

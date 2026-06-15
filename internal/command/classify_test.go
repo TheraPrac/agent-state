@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/classify"
+	"github.com/jfinlinson/agent-state/internal/config"
 )
 
 // TestClassify_DenyListPersists covers the end-to-end happy path of
@@ -17,7 +18,7 @@ func TestClassify_DenyListPersists(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	rc := Classify(s, cfg, "T-001", ClassifyOpts{
-		Files: []string{"theraprac-infra/state/dev.tfstate"},
+		Files: []string{"infra/keys/prod.pem"},
 	})
 	if rc != 0 {
 		t.Fatalf("Classify rc = %d; want 0", rc)
@@ -139,7 +140,7 @@ func TestClassify_DryRunPrintsPromptAndSkipsModel(t *testing.T) {
 func TestClassify_NotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	rc := Classify(s, cfg, "T-999", ClassifyOpts{
-		Files: []string{"theraprac-infra/state/x.tfstate"},
+		Files: []string{"infra/keys/prod.pem"},
 	})
 	if rc != 1 {
 		t.Errorf("Classify rc = %d; want 1 (not found)", rc)
@@ -152,7 +153,7 @@ func TestClassify_NotFound(t *testing.T) {
 func TestClassify_CacheRoundTrip(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
-	files := []string{"theraprac-infra/state/dev.tfstate"}
+	files := []string{"infra/keys/prod.pem"}
 
 	if rc := Classify(s, cfg, "T-001", ClassifyOpts{Files: files}); rc != 0 {
 		t.Fatalf("first Classify rc = %d", rc)
@@ -188,7 +189,7 @@ func TestClassify_ChangelogEntry(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	if rc := Classify(s, cfg, "T-001", ClassifyOpts{
-		Files: []string{"theraprac-infra/state/dev.tfstate"},
+		Files: []string{"infra/keys/prod.pem"},
 	}); rc != 0 {
 		t.Fatalf("Classify rc = %d", rc)
 	}
@@ -203,5 +204,75 @@ func TestClassify_ChangelogEntry(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"new":"red"`) {
 		t.Errorf("changelog missing red verdict entry:\n%s", body)
+	}
+}
+
+// TestClassifyConfigDenyList verifies that project-specific path prefixes
+// loaded from config.ClassifyConfig are merged into the deny list and
+// trigger a hard-red verdict without calling the model.
+func TestClassifyConfigDenyList(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Inject project-specific deny patterns via config (simulating
+	// .as/config.yaml classify.deny_path_prefixes).
+	cfg.Classify = &config.ClassifyConfig{
+		DenyPathPrefixes: []string{"project/auth/"},
+	}
+
+	stub := &stubClassifyModel{res: classify.Result{
+		Verdict: classify.VerdictGreen,
+		Reason:  "stub: model should not be reached",
+	}}
+
+	rc := Classify(s, cfg, "T-001", ClassifyOpts{
+		Files: []string{"project/auth/middleware.go"},
+		Model: stub,
+	})
+	if rc != 0 {
+		t.Fatalf("Classify rc = %d; want 0", rc)
+	}
+
+	item, _ := s.Get("T-001")
+	verdict, _ := item.Doc.GetNestedField("classification.verdict")
+	if verdict != string(classify.VerdictRed) {
+		t.Errorf("classification.verdict = %q; want red (config deny-list must force red)", verdict)
+	}
+	classifiedBy, _ := item.Doc.GetNestedField("classification.classified_by")
+	if classifiedBy != "deny-list" {
+		t.Errorf("classification.classified_by = %q; want deny-list", classifiedBy)
+	}
+}
+
+// TestClassifyConfigDenyList_BasenameGlobs verifies that project-specific
+// basename-glob patterns from config.ClassifyConfig are merged into the
+// deny list and force a hard-red verdict without calling the model.
+func TestClassifyConfigDenyList_BasenameGlobs(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	cfg.Classify = &config.ClassifyConfig{
+		DenyBasenameGlobs: []string{"private_*.json"},
+	}
+
+	stub := &stubClassifyModel{res: classify.Result{
+		Verdict: classify.VerdictGreen,
+		Reason:  "stub: model should not be reached",
+	}}
+
+	rc := Classify(s, cfg, "T-001", ClassifyOpts{
+		Files: []string{"config/private_keys.json"},
+		Model: stub,
+	})
+	if rc != 0 {
+		t.Fatalf("Classify rc = %d; want 0", rc)
+	}
+
+	item, _ := s.Get("T-001")
+	verdict, _ := item.Doc.GetNestedField("classification.verdict")
+	if verdict != string(classify.VerdictRed) {
+		t.Errorf("classification.verdict = %q; want red (basename-glob deny-list must force red)", verdict)
+	}
+	classifiedBy, _ := item.Doc.GetNestedField("classification.classified_by")
+	if classifiedBy != "deny-list" {
+		t.Errorf("classification.classified_by = %q; want deny-list", classifiedBy)
 	}
 }

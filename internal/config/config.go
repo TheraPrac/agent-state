@@ -64,6 +64,9 @@ type Config struct {
 	// Evidence storage (optional)
 	Evidence *EvidenceConfig
 
+	// Autonomy classifier configuration (optional)
+	Classify *ClassifyConfig
+
 	// Session guidance text (optional, shown in prime output)
 	Guidance string
 
@@ -287,6 +290,15 @@ type GateConfig struct {
 
 type AgentsConfig struct {
 	// Agent identity comes from $AS_AGENT_ID env var
+}
+
+// ClassifyConfig holds project-specific autonomy classifier settings.
+// Project-specific path prefixes that should always force a red verdict
+// go here (via .as/config.yaml) instead of HardRedPatterns, which is
+// reserved for universally-appropriate generic patterns.
+type ClassifyConfig struct {
+	DenyPathPrefixes  []string // path-prefix deny patterns: any touched file with this prefix forces red
+	DenyBasenameGlobs []string // basename-glob deny patterns: e.g. "private_*.tf"
 }
 
 type SprintsConfig struct {
@@ -1619,6 +1631,14 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 				}
 			}
 		}
+	case "classify":
+		ensureClassify(cfg)
+		switch key {
+		case "deny_path_prefixes":
+			cfg.Classify.DenyPathPrefixes = append(cfg.Classify.DenyPathPrefixes, items...)
+		case "deny_basename_globs":
+			cfg.Classify.DenyBasenameGlobs = append(cfg.Classify.DenyBasenameGlobs, items...)
+		}
 	case "run":
 		ensureRun(cfg)
 		switch key {
@@ -1666,7 +1686,22 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 
 // applyListItem routes a dash-prefixed list item to the appropriate config field.
 func applyListItem(cfg *Config, levels [4]string, val string) {
-	// Currently unused — gates list items would be handled here in the future.
+	switch levels[0] {
+	case "classify":
+		ensureClassify(cfg)
+		switch levels[1] {
+		case "deny_path_prefixes":
+			cfg.Classify.DenyPathPrefixes = append(cfg.Classify.DenyPathPrefixes, val)
+		case "deny_basename_globs":
+			cfg.Classify.DenyBasenameGlobs = append(cfg.Classify.DenyBasenameGlobs, val)
+		}
+	}
+}
+
+func ensureClassify(cfg *Config) {
+	if cfg.Classify == nil {
+		cfg.Classify = &ClassifyConfig{}
+	}
 }
 
 func ensureRun(cfg *Config) {
