@@ -514,3 +514,35 @@ func TestRemoveDuplicateDeliveryBlock_KeepsFirst(t *testing.T) {
 		t.Error("should have no duplicate after removal")
 	}
 }
+
+// ReplaceList must consume the entire prior block, including malformed flat
+// lines (e.g. 'cmd: check 1') that were written by plan-approve without '- '
+// markers. Previously the endIdx scan stopped at the first non-canonical key
+// it encountered, leaving those lines appended after the new list.
+func TestReplaceList_MalformedFlatBlock(t *testing.T) {
+	doc := &ParsedDocument{
+		Lines: []Line{
+			{Raw: "id: I-001", Key: "id"},
+			{Raw: "acceptance_criteria:", Key: "acceptance_criteria"},
+			{Raw: "cmd: check 1", Key: "cmd"},
+			{Raw: "cmd: check 2", Key: "cmd"},
+			{Raw: "status: open", Key: "status"},
+		},
+	}
+	doc.ReplaceList("acceptance_criteria", []string{"- cmd: real check"})
+	got := doc.String()
+	if strings.Contains(got, "check 1") || strings.Contains(got, "check 2") {
+		t.Errorf("malformed flat lines must be consumed, got:\n%s", got)
+	}
+	if !strings.Contains(got, "- cmd: real check") {
+		t.Errorf("replacement AC line missing, got:\n%s", got)
+	}
+	if !strings.Contains(got, "status: open") {
+		t.Errorf("subsequent field must be preserved, got:\n%s", got)
+	}
+	// Exactly one AC line (the replacement), not two or more.
+	count := strings.Count(got, "cmd:")
+	if count != 1 {
+		t.Errorf("expected exactly 1 cmd: line, got %d:\n%s", count, got)
+	}
+}
