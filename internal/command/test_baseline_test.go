@@ -1,12 +1,10 @@
 package command
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/evidence"
 )
 
@@ -114,8 +112,8 @@ func TestLoadBaseline_Missing(t *testing.T) {
 
 // ---- integration: applyBaselineCheck in testRunMode -------------------------
 
-// writeBaselineForTest saves a baseline directly to cfg's workspace.
-func writeBaselineForTest(t *testing.T, cfg interface{ Root() string }, suite string, failingTests []string) {
+// writeBaselineForTest saves a baseline to cfg's workspace via SaveBaseline.
+func writeBaselineForTest(t *testing.T, cfg *config.Config, suite string, failingTests []string) {
 	t.Helper()
 	b := &TestBaseline{
 		Suite:        suite,
@@ -123,13 +121,8 @@ func writeBaselineForTest(t *testing.T, cfg interface{ Root() string }, suite st
 		SHA:          "main123",
 		FailingTests: failingTests,
 	}
-	path := filepath.Join(cfg.Root(), ".as", "baselines", suite, "baseline.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	data, _ := json.MarshalIndent(b, "", "  ")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("WriteFile baseline: %v", err)
+	if err := SaveBaseline(cfg, b); err != nil {
+		t.Fatalf("SaveBaseline: %v", err)
 	}
 }
 

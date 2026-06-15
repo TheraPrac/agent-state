@@ -116,13 +116,13 @@ func filterNewFailures(current, baselineTests []string) (newFails, preExisting [
 // (unparseable), or new failures are present (caller should use the normal
 // fail path).
 func applyBaselineCheck(cfg *config.Config, s *store.Store, id, suite string, output []byte, sha, logURI, retryTag, envTag string, now time.Time) int {
-	b, err := LoadBaseline(cfg, suite)
-	if err != nil || b == nil {
-		return -1
-	}
 	current := parseFailingTests(output)
 	if current == nil {
 		return -1 // non-Go suite or no parseable failures
+	}
+	b, err := LoadBaseline(cfg, suite)
+	if err != nil || b == nil {
+		return -1
 	}
 	newFails, preExisting := filterNewFailures(current, b.FailingTests)
 	if len(newFails) > 0 {
@@ -139,15 +139,20 @@ func applyBaselineCheck(cfg *config.Config, s *store.Store, id, suite string, ou
 	fmt.Printf("PASS %s (all %d failure(s) pre-existing on main @ %s)\n", suite, len(preExisting), b.SHA)
 	ev := fmt.Sprintf("pass%s%s baseline:pre-existing/%d %s %s evidence:%s",
 		retryTag, envTag, len(preExisting), sha, now.Format(time.RFC3339), logURI)
-	_ = s.Mutate(id, func(it *model.Item) error {
+	if err := s.Mutate(id, func(it *model.Item) error {
 		it.SetNested("testing_evidence", suite, ev)
 		it.Doc.SetField("last_touched", now.Format(time.RFC3339))
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
+		return 1
+	}
 	changelog.Append(cfg, id, changelog.Entry{
-		Op: "test_passed", Field: "testing_evidence." + suite, NewValue: ev,
+		Op: "test_executed", Field: "testing_evidence." + suite, NewValue: ev,
 	})
-	autoSync(s, fmt.Sprintf("st test pass: %s %s (baseline pre-existing)", id, suite)) //nolint:errcheck
+	if err := autoSync(s, fmt.Sprintf("st test pass: %s %s (baseline pre-existing)", id, suite)); err != nil {
+		return 1
+	}
 	return 0
 }
 
