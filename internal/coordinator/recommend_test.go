@@ -175,14 +175,15 @@ func TestRecommend_GoalWeightZeroWhenMapEmpty(t *testing.T) {
 	}
 }
 
-// Priority override tests (T-467): pin is now a band modifier applied upstream;
-// the coordinator receives priorityOverrides map[string]int instead of a pin set.
+// Priority override tests: overrides model transitive dependency inheritance
+// (a p2 item unblocked by a p1 dep gets lifted). Pins are a separate score
+// boost (pinWeight) applied within the band — they never cross bands.
 
-// An item with a lower effective priority override beats a same-label item.
+// An item with a lower effective priority override (dep inheritance) beats a same-label item.
 func TestRecommend_PriorityOverrideWins(t *testing.T) {
 	a := &model.Item{ID: "T-A", Priority: pInt(2), Created: refNow}
 	b := &model.Item{ID: "T-B", Priority: pInt(2), Created: refNow}
-	// T-B has an effective priority of p1 (e.g. queue-pinned p2 → p1 band).
+	// T-B has an effective priority of p1 (e.g. inherited from a p1 dependency).
 	overrides := map[string]int{"T-B": 1}
 	recs := Recommend([]*model.Item{a, b}, nil, nil, nil, overrides, refNow)
 	if got := ids(recs); got[0] != "T-B" {
@@ -209,15 +210,36 @@ func TestRecommend_PriorityOverrideTiesNativePriority(t *testing.T) {
 }
 
 // A nil priorityOverrides map has no effect on scoring.
-func TestRecommend_NilPinMapNoBoost(t *testing.T) {
+func TestRecommend_NilOverridesNoEffect(t *testing.T) {
 	a := &model.Item{ID: "T-A", Priority: pInt(2), Created: refNow}
 	r1 := Recommend([]*model.Item{a}, nil, nil, nil, nil, refNow)
 	r2 := Recommend([]*model.Item{a}, nil, nil, nil, map[string]int{}, refNow)
 	if r1[0].Score != r2[0].Score {
 		t.Fatalf("nil vs empty overrides must produce same score: %v vs %v", r1[0].Score, r2[0].Score)
 	}
-	if strings.Contains(r1[0].Rationale(), "queue pin") {
-		t.Errorf("no-override rationale must not contain 'queue pin': %q", r1[0].Rationale())
+}
+
+// A pinned item gets a score boost but stays in its priority band.
+func TestRecommend_PinBoostsWithinBand(t *testing.T) {
+	// p1 item (native) must beat pinned p2 even with pin score boost.
+	p1 := &model.Item{ID: "I-001", Priority: pInt(1), Created: refNow}
+	p2 := &model.Item{ID: "T-001", Priority: pInt(2), Created: refNow}
+	pins := map[string]bool{"T-001": true}
+	recs := Recommend([]*model.Item{p2, p1}, nil, nil, nil, nil, refNow, pins)
+	if got := ids(recs); got[0] != "I-001" {
+		t.Fatalf("p1 must beat pinned p2: got %v", got)
+	}
+	// T-001 score must be higher than p2 item without pin — pin boost is real.
+	unpinned := &model.Item{ID: "T-002", Priority: pInt(2), Created: refNow}
+	recs2 := Recommend([]*model.Item{p2, unpinned}, nil, nil, nil, nil, refNow, pins)
+	if got := ids(recs2); got[0] != "T-001" {
+		t.Fatalf("pinned p2 must beat unpinned p2: got %v", got)
+	}
+	// Pin factor must appear in the rationale.
+	for _, r := range recs2 {
+		if r.Item.ID == "T-001" && !strings.Contains(r.Rationale(), "queue-pin") {
+			t.Errorf("pinned item rationale must contain 'queue-pin': %q", r.Rationale())
+		}
 	}
 }
 

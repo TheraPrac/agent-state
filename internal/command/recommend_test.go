@@ -111,12 +111,12 @@ func TestRecommend_QueueFlagNoOp(t *testing.T) {
 		t.Fatalf("--queue flag must not change the candidate set:\nwith: %s\nwithout: %s", withFlag, without)
 	}
 
-	// After pinning T-001, the rationale shows the effective (lifted) priority.
-	// Pin is now a band modifier: p2 pin → effective p1, visible in rationale.
+	// After pinning T-001, the rationale shows the queue-pin score boost.
+	// Pin stays within the priority band (no effective-priority change).
 	QueueAdd(s, cfg, "T-001", QueueOpts{})
 	out := captureStdout(t, func() { Recommend(s, cfg, RecommendOpts{Queue: true}) })
-	if !strings.Contains(out, "effective") {
-		t.Fatalf("pinned T-001 must show effective priority in rationale:\n%s", out)
+	if !strings.Contains(out, "queue-pin") {
+		t.Fatalf("pinned T-001 must show queue-pin in rationale:\n%s", out)
 	}
 }
 

@@ -471,7 +471,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 		leverage, _ := unblockLeverage(g, cands)
 		pins := loadQueuePins(cfg)
 		priorityOverrides := buildPriorityOverrides(g, cands, pins)
-		recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
+		recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now(), pins)
 		enrichPriorityDetail(recs, priorityOverrides, g.Items, pins)
 		if len(recs) > 0 {
 			next := recs[0]

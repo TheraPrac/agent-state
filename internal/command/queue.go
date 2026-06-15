@@ -342,7 +342,7 @@ func QueueNext(s *store.Store, cfg *config.Config, opts QueueNextOpts) int {
 	lev, _ := unblockLeverage(g, cands)
 	pins := loadQueuePins(cfg)
 	priorityOverrides := buildPriorityOverrides(g, cands, pins)
-	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
+	recs := coordinator.Recommend(cands, lev, sprints, loadGoalWeights(s), priorityOverrides, time.Now(), pins)
 	enrichPriorityDetail(recs, priorityOverrides, g.Items, pins)
 
 	for _, r := range recs {
