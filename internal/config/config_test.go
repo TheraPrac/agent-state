@@ -1195,3 +1195,59 @@ classify:
 		t.Errorf("DenyBasenameGlobs[0] = %q; want private_*.tf", cfg.Classify.DenyBasenameGlobs[0])
 	}
 }
+
+// I-757: env_from, target_from, vendor_tiers parse into ScopeSuiteConfig.
+func TestScopeSuiteEnvFrom(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte(`paths:
+  root: .
+
+testing:
+  enabled: true
+  scope_suites:
+    live_acceptance:
+      command: bash scripts/live.sh
+      env_from: $TARGET_ENV
+      target_from: [db_endpoint=$DB_HOST, api_endpoint=$API_BASE_URL]
+      vendor_tiers: [stedi=$STEDI_TIER]
+`), 0644)
+
+	cfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	sc, ok := cfg.Testing.ScopeSuites["live_acceptance"]
+	if !ok {
+		t.Fatal("live_acceptance scope suite not found")
+	}
+	if sc.Command != "bash scripts/live.sh" {
+		t.Errorf("Command = %q", sc.Command)
+	}
+	if sc.EnvFrom != "$TARGET_ENV" {
+		t.Errorf("EnvFrom = %q, want $TARGET_ENV", sc.EnvFrom)
+	}
+	if len(sc.TargetFrom) != 2 {
+		t.Errorf("TargetFrom = %v, want 2 entries", sc.TargetFrom)
+	} else {
+		if sc.TargetFrom[0] != "db_endpoint=$DB_HOST" {
+			t.Errorf("TargetFrom[0] = %q", sc.TargetFrom[0])
+		}
+		if sc.TargetFrom[1] != "api_endpoint=$API_BASE_URL" {
+			t.Errorf("TargetFrom[1] = %q", sc.TargetFrom[1])
+		}
+	}
+	if len(sc.VendorTiers) != 1 {
+		t.Errorf("VendorTiers = %v, want 1 entry", sc.VendorTiers)
+	} else if sc.VendorTiers[0] != "stedi=$STEDI_TIER" {
+		t.Errorf("VendorTiers[0] = %q", sc.VendorTiers[0])
+	}
+
+	// env_from must not be parsed as a phantom simple-format suite command.
+	if sc2, ok := cfg.Testing.ScopeSuites["$TARGET_ENV"]; ok {
+		t.Errorf("env_from value was parsed as phantom suite: %+v", sc2)
+	}
+}
