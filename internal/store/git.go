@@ -682,6 +682,18 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		return nil
 	}
 
+	// I-594: detect cross-attribution — parallel `st update` calls each write
+	// to the working tree before holding the git lock, so `git add -u` above
+	// may have staged OTHER items' files alongside this call's intended changes.
+	// When detected, replace the caller's single-item message with a bundle
+	// message listing all staged files so git history stays accurate.
+	//
+	// Pass `root` so the function can normalize git-toplevel-relative paths
+	// (e.g. "agent-state/tasks/I-123.md") to ItemDir-relative paths
+	// ("tasks/I-123.md") before classifying them — required for nested-layout
+	// workspaces where ItemDir is a subdirectory of the git repository root.
+	message = synthesizeBundleMessage(root, message, cached)
+
 	// I-1313: commit the staged agent-state onto refs/heads/main via
 	// plumbing, NEVER `git commit` onto HEAD. When a code feature branch is
 	// checked out, `git commit` would strand the agent-state commit on that
@@ -1419,4 +1431,108 @@ func gitOutputStdin(dir, stdin string, args ...string) (string, error) {
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+// synthesizeBundleMessage detects cross-attribution in the staged file list
+// and returns an accurate bundle commit message when unexpected item files
+// are present. If the staged set matches what `message` implies, message is
+// returned unchanged.
+//
+// Cross-attribution occurs when parallel `st update` processes each write to
+// the working tree before acquiring the git lock, causing `git add -u` to
+// stage multiple items' changes together. The resulting commit message must
+// name all staged items — not just the one the caller intended to write —
+// so git history stays auditable.
+//
+// root is passed so the function can strip the git-toplevel-relative prefix
+// (e.g. "agent-state/") that git diff --name-only always emits, normalizing
+// paths to ItemDir-relative form before classification. This is required in
+// nested-layout workspaces where ItemDir is a subdirectory of the git root.
+//
+// Detection heuristic: for "st update: <id>.*" messages, any item file in
+// tasks/, issues/, or archive/ whose base name doesn't match <id> is
+// unexpected. Auto-stage subdirs (.plans/, .changelog/, .as/, .locks/) are
+// always expected and never count as cross-attribution.
+func synthesizeBundleMessage(root, message, cached string) string {
+	// Only inspect single-item "st update: <id>.*" messages.
+	if !strings.HasPrefix(message, "st update: ") {
+		return message
+	}
+	suffix := strings.TrimPrefix(message, "st update: ")
+	expectedID := suffix
+	if dot := strings.IndexByte(suffix, '.'); dot >= 0 {
+		expectedID = suffix[:dot]
+	}
+
+	// Strip the git-root prefix so all path comparisons use bare names like
+	// "tasks/I-123.md" regardless of nested-layout depth. In flat layout
+	// (ItemDir == git root) the prefix is "." and no stripping is needed.
+	prefix := ""
+	if top, err := gitOutput(root, "rev-parse", "--show-toplevel"); err == nil {
+		top = strings.TrimSpace(top)
+		if rel, err := filepath.Rel(top, root); err == nil && rel != "." && rel != "" {
+			prefix = rel + "/"
+		}
+	}
+
+	stripPrefix := func(p string) string {
+		if prefix != "" {
+			return strings.TrimPrefix(p, prefix)
+		}
+		return p
+	}
+
+	// isAutoStageDir returns true for directories that are always expected
+	// alongside any single-item update (plan files, changelogs, sessions, locks).
+	isAutoStageDir := func(dir string) bool {
+		for _, known := range []string{".plans", ".changelog", ".as", ".locks"} {
+			if dir == known || strings.HasPrefix(dir, known+"/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Single pass: collect unexpected item files and all item IDs for the message.
+	var unexpected []string
+	var itemIDs []string
+	for _, line := range strings.Split(strings.TrimSpace(cached), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rel := stripPrefix(line)
+		dir := filepath.Dir(rel)
+		if isAutoStageDir(dir) {
+			continue
+		}
+		switch dir {
+		case "tasks", "issues", "archive":
+			id := strings.TrimSuffix(filepath.Base(rel), ".md")
+			itemIDs = append(itemIDs, id)
+			if !matchesItemID(filepath.Base(rel), expectedID) {
+				unexpected = append(unexpected, rel)
+			}
+		}
+	}
+
+	if len(unexpected) == 0 {
+		return message
+	}
+
+	// Cross-attribution detected: the staged set includes item files not written
+	// by this call. Warn and build a bundle message listing all staged item IDs.
+	fmt.Fprintf(os.Stderr,
+		"[st sync] WARNING: cross-attribution detected — %d unexpected item file(s) staged alongside %q: %s; synthesizing bundle commit message\n",
+		len(unexpected), message, strings.Join(unexpected, ", "))
+
+	return "st sync batch: " + strings.Join(itemIDs, ", ")
+}
+
+// matchesItemID reports whether the file base name (e.g. "T-123-foo-bar.md")
+// corresponds to the given item ID (e.g. "T-123"). The name matches if,
+// after stripping ".md", it equals id or has id as a prefix followed by "-".
+func matchesItemID(base, id string) bool {
+	name := strings.TrimSuffix(base, ".md")
+	return name == id || strings.HasPrefix(name, id+"-")
 }
