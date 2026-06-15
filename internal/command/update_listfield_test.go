@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -97,6 +98,54 @@ func TestUpdate_SingleLineListField_TagsAndLeadingQuote(t *testing.T) {
 	}
 	if len(item.RelatedIssues) != 1 || item.RelatedIssues[0] != quoted {
 		t.Errorf("RelatedIssues = %#v, want exactly [%q] (leading-quote round-trip)", item.RelatedIssues, quoted)
+	}
+}
+
+// I-698: ReplaceList must consume the whole prior malformed block. When
+// plan-approve writes ACs as flat 'cmd:' lines (no '- ' markers), a
+// subsequent `st update <id> acceptance_criteria --stdin` must fully replace
+// them — not prepend the new list and leave the flat lines in the file.
+func TestUpdateAC_ReplaceMalformedFlatBlock(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+
+	// Inject a malformed AC block: acceptance_criteria followed by bare 'cmd:'
+	// lines (no '- ' markers) — exactly what plan-approve used to write.
+	if err := s.Mutate("T-001", func(item *model.Item) error {
+		item.Doc.Lines = append(item.Doc.Lines,
+			model.Line{Raw: "acceptance_criteria:", Key: "acceptance_criteria"},
+			model.Line{Raw: "cmd: check 1", Key: "cmd"},
+			model.Line{Raw: "cmd: check 2", Key: "cmd"},
+		)
+		return nil
+	}); err != nil {
+		t.Fatalf("inject malformed block: %v", err)
+	}
+
+	// Replace via multi-line value (same code path as --stdin).
+	newAC := "- cmd: npm run test\n- cmd: go test ./..."
+	if code := Update(s, cfg, "T-001", "acceptance_criteria", newAC, UpdateModeValue); code != 0 {
+		t.Fatalf("Update acceptance_criteria returned %d, want 0", code)
+	}
+
+	path, _ := s.Path("T-001")
+	body, _ := os.ReadFile(path)
+	bodyStr := string(body)
+
+	// Malformed flat lines must be gone.
+	if strings.Contains(bodyStr, "check 1") || strings.Contains(bodyStr, "check 2") {
+		t.Errorf("malformed flat AC lines survived replacement:\n%s", bodyStr)
+	}
+	// Both replacement list items must be present.
+	if !strings.Contains(bodyStr, "- cmd: npm run test") {
+		t.Errorf("replacement AC item 1 missing:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "- cmd: go test ./...") {
+		t.Errorf("replacement AC item 2 missing:\n%s", bodyStr)
+	}
+	// No duplicate acceptance_criteria: headers.
+	if strings.Count(bodyStr, "acceptance_criteria:") != 1 {
+		t.Errorf("expected exactly 1 acceptance_criteria: header, got %d:\n%s",
+			strings.Count(bodyStr, "acceptance_criteria:"), bodyStr)
 	}
 }
 

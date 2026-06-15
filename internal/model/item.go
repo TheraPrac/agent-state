@@ -559,22 +559,13 @@ func (d *ParsedDocument) ReplaceList(key string, values []string) {
 		return
 	}
 
-	// Find the end of the list block (next key at indent 0, or empty line followed by key)
+	// Find the end of the list block. Stop only at canonical top-level keys.
+	// Non-canonical keys (e.g. 'cmd:') may be malformed list content left by
+	// plan-approve and must be consumed so the replacement is complete.
 	endIdx := keyIdx + 1
 	for endIdx < len(d.Lines) {
 		l := d.Lines[endIdx]
-		// Stop at next top-level key (not a list continuation)
-		if l.Key != "" && l.Indent == 0 && l.Key != key {
-			break
-		}
-		// List items start with "- " or are indented continuations
-		raw := strings.TrimSpace(l.Raw)
-		if raw == "" || strings.HasPrefix(raw, "- ") || l.BlockKey == key {
-			endIdx++
-			continue
-		}
-		// Some other content at indent 0 — stop
-		if l.Indent == 0 && !strings.HasPrefix(raw, "- ") {
+		if l.Key != "" && l.Indent == 0 && l.Key != key && CanonicalTopLevelKeys[l.Key] {
 			break
 		}
 		endIdx++
