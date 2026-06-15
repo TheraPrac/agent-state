@@ -258,7 +258,10 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 		// I-540: `skip: <reason>` (written by `st test <id> <suite> --skip`)
 		// is an explicit operator marker that this scope suite is N/A for
 		// the current change. Render as ⊘ skipped, not auto-fail.
-		if strings.HasPrefix(val, "skip:") {
+		// I-1479: `auto-skip:` is a system-determined "not applicable" written
+		// by st test --auto (same semantics; mirroring required-suite handling
+		// at line 213 and the evalTestingComplete gate).
+		if strings.HasPrefix(val, "skip:") || strings.HasPrefix(val, "auto-skip:") {
 			results = append(results, checkResult{
 				Label:   name,
 				Mode:    "auto",
