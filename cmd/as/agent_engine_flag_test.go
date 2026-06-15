@@ -21,7 +21,8 @@ func TestAgentEngineFlagWired(t *testing.T) {
 			case "advance":
 				args = []string{"advance", "--agent-engine", "codex", "--dry-run", "no-such-sprint"}
 			case "plan prep":
-				args = []string{"plan", "prep", "--agent-engine", "codex", "--item", "T-001"}
+				// Use a non-existent item so prep exits before invoking the codex binary.
+				args = []string{"plan", "prep", "--agent-engine", "codex", "--item", "NO-SUCH-ITEM"}
 			}
 			// A "no such sprint" failure means the flag parsed; a "unknown flag" failure
 			// means the flag was not registered.

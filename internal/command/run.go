@@ -5022,11 +5022,24 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 // interactive mode. Stdout is captured (all --json events land there);
 // stderr is forwarded so the operator sees codex's diagnostic output.
 func defaultRunCodex(cwd string, args []string, env []string) ([]byte, int, error) {
+	// Honor AS_CLAUDE_WALL_TIMEOUT in the env slice (same as defaultRunClaude)
+	// so prep runs with a tighter cap don't inherit the 2h global ceiling.
+	wallTimeout := maxWallTimeout
+	for _, e := range env {
+		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
+			if parsed, perr := time.ParseDuration(v); perr == nil {
+				wallTimeout = parsed
+			} else {
+				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — using global %s ceiling\n", v, perr, maxWallTimeout)
+			}
+		}
+	}
+
 	parentCtx := context.Background()
 	if activeRunCtx != nil {
 		parentCtx = activeRunCtx
 	}
-	ctx, cancel := context.WithTimeout(parentCtx, maxWallTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, wallTimeout)
 	defer cancel()
 
 	codexBin, err := exec.LookPath("codex")

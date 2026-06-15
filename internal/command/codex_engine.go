@@ -101,29 +101,35 @@ func (e CodexEngine) Run(s *store.Store, cfg *config.Config, itemID, sprintID st
 		pricingModel = defaultCodexModel
 	}
 
-	// Compute per-turn delta to avoid double-counting across resumes if codex
-	// exec resume re-emits prior-turn usage. Keyed by thread_id.
-	if (cur.Input > 0 || cur.Output > 0) && codexSessionID != "" {
-		usage, deltaErr := computeCodexUsageDelta(s, cfg, itemID, pricingModel, codexSessionID, cur)
-		if deltaErr != nil {
-			fmt.Fprintf(os.Stderr, "[%s] codex usage delta: %v\n", itemID, deltaErr)
-		} else {
-			cost, costErr := pricing.EstimateOpenAICostUSD(pricingModel, usage.RegInputTokens, usage.RegOutputTokens, usage.CachedInTokens)
-			if costErr != nil {
-				fmt.Fprintf(os.Stderr, "[%s] codex cost estimate: %v (recorded without cost)\n", itemID, costErr)
-			} else {
-				usage.CostUSD = cost
-			}
-			applyUsageToStepResult(&sr, usage)
-			recordCodexUsage(s, cfg, itemID, step.Name(), usage)
-		}
-	}
-
 	sr.Output = truncate(strings.TrimSpace(string(output)), 500)
 	sr.FullOutput = strings.TrimSpace(string(output))
 	if exitCode != 0 {
 		sr.Error = fmt.Sprintf("codex exited %d", exitCode)
 		return sr
+	}
+
+	// Compute per-turn delta to avoid double-counting across resumes if codex
+	// exec resume re-emits prior-turn usage. Keyed by thread_id.
+	// NOTE: delta advance happens AFTER the exit-code check so a failed run
+	// does not consume the cursor — the next resume will re-count correctly.
+	if cur.Input > 0 || cur.Output > 0 {
+		if codexSessionID == "" {
+			fmt.Fprintf(os.Stderr, "[%s] codex: token usage non-zero but no thread_id — usage not recorded\n", itemID)
+		} else {
+			usage, deltaErr := computeCodexUsageDelta(s, cfg, itemID, pricingModel, codexSessionID, cur)
+			if deltaErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] codex usage delta: %v\n", itemID, deltaErr)
+			} else {
+				cost, costErr := pricing.EstimateOpenAICostUSD(pricingModel, usage.RegInputTokens, usage.RegOutputTokens, usage.CachedInTokens)
+				if costErr != nil {
+					fmt.Fprintf(os.Stderr, "[%s] codex cost estimate: %v (recorded without cost)\n", itemID, costErr)
+				} else {
+					usage.CostUSD = cost
+				}
+				applyUsageToStepResult(&sr, usage)
+				recordCodexUsage(s, cfg, itemID, step.Name(), usage)
+			}
+		}
 	}
 	sr.Passed = true
 	return sr

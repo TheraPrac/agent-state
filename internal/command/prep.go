@@ -450,7 +450,8 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		runOpts := RunOpts{Model: opts.Model, AgentEngine: opts.AgentEngine}
 		var args []string
 		if opts.AgentEngine == "codex" {
-			args = []string{"exec", "-p", prompt}
+			// Prompt is passed POSITIONALLY — -p selects a codex config profile.
+			args = append([]string{"exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only"}, prompt)
 		} else {
 			args = buildClaudeArgs(cfg, prompt, runOpts, cwd)
 		}
@@ -466,6 +467,7 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		// I-985: cap the prep sub-agent so a stuck tool call doesn't
 		// hang indefinitely. defaultRunClaude reads AS_CLAUDE_WALL_TIMEOUT
 		// from env and tightens its context.WithTimeout accordingly.
+		// defaultRunCodex also reads this (shared via the env slice).
 		env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePrepTimeout().String())
 
 		fmt.Printf("[%s] Exploring codebase and generating plan...\n\n", itemID)
@@ -849,7 +851,8 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		runOpts := RunOpts{Model: opts.Model, AgentEngine: opts.AgentEngine}
 		var args []string
 		if opts.AgentEngine == "codex" {
-			args = []string{"exec", "-p", prompt}
+			// Prompt is passed POSITIONALLY — -p selects a codex config profile.
+			args = append([]string{"exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only"}, prompt)
 		} else {
 			args = buildClaudeArgs(cfg, prompt, runOpts, cwd)
 		}
