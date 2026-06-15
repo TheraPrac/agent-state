@@ -106,7 +106,7 @@ func MetricsBackfill(s *store.Store, _ *config.Config, opts MetricsBackfillOpts)
 		}
 
 		if opts.DryRun {
-			fmt.Printf("  [dry-run] %s %q — in=%d out=%d cache_r=%d cache_w=%d turns=%d cost=$%.4f dur=%ds model=%s\n",
+			fmt.Printf("  [dry-run] %s %q — in=%d out=%d cache_r=%d cache_w=%d turns=%d cost=$%.4f process=%ds model=%s\n",
 				item.ID, truncateTitle(item.Title, 40),
 				res.Input, res.Output, res.CacheRead, res.CacheOut,
 				res.Turns, costUSD, durSec, res.Model)
@@ -131,7 +131,10 @@ func MetricsBackfill(s *store.Store, _ *config.Config, opts MetricsBackfillOpts)
 				it.SetNested("time_tracking", "ai_cost_usd", fmt.Sprintf("%.6f", capturedCost))
 			}
 			if capturedDur > 0 {
-				it.SetNested("time_tracking", "total_duration_seconds", fmt.Sprintf("%d", capturedDur))
+				// Write as process_time_seconds — the field ExtractItemMetrics
+				// reads for ProcessTime. "total_duration_seconds" is not read
+				// by any consumer; this field is.
+				it.SetNested("time_tracking", "process_time_seconds", fmt.Sprintf("%d", capturedDur))
 			}
 			if capturedRes.Model != "" {
 				it.SetNested("time_tracking", "last_model", capturedRes.Model)
@@ -144,7 +147,7 @@ func MetricsBackfill(s *store.Store, _ *config.Config, opts MetricsBackfillOpts)
 			continue
 		}
 
-		fmt.Printf("  [done] %s %q — $%.4f %d turns %ds\n",
+		fmt.Printf("  [done] %s %q — $%.4f %d turns process=%ds\n",
 			item.ID, truncateTitle(item.Title, 40), costUSD, res.Turns, durSec)
 		costed++
 	}
@@ -211,7 +214,10 @@ func parseBackfillJSONL(paths []string) backfillResult {
 				res.Model = rec.Message.Model
 			}
 			if rec.Timestamp != "" {
-				if ts, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+				// RFC3339Nano is required: real Claude Code transcripts use
+				// fractional-second timestamps (e.g. "…T17:00:02.200Z").
+				// RFC3339 silently fails on those, leaving all timestamps zero.
+				if ts, err := time.Parse(time.RFC3339Nano, rec.Timestamp); err == nil {
 					if res.FirstTS.IsZero() {
 						res.FirstTS = ts
 					}

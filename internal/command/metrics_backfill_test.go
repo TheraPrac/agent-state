@@ -34,7 +34,8 @@ func writeJSONLSession(t *testing.T, claudeProjectsDir, projectDir, sid string, 
 	baseTime := time.Now().Add(-time.Hour).UTC()
 	enc := json.NewEncoder(f)
 	for i, turn := range turns {
-		ts := baseTime.Add(time.Duration(i) * 5 * time.Minute).Format(time.RFC3339)
+		// Use RFC3339Nano to match real Claude Code JSONL format (fractional seconds).
+		ts := baseTime.Add(time.Duration(i)*5*time.Minute + 200*time.Millisecond).Format(time.RFC3339Nano)
 		type usage struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
@@ -305,8 +306,8 @@ func TestMetricsBackfillWrites(t *testing.T) {
 	}
 
 	// Duration must be positive (3 turns × 5-minute gap → ≥ 10 minutes).
-	if d := readIntField(item, "time_tracking", "total_duration_seconds"); d < 60 {
-		t.Errorf("total_duration_seconds: want >=60, got %d", d)
+	if d := readIntField(item, "time_tracking", "process_time_seconds"); d < 60 {
+		t.Errorf("process_time_seconds: want >=60, got %d", d)
 	}
 
 	// backfill_status must be "done".
