@@ -204,7 +204,7 @@ func TestCanonicalTopLevelKeys_MatchesParser(t *testing.T) {
 		"plan_approved": true, "plan_approved_at": true,
 		"plan_approved_by": true, "parallel_group": true,
 		"weight": true, "success_criterion": true,
-		"dropped_reason": true, "hotfix": true,
+		"dropped_reason": true, "hotfix": true, "coship_api_ref": true,
 		"plan_written_at": true, "plan_failed_at": true, "plan_failure_reason": true,
 		// storeList
 		"tags": true, "depends_on": true, "blocks": true,

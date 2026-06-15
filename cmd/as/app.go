@@ -592,6 +592,31 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	hotfixCmd.Flags().Bool("off", false, "clear the hotfix flag on the given item")
 	root.AddCommand(hotfixCmd)
 
+	coshipCmd := &cobra.Command{
+		Use:   "coship [<id>]",
+		Short: "Co-ship a paired api+web change: resolve the web OpenAPI check against a paired api ref",
+		Long: "Mark an item in co-ship mode so the web pre-commit OpenAPI check resolves the backend\n" +
+			"spec against a paired api ref (a local branch in the sibling api worktree) instead of\n" +
+			"api origin/main. This lets a paired api+web contract change commit/push before the api\n" +
+			"PR merges, instead of forcing api-merges-first serialization. Default stays strict for\n" +
+			"every other item. Every flip is changelog-logged and git-synced — never a silent bypass.\n\n" +
+			"  st coship                       list items currently in co-ship mode\n" +
+			"  st coship --active-ref          print the stack-top item's ref (for the web check)\n" +
+			"  st coship <ID> --api-ref <ref>  flag an existing item with the paired api ref\n" +
+			"  st coship --off <ID>            clear the flag",
+		Args: cobra.ArbitraryArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			off, _ := cmd.Flags().GetBool("off")
+			apiRef, _ := cmd.Flags().GetString("api-ref")
+			activeRef, _ := cmd.Flags().GetBool("active-ref")
+			exitCode = command.CoShip(appStore, appCfg, args, command.CoShipOpts{Off: off, APIRef: apiRef, ActiveRef: activeRef})
+		},
+	}
+	coshipCmd.Flags().Bool("off", false, "clear the co-ship flag on the given item")
+	coshipCmd.Flags().String("api-ref", "", "the paired api git ref to resolve the web OpenAPI check against")
+	coshipCmd.Flags().Bool("active-ref", false, "print the active (stack-top) item's co-ship ref, machine-readable")
+	root.AddCommand(coshipCmd)
+
 	agentCmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Manage local agent identity, auth, and isolated agent workspaces",

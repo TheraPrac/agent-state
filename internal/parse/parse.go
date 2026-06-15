@@ -507,6 +507,8 @@ func storeScalar(item *model.Item, key, val string) {
 		item.PlanApproved = val == "true"
 	case "hotfix":
 		item.Hotfix = val == "true"
+	case "coship_api_ref":
+		item.CoShipAPIRef = val
 	case "plan_approved_at":
 		item.PlanApprovedAt = val
 	case "plan_approved_by":

@@ -797,6 +797,25 @@ func writeTempFile(t *testing.T, content string) string {
 	return path
 }
 
+// I-1476: the co-ship escape flag parses into CoShipAPIRef.
+func TestParse_CoShipAPIRef(t *testing.T) {
+	content := `id: I-001
+type: issue
+status: active
+created: 2026-06-15T10:00:00-06:00
+last_touched: 2026-06-15T10:00:00-06:00
+title: paired change
+coship_api_ref: fix/I-001-api-branch
+`
+	item, err := File(writeTempFile(t, content))
+	if err != nil {
+		t.Fatalf("File: %v", err)
+	}
+	if item.CoShipAPIRef != "fix/I-001-api-branch" {
+		t.Errorf("CoShipAPIRef = %q, want \"fix/I-001-api-branch\"", item.CoShipAPIRef)
+	}
+}
+
 // I-487: SBAR with all four multiline children parses into the typed
 // struct AND survives a serialize-reparse round-trip without churn.
 func TestParse_SBARBlock(t *testing.T) {
