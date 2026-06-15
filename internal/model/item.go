@@ -52,6 +52,14 @@ type Item struct {
 	// — never a silent bypass. Per-item and short-lived by construction
 	// (the hotfix item closes), so the open window is naturally scoped.
 	Hotfix            bool
+	// CoShipAPIRef, when non-empty, marks this item in co-ship mode (I-1476):
+	// the web OpenAPI sync check resolves the backend spec against this git ref
+	// (a paired api branch in the sibling api worktree) instead of api
+	// origin/main, so a paired api+web contract change can commit/push before the
+	// api PR merges. Default (empty) keeps the strict origin/main check. Set only
+	// via `st coship` so every flip is changelog-logged + git-synced — never a
+	// silent bypass; audited like Hotfix.
+	CoShipAPIRef      string
 	DroppedReason     string // reason from ValidDropReasons; required when status==abandoned (T-414)
 	Weight            *int   // goal type only: strategic weight 1-100; active goals must sum to ≤100
 	SuccessCriterion  string // goal type only
@@ -263,7 +271,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	"plan_approved": true, "plan_approved_at": true,
 	"plan_approved_by": true, "parallel_group": true,
 	"weight": true, "success_criterion": true,
-	"dropped_reason": true, "hotfix": true,
+	"dropped_reason": true, "hotfix": true, "coship_api_ref": true,
 	"plan_written_at": true, "plan_failed_at": true, "plan_failure_reason": true,
 	// storeList
 	"tags": true, "depends_on": true, "blocks": true,
