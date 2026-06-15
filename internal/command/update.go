@@ -129,6 +129,14 @@ const (
 	UpdateModeStdin
 )
 
+// UpdateOpts carries optional flags for Update.
+type UpdateOpts struct {
+	// I-756: bypass the empirical-claim guard on sbar.background with a
+	// stated reason. Non-empty value enables the bypass; reason is
+	// audit-logged to .as/sbar-evidence-skip.log.
+	EvidenceSkip string
+}
+
 // Update writes a field on an item. The value is sourced according to
 // mode: UpdateModeValue uses `value` directly; UpdateModeStdin reads
 // from stdin. The CLI binding refuses with "no value supplied — pass
@@ -138,7 +146,11 @@ const (
 // YAML block scalars so multi-line content replaces cleanly. List fields
 // (depends_on, acceptance_criteria, etc.) accept multi-line input as a
 // list replacement.
-func Update(s *store.Store, cfg *config.Config, id, field, value string, mode UpdateMode) int {
+func Update(s *store.Store, cfg *config.Config, id, field, value string, mode UpdateMode, opts ...UpdateOpts) int {
+	var uopts UpdateOpts
+	if len(opts) > 0 {
+		uopts = opts[0]
+	}
 	// I-406: reject writes to the deprecated severity field with a
 	// migration pointer. The mapping is documented in cmd/migrate-priority.
 	if field == "severity" {
@@ -253,6 +265,30 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 		if value == "" {
 			fmt.Fprintln(os.Stderr, "empty input from stdin — no changes")
 			return 1
+		}
+	}
+
+	// I-756: empirical-claim guard fires when the write targets sbar.background
+	// (directly or as part of a full `sbar` composite write).
+	if field == "sbar.background" || field == "sbar" {
+		bgCandidate := value
+		if field == "sbar" {
+			// Extract only the background section from the composite buffer
+			// so the check runs on the right fragment.
+			parsedSBAR, _ := parseSBARBuffer(value)
+			bgCandidate = parsedSBAR.Background
+		}
+		if uopts.EvidenceSkip != "" {
+			logEvidenceSkip(cfg, id, uopts.EvidenceSkip)
+		} else {
+			ecItem := &model.Item{SBAR: model.SBAR{Background: bgCandidate}}
+			if evs := quality.ValidateBackgroundEvidenceClaims(ecItem); len(evs) > 0 {
+				fmt.Fprintln(os.Stderr, "update: sbar.background contains unsourced empirical claims:")
+				for _, v := range evs {
+					fmt.Fprintf(os.Stderr, "  %s\n", v.Message)
+				}
+				return 1
+			}
 		}
 	}
 
