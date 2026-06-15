@@ -601,3 +601,326 @@ status: queued
 		t.Errorf("expected haiku from fresh call, got: %q", out.String())
 	}
 }
+
+// --- T-428: Opus second-opinion gate tests ---
+
+func TestIsHighRiskDomain_Tags(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantRisk bool
+	}{
+		{
+			name: "auth tag triggers",
+			body: "id: I-test\ntype: issue\ntitle: Auth change\nstatus: queued\ntags: [auth, G-003]\n",
+			wantRisk: true,
+		},
+		{
+			name: "billing tag triggers",
+			body: "id: I-test\ntype: issue\ntitle: Billing change\nstatus: queued\ntags: [billing]\n",
+			wantRisk: true,
+		},
+		{
+			name: "rbac tag triggers",
+			body: "id: I-test\ntype: issue\ntitle: RBAC change\nstatus: queued\ntags: [rbac, G-001]\n",
+			wantRisk: true,
+		},
+		{
+			name: "unrelated tag not triggered",
+			body: "id: I-test\ntype: issue\ntitle: Tooling change\nstatus: queued\ntags: [st-tooling, G-005]\n",
+			wantRisk: false,
+		},
+		{
+			name: "no tags not triggered",
+			body: "id: I-test\ntype: issue\ntitle: Simple change\nstatus: queued\n",
+			wantRisk: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := modelRecTestEnv(t)
+			writeItemFile(t, root, "issues", "I-test", tc.body)
+			s, _ := loadStore(t, root)
+			item, ok := s.Get("I-test")
+			if !ok {
+				t.Fatal("I-test not found in store")
+			}
+			got := isHighRiskDomain(item)
+			if got != tc.wantRisk {
+				t.Errorf("isHighRiskDomain = %v, want %v", got, tc.wantRisk)
+			}
+		})
+	}
+}
+
+func TestIsHighRiskDomain_SBARPaths(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantRisk bool
+	}{
+		{
+			name: "internal/auth in situation triggers",
+			body: "id: I-test\ntype: issue\ntitle: Auth middleware\nstatus: queued\ntags: []\nsbar:\n  situation: Changes in internal/auth/ to fix the JWT flow.\n",
+			wantRisk: true,
+		},
+		{
+			name: "db/changelog in assessment triggers",
+			body: "id: I-test\ntype: issue\ntitle: Schema migration\nstatus: queued\nsbar:\n  situation: Adds a column.\n  assessment: Requires a db/changelog migration entry.\n",
+			wantRisk: true,
+		},
+		{
+			name: "internal/billing in recommendation triggers",
+			body: "id: I-test\ntype: issue\ntitle: Billing fix\nstatus: queued\nsbar:\n  situation: Fix invoicing.\n  recommendation: Edit internal/billing/invoice.go to fix rounding.\n",
+			wantRisk: true,
+		},
+		{
+			name: "web component change not triggered",
+			body: "id: I-test\ntype: issue\ntitle: UI tweak\nstatus: queued\nsbar:\n  situation: Change the dashboard layout in the web UI.\n",
+			wantRisk: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := modelRecTestEnv(t)
+			writeItemFile(t, root, "issues", "I-test", tc.body)
+			s, _ := loadStore(t, root)
+			item, ok := s.Get("I-test")
+			if !ok {
+				t.Fatal("I-test not found in store")
+			}
+			got := isHighRiskDomain(item)
+			if got != tc.wantRisk {
+				t.Errorf("isHighRiskDomain = %v, want %v", got, tc.wantRisk)
+			}
+		})
+	}
+}
+
+func TestDecideTier_OpusSecondOpinion_Triggers(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-920
+type: issue
+title: Auth session change
+status: queued
+priority: 1
+tags: [auth]
+sbar:
+  situation: Fix session expiry in internal/auth/session.go
+`
+	writeItemFile(t, root, "issues", "I-920", body)
+	s, cfg := loadStore(t, root)
+
+	haikuEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"sonnet\",\"reason\":\"multi-file edit\"}"}`
+	opusEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"opus\",\"reason\":\"correctness-critical auth domain\"}"}`
+
+	callCount := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callCount++
+			if callCount == 1 {
+				return []byte(haikuEnvelope), 0, nil
+			}
+			return []byte(opusEnvelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	exit := ModelRec(s, cfg, ModelRecOpts{ItemID: "I-920", Engine: engine, NoCache: true}, &out)
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "tier:opus|") {
+		t.Errorf("want tier:opus after second-opinion escalation, got %q", got)
+	}
+	if !strings.Contains(got, "SECOND-OPINION") {
+		t.Errorf("want SECOND-OPINION in reason, got %q", got)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 engine calls (haiku + opus), got %d", callCount)
+	}
+}
+
+func TestDecideTier_OpusSecondOpinion_SkipsP2(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-921
+type: issue
+title: Auth cleanup (low priority)
+status: queued
+priority: 2
+tags: [auth]
+sbar:
+  situation: Low-priority refactor of internal/auth/ helpers.
+`
+	writeItemFile(t, root, "issues", "I-921", body)
+	s, cfg := loadStore(t, root)
+
+	haikuEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"sonnet\",\"reason\":\"multi-file edit\"}"}`
+	callCount := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callCount++
+			return []byte(haikuEnvelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	exit := ModelRec(s, cfg, ModelRecOpts{ItemID: "I-921", Engine: engine, NoCache: true}, &out)
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "tier:sonnet|") {
+		t.Errorf("want tier:sonnet (no escalation for p2), got %q", got)
+	}
+	if callCount != 1 {
+		t.Errorf("expected exactly 1 engine call (no Opus second-opinion for p2), got %d", callCount)
+	}
+}
+
+func TestDecideTier_OpusSecondOpinion_SkipsNonRisk(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-922
+type: issue
+title: Tooling update
+status: queued
+priority: 1
+tags: [st-tooling]
+sbar:
+  situation: Update the CLI help text.
+`
+	writeItemFile(t, root, "issues", "I-922", body)
+	s, cfg := loadStore(t, root)
+
+	haikuEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"sonnet\",\"reason\":\"doc update\"}"}`
+	callCount := 0
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			callCount++
+			return []byte(haikuEnvelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	exit := ModelRec(s, cfg, ModelRecOpts{ItemID: "I-922", Engine: engine, NoCache: true}, &out)
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	if !strings.HasPrefix(out.String(), "tier:sonnet|") {
+		t.Errorf("want tier:sonnet (non-risk domain), got %q", out.String())
+	}
+	if callCount != 1 {
+		t.Errorf("expected exactly 1 engine call (no Opus for non-risk domain), got %d", callCount)
+	}
+}
+
+func TestModelRecConfirmOpus_ForcesCheck(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-930
+type: issue
+title: Auth token validation
+status: queued
+priority: 1
+tags: [auth]
+sbar:
+  situation: Strengthen token validation in internal/auth/jwt.go
+`
+	writeItemFile(t, root, "issues", "I-930", body)
+	s, cfg := loadStore(t, root)
+
+	haikuEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"sonnet\",\"reason\":\"multi-file\"}"}`
+	opusEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"opus\",\"reason\":\"auth correctness critical\"}"}`
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			// decideTier calls haiku first, then fires the Opus gate (p1+auth predicate).
+			// ModelRecConfirmOpus detects "SECOND-OPINION" in the base output and skips
+			// the redundant second Opus call.
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "claude-haiku") {
+				return []byte(haikuEnvelope), 0, nil
+			}
+			return []byte(opusEnvelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	code := ModelRecConfirmOpus(s, cfg, "I-930", engine, true, &out)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	outStr := out.String()
+	// The automatic gate already escalated to opus; confirm-opus detects this and
+	// skips the redundant Opus call. Output should show the gate result.
+	if !strings.Contains(outStr, "opus") {
+		t.Errorf("expected opus in output, got:\n%s", outStr)
+	}
+
+	// The early-return path ("automatic gate already escalated") skips the Mutate,
+	// so model_tier_rec may be set by the internal stampModelRec path but not here.
+	// The important assertion is that opus was returned and code==0 (above).
+}
+
+// TestModelRecConfirmOpus_PersistsWhenNotAutoEscalated tests the path where
+// ModelRec returns sonnet (no automatic escalation) and --confirm-opus forces
+// the check and persists the result.
+func TestModelRecConfirmOpus_PersistsWhenNotAutoEscalated(t *testing.T) {
+	root := modelRecTestEnv(t)
+	// p2 item with auth tag: itemPriorityIsHighRisk returns false (priority=2),
+	// so the automatic gate in decideTier does NOT fire. ModelRec returns sonnet.
+	// ModelRecConfirmOpus then forces the Opus check and persists opus.
+	body := `id: I-931
+type: issue
+title: Auth cleanup (low priority confirm-opus test)
+status: queued
+priority: 2
+tags: [auth]
+sbar:
+  situation: Refactor session handling in internal/auth/.
+`
+	writeItemFile(t, root, "issues", "I-931", body)
+	s, cfg := loadStore(t, root)
+
+	haikuEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"sonnet\",\"reason\":\"multi-file\"}"}`
+	opusEnvelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"opus\",\"reason\":\"auth correctness critical\"}"}`
+
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "claude-haiku") {
+				return []byte(haikuEnvelope), 0, nil
+			}
+			return []byte(opusEnvelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	code := ModelRecConfirmOpus(s, cfg, "I-931", engine, true, &out)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	outStr := out.String()
+	if !strings.Contains(outStr, "escalated to opus") {
+		t.Errorf("expected escalation message, got:\n%s", outStr)
+	}
+
+	// Reload and confirm model_tier_rec was persisted.
+	s2, _ := loadStore(t, root)
+	item, _ := s2.Get("I-931")
+	rec, ok := item.Doc.GetField("model_tier_rec")
+	if !ok || strings.TrimSpace(rec) != "opus" {
+		t.Errorf("model_tier_rec = %q, want opus", rec)
+	}
+}
+
+func TestModelRecConfirmOpus_MissingItemReturnsOne(t *testing.T) {
+	root := modelRecTestEnv(t)
+	s, cfg := loadStore(t, root)
+
+	var out bytes.Buffer
+	code := ModelRecConfirmOpus(s, cfg, "I-999", RunEngine{}, true, &out)
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 for missing item", code)
+	}
+}

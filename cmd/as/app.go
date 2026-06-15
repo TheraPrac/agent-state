@@ -166,6 +166,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 			}
 			noCache, _ := cmd.Flags().GetBool("no-cache")
 			persist, _ := cmd.Flags().GetBool("persist")
+			confirmOpus, _ := cmd.Flags().GetBool("confirm-opus")
 			if persist {
 				if itemID == "" {
 					fmt.Fprintln(os.Stderr, "model-rec --persist: item ID required")
@@ -173,6 +174,15 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 					return
 				}
 				exitCode = command.ModelRecPersist(appStore, appCfg, itemID, command.DefaultRunEngine(), noCache, cmd.OutOrStdout())
+				return
+			}
+			if confirmOpus {
+				if itemID == "" {
+					fmt.Fprintln(os.Stderr, "model-rec --confirm-opus: item ID required")
+					exitCode = 1
+					return
+				}
+				exitCode = command.ModelRecConfirmOpus(appStore, appCfg, itemID, command.DefaultRunEngine(), noCache, cmd.OutOrStdout())
 				return
 			}
 			exitCode = command.ModelRec(appStore, appCfg, command.ModelRecOpts{
@@ -184,6 +194,7 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 	}
 	modelRecCmd.Flags().Bool("no-cache", false, "skip the cache (force a fresh recommender call)")
 	modelRecCmd.Flags().Bool("persist", false, "write recommendation as model_tier_rec on the item (backfill)")
+	modelRecCmd.Flags().Bool("confirm-opus", false, "force Opus second-opinion and escalate tier if Opus disagrees (p0/p1 high-risk items)")
 	root.AddCommand(modelRecCmd)
 
 	costCmd := &cobra.Command{

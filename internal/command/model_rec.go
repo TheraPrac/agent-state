@@ -40,15 +40,23 @@ var validTiers = map[string]struct{}{
 }
 
 const (
-	defaultTier        = "sonnet"
-	defaultReason      = "default policy for standard work"
-	fallbackReason     = "rec service unavailable — defaulting to sonnet"
-	overrideReason     = "operator override via model_tier field"
-	prepRecReason      = "prep-generated recommendation (model_tier_rec)"
-	noItemReason       = "no active item — defaulting to sonnet"
-	recommenderModel   = "claude-haiku-4-5"
-	recommenderTimeout = 30 // seconds; haiku one-shot is fast
+	defaultTier              = "sonnet"
+	defaultReason            = "default policy for standard work"
+	fallbackReason           = "rec service unavailable — defaulting to sonnet"
+	overrideReason           = "operator override via model_tier field"
+	prepRecReason            = "prep-generated recommendation (model_tier_rec)"
+	noItemReason             = "no active item — defaulting to sonnet"
+	recommenderModel             = "claude-haiku-4-5"
+	opusSecondOpinionModel       = "claude-opus-4-8"
+	recommenderTimeout           = 30 // seconds; haiku one-shot is fast
+	opusSecondOpinionTimeout     = 90 // seconds; opus is slower than haiku
 )
+
+// highRiskDomainTags are tag substrings that flag an item as high-risk domain.
+var highRiskDomainTags = []string{"auth", "billing", "rbac", "migrations", "access"}
+
+// highRiskDomainPaths are SBAR text substrings that flag high-risk domain work.
+var highRiskDomainPaths = []string{"internal/auth", "internal/access", "db/changelog", "internal/billing"}
 
 // ModelRec runs the recommender for the given item and writes a one-line
 // `tier:<x>|reason:<y>` result to out. Exit 0 always — on any failure we fall
@@ -112,6 +120,18 @@ func decideTier(s *store.Store, cfg *config.Config, opts ModelRecOpts) ModelRecR
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "model-rec: %v — falling back to %s\n", err, defaultTier)
 		return ModelRecResult{Tier: defaultTier, Reason: fallbackReason}
+	}
+
+	// Opus second-opinion gate: if Haiku recommended sonnet for a p0/p1
+	// high-risk-domain item, confirm with Opus. On disagreement, escalate.
+	if res.Tier == "sonnet" && opts.Engine.RunClaude != nil &&
+		itemPriorityIsHighRisk(item) && isHighRiskDomain(item) {
+		if opusRes, opusErr := runOpusSecondOpinion(item, cfg, opts.Engine); opusErr == nil && opusRes.Tier == "opus" {
+			res = ModelRecResult{
+				Tier:   "opus",
+				Reason: fmt.Sprintf("SECOND-OPINION: opus recommends opus — %s", opusRes.Reason),
+			}
+		}
 	}
 
 	if !opts.NoCache {
@@ -187,8 +207,10 @@ func ModelRecPersist(s *store.Store, cfg *config.Config, id string, engine RunEn
 
 // stampModelRec calls the recommender for id and writes the result as
 // model_tier_rec on the item so `st start` model checks resolve without
-// a Haiku API call. Called from plan prep/approve paths. Non-blocking —
-// any error is silently dropped so plan approval itself is never blocked.
+// an API call. Called from plan prep/approve paths. Errors are silently
+// dropped so plan approval is never blocked. For p0/p1 high-risk-domain
+// items, decideTier runs an Opus second-opinion (up to opusSecondOpinionTimeout
+// seconds) before returning — plan approve may take longer for those items.
 func stampModelRec(s *store.Store, cfg *config.Config, id string, engine RunEngine) {
 	var buf strings.Builder
 	ModelRec(s, cfg, ModelRecOpts{ItemID: id, Engine: engine}, &buf)
@@ -206,6 +228,165 @@ func stampModelRec(s *store.Store, cfg *config.Config, id string, engine RunEngi
 		return nil
 	})
 	fmt.Fprintf(os.Stdout, "[%s] model recommendation: %s\n", id, line)
+}
+
+// isHighRiskDomain returns true when the item's tags or SBAR text reference
+// auth, billing, migrations, or RBAC-adjacent domains.
+func isHighRiskDomain(item *model.Item) bool {
+	for _, tag := range readItemTags(item) {
+		tagLow := strings.ToLower(tag)
+		for _, keyword := range highRiskDomainTags {
+			if strings.Contains(tagLow, keyword) {
+				return true
+			}
+		}
+	}
+	sbarText := strings.ToLower(item.SBAR.Situation + " " + item.SBAR.Assessment + " " + item.SBAR.Recommendation)
+	for _, path := range highRiskDomainPaths {
+		if strings.Contains(sbarText, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// itemPriorityIsHighRisk returns true when the item's priority is p0 or p1
+// (ResolvedPriority 0 or 1). Priority is stored as a bare integer in YAML
+// (e.g., "priority: 1"), not as "p1" — using item.ResolvedPriority() avoids
+// the raw-string mismatch that readItemString("priority") would produce.
+func itemPriorityIsHighRisk(item *model.Item) bool {
+	return item.ResolvedPriority() <= 1
+}
+
+// runOpusSecondOpinion calls Opus with a high-risk-aware prompt variant and
+// returns the parsed verdict. Any error is propagated so the caller can
+// silently fall back to the original sonnet recommendation.
+func runOpusSecondOpinion(item *model.Item, cfg *config.Config, engine RunEngine) (ModelRecResult, error) {
+	if engine.RunClaude == nil {
+		return ModelRecResult{}, fmt.Errorf("no RunClaude engine wired")
+	}
+	var sb strings.Builder
+	sb.WriteString("You are a model-tier auditor for an agent runtime. ")
+	sb.WriteString("A fast model already recommended 'sonnet' for this item, but it touches a high-risk domain ")
+	sb.WriteString("(auth / access / billing / database migrations / RBAC). ")
+	sb.WriteString("Your job: independently decide if 'sonnet' is sufficient, or if 'opus' is needed.\n\n")
+	sb.WriteString("Reply ONLY with one line of JSON: {\"tier\":\"sonnet|opus\",\"reason\":\"<≤20 words>\"}\n\n")
+	sb.WriteString("Tiers:\n")
+	sb.WriteString("- sonnet: standard coding, SBAR review, docs, multi-file edits without architectural decisions\n")
+	sb.WriteString("- opus: architecture decisions, hard debugging, multi-system coordination, cross-repo refactors, correctness-critical domain logic\n\n")
+	sb.WriteString("If genuinely uncertain, prefer opus — this is the safety-net pass.\n\n")
+	sb.WriteString("Item:\n")
+	sb.WriteString(fmt.Sprintf("  id: %s\n", item.ID))
+	sb.WriteString(fmt.Sprintf("  type: %s\n", item.Type))
+	sb.WriteString(fmt.Sprintf("  title: %s\n", item.Title))
+	if item.SBAR.Situation != "" {
+		sb.WriteString(fmt.Sprintf("\nSituation:\n%s\n", truncateForPrompt(item.SBAR.Situation, 400)))
+	}
+	if item.SBAR.Assessment != "" {
+		sb.WriteString(fmt.Sprintf("\nAssessment:\n%s\n", truncateForPrompt(item.SBAR.Assessment, 400)))
+	}
+	if item.SBAR.Recommendation != "" {
+		sb.WriteString(fmt.Sprintf("\nRecommendation:\n%s\n", truncateForPrompt(item.SBAR.Recommendation, 400)))
+	}
+
+	args := buildClaudeArgs(cfg, sb.String(), RunOpts{
+		PermissionMode: "plan",
+		Model:          opusSecondOpinionModel,
+	}, cfg.Root())
+
+	sessionID := generateSessionID()
+	env := []string{
+		"AS_SESSION_ID=" + sessionID,
+		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", opusSecondOpinionTimeout),
+	}
+
+	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
+	if err != nil {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion exec: %w", err)
+	}
+	if exitCode != 0 {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion exit %d: %s", exitCode, truncateOutput(string(output)))
+	}
+
+	parsed, err := parseClaudeOutput(output)
+	if err != nil {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion parse envelope: %w", err)
+	}
+	if parsed.IsError {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion reported error: %v", parsed.Errors)
+	}
+	if parsed.Subtype != "" && parsed.Subtype != "success" {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion returned subtype %q: %v", parsed.Subtype, parsed.Errors)
+	}
+
+	res, err := parseRecVerdict(parsed.Result)
+	if err != nil {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion verdict parse: %w", err)
+	}
+	// Only sonnet and opus are valid responses from the second-opinion pass.
+	if res.Tier != "sonnet" && res.Tier != "opus" {
+		return ModelRecResult{}, fmt.Errorf("opus second-opinion returned unexpected tier %q", res.Tier)
+	}
+	return res, nil
+}
+
+// ModelRecConfirmOpus is the --confirm-opus entry point: runs the standard
+// recommender, then forces an Opus second-opinion regardless of the predicate.
+// If Opus recommends opus, the higher tier is persisted as model_tier_rec and
+// printed. If the item already has an operator model_tier override, that takes
+// precedence and no second-opinion is run. Returns 1 on item-not-found or
+// write failure; 0 otherwise.
+func ModelRecConfirmOpus(s *store.Store, cfg *config.Config, id string, engine RunEngine, noCache bool, out io.Writer) int {
+	item, ok := s.Get(id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "model-rec --confirm-opus: item %s not found\n", id)
+		return 1
+	}
+
+	// Get the base recommendation first.
+	var buf strings.Builder
+	ModelRec(s, cfg, ModelRecOpts{ItemID: id, Engine: engine, NoCache: noCache}, &buf)
+	baseOutput := strings.TrimSpace(buf.String())
+	fmt.Fprintln(out, baseOutput)
+
+	// If ModelRec already escalated to opus via the automatic gate (indicated by
+	// "SECOND-OPINION" in the reason), skip the explicit second-opinion call to
+	// avoid a redundant Opus API round-trip.
+	if strings.HasPrefix(baseOutput, "tier:opus|") && strings.Contains(baseOutput, "SECOND-OPINION") {
+		fmt.Fprintf(out, "confirm-opus: automatic gate already escalated to opus — skipping redundant second opinion\n")
+		return 0
+	}
+
+	// If an operator override exists, respect it — no second opinion.
+	if ov := readItemTierOverride(item); ov != "" {
+		if _, valid := validTiers[ov]; valid {
+			fmt.Fprintf(out, "confirm-opus: operator override (%s) in effect — skipping second opinion\n", ov)
+			return 0
+		}
+	}
+
+	opusRes, err := runOpusSecondOpinion(item, cfg, engine)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "confirm-opus: %v — no change\n", err)
+		return 0
+	}
+	if opusRes.Tier != "opus" {
+		fmt.Fprintf(out, "confirm-opus: Opus agrees sonnet is sufficient (%s)\n", opusRes.Reason)
+		return 0
+	}
+
+	finalReason := fmt.Sprintf("SECOND-OPINION: opus recommends opus — %s", opusRes.Reason)
+	if err := s.Mutate(id, func(it *model.Item) error {
+		it.Doc.SetField("model_tier_rec", "opus")
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "confirm-opus: write failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "confirm-opus: escalated to opus — %s\n", finalReason)
+	fmt.Fprintf(out, "persisted model_tier_rec=opus on %s\n", id)
+	_ = autoSync(s, fmt.Sprintf("st model-rec --confirm-opus: %s escalated to opus", id))
+	return 0
 }
 
 // callRecommender builds the Haiku prompt, runs claude, parses the JSON
@@ -290,11 +471,11 @@ func buildRecPrompt(item *model.Item) string {
 	}
 
 	// SBAR — situation + assessment are usually enough; background can be long.
-	if sit := readItemString(item, "sbar.situation"); sit != "" {
-		sb.WriteString(fmt.Sprintf("\nSituation:\n%s\n", truncateForPrompt(sit, 400)))
+	if item.SBAR.Situation != "" {
+		sb.WriteString(fmt.Sprintf("\nSituation:\n%s\n", truncateForPrompt(item.SBAR.Situation, 400)))
 	}
-	if ass := readItemString(item, "sbar.assessment"); ass != "" {
-		sb.WriteString(fmt.Sprintf("\nAssessment:\n%s\n", truncateForPrompt(ass, 400)))
+	if item.SBAR.Assessment != "" {
+		sb.WriteString(fmt.Sprintf("\nAssessment:\n%s\n", truncateForPrompt(item.SBAR.Assessment, 400)))
 	}
 
 	return sb.String()
