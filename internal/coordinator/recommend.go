@@ -65,6 +65,7 @@ func (r Recommendation) Rationale() string {
 const (
 	unblockWeight    = 10.0 // per non-terminal item this one unblocks
 	sprintWeight     = 5.0  // × completion fraction of its ACTIVE sprint (≤ 5)
+	pinWeight        = 3.0  // operator-pinned via `st queue add` — floats within its priority band
 	agePerDay        = 0.05 // per day since Created, capped → ≤ 1.5
 	ageCapDays       = 30.0
 	goalWeightFactor = 0.5 // per weight-point contributed by item's active goals; per-item
@@ -80,14 +81,21 @@ const (
 // Goal.weight values for every goal the item belongs to (built by the shell
 // from item.Goals; nil or missing key → zero contribution). priorityOverrides
 // maps item IDs to their effective priority, computed by the shell via
-// transitive dependency inheritance and queue-pin band modifiers — when
-// present, the override value is used as the primary sort key instead of the
-// item's own label. now anchors the age factor (passed in, not time.Now(), so
-// tests are deterministic). The returned slice is stably ordered: effective
-// priority asc, then composite score desc, then ID asc.
+// transitive dependency inheritance — when present, the override value is
+// used as the primary sort key instead of the item's own label. pins
+// identifies operator-queued items (via `st queue add`); pinned items receive
+// a score boost within their priority band but never cross into a
+// higher-priority band. now anchors the age factor (passed in, not
+// time.Now(), so tests are deterministic). The returned slice is stably
+// ordered: effective priority asc, then composite score desc, then ID asc.
 func Recommend(cands []*model.Item, leverage map[string]int,
 	sprints map[string]SprintInfo, goalWeights map[string]float64,
-	priorityOverrides map[string]int, now time.Time) []Recommendation {
+	priorityOverrides map[string]int, now time.Time, pins ...map[string]bool) []Recommendation {
+
+	var pinSet map[string]bool
+	if len(pins) > 0 {
+		pinSet = pins[0]
+	}
 
 	recs := make([]Recommendation, 0, len(cands))
 	for _, it := range cands {
@@ -139,6 +147,17 @@ func Recommend(cands []*model.Item, leverage map[string]int,
 			factors = append(factors, Factor{
 				Name: "goal", Points: pts,
 				Detail: fmt.Sprintf("goal-weight %.0f", w),
+			})
+		}
+
+		// Queue pin — operator explicitly queued this item via `st queue add`.
+		// Boosts within the priority band; cannot cross into a higher band.
+		if pinSet[it.ID] {
+			score += pinWeight
+			factors = append(factors, Factor{
+				Name:   "pin",
+				Points: pinWeight,
+				Detail: "queue-pin",
 			})
 		}
 

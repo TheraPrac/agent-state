@@ -25,7 +25,7 @@ func Ready(s *store.Store, cfg *config.Config, opts ReadyOpts) int {
 	leverage, names := unblockLeverage(g, cands)
 	pins := loadQueuePins(cfg)
 	priorityOverrides := buildPriorityOverrides(g, cands, pins)
-	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now(), pins)
 	enrichUnblockDetail(recs, names)
 	enrichPriorityDetail(recs, priorityOverrides, g.Items, pins)
 

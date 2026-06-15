@@ -38,7 +38,8 @@ type RecommendOpts struct {
 // recommendJSON is the STABLE machine contract (documented for the T-348
 // TUI planning panel). Field names are part of that contract — additive
 // changes only. Priority is the item's own label; EffectivePriority is set
-// only when inheritance or a queue pin lifts it above the label value.
+// only when transitive dep inheritance lifts it above the label value
+// (queue pins appear in Factors as "pin", not as an effective priority change).
 type recommendJSON struct {
 	ID               string       `json:"id"`
 	Title            string       `json:"title"`
@@ -80,7 +81,7 @@ func recommendTo(w io.Writer, s *store.Store, cfg *config.Config, opts Recommend
 	pins := loadQueuePins(cfg)
 	priorityOverrides := buildPriorityOverrides(g, cands, pins)
 
-	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now())
+	recs := coordinator.Recommend(cands, leverage, sprints, loadGoalWeights(s), priorityOverrides, time.Now(), pins)
 	enrichUnblockDetail(recs, names)
 	enrichPriorityDetail(recs, priorityOverrides, g.Items, pins)
 
@@ -259,18 +260,15 @@ func recommendCandidates(s *store.Store, cfg *config.Config, g *deps.Graph,
 }
 
 // buildPriorityOverrides computes effective priority for each candidate by
-// walking the dependency graph transitively (priority inheritance) and applying
-// queue-pin as a bounded band modifier (+1 toward p0, floored at 0). Only
-// items whose effective priority differs from their own label are included in
-// the returned map, keeping the coordinator's scoring loop clean.
-func buildPriorityOverrides(g *deps.Graph, cands []*model.Item, pins map[string]bool) map[string]int {
+// walking the dependency graph transitively (priority inheritance). Only
+// items whose effective priority differs from their own label are included.
+// Queue pins are NOT applied here — they add a score boost within the band
+// via coordinator.Recommend (pinWeight), never a band crossing.
+func buildPriorityOverrides(g *deps.Graph, cands []*model.Item, _ map[string]bool) map[string]int {
 	overrides := map[string]int{}
 	for _, it := range cands {
 		own := it.ResolvedPriority()
 		eff := g.TransitiveMinPriority(it.ID, own)
-		if pins[it.ID] && eff > 0 {
-			eff--
-		}
 		if eff != own {
 			overrides[it.ID] = eff
 		}
@@ -279,10 +277,9 @@ func buildPriorityOverrides(g *deps.Graph, cands []*model.Item, pins map[string]
 }
 
 // enrichPriorityDetail rewrites the "priority" factor detail when an item's
-// effective priority was inherited from a downstream dependency or lifted by a
-// queue pin, so the rationale is transparent about what drove the rank.
-// pins is passed to distinguish a queue-pin lift from pure inheritance.
-func enrichPriorityDetail(recs []coordinator.Recommendation, overrides map[string]int, items map[string]*model.Item, pins map[string]bool) {
+// effective priority was inherited from a downstream dependency, so the
+// rationale is transparent about what drove the rank.
+func enrichPriorityDetail(recs []coordinator.Recommendation, overrides map[string]int, items map[string]*model.Item, _ map[string]bool) {
 	for i := range recs {
 		id := recs[i].Item.ID
 		eff, ok := overrides[id]
@@ -294,13 +291,9 @@ func enrichPriorityDetail(recs []coordinator.Recommendation, overrides map[strin
 			continue
 		}
 		own := it.ResolvedPriority()
-		cause := "inherited"
-		if pins[id] {
-			cause = "queue pin"
-		}
 		for j := range recs[i].Factors {
 			if recs[i].Factors[j].Name == "priority" {
-				recs[i].Factors[j].Detail = fmt.Sprintf("priority p%d (effective p%d — %s)", own, eff, cause)
+				recs[i].Factors[j].Detail = fmt.Sprintf("priority p%d (effective p%d — inherited)", own, eff)
 			}
 		}
 	}
