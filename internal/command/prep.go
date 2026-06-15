@@ -64,7 +64,8 @@ type PrepOpts struct {
 	// .plans/<id>.md (draft, plan_approved=false) and
 	// .plans/<id>.report.md (verbose plan-review narrative). Approval
 	// is then a separate step via `st plan approve <id>`. I-565.
-	WriteOnly bool
+	WriteOnly   bool
+	AgentEngine string // --agent-engine/--ae: "claude" (default) or "codex"
 }
 
 // PrepInteractive shows sprint selection and runs prep on the selected sprint.
@@ -442,12 +443,18 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		}
 	}
 
-	// No draft — run Claude to generate a new plan
+	// No draft — run the configured agent to generate a new plan
 	if p == nil {
 		prompt := buildPrepPrompt(cfg, itemID, item)
 
-		runOpts := RunOpts{Model: opts.Model}
-		args := buildClaudeArgs(cfg, prompt, runOpts, cwd)
+		runOpts := RunOpts{Model: opts.Model, AgentEngine: opts.AgentEngine}
+		var args []string
+		if opts.AgentEngine == "codex" {
+			// Prompt is passed POSITIONALLY — -p selects a codex config profile.
+			args = append([]string{"exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only"}, prompt)
+		} else {
+			args = buildClaudeArgs(cfg, prompt, runOpts, cwd)
+		}
 		sessionID := generateSessionID()
 		env := []string{
 			"AS_SESSION_ID=" + sessionID,
@@ -460,16 +467,17 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		// I-985: cap the prep sub-agent so a stuck tool call doesn't
 		// hang indefinitely. defaultRunClaude reads AS_CLAUDE_WALL_TIMEOUT
 		// from env and tightens its context.WithTimeout accordingly.
+		// defaultRunCodex also reads this (shared via the env slice).
 		env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePrepTimeout().String())
 
 		fmt.Printf("[%s] Exploring codebase and generating plan...\n\n", itemID)
-		output, exitCode, err := engine.RunClaude(cwd, args, env)
+		output, exitCode, err := execAgentRaw(engine, opts.AgentEngine, cwd, args, env)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] claude error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
+			fmt.Fprintf(os.Stderr, "[%s] agent error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
 			return "rejected"
 		}
 
-		// Parse claude output for the plan text
+		// Parse agent output for the plan text
 		planText := ""
 		claudeResult, parseErr := parseClaudeOutput(output)
 		if parseErr == nil {
@@ -477,7 +485,7 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		} else if exitCode == 0 {
 			planText = string(output)
 		} else {
-			fmt.Fprintf(os.Stderr, "[%s] claude exited %d\n", itemID, exitCode)
+			fmt.Fprintf(os.Stderr, "[%s] agent exited %d\n", itemID, exitCode)
 			return "rejected"
 		}
 
@@ -840,8 +848,14 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 	if p == nil {
 		prompt := buildPrepPrompt(cfg, itemID, item)
 
-		runOpts := RunOpts{Model: opts.Model}
-		args := buildClaudeArgs(cfg, prompt, runOpts, cwd)
+		runOpts := RunOpts{Model: opts.Model, AgentEngine: opts.AgentEngine}
+		var args []string
+		if opts.AgentEngine == "codex" {
+			// Prompt is passed POSITIONALLY — -p selects a codex config profile.
+			args = append([]string{"exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only"}, prompt)
+		} else {
+			args = buildClaudeArgs(cfg, prompt, runOpts, cwd)
+		}
 		sessionID := generateSessionID()
 		env := []string{
 			"AS_SESSION_ID=" + sessionID,
@@ -855,10 +869,10 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		env = append(env, "AS_CLAUDE_WALL_TIMEOUT="+resolvePrepTimeout().String())
 
 		fmt.Printf("[%s] Exploring codebase and generating plan...\n", itemID)
-		output, exitCode, err := engine.RunClaude(cwd, args, env)
+		output, exitCode, err := execAgentRaw(engine, opts.AgentEngine, cwd, args, env)
 		if err != nil {
-			fmt.Printf("[%s] FAILED: claude error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
-			stampPrepFailure(s, itemID, "claude error: "+err.Error())
+			fmt.Printf("[%s] FAILED: agent error: %v — re-run or set AS_PREP_TIMEOUT=<longer> if this is a large item\n", itemID, err)
+			stampPrepFailure(s, itemID, "agent error: "+err.Error())
 			return "rejected"
 		}
 
@@ -869,8 +883,8 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		} else if exitCode == 0 {
 			planText = string(output)
 		} else {
-			fmt.Printf("[%s] FAILED: claude exited %d\n", itemID, exitCode)
-			stampPrepFailure(s, itemID, fmt.Sprintf("claude exited %d", exitCode))
+			fmt.Printf("[%s] FAILED: agent exited %d\n", itemID, exitCode)
+			stampPrepFailure(s, itemID, fmt.Sprintf("agent exited %d", exitCode))
 			return "rejected"
 		}
 

@@ -10,9 +10,10 @@ const (
 	AIProviderClaude = "claude"
 	AIProviderOpenAI = "openai"
 
-	CostSourceProvided = "provided"
-	CostSourceComputed = "computed"
-	CostSourceUnknown  = "unknown"
+	CostSourceProvided  = "provided"
+	CostSourceComputed  = "computed"
+	CostSourceUnknown   = "unknown"
+	CostSourceEstimated = "estimated" // cost from our own pricing table, not provider-reported
 )
 
 // AIUsage is the provider-neutral per-turn usage record. It is intentionally

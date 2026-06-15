@@ -191,14 +191,14 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 		return 0
 	}
 
-	// I-569 step 3: synthetic cost is ALWAYS recomputed from tokens × the
-	// pricing rate table. payload.CostUSD and payload.CostSource are
-	// accepted on the wire (back-compat for older producers) but ignored
-	// in logic — the only authoritative source is
-	// `pricing.EstimateSyntheticCostUSD`,
-	// and unknown model just means cost stays at 0 for this turn (no
-	// per-turn "unknown" bookkeeping; the absence is derivable from
-	// non-zero tokens with zero cost).
+	// I-569 step 3: cost is recomputed from tokens × the pricing rate table.
+	// payload.CostUSD and payload.CostSource are accepted on the wire
+	// (back-compat for older producers) but ignored — the authoritative source
+	// is always the pricing package.
+	//
+	// T-307: provider-aware dispatch:
+	//   claude / empty → Anthropic table (EstimateSyntheticCostUSD)
+	//   openai         → OpenAI table (EstimateOpenAICostUSD, estimated source)
 	var cost float64
 	if shouldComputeCost(payload) {
 		computed, err := pricing.EstimateSyntheticCostUSD(
@@ -210,6 +210,17 @@ func SessionLog(s *store.Store, cfg *config.Config, payload SessionLogPayload) i
 			fmt.Fprintf(os.Stderr, "session log: %v (tokens recorded without cost)\n", err)
 		} else {
 			cost = computed
+		}
+	} else if shouldComputeOpenAICost(payload) {
+		estimated, err := pricing.EstimateOpenAICostUSD(
+			payload.Model,
+			payload.RegInputTokens, payload.RegOutputTokens,
+			payload.CacheReadInputTokens,
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "session log: %v (openai tokens recorded without cost)\n", err)
+		} else {
+			cost = estimated
 		}
 	}
 
@@ -835,6 +846,11 @@ func hasTokens(p SessionLogPayload) bool {
 func shouldComputeCost(p SessionLogPayload) bool {
 	provider := strings.TrimSpace(strings.ToLower(p.Provider))
 	return (provider == "" || provider == AIProviderClaude) && p.Model != "" && hasTokens(p)
+}
+
+func shouldComputeOpenAICost(p SessionLogPayload) bool {
+	provider := strings.TrimSpace(strings.ToLower(p.Provider))
+	return provider == AIProviderOpenAI && p.Model != "" && hasTokens(p)
 }
 
 func providerModelKey(p SessionLogPayload) string {

@@ -2517,6 +2517,16 @@ lets you pick one, validates the plan, and starts execution.`,
 			showAll, _ := cmd.Flags().GetBool("all")
 			closedOnly, _ := cmd.Flags().GetBool("closed")
 			noCoord, _ := cmd.Flags().GetBool("no-coordination")
+			agentEngine, _ := cmd.Flags().GetString("agent-engine")
+			if agentEngine == "" {
+				agentEngine, _ = cmd.Flags().GetString("ae")
+			}
+			if err := command.ValidateAgentEngine(agentEngine); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 2
+				return
+			}
+			codexModel, _ := cmd.Flags().GetString("ae-model")
 			opts := command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
@@ -2526,6 +2536,8 @@ lets you pick one, validates the plan, and starts execution.`,
 				PermissionMode: permMode,
 				Fresh:          fresh,
 				NoCoordination: noCoord,
+				AgentEngine:    agentEngine,
+				CodexModel:     codexModel,
 			}
 			engine := command.DefaultRunEngine()
 			if len(args) == 1 && args[0] == "status" {
@@ -2563,6 +2575,9 @@ lets you pick one, validates the plan, and starts execution.`,
 	runCmd.Flags().BoolP("closed", "c", false, "with 'status': show only closed/archived epics and sprints")
 	runCmd.Flags().Bool("no-refresh", false, "with 'status': skip the auto-pull from origin (for scripts/CI/hot loops)")
 	runCmd.Flags().Bool("no-coordination", false, "skip the T-314 multi-agent coordination block in claude prompts (tests/minimal prompts)")
+	runCmd.Flags().String("agent-engine", "", "agent engine to use: claude (default) or codex")
+	runCmd.Flags().String("ae", "", "alias for --agent-engine")
+	runCmd.Flags().String("ae-model", "", "OpenAI model ID for Codex pricing (default \"codex-mini-latest\")")
 	root.AddCommand(runCmd)
 
 	// T-376: shared dispatch helper used by both `st prep` (deprecated
@@ -2575,12 +2590,21 @@ lets you pick one, validates the plan, and starts execution.`,
 		model, _ := cmd.Flags().GetString("model")
 		includeRejected, _ := cmd.Flags().GetBool("include-rejected")
 		writeOnly, _ := cmd.Flags().GetBool("write-only")
+		agentEngine, _ := cmd.Flags().GetString("agent-engine")
+		if agentEngine == "" {
+			agentEngine, _ = cmd.Flags().GetString("ae")
+		}
+		if err := command.ValidateAgentEngine(agentEngine); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 		opts := command.PrepOpts{
 			DryRun:          dryRun,
 			Model:           model,
 			ItemFilter:      item,
 			IncludeRejected: includeRejected,
 			WriteOnly:       writeOnly,
+			AgentEngine:     agentEngine,
 		}
 		engine := command.DefaultRunEngine()
 		if len(args) > 0 {
@@ -2629,6 +2653,8 @@ lets you pick one, validates the plan, and starts execution.`,
 		c.Flags().String("model", "", "model to use (overrides config)")
 		c.Flags().Bool("include-rejected", false, "re-process previously rejected plans")
 		c.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
+		c.Flags().String("agent-engine", "", "agent engine to use: claude (default) or codex")
+		c.Flags().String("ae", "", "alias for --agent-engine")
 	}
 
 	prepCmd := &cobra.Command{
@@ -2698,6 +2724,16 @@ rates. I-180.`,
 			model, _ := cmd.Flags().GetString("model")
 			permMode, _ := cmd.Flags().GetString("permission-mode")
 			step, _ := cmd.Flags().GetString("step")
+			agentEngine, _ := cmd.Flags().GetString("agent-engine")
+			if agentEngine == "" {
+				agentEngine, _ = cmd.Flags().GetString("ae")
+			}
+			if err := command.ValidateAgentEngine(agentEngine); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				exitCode = 2
+				return
+			}
+			codexModel, _ := cmd.Flags().GetString("ae-model")
 			exitCode = command.Advance(appStore, appCfg, args[0], command.RunOpts{
 				DryRun:         dryRun,
 				MaxBudgetUSD:   budget,
@@ -2706,6 +2742,8 @@ rates. I-180.`,
 				Model:          model,
 				PermissionMode: permMode,
 				StepFilter:     step,
+				AgentEngine:    agentEngine,
+				CodexModel:     codexModel,
 			}, command.DefaultRunEngine())
 		},
 	}
@@ -2715,6 +2753,9 @@ rates. I-180.`,
 	advanceCmd.Flags().String("model", "", "model to use")
 	advanceCmd.Flags().String("permission-mode", "", "claude permission mode")
 	advanceCmd.Flags().String("step", "", "stop after this step name")
+	advanceCmd.Flags().String("agent-engine", "", "agent engine to use: claude (default) or codex")
+	advanceCmd.Flags().String("ae", "", "alias for --agent-engine")
+	advanceCmd.Flags().String("ae-model", "", "OpenAI model ID for Codex pricing (default \"codex-mini-latest\")")
 	root.AddCommand(advanceCmd)
 
 	stackCmd := &cobra.Command{

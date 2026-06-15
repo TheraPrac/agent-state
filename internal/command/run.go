@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,12 +64,17 @@ type RunOpts struct {
 	StepFilter     string // --step: advance up to this step name
 	Fresh          bool   // --fresh: ignore saved progress, restart pipeline from step 0
 	NoCoordination bool   // --no-coordination: skip the T-314 coordination block injection (tests/minimal prompts)
+	AgentEngine    string // --agent-engine/--ae: "claude" (default) or "codex"
+	CodexModel     string // --ae-model: OpenAI model for Codex pricing (default "codex-mini-latest")
 }
 
 // RunEngine holds injectable dependencies for run/advance.
 type RunEngine struct {
 	// RunClaude launches a claude -p subprocess and returns its output.
 	RunClaude func(cwd string, args []string, env []string) ([]byte, int, error)
+	// RunCodex launches a codex subprocess and returns its output.
+	// If nil, defaults to defaultRunCodex.
+	RunCodex func(cwd string, args []string, env []string) ([]byte, int, error)
 	// RunClaudeInteractive launches claude in interactive mode (stdin/stdout attached).
 	// Returns exit code. If nil, uses default exec.Command implementation.
 	RunClaudeInteractive func(cwd string, args []string) (int, error)
@@ -157,6 +163,7 @@ type ItemResult struct {
 func DefaultRunEngine() RunEngine {
 	return RunEngine{
 		RunClaude:  defaultRunClaude,
+		RunCodex:   defaultRunCodex,
 		PromptUser: defaultPromptUser,
 	}
 }
@@ -1874,7 +1881,7 @@ func executeStepWithSession(s *store.Store, cfg *config.Config, itemID, sprintID
 	case "plan":
 		sr = executePlanWithOpts(s, cfg, itemID, engine, opts, worktreeDir)
 	case "claude":
-		sr = executeClaude(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID, isResume)
+		sr = selectAgentEngine(opts, engine).Run(s, cfg, itemID, sprintID, step, opts, engine, worktreeDir, claudeSessionID, isResume)
 	case "test":
 		sr = executeTest(s, cfg, itemID, step, worktreeDir)
 	case "verify_tests":
@@ -5006,6 +5013,68 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 		return lastResult, exitCode, waitErr
 	}
 	return nil, exitCode, waitErr
+}
+
+// defaultRunCodex runs the codex CLI with the given args. The args slice is
+// assembled by CodexEngine and begins with "exec" [flags] prompt or
+// "exec" "resume" <thread_id> [flags] prompt. Stdin is redirected from
+// /dev/null to avoid the "Reading additional input from stdin..." hang in
+// interactive mode. Stdout is captured (all --json events land there);
+// stderr is forwarded so the operator sees codex's diagnostic output.
+func defaultRunCodex(cwd string, args []string, env []string) ([]byte, int, error) {
+	// Honor AS_CLAUDE_WALL_TIMEOUT in the env slice (same as defaultRunClaude)
+	// so prep runs with a tighter cap don't inherit the 2h global ceiling.
+	wallTimeout := maxWallTimeout
+	for _, e := range env {
+		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
+			if parsed, perr := time.ParseDuration(v); perr == nil {
+				wallTimeout = parsed
+			} else {
+				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — using global %s ceiling\n", v, perr, maxWallTimeout)
+			}
+		}
+	}
+
+	parentCtx := context.Background()
+	if activeRunCtx != nil {
+		parentCtx = activeRunCtx
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, wallTimeout)
+	defer cancel()
+
+	codexBin, err := exec.LookPath("codex")
+	if err != nil {
+		return nil, 127, fmt.Errorf("codex not found in PATH")
+	}
+	nullIn, err := os.Open(os.DevNull)
+	if err != nil {
+		return nil, 1, fmt.Errorf("codex exec: open /dev/null: %w", err)
+	}
+	defer nullIn.Close()
+
+	cmd := exec.CommandContext(ctx, codexBin, args...)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = nullIn
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second
+
+	out, err := cmd.Output()
+	exitCode := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			exitCode = ee.ExitCode()
+			err = nil
+		} else {
+			return nil, 0, fmt.Errorf("codex exec: %w", err)
+		}
+	}
+	return out, exitCode, nil
 }
 
 // activityTracker monitors a subprocess for idle timeout.
