@@ -625,13 +625,13 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 	if parentIdx < 0 {
 		// Parent not found — insert parent + child before body separator
 		parentLine := Line{Raw: parent + ":", Key: parent}
-		childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+		childLines := buildNestedScalarOrBlock(parent, child, value, 2, "")
 		if idx := d.BodySeparatorIndex(); idx >= 0 {
 			tail := make([]Line, len(d.Lines[idx:]))
 			copy(tail, d.Lines[idx:])
-			d.Lines = append(d.Lines[:idx], append([]Line{parentLine, childLine}, tail...)...)
+			d.Lines = append(d.Lines[:idx], append(append([]Line{parentLine}, childLines...), tail...)...)
 		} else {
-			d.Lines = append(d.Lines, parentLine, childLine)
+			d.Lines = append(append(d.Lines, parentLine), childLines...)
 		}
 		return false
 	}
@@ -681,10 +681,10 @@ func (d *ParsedDocument) SetNestedField(path, value string) bool {
 		}
 		insertIdx++
 	}
-	childLine := Line{Raw: "  " + child + ": " + value, Key: child, Value: value, Indent: 2, BlockKey: parent}
+	childLines := buildNestedScalarOrBlock(parent, child, value, 2, "")
 	tail := make([]Line, len(d.Lines[insertIdx:]))
 	copy(tail, d.Lines[insertIdx:])
-	d.Lines = append(d.Lines[:insertIdx], append([]Line{childLine}, tail...)...)
+	d.Lines = append(d.Lines[:insertIdx], append(childLines, tail...)...)
 	return false
 }
 
@@ -718,7 +718,19 @@ func (d *ParsedDocument) RemoveNestedField(path string) bool {
 			break
 		}
 		if line.Key == child && line.Indent > 0 && line.BlockKey == parent {
-			d.Lines = append(d.Lines[:end], d.Lines[end+1:]...)
+			// Also remove any block-body lines (IsBlock, BlockKey==child)
+			// that immediately follow the header — emitted by
+			// buildNestedScalarOrBlock for multi-line values.
+			bodyEnd := end + 1
+			for bodyEnd < len(d.Lines) {
+				bl := d.Lines[bodyEnd]
+				if bl.IsBlock && bl.BlockKey == child {
+					bodyEnd++
+					continue
+				}
+				break
+			}
+			d.Lines = append(d.Lines[:end], d.Lines[bodyEnd:]...)
 			removed = true
 			continue
 		}
@@ -831,7 +843,7 @@ func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
 	parent, child := parts[0], parts[1]
 
 	inParent := false
-	for _, line := range d.Lines {
+	for i, line := range d.Lines {
 		if line.Key == parent && line.Indent == 0 {
 			inParent = true
 			continue
@@ -841,7 +853,19 @@ func (d *ParsedDocument) GetNestedField(path string) (string, bool) {
 				return "", false // left parent block
 			}
 			if line.Key == child && line.Indent > 0 {
-				return line.Value, true
+				if line.Value != "" {
+					return line.Value, true
+				}
+				// Block-scalar header (Value=="") — reassemble from body lines.
+				var bodyLines []string
+				for j := i + 1; j < len(d.Lines); j++ {
+					bl := d.Lines[j]
+					if !bl.IsBlock || bl.BlockKey != child {
+						break
+					}
+					bodyLines = append(bodyLines, strings.TrimLeft(bl.Raw, " "))
+				}
+				return strings.Join(bodyLines, "\n"), true
 			}
 		}
 	}
