@@ -107,3 +107,57 @@ func TestTryAutoFinishWorktreeRetainsWhenCleanupFails(t *testing.T) {
 		t.Errorf("retention path removed wtDir; should be preserved for force-finish")
 	}
 }
+
+// TestTryAutoFinishWorktreeRetainsWhenNoUpstream — a real git repo with local
+// commits but no upstream tracking branch configured. Before the I-1469 fix,
+// `git log @{u}..HEAD` failed (err != nil) and the guard was bypassed, so the
+// worktree was removed despite having local-only work. After the fix, a failing
+// @{u} query retains conservatively.
+func TestTryAutoFinishWorktreeRetainsWhenNoUpstream(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"repo-a"},
+	}
+
+	wtDir := filepath.Join(cfg.Root(), "worktrees", "T-001")
+	repoDir := filepath.Join(wtDir, "repo-a")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Init a real git repo with a commit and NO upstream tracking branch.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test"},
+		{"config", "user.name", "Test"},
+	} {
+		if out, err := runGit(repoDir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "work.txt"), []byte("local work"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "work.txt"},
+		{"commit", "-m", "local work not on any remote"},
+	} {
+		if out, err := runGit(repoDir, args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// Branch 'main' has no upstream — `git log @{u}..HEAD` will fail.
+
+	cleaned, retained := TryAutoFinishWorktree(cfg, "T-001")
+	if cleaned {
+		t.Error("no-upstream: got cleaned=true, want false — worktree with no upstream must be retained to prevent data loss")
+	}
+	if !retained {
+		t.Error("no-upstream: got retained=false, want true")
+	}
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		t.Error("no-upstream: wtDir was removed; must be preserved for operator to run `st finish --force`")
+	}
+}

@@ -89,9 +89,14 @@ func Finish(s *store.Store, cfg *config.Config, id string, opts FinishOpts) int 
 				return 1
 			}
 
-			// Check for unpushed commits
+			// Check for unpushed commits. When @{u} is absent (err != nil),
+			// retain conservatively — dropping work is worse than a false retain.
 			out, err = gitOutputDir(repoDir, "log", "--oneline", "@{u}..HEAD")
-			if err == nil && strings.TrimSpace(out) != "" {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s: cannot verify unpushed commits in %s (no upstream configured)\n", id, repo)
+				fmt.Fprintln(os.Stderr, "use --force to remove anyway")
+				return 1
+			} else if strings.TrimSpace(out) != "" {
 				fmt.Fprintf(os.Stderr, "%s has unpushed commits in %s\n", id, repo)
 				fmt.Fprintln(os.Stderr, "use --force to remove anyway")
 				return 1
@@ -288,7 +293,11 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 			fmt.Printf("  worktree %s/%s retained — uncommitted changes; run `st finish %s --force` after handling\n", id, repo, id)
 			return false, true
 		}
-		if out, err := gitOutputDir(repoDir, "log", "--oneline", "@{u}..HEAD"); err == nil && strings.TrimSpace(out) != "" {
+		out, upErr := gitOutputDir(repoDir, "log", "--oneline", "@{u}..HEAD")
+		if upErr != nil {
+			fmt.Printf("  worktree %s/%s retained — cannot verify commits are pushed (no upstream configured); run `st finish %s --force` if safe\n", id, repo, id)
+			return false, true
+		} else if strings.TrimSpace(out) != "" {
 			fmt.Printf("  worktree %s/%s retained — unpushed commits; run `st finish %s --force` after pushing\n", id, repo, id)
 			return false, true
 		}
