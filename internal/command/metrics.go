@@ -27,16 +27,17 @@ type MetricsOpts struct {
 
 // metricsRow holds the per-item data for rendering.
 type metricsRow struct {
-	ID       string  `json:"id"`
-	Title    string  `json:"title"`
-	Type     string  `json:"type"`
-	Status   string  `json:"status"`
-	CostUSD  float64 `json:"cost_usd"`
-	Tokens   int     `json:"total_tokens"`
-	NetLOC   int     `json:"net_loc"`
-	Files    int     `json:"files_changed"`
-	Duration string  `json:"duration"`
-	Turns    int     `json:"turns"`
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	Type        string  `json:"type"`
+	Status      string  `json:"status"`
+	CostUSD     float64 `json:"cost_usd"`
+	Tokens      int     `json:"total_tokens"`
+	NetLOC      int     `json:"net_loc"`
+	Files       int     `json:"files_changed"`
+	Duration    string  `json:"duration"`
+	DurationSec int64   `json:"duration_seconds"`
+	Turns       int     `json:"turns"`
 }
 
 // Metrics renders a per-item table of cost, LOC, tokens, and duration.
@@ -45,13 +46,14 @@ func Metrics(s *store.Store, _ *config.Config, opts MetricsOpts) int {
 		opts.Sort = "cost"
 	}
 
-	// Parse --since threshold.
+	// Parse --since threshold. YYYY-MM-DD is interpreted as local midnight so that
+	// items completed on that calendar day in the local timezone are included.
 	var sinceTime time.Time
 	if opts.Since != "" {
 		var err error
 		sinceTime, err = time.Parse(time.RFC3339, opts.Since)
 		if err != nil {
-			sinceTime, err = time.Parse("2006-01-02", opts.Since)
+			sinceTime, err = time.ParseInLocation("2006-01-02", opts.Since, time.Local)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "metrics: invalid --since %q (use YYYY-MM-DD or RFC3339)\n", opts.Since)
 				return 1
@@ -133,26 +135,32 @@ func Metrics(s *store.Store, _ *config.Config, opts MetricsOpts) int {
 			}
 		}
 
-		dur := ""
+		// Raw seconds for --sort duration; prefer ProcessTime > AITime > Wall.
+		var durSec int64
+		var durStr string
 		if m.ProcessTime > 0 {
-			dur = formatDuration(m.ProcessTime)
+			durSec = int64(m.ProcessTime.Seconds())
+			durStr = formatDuration(m.ProcessTime)
 		} else if m.AITime > 0 {
-			dur = formatDuration(m.AITime)
+			durSec = int64(m.AITime.Seconds())
+			durStr = formatDuration(m.AITime)
 		} else if m.Wall > 0 {
-			dur = formatDuration(m.Wall)
+			durSec = int64(m.Wall.Seconds())
+			durStr = formatDuration(m.Wall)
 		}
 
 		rows = append(rows, metricsRow{
-			ID:       item.ID,
-			Title:    truncateTitle(item.Title, 40),
-			Type:     item.Type,
-			Status:   item.Status,
-			CostUSD:  m.CostUSD,
-			Tokens:   totalTokens,
-			NetLOC:   netLOC,
-			Files:    files,
-			Duration: dur,
-			Turns:    turns,
+			ID:          item.ID,
+			Title:       truncateTitle(item.Title, 40),
+			Type:        item.Type,
+			Status:      item.Status,
+			CostUSD:     m.CostUSD,
+			Tokens:      totalTokens,
+			NetLOC:      netLOC,
+			Files:       files,
+			Duration:    durStr,
+			DurationSec: durSec,
+			Turns:       turns,
 		})
 	}
 
@@ -169,9 +177,7 @@ func Metrics(s *store.Store, _ *config.Config, opts MetricsOpts) int {
 			}
 			return ai > aj
 		case "duration":
-			// Compare as strings won't work; store raw seconds in the row.
-			// Fall back to cost for now since duration is pre-formatted.
-			return rows[i].CostUSD > rows[j].CostUSD
+			return rows[i].DurationSec > rows[j].DurationSec
 		case "tokens":
 			return rows[i].Tokens > rows[j].Tokens
 		default: // "cost"
@@ -188,9 +194,15 @@ func Metrics(s *store.Store, _ *config.Config, opts MetricsOpts) int {
 	case "json":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		enc.Encode(rows)
+		if err := enc.Encode(rows); err != nil {
+			fmt.Fprintf(os.Stderr, "metrics: encode error: %v\n", err)
+			return 1
+		}
 	case "csv":
-		renderMetricsCSV(rows)
+		if err := renderMetricsCSV(rows); err != nil {
+			fmt.Fprintf(os.Stderr, "metrics: csv write error: %v\n", err)
+			return 1
+		}
 	default:
 		renderMetricsTable(rows)
 	}
@@ -232,9 +244,9 @@ func renderMetricsTable(rows []metricsRow) {
 	fmt.Printf("\033[2m%d item(s)\033[0m\n", len(rows))
 }
 
-func renderMetricsCSV(rows []metricsRow) {
+func renderMetricsCSV(rows []metricsRow) error {
 	w := csv.NewWriter(os.Stdout)
-	w.Write([]string{"id", "title", "type", "status", "cost_usd", "total_tokens", "net_loc", "files_changed", "duration", "turns"})
+	w.Write([]string{"id", "title", "type", "status", "cost_usd", "total_tokens", "net_loc", "files_changed", "duration", "duration_seconds", "turns"})
 	for _, r := range rows {
 		w.Write([]string{
 			r.ID,
@@ -246,10 +258,12 @@ func renderMetricsCSV(rows []metricsRow) {
 			fmt.Sprintf("%d", r.NetLOC),
 			fmt.Sprintf("%d", r.Files),
 			r.Duration,
+			fmt.Sprintf("%d", r.DurationSec),
 			fmt.Sprintf("%d", r.Turns),
 		})
 	}
 	w.Flush()
+	return w.Error()
 }
 
 // truncateTitle shortens s to max runes, appending "…" if truncated.

@@ -3578,6 +3578,7 @@ var commandGroupAssignments = map[string]string{
 	"watch":      "querying",
 	"tui":        "querying",
 	"cost":       "querying",
+	"metrics":    "querying",
 	"model-rec":  "querying",
 	"files":      "querying",
 	"transcript": "querying",

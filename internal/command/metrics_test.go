@@ -327,6 +327,17 @@ func TestMetricsFormatCSV(t *testing.T) {
 	if header[0] != "id" {
 		t.Errorf("--format csv: first header column should be 'id', got %q", header[0])
 	}
+	// duration_seconds column must be present so downstream consumers can sort numerically.
+	found := false
+	for _, col := range header {
+		if col == "duration_seconds" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("--format csv: header missing 'duration_seconds' column, got %v", header)
+	}
 }
 
 // TestMetricsSince verifies that --since excludes items completed before the date
