@@ -1906,3 +1906,161 @@ func TestTestRecord_SkipRequiredSuite_NoRepoMapping_Rejected_I1304(t *testing.T)
 		t.Error("TestRecord should reject --skip when suite has no repo mapping (cannot verify not-applicable)")
 	}
 }
+
+// --- I-757: env/target/vendor-tier capture ---
+
+func TestTestRecord_EnvFrom(t *testing.T) {
+	tests := []struct {
+		name         string
+		envFrom      string
+		targetFrom   []string
+		vendorTiers  []string
+		envVars      map[string]string
+		suiteExit    int
+		wantCode     int
+		wantEnvInEv  string // non-empty → evidence line must contain this substring
+		wantEnvField string // expected summary.Env (empty string = field should be absent)
+		wantSuiteRan bool
+	}{
+		{
+			name:         "env_from_set",
+			envFrom:      "$TARGET_ENV",
+			envVars:      map[string]string{"TARGET_ENV": "demo"},
+			suiteExit:    0,
+			wantCode:     0,
+			wantEnvInEv:  "env=demo",
+			wantEnvField: "demo",
+			wantSuiteRan: true,
+		},
+		{
+			name:         "env_from_unset",
+			envFrom:      "$TARGET_ENV",
+			envVars:      map[string]string{}, // TARGET_ENV not set
+			wantCode:     1,
+			wantSuiteRan: false, // suite must NOT run when env_from is unset
+		},
+		{
+			name:         "env_from_absent",
+			envFrom:      "", // no env_from declared
+			envVars:      map[string]string{"TARGET_ENV": "demo"},
+			suiteExit:    0,
+			wantCode:     0,
+			wantEnvInEv:  "", // no env tag in evidence line
+			wantEnvField: "",
+			wantSuiteRan: true,
+		},
+		{
+			name:        "target_vendor_stamped",
+			envFrom:     "$TARGET_ENV",
+			targetFrom:  []string{"db_endpoint=$DB_HOST", "api_endpoint=$API_BASE_URL"},
+			vendorTiers: []string{"stedi=$STEDI_TIER"},
+			envVars: map[string]string{
+				"TARGET_ENV":   "demo",
+				"DB_HOST":      "rds.example.com",
+				"API_BASE_URL": "https://api.example.com",
+				"STEDI_TIER":   "T",
+			},
+			suiteExit:    0,
+			wantCode:     0,
+			wantEnvInEv:  "env=demo",
+			wantEnvField: "demo",
+			wantSuiteRan: true,
+		},
+		{
+			name:         "env_from_set_suite_fails",
+			envFrom:      "$TARGET_ENV",
+			envVars:      map[string]string{"TARGET_ENV": "demo"},
+			suiteExit:    1,
+			wantCode:     1,
+			wantEnvInEv:  "env=demo", // env tag appears on fail path too
+			wantEnvField: "demo",
+			wantSuiteRan: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cfg := setupPRTestEnv(t)
+			backend := &evidence.LocalBackend{Dir: t.TempDir()}
+
+			// Set up a scope suite with the test's config
+			cfg.Testing.ScopeSuites["live_acceptance"] = config.ScopeSuiteConfig{
+				Command:     "make live-acceptance",
+				EnvFrom:     tc.envFrom,
+				TargetFrom:  tc.targetFrom,
+				VendorTiers: tc.vendorTiers,
+			}
+			// Mark the suite as required so TestRecord's --run path enters testRunMode
+			if err := s.Mutate("T-003", func(it *model.Item) error {
+				it.SetNested("testing_evidence", "live_acceptance", "required")
+				return nil
+			}); err != nil {
+				t.Fatalf("mutate: %v", err)
+			}
+
+			// Set/unset env vars
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			// Ensure vars not in the map are cleared
+			for _, varName := range []string{"TARGET_ENV", "DB_HOST", "API_BASE_URL", "STEDI_TIER"} {
+				if _, set := tc.envVars[varName]; !set {
+					t.Setenv(varName, "")
+				}
+			}
+
+			suiteRan := false
+			opts := TestRecordOpts{
+				Run: true,
+				GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+				RunCmd: func(command string) ([]byte, int, error) {
+					suiteRan = true
+					return []byte("output\n"), tc.suiteExit, nil
+				},
+				Backend: backend,
+			}
+
+			code := TestRecord(s, cfg, "T-003", "live_acceptance", opts)
+
+			if code != tc.wantCode {
+				t.Errorf("code = %d, want %d", code, tc.wantCode)
+			}
+			if suiteRan != tc.wantSuiteRan {
+				t.Errorf("suiteRan = %v, want %v", suiteRan, tc.wantSuiteRan)
+			}
+
+			if !tc.wantSuiteRan {
+				return // no evidence to check
+			}
+
+			// Check evidence line in item
+			item, _ := s.Get("T-003")
+			ev, _ := getNestedField(item, "testing_evidence", "live_acceptance")
+			if tc.wantEnvInEv != "" && !strings.Contains(ev, tc.wantEnvInEv) {
+				t.Errorf("evidence = %q, want to contain %q", ev, tc.wantEnvInEv)
+			}
+			if tc.wantEnvInEv == "" && strings.Contains(ev, " env=") {
+				t.Errorf("evidence = %q, unexpected env= tag", ev)
+			}
+
+			// Check summary.json fields
+			summary := readBackTestSummary(t, backend, "T-003", "live_acceptance")
+			if summary.Env != tc.wantEnvField {
+				t.Errorf("summary.Env = %q, want %q", summary.Env, tc.wantEnvField)
+			}
+
+			// target/vendor checks only for target_vendor_stamped
+			if tc.name == "target_vendor_stamped" {
+				if summary.Target["db_endpoint"] != "rds.example.com" {
+					t.Errorf("summary.Target[db_endpoint] = %q", summary.Target["db_endpoint"])
+				}
+				if summary.Target["api_endpoint"] != "https://api.example.com" {
+					t.Errorf("summary.Target[api_endpoint] = %q", summary.Target["api_endpoint"])
+				}
+				if summary.VendorTiers["stedi"] != "T" {
+					t.Errorf("summary.VendorTiers[stedi] = %q", summary.VendorTiers["stedi"])
+				}
+			}
+		})
+	}
+}

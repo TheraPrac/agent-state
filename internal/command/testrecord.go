@@ -57,6 +57,12 @@ type testSummary struct {
 	GolangciLintCache string `json:"golangci_lint_cache,omitempty"`
 	GoCache           string `json:"go_cache,omitempty"`
 	Retried           bool   `json:"retried,omitempty"`
+	// I-757: env/target/vendor-tier context so live_acceptance evidence is
+	// interpretable. All omitempty — suites without env_from leave these empty.
+	Env         string            `json:"env,omitempty"`
+	Target      map[string]string `json:"target,omitempty"`
+	Agent       string            `json:"agent,omitempty"`
+	VendorTiers map[string]string `json:"vendor_tiers,omitempty"`
 }
 
 // TestRecord records or executes a test suite for an item.
@@ -95,12 +101,15 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	suiteCmd := ""
 	isRequired := false
 	isScope := false
+	var scopeSuiteCfg *config.ScopeSuiteConfig
 	if sc, ok := requiredSuites[suite]; ok {
 		isRequired = true
 		suiteCmd = sc.Command
 	} else if sc, ok := cfg.Testing.ScopeSuites[suite]; ok {
 		isScope = true
 		suiteCmd = sc.Command
+		sc2 := sc
+		scopeSuiteCfg = &sc2
 	}
 	if !isRequired && !isScope {
 		fmt.Fprintf(os.Stderr, "unknown suite %q — not in required_suites or scope_suites\n", suite)
@@ -219,7 +228,7 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 				return 0
 			}
 		}
-		return testRunMode(s, cfg, id, suite, suiteCmd, sha, item, opts)
+		return testRunMode(s, cfg, id, suite, suiteCmd, sha, item, scopeSuiteCfg, opts)
 	}
 	return testRecordOnly(s, cfg, id, suite, sha, item)
 }
@@ -250,7 +259,7 @@ func testRecordOnly(s *store.Store, cfg *config.Config, id, suite, sha string, i
 }
 
 // testRunMode executes the suite, captures output, uploads evidence, records result.
-func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha string, item *model.Item, opts TestRecordOpts) int {
+func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha string, item *model.Item, scopeSuite *config.ScopeSuiteConfig, opts TestRecordOpts) int {
 	if suiteCmd == "" {
 		fmt.Fprintf(os.Stderr, "suite %q has no command configured\n", suite)
 		return 1
@@ -378,6 +387,16 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	} else {
 		fmt.Printf("Running %s: %s\n", suite, cmd)
 	}
+
+	// I-757: resolve env/target/vendor-tier BEFORE running the suite so a
+	// missing env_from fails fast with a clear error rather than recording
+	// an opaque artifact.
+	envVal, targetMap, vtMap, envErr := resolveEnvTarget(scopeSuite)
+	if envErr != nil {
+		fmt.Fprintln(os.Stderr, "error:", envErr)
+		return 1
+	}
+
 	start := time.Now()
 
 	// Execute suite command. Stream output to stderr so the user (and
@@ -405,6 +424,10 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	}
 
 	// Build summary
+	agentID := cfg.AgentID()
+	if runtimeResolved {
+		agentID = resolvedRuntime.AgentID
+	}
 	summary := testSummary{
 		Status:            status,
 		Suite:             suite,
@@ -415,6 +438,10 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		GolangciLintCache: golangciLintCache,
 		GoCache:           goCache,
 		Retried:           retried,
+		Env:               envVal,
+		Target:            targetMap,
+		Agent:             agentID,
+		VendorTiers:       vtMap,
 	}
 
 	// Upload evidence (best-effort — don't fail the test recording if upload fails)
@@ -453,10 +480,16 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	if retried {
 		retryTag = " retried"
 	}
+	// I-757: append env=<value> when env was recorded, so the item line
+	// carries the execution context without an S3 round-trip.
+	envTag := ""
+	if summary.Env != "" {
+		envTag = " env=" + summary.Env
+	}
 
 	// If test failed, record failure and stop
 	if exitCode != 0 {
-		ev := fmt.Sprintf("fail%s %s %s evidence:%s", retryTag, sha, now.Format(time.RFC3339), logURI)
+		ev := fmt.Sprintf("fail%s%s %s %s evidence:%s", retryTag, envTag, sha, now.Format(time.RFC3339), logURI)
 		_ = s.Mutate(id, func(it *model.Item) error {
 			it.SetNested("testing_evidence", suite, ev)
 			it.Doc.SetField("last_touched", now.Format(time.RFC3339))
@@ -488,8 +521,8 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		}
 	}
 
-	// Record pass (with I-802 retry tag when applicable)
-	ev := fmt.Sprintf("pass%s %s %s evidence:%s", retryTag, sha, now.Format(time.RFC3339), logURI)
+	// Record pass (with I-802 retry tag and I-757 env tag when applicable)
+	ev := fmt.Sprintf("pass%s%s %s %s evidence:%s", retryTag, envTag, sha, now.Format(time.RFC3339), logURI)
 	if err := s.Mutate(id, func(it *model.Item) error {
 		it.SetNested("testing_evidence", suite, ev)
 		it.Doc.SetField("last_touched", now.Format(time.RFC3339))
@@ -1264,6 +1297,41 @@ func runWithLockAwareRetry(suite string, injected bool, runFn func() ([]byte, in
 // inScopeRepos reports whether repo is listed in the comma-separated scopeReposStr.
 func inScopeRepos(scopeReposStr, repo string) bool {
 	return matchInList(repo, scopeReposStr)
+}
+
+// resolveEnvTarget resolves I-757 env/target/vendor-tier fields from a
+// ScopeSuiteConfig. Returns empty strings/nil maps when scopeSuite is nil
+// or when the fields are not declared. Fails (non-nil error) only when
+// env_from is declared but the referenced variable is unset or empty.
+func resolveEnvTarget(scopeSuite *config.ScopeSuiteConfig) (env string, target, vendorTiers map[string]string, err error) {
+	if scopeSuite == nil {
+		return "", nil, nil, nil
+	}
+	if scopeSuite.EnvFrom != "" {
+		env = os.ExpandEnv(scopeSuite.EnvFrom)
+		if env == "" {
+			return "", nil, nil, fmt.Errorf("suite declares env_from %q but it resolved to empty — check that the referenced variable is exported", scopeSuite.EnvFrom)
+		}
+	}
+	if len(scopeSuite.TargetFrom) > 0 {
+		target = make(map[string]string, len(scopeSuite.TargetFrom))
+		for _, pair := range scopeSuite.TargetFrom {
+			k, v, _ := strings.Cut(pair, "=")
+			if k != "" {
+				target[k] = os.ExpandEnv(v)
+			}
+		}
+	}
+	if len(scopeSuite.VendorTiers) > 0 {
+		vendorTiers = make(map[string]string, len(scopeSuite.VendorTiers))
+		for _, pair := range scopeSuite.VendorTiers {
+			k, v, _ := strings.Cut(pair, "=")
+			if k != "" {
+				vendorTiers[k] = os.ExpandEnv(v)
+			}
+		}
+	}
+	return env, target, vendorTiers, nil
 }
 
 func shellQuote(s string) string {

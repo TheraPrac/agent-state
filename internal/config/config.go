@@ -235,6 +235,11 @@ type ScopeSuiteConfig struct {
 	Artifacts     []string // glob patterns for artifacts to upload after execution
 	PostDeployCmd string   // command to run post-deploy verification (e.g., E2E against dev)
 	PostMergeCmd  string   // command to run post-merge verification against merged main (I-696, e.g., full local E2E)
+	// I-757: optional env/target/vendor-tier capture. Resolved at run time and
+	// stamped into testSummary so live_acceptance evidence is interpretable.
+	EnvFrom     string   // env-var reference (e.g. "$TARGET_ENV"); resolved value → testSummary.Env
+	TargetFrom  []string // list of "key=$VAR" pairs → testSummary.Target
+	VendorTiers []string // list of "key=$VAR" pairs → testSummary.VendorTiers
 }
 
 type PipelineConfig struct {
@@ -1342,7 +1347,7 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 			}
 			// val == "" means this is a section header (suite name), levels tracks it
 		case "scope_suites":
-			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" && key != "post_merge" && key != "repo_trigger" {
+			if val != "" && key != "command" && key != "artifacts" && key != "post_deploy" && key != "post_merge" && key != "repo_trigger" && key != "env_from" {
 				// Simple format
 				cfg.Testing.ScopeSuites[key] = ScopeSuiteConfig{Command: val}
 			} else if val != "" {
@@ -1358,6 +1363,8 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 					sc.PostMergeCmd = val
 				case "repo_trigger":
 					sc.RepoTrigger = val
+				case "env_from":
+					sc.EnvFrom = val
 				}
 				cfg.Testing.ScopeSuites[suiteName] = sc
 			}
@@ -1661,7 +1668,7 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 			cfg.Testing.ScopeClasses[className] = class
 			return
 		}
-		if (key == "artifacts" || key == "triggers") && levels[2] != "" {
+		if (key == "artifacts" || key == "triggers" || key == "target_from" || key == "vendor_tiers") && levels[2] != "" {
 			suiteName := levels[2]
 			switch levels[1] {
 			case "required_suites":
@@ -1677,6 +1684,10 @@ func applyInlineList(cfg *Config, levels [4]string, key string, items []string) 
 					sc.Artifacts = items
 				case "triggers":
 					sc.Triggers = items
+				case "target_from":
+					sc.TargetFrom = items
+				case "vendor_tiers":
+					sc.VendorTiers = items
 				}
 				cfg.Testing.ScopeSuites[suiteName] = sc
 			}
