@@ -161,12 +161,61 @@ func autoRecordSkips(s *store.Store, cfg *config.Config, id string, item *model.
 	return 0
 }
 
+// resolveRepoDirForAuto resolves the git directory for a per-item auto-test
+// diff check using Pattern 1 only (no cross-item fallback).
+//
+// resolveRepoDirForItem has broad fallback patterns 2 & 3 that scan the entire
+// WorktreeBase(), which can return another item's clone when the requested repo
+// is absent from the current item's worktree. For auto-test diff purposes that
+// cross-item contamination is wrong: a diff of I-1302's theraprac-api produces
+// I-1302's changes, causing incorrect auto-skip decisions for the current item.
+// I-1473.
+//
+// Resolution rules:
+//   - No worktree config or WorktreeForItem returns "": fall back to the main
+//     checkout (resolveRepoDir). Item has no worktree; its scope is main-branch.
+//   - Item worktree dir doesn't exist on disk: same main-checkout fallback.
+//   - Item worktree dir exists but <repo> is absent: return "" (skip this repo;
+//     do not cross to another item's clone).
+//   - Item worktree dir exists and <repo> is a git dir: return that path.
+func resolveRepoDirForAuto(cfg *config.Config, id, repo string) string {
+	if cfg.Worktree == nil || cfg.Worktree.BaseDir == "" {
+		return resolveRepoDir(cfg, repo)
+	}
+	wtBase := cfg.WorktreeForItem(id)
+	if wtBase == "" {
+		return resolveRepoDir(cfg, repo)
+	}
+	if _, err := os.Stat(wtBase); err != nil {
+		// Item has no worktree on disk; diff against the main checkout.
+		return resolveRepoDir(cfg, repo)
+	}
+	// Item worktree exists. Pattern 1: <worktree>/<repo>.
+	candidate := filepath.Join(wtBase, repo)
+	if isGitDir(candidate) {
+		return candidate
+	}
+	if cfg.Worktree.RepoMap != nil {
+		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+			if c := filepath.Join(wtBase, mapped); isGitDir(c) {
+				return c
+			}
+		}
+	}
+	// Worktree exists but repo is absent — skip rather than fall through to
+	// Pattern 2/3, which would find another item's clone.
+	return ""
+}
+
 // detectTouchedRepos runs `git diff main..HEAD --name-only` in each configured
 // repo's worktree directory and returns the changed file list per repo name.
 func detectTouchedRepos(cfg *config.Config, id string) (map[string][]string, error) {
 	result := make(map[string][]string)
 	for _, repo := range cfg.Worktree.Repos {
-		dir := resolveRepoDirForItem(cfg, id, repo)
+		dir := resolveRepoDirForAuto(cfg, id, repo)
+		if dir == "" {
+			continue // repo absent from item worktree — skip without cross-item fallback
+		}
 		if !isGitDir(dir) {
 			continue
 		}

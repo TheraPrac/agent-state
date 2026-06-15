@@ -1,6 +1,9 @@
 package command
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -363,5 +366,199 @@ func TestAutoRecordSkips_DoesNotSkipScopeSuiteForChangedRepo(t *testing.T) {
 	ev, ok := getNestedField(item, "testing_evidence", "api_unit")
 	if !ok || !strings.HasPrefix(ev, "auto-skip:") {
 		t.Errorf("api_unit testing_evidence = %q, want auto-skip (required, api unchanged)", ev)
+	}
+}
+
+// --- resolveRepoDirForAuto (I-1473) ---
+
+// gitAuto runs git -C dir with args and fatals on error. Local to auto-test
+// fixtures.
+func gitAuto(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// initRepoWithFeatureBranch creates a git repo in dir with one commit on main
+// and (when changedFile != "") a feature branch adding that file.
+func initRepoWithFeatureBranch(t *testing.T, dir string, changedFile string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	os.MkdirAll(dir, 0755)
+	gitAuto(t, dir, "init", "-b", "main")
+	gitAuto(t, dir, "config", "user.email", "test@test.com")
+	gitAuto(t, dir, "config", "user.name", "Test")
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("initial\n"), 0644)
+	gitAuto(t, dir, "add", ".")
+	gitAuto(t, dir, "commit", "-m", "initial")
+	if changedFile != "" {
+		gitAuto(t, dir, "checkout", "-b", "feature")
+		fullPath := filepath.Join(dir, changedFile)
+		os.MkdirAll(filepath.Dir(fullPath), 0755)
+		os.WriteFile(fullPath, []byte("change\n"), 0644)
+		gitAuto(t, dir, "add", ".")
+		gitAuto(t, dir, "commit", "-m", "add "+changedFile)
+	}
+}
+
+// worktreeCfgFor returns a Config with Worktree enabled pointing at root,
+// using a single repo name. The legacy worktree path (root/worktrees/<id>)
+// is what WorktreeForItem resolves to in tests that use cfg.Root().
+func worktreeCfgFor(t *testing.T, repo string) (*config.Config, string) {
+	t.Helper()
+	_, cfg := setupTestEnvWithChangelog(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{repo},
+	}
+	return cfg, cfg.Root()
+}
+
+// TestResolveRepoDirForAuto_NoWorktreeConfig checks the no-config fallback.
+func TestResolveRepoDirForAuto_NoWorktreeConfig(t *testing.T) {
+	cfg := &config.Config{}
+	got := resolveRepoDirForAuto(cfg, "I-001", "theraprac-api")
+	// resolveRepoDir with no ParentDir returns the bare repo name.
+	if got != "theraprac-api" {
+		t.Errorf("got %q, want %q (bare name fallback)", got, "theraprac-api")
+	}
+}
+
+// TestResolveRepoDirForAuto_WorktreeDirMissing checks the fallback when the
+// item has no worktree on disk.
+func TestResolveRepoDirForAuto_WorktreeDirMissing(t *testing.T) {
+	cfg, _ := worktreeCfgFor(t, "theraprac-api")
+	// No worktree dir created — item has no worktree.
+	got := resolveRepoDirForAuto(cfg, "I-001", "theraprac-api")
+	// Should fall back to resolveRepoDir (bare name when no ParentDir).
+	if got == "" {
+		t.Error("expected non-empty main-checkout fallback, got empty string")
+	}
+	if filepath.IsAbs(got) && strings.Contains(got, "worktrees") {
+		t.Errorf("got worktree path %q but no worktree exists — expected main checkout", got)
+	}
+}
+
+// TestResolveRepoDirForAuto_RepoDirMissing checks that a missing repo inside
+// an existing worktree returns "" (skip), not another item's clone.
+func TestResolveRepoDirForAuto_RepoDirMissing(t *testing.T) {
+	cfg, root := worktreeCfgFor(t, "theraprac-api")
+	// Create I-001 worktree dir but NOT theraprac-api inside it.
+	os.MkdirAll(filepath.Join(root, "worktrees", "I-001"), 0755)
+	// Create I-002 worktree with theraprac-api — must NOT be returned for I-001.
+	otherRepo := filepath.Join(root, "worktrees", "I-002", "theraprac-api")
+	os.MkdirAll(otherRepo, 0755)
+	os.WriteFile(filepath.Join(otherRepo, ".git"), []byte("gitdir: ../some/path\n"), 0644)
+
+	got := resolveRepoDirForAuto(cfg, "I-001", "theraprac-api")
+	if got != "" {
+		t.Errorf("got %q, want empty string (repo absent → skip, no cross-item fallback)", got)
+	}
+}
+
+// TestResolveRepoDirForAuto_RepoPresent checks that a repo in the item's own
+// worktree is returned correctly.
+func TestResolveRepoDirForAuto_RepoPresent(t *testing.T) {
+	cfg, root := worktreeCfgFor(t, "theraprac-api")
+	repoDir := filepath.Join(root, "worktrees", "I-001", "theraprac-api")
+	os.MkdirAll(repoDir, 0755)
+	os.WriteFile(filepath.Join(repoDir, ".git"), []byte("gitdir: ../some/path\n"), 0644)
+
+	got := resolveRepoDirForAuto(cfg, "I-001", "theraprac-api")
+	if got != repoDir {
+		t.Errorf("got %q, want %q", got, repoDir)
+	}
+}
+
+// TestDetectTouchedRepos_UsesItemWorktree confirms that detectTouchedRepos
+// reads from the item's own worktree and not from a peer item's clone.
+// I-1473: before the fix, Pattern-3 fallback would find I-002's clone and
+// return its (empty) diff, causing I-001's suites to be incorrectly skipped.
+func TestDetectTouchedRepos_UsesItemWorktree(t *testing.T) {
+	cfg, root := worktreeCfgFor(t, "theraprac-api")
+
+	// I-001's worktree has changes (feature file).
+	initRepoWithFeatureBranch(t,
+		filepath.Join(root, "worktrees", "I-001", "theraprac-api"),
+		"internal/billing/charge.go")
+
+	// I-002's worktree has NO changes (stays on main).
+	initRepoWithFeatureBranch(t,
+		filepath.Join(root, "worktrees", "I-002", "theraprac-api"),
+		"" /* no feature branch */)
+
+	touched, err := detectTouchedRepos(cfg, "I-001")
+	if err != nil {
+		t.Fatalf("detectTouchedRepos: %v", err)
+	}
+	files, ok := touched["theraprac-api"]
+	if !ok || len(files) == 0 {
+		t.Errorf("expected I-001's worktree changes to be detected; touched=%v", touched)
+	}
+	found := false
+	for _, f := range files {
+		if f == "internal/billing/charge.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("internal/billing/charge.go not in changed files; got %v", files)
+	}
+}
+
+// TestDetectTouchedRepos_SkipsRepoNotInWorktree confirms that when the item's
+// worktree dir exists but the requested repo is absent, the repo is skipped
+// (not populated in the touched map), rather than falling back to another
+// item's clone. I-1473.
+func TestDetectTouchedRepos_SkipsRepoNotInWorktree(t *testing.T) {
+	cfg, root := worktreeCfgFor(t, "theraprac-api")
+
+	// I-001 worktree dir exists but theraprac-api is absent.
+	os.MkdirAll(filepath.Join(root, "worktrees", "I-001"), 0755)
+
+	// A peer item has theraprac-api with changes — must NOT bleed into I-001.
+	initRepoWithFeatureBranch(t,
+		filepath.Join(root, "worktrees", "I-002", "theraprac-api"),
+		"internal/billing/charge.go")
+
+	touched, err := detectTouchedRepos(cfg, "I-001")
+	if err != nil {
+		t.Fatalf("detectTouchedRepos: %v", err)
+	}
+	if _, ok := touched["theraprac-api"]; ok {
+		t.Errorf("theraprac-api should be absent from touched when repo is not in I-001's worktree; got %v", touched)
+	}
+}
+
+// TestDetectTouchedRepos_FallsBackToMainWhenNoWorktree checks that when an
+// item has no worktree at all, detectTouchedRepos uses the main checkout.
+func TestDetectTouchedRepos_FallsBackToMainWhenNoWorktree(t *testing.T) {
+	cfg, root := worktreeCfgFor(t, "theraprac-api")
+
+	// No worktree dir for I-001. Create a "main checkout" in the location
+	// resolveRepoDir would return (bare name "theraprac-api" relative to CWD,
+	// but since tests don't chdir we use WorktreeBaseLegacy parent).
+	// The simplest setup: configure a ParentDir so resolveRepoDir returns an
+	// absolute path, then create a git repo there with changes.
+	mainRepo := filepath.Join(root, "theraprac-api")
+	initRepoWithFeatureBranch(t, mainRepo, "main_change.go")
+	cfg.Worktree.ParentDir = root // absolute → RepoParent() returns root directly
+
+	touched, err := detectTouchedRepos(cfg, "I-001")
+	if err != nil {
+		t.Fatalf("detectTouchedRepos: %v", err)
+	}
+	// The main checkout has changes — they must be detected.
+	if _, ok := touched["theraprac-api"]; !ok {
+		t.Errorf("expected main-checkout changes detected when no worktree; touched=%v", touched)
 	}
 }
