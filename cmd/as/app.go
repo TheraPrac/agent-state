@@ -1821,6 +1821,20 @@ Example:
 	metricsCmd.Flags().String("sort", "cost", "sort by: cost|loc|duration|tokens")
 	metricsCmd.Flags().Int("top", 0, "limit to top N rows (0 = no limit)")
 	metricsCmd.Flags().String("format", "", "output format: '' (table), json, csv")
+
+	metricsBackfillCmd := &cobra.Command{
+		Use:   "backfill",
+		Short: "Backfill metrics from historical Claude Code transcripts",
+		Long:  "Walk closed items with no cost/token data, resolve linked session transcripts, and write back token/cost/duration fields.",
+		Run: func(cmd *cobra.Command, args []string) {
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			exitCode = command.MetricsBackfill(appStore, appCfg, command.MetricsBackfillOpts{
+				DryRun: dryRun,
+			})
+		},
+	}
+	metricsBackfillCmd.Flags().Bool("dry-run", false, "print what would be written without mutating items")
+	metricsCmd.AddCommand(metricsBackfillCmd)
 	root.AddCommand(metricsCmd)
 
 	depCmd := &cobra.Command{
