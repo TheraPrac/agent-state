@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -589,6 +590,11 @@ func normalizeSlug(id, slug string) (string, error) {
 	return s, nil
 }
 
+// workspaceRepo is the directory name of the agent-state/workspace clone. Its
+// per-item worktree (I-769) holds claude-config/ and docs/ edits; the primary
+// clone of this name stays on main as the agent-state store.
+const workspaceRepo = "theraprac-workspace"
+
 // createWorktrees creates git worktrees for the given item.
 // Absorbs start-work.sh logic: pull main, create branch, worktree add,
 // symlink .env files, npm install for Node repos (via
@@ -644,6 +650,22 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	// the correct per-agent root even when cfg.Root() was discovered
 	// via an ST_ROOT env leak from a peer.
 	parentDir := cfg.RepoParent()
+
+	// I-769: the theraprac-workspace clone is the agent-state store — its
+	// primary checkout must stay on main so st create/update/queue/sync keep
+	// writing agent-state there (GitSync targets the fixed cfg.ItemDir(), not
+	// cwd, so a worktree on a feature branch never diverts agent-state). But
+	// workspace-side CODE edits (claude-config/, docs/) need a per-item PR
+	// branch like every other repo, or they pile onto one long-lived branch.
+	// Give them a dedicated worktree — provisionSingleRepoWorktree special-cases
+	// the workspace clone to leave the primary working tree untouched. Append
+	// only when the clone exists on disk and isn't already enumerated, so
+	// explicit --repos and setups lacking the clone are unaffected.
+	if !slices.Contains(repos, workspaceRepo) {
+		if _, err := os.Stat(filepath.Join(parentDir, workspaceRepo, ".git")); err == nil {
+			repos = append(append([]string{}, repos...), workspaceRepo)
+		}
+	}
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", fmt.Errorf("creating worktree dir: %w", err)
@@ -803,7 +825,14 @@ func provisionSingleRepoWorktree(cfg *config.Config, workDir, branch, repoShort,
 		fmt.Printf("  %s: fetch skipped (%v)\n", repoDir, fetchErr)
 	}
 
-	if fetchErr == nil {
+	// I-769: skip the ff-only merge for the theraprac-workspace clone. Its
+	// primary checkout is the agent-state store and frequently has
+	// uncommitted/auto-committed agent-state in its working tree, which would
+	// make `git merge --ff-only` fail (or, worse, mutate that tree). The
+	// worktree is still based on fresh origin/main via the fetch above plus the
+	// `-b branch origin/main` path below, so the workspace branch isn't stale;
+	// the primary clone stays on main with its working tree untouched.
+	if fetchErr == nil && repoShort != workspaceRepo {
 		fmt.Printf("  %s: fast-forwarding main...\n", repoDir)
 		if err := gitRun(mainRepoPath, "merge", "--ff-only", "origin/main"); err != nil {
 			fmt.Printf("  %s: fast-forward skipped (%v)\n", repoDir, err)
