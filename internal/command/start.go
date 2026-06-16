@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -594,15 +595,6 @@ func normalizeSlug(id, slug string) (string, error) {
 // clone of this name stays on main as the agent-state store.
 const workspaceRepo = "theraprac-workspace"
 
-func repoListContains(repos []string, name string) bool {
-	for _, r := range repos {
-		if r == name {
-			return true
-		}
-	}
-	return false
-}
-
 // createWorktrees creates git worktrees for the given item.
 // Absorbs start-work.sh logic: pull main, create branch, worktree add,
 // symlink .env files, npm install for Node repos (via
@@ -669,7 +661,7 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	// the workspace clone to leave the primary working tree untouched. Append
 	// only when the clone exists on disk and isn't already enumerated, so
 	// explicit --repos and setups lacking the clone are unaffected.
-	if !repoListContains(repos, workspaceRepo) {
+	if !slices.Contains(repos, workspaceRepo) {
 		if _, err := os.Stat(filepath.Join(parentDir, workspaceRepo, ".git")); err == nil {
 			repos = append(append([]string{}, repos...), workspaceRepo)
 		}
