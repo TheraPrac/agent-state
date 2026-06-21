@@ -242,3 +242,92 @@ func TestTimerScrubDryRunChangesNothing(t *testing.T) {
 		t.Errorf("dry-run must not modify the item, got %q", v)
 	}
 }
+
+func TestTimerPauseSanityCapStaleEpoch(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Simulate a stale session_started_at 48 hours ago (e.g., write-race residue).
+	stale := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "session_started_at", stale)
+		return nil
+	}); err != nil {
+		t.Fatalf("seed stale session_started_at: %v", err)
+	}
+
+	_, err := TimerPauseAll(env.S, env.Cfg, "agent-a")
+	if err != nil {
+		t.Fatalf("TimerPauseAll: %v", err)
+	}
+
+	acc := readTTField(t, env, "T-003", "accumulated_seconds")
+	var secs int
+	fmt.Sscanf(acc, "%d", &secs)
+
+	// Without the cap this would be ~172800s (48h). With the cap it must be ≤ 43200 (12h).
+	const maxExpected = 12 * 3600
+	if secs > maxExpected {
+		t.Errorf("sanity cap failed: accumulated_seconds=%d exceeds 12h cap (%d)", secs, maxExpected)
+	}
+	if secs <= 0 {
+		t.Errorf("accumulated_seconds should be > 0 (capped, not zeroed), got %d", secs)
+	}
+}
+
+func TestTimerScrubRatioFlagsContamination(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// Seed an item with accumulated_seconds=314710 (87.4h) and wall_time_hours=90.6 —
+	// the exact I-1530 shape: ratio=96.5%, clearly contaminated.
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "accumulated_seconds", "314710")
+		it.SetNested("time_tracking", "work_duration_seconds", "314710")
+		it.SetNested("time_tracking", "wall_time_hours", "90.6")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Warn-only (autoNull=false) — must flag but not modify.
+	n, err := TimerScrubRatio(env.S, false, false)
+	if err != nil {
+		t.Fatalf("TimerScrubRatio warn-only: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item flagged, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "accumulated_seconds"); v != "314710" {
+		t.Errorf("warn-only must not modify the item, got %q", v)
+	}
+
+	// Auto-null (autoNull=true) — must remove both fields.
+	n, err = TimerScrubRatio(env.S, false, true)
+	if err != nil {
+		t.Fatalf("TimerScrubRatio auto-null: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item flagged in auto-null run, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "accumulated_seconds"); v != "" {
+		t.Errorf("auto-null should remove accumulated_seconds, got %q", v)
+	}
+}
+
+func TestTimerScrubRatioKeepsLegitimate(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// I-1538 shape: 16170s (4.5h) out of 75.9h wall time — ratio=5.9%, legitimate.
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "accumulated_seconds", "16170")
+		it.SetNested("time_tracking", "work_duration_seconds", "16170")
+		it.SetNested("time_tracking", "wall_time_hours", "75.9")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	n, err := TimerScrubRatio(env.S, false, false)
+	if err != nil {
+		t.Fatalf("TimerScrubRatio: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("legitimate item should not be flagged, got n=%d", n)
+	}
+}

@@ -3638,23 +3638,45 @@ Kinds:
 	}
 	timerScrubCmd := &cobra.Command{
 		Use:   "scrub",
-		Short: "Remove wall-clock-contaminated work_duration_seconds values (I-1335 one-time migration)",
+		Short: "Remove wall-clock-contaminated work_duration_seconds values",
+		Long: `Two-pass scrub for wall-clock contamination:
+
+Pass 1 (I-1335 shape): items with work_duration_seconds set but
+accumulated_seconds absent — the pre-I-1335 fallback close wrote the
+wall-clock span directly and never persisted accumulated_seconds.
+
+Pass 2 (stale-epoch ratio shape): items where accumulated_seconds and
+wall_time_hours are both present but accumulated_seconds exceeds 50%
+of the calendar window on a multi-day item — characteristic of a stale
+session_started_at surviving a write race and inflating one large flush.
+Use --auto-null to remove the contaminated values; default is warn-only.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			n, err := command.TimerScrub(appStore, appCfg, dryRun)
+			autoNull, _ := cmd.Flags().GetBool("auto-null")
+
+			n1, err := command.TimerScrub(appStore, appCfg, dryRun)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				exitCode = 1
 				return
 			}
+
+			n2, err2 := command.TimerScrubRatio(appStore, dryRun, autoNull)
+			if err2 != nil {
+				fmt.Fprintln(os.Stderr, err2)
+				exitCode = 1
+				return
+			}
+
 			if dryRun {
-				fmt.Printf("timer scrub: %d item(s) would be scrubbed\n", n)
+				fmt.Printf("timer scrub: %d item(s) would be scrubbed (pass 1), %d flagged (pass 2)\n", n1, n2)
 			} else {
-				fmt.Printf("timer scrub: scrubbed %d item(s)\n", n)
+				fmt.Printf("timer scrub: scrubbed %d item(s) (pass 1), %d flagged (pass 2)\n", n1, n2)
 			}
 		},
 	}
 	timerScrubCmd.Flags().Bool("dry-run", false, "show changes without applying")
+	timerScrubCmd.Flags().Bool("auto-null", false, "pass 2: remove contaminated accumulated_seconds instead of warn-only")
 	timerCmd.AddCommand(timerPauseCmd, timerResumeCmd, timerScrubCmd)
 	root.AddCommand(timerCmd)
 
