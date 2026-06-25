@@ -38,9 +38,10 @@ func addAgentStateScopeClass(cfg *config.Config) {
 	}
 	cfg.Testing.ScopeClasses["agent-state"] = config.ScopeClassConfig{
 		RequiredSuites: map[string]config.SuiteConfig{
-			"as_test": {Command: "cd ../as && go build ./... && go vet ./... && go test ./... -count=1"},
+			"as_test":   {Command: "cd ../as && go build ./... && go vet ./... && go test ./... -count=1"},
+			"hook_test": {Command: "bash claude-config/hooks/run-changed-hook-tests.sh"},
 		},
-		AppliesToGoals: []string{"G-014", "st-tooling"},
+		AppliesToGoals: []string{"G-014"},
 	}
 }
 

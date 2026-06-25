@@ -190,22 +190,26 @@ func (t *TestingConfig) RequiredSuitesFor(scopeClass string) (map[string]SuiteCo
 
 // ScopeClassForItem returns the first scope class (by sorted class name, for
 // deterministic precedence) whose AppliesToGoals list matches the item. A class
-// target matches when it appears in the item's goal IDs (e.g. "G-014") OR in the
-// item's tag set — either as a bare tag or as the slug of a "goal:<slug>" tag.
-// Returns "" if none match. I-830 introduced goal-tag matching; I-987 broadened
-// it to goal-ID membership (item.Goals) because items reliably carry their goal
-// IDs but inconsistently carry goal:<slug> tags, leaving auto-assign dormant.
+// target matches when it appears in the item's goal IDs (e.g. "G-014") OR is the
+// slug of a "goal:<slug>" tag. Returns "" if none match. I-830 introduced
+// goal-tag matching; I-987 added goal-ID membership (item.Goals) because items
+// reliably carry their goal IDs but inconsistently carry goal:<slug> tags,
+// leaving auto-assign dormant.
+//
+// Bare (non-"goal:"-prefixed) tags are deliberately NOT matched: applies_to_goals
+// entries are goal identifiers, not the free-form tag namespace, so a label tag
+// that merely happens to equal a goal slug must not silently swap an item's
+// required-suite set (I-987 review finding D1).
 func (t *TestingConfig) ScopeClassForItem(tags, goals []string) string {
 	if t == nil {
 		return ""
 	}
-	// Build the match set: goal IDs, plus tags both verbatim and goal:-stripped.
+	// Match set is goal IDs plus goal:-stripped tag slugs — never bare tags.
 	matchSet := make(map[string]bool, len(tags)+len(goals))
 	for _, g := range goals {
 		matchSet[g] = true
 	}
 	for _, tag := range tags {
-		matchSet[tag] = true
 		if slug, ok := strings.CutPrefix(tag, "goal:"); ok {
 			matchSet[slug] = true
 		}

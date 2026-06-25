@@ -143,9 +143,8 @@ sprint: wo-sprint
 	return s, cfg
 }
 
-// cannedPlanText is a syntactically valid plan body that plan.Parse
-// can consume and Save will accept.
-// cannedPlanText is a substance-complete plan: it carries every section
+// cannedPlanText is a syntactically valid, substance-complete plan body that
+// plan.Parse can consume and Save will accept. It carries every section
 // quality.ValidatePlan requires (Approach, Scope, Tests, Out-of-scope, Risks)
 // so the interactive Accept path (prepItem) passes the substance gate instead
 // of looping back to the menu forever when a stub SelectMenu keeps choosing

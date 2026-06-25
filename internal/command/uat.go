@@ -193,7 +193,7 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 				Mode:    "auto",
 				Passed:  true,
 				Skipped: true,
-				Detail:  fmt.Sprintf("goal tags suggest scope_class %q — run `st update %s scope_class %s` then re-run", suggestedClass, item.ID, suggestedClass),
+				Detail:  fmt.Sprintf("goal membership suggests scope_class %q — run `st update %s scope_class %s` then re-run", suggestedClass, item.ID, suggestedClass),
 			})
 		}
 	}

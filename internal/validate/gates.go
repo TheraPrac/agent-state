@@ -194,7 +194,7 @@ func evalTestingComplete(item *model.Item, cfg *config.Config) GateResult {
 	var scopeHint string
 	if item.ScopeClass == "" {
 		if suggestedClass := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); suggestedClass != "" {
-			scopeHint = fmt.Sprintf(" (hint: goal tags suggest scope_class %q — run `st update %s scope_class %s` to use the correct suite set)", suggestedClass, item.ID, suggestedClass)
+			scopeHint = fmt.Sprintf(" (hint: goal membership suggests scope_class %q — run `st update %s scope_class %s` to use the correct suite set)", suggestedClass, item.ID, suggestedClass)
 		}
 	}
 	if scopeHint != "" && len(suiteNames) == 0 {
