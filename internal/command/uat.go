@@ -575,6 +575,12 @@ func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, r
 		detail := "exit 0"
 		if exitCode != 0 {
 			detail = fmt.Sprintf("exit %d: %s", exitCode, truncate(string(output), 100))
+			// I-144: when the suite exits non-zero but the command carried a
+			// test-name filter, check per-test PASS/FAIL lines to distinguish
+			// the targeted test failing from an unrelated test failing.
+			if override, warning := evaluateFilteredCmd(cmd, string(output)); override != nil && *override {
+				return checkResult{Label: criterion, Mode: "cmd", Passed: true, Detail: warning}
+			}
 		}
 		return checkResult{Label: criterion, Mode: "cmd", Passed: exitCode == 0, Detail: detail}
 	}
