@@ -95,6 +95,57 @@ func TestWorktreeRepoOnSameCommit_MissingDir(t *testing.T) {
 	}
 }
 
+// ---- cloneFreshness / stale-clone guard (I-1588) -------------------------
+
+func TestCloneFreshness_Current(t *testing.T) {
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	clone := filepath.Join(tmp, "clone")
+	initBareGitRepo(t, origin)
+	cloneGitRepo(t, origin, clone)
+
+	head, behind, ok := cloneFreshness(clone)
+	if !ok {
+		t.Fatal("ok=false, want true for a healthy clone")
+	}
+	if head == "" {
+		t.Error("head is empty")
+	}
+	if behind != "0" {
+		t.Errorf("behind=%q, want %q (clone is current with origin)", behind, "0")
+	}
+}
+
+func TestCloneFreshness_Behind(t *testing.T) {
+	tmp := t.TempDir()
+	origin := filepath.Join(tmp, "origin")
+	clone := filepath.Join(tmp, "clone")
+	initBareGitRepo(t, origin)
+	cloneGitRepo(t, origin, clone)
+	// Advance origin/main after the clone; cloneFreshness must fetch the ref
+	// and report the clone as 1 commit behind (the I-1588 stale case).
+	addExtraCommit(t, origin)
+
+	head, behind, ok := cloneFreshness(clone)
+	if !ok {
+		t.Fatal("ok=false, want true")
+	}
+	if head == "" {
+		t.Error("head is empty")
+	}
+	if behind != "1" {
+		t.Errorf("behind=%q, want %q after origin advanced one commit", behind, "1")
+	}
+}
+
+func TestCloneFreshness_NonRepo(t *testing.T) {
+	if _, _, ok := cloneFreshness(filepath.Join(t.TempDir(), "not-a-repo")); ok {
+		t.Error("ok=true for a non-git path, want false")
+	}
+	// warnIfCloneStale must not panic on the same degraded input.
+	warnIfCloneStale("as", filepath.Join(t.TempDir(), "not-a-repo"))
+}
+
 // ---- rewriteSuiteForWorktree warm-checkout integration -------------------
 
 // setupWarmCheckoutCfg returns a config with worktree enabled, parent_dir set
