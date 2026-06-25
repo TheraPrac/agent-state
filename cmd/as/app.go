@@ -2486,6 +2486,33 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintMoveCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
 	root.AddCommand(sprintCmd)
 
+	// I-1590: fleet-wide clone audit/sync — the per-agent session-start sync is
+	// lazy, so idle agents silently drift behind origin/main (and run stale st
+	// binaries). `st fleet status` audits all theraprac-agent-* clones; `st fleet
+	// sync` fast-forwards the clean on-main ones and rebuilds their as binary.
+	fleetCmd := &cobra.Command{
+		Use:   "fleet",
+		Short: "Audit/sync all agents' main clones against origin/main",
+	}
+	fleetStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Audit every agent clone: branch, HEAD, commits behind origin/main",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.FleetStatus(appCfg)
+		},
+	}
+	fleetSyncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Fast-forward clean on-main clones to origin/main; rebuild as binary when it advances",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.FleetSync(appCfg)
+		},
+	}
+	fleetCmd.AddCommand(fleetStatusCmd, fleetSyncCmd)
+	root.AddCommand(fleetCmd)
+
 	uatCmd := &cobra.Command{
 		Use:   "uat <id>",
 		Short: "Run automated UAT verification and produce evidence report",
