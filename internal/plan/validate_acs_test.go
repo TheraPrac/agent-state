@@ -56,11 +56,12 @@ func TestValidateACsHollow(t *testing.T) {
 		"cmd: echo done > /dev/null", // output redirect to /dev/null can't fail
 		"cmd: grep -q x f || echo missing > /dev/null", // mask via echo+/dev/null
 		`cmd: printf "all good\n"`,   // conversion-free printf always succeeds
+		"cmd: set -o pipefail; run | echo done", // unreadable pipefail trick — reject, ask to rewrite
 	}
 	for _, ac := range hollow {
 		t.Run("hollow/"+ac, func(t *testing.T) {
 			findings := ValidateACs([]string{ac})
-			if !hasReasonContaining(findings, "hollow AC") {
+			if !hasReasonContaining(findings, "always exits 0") {
 				t.Errorf("expected a 'hollow AC' finding for %q; got: %v", ac, findings)
 			}
 		})
@@ -89,7 +90,7 @@ func TestValidateACsHollow(t *testing.T) {
 	for _, ac := range legit {
 		t.Run("legit/"+ac, func(t *testing.T) {
 			findings := ValidateACs([]string{ac})
-			if hasReasonContaining(findings, "hollow AC") {
+			if hasReasonContaining(findings, "always exits 0") {
 				t.Errorf("did not expect a 'hollow AC' finding for %q; got: %v", ac, findings)
 			}
 		})

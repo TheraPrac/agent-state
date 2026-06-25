@@ -77,18 +77,22 @@ func ValidateACs(acs []string) []ACFinding {
 		}
 	}
 
-	// Pass 3: hollow / false-pass detection (I-933). A full-corpus audit of
-	// the plan-review sub-agent showed a recurring shape it kept catching —
-	// an AC that "passes" without exercising the behavior it claims, because
-	// its result is always 0 (headline case: a trailing `|| true`).
+	// Pass 3: AC-format requirement (I-933). A full-corpus audit of the
+	// plan-review sub-agent showed a recurring shape it kept catching — an AC
+	// that "passes" without exercising the behavior it claims, because its
+	// result is always 0 (headline case: a trailing `|| true`).
 	//
-	// Correctness is the governing constraint (I-1478): a false positive
-	// hard-blocks a valid plan with NO override path, which is strictly worse
-	// than the latency this gate removes. Regex/tokenizer approximations of
-	// "always exits 0" produced false positives on escaped quotes, command
-	// substitution, and redirects, so this uses a real shell AST parser
-	// (mvdan.cc/sh — the shfmt engine) and walks the exit-status structure on
-	// proper nodes. See acAlwaysZeroExit.
+	// This is framed as a REQUIREMENT, not a heuristic detector. Deciding
+	// whether an arbitrary command is "hollow" is undecidable in general
+	// (shell options like pipefail, runtime values), so instead a verification
+	// AC must be written in a form that actually fails on a bad result. A
+	// command whose success is structurally independent of the work — a no-op
+	// (`true`/`echo`), a masked result (`… || true`, `… ; echo`, `… | cat`),
+	// or one whose outcome hinges on hidden shell state — is INVALID, and the
+	// author is told to rewrite it as a direct assertion. So a rejection is
+	// never a "false positive": it means "not a valid AC form, write it
+	// clearly", which is what we want regardless (I-1478 — a gate must be
+	// cheap, correct, and judge a property the author controls).
 	for i, ac := range acs {
 		trimmed := strings.TrimSpace(ac)
 		if !strings.HasPrefix(strings.ToLower(trimmed), "cmd:") {
@@ -99,7 +103,7 @@ func ValidateACs(acs []string) []ACFinding {
 			findings = append(findings, ACFinding{
 				Index:  i + 1,
 				AC:     trimmed,
-				Reason: "hollow AC — always exits 0 regardless of the real result (a no-op like `true`/`echo`, or its result is masked: `|| true`, `; true`, `| true`, `; exit 0`). Make the AC fail when the behavior is wrong (run a test, grep with non-zero-on-absence, or compare output)",
+				Reason: "invalid AC — it always exits 0, so it can't fail the way a verification must. It is a no-op (`true`/`echo`) or its result is masked (`|| true`, `; echo`, `| cat`, `> /dev/null`). Rewrite it as a direct assertion that exits non-zero on a bad result (run a test, `grep` with non-zero-on-absence, or compare output); avoid trailing fallbacks and `set -o pipefail` tricks",
 			})
 		}
 	}

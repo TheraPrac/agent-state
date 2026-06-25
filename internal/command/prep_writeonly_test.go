@@ -16,39 +16,6 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
-// TestClearStaleReviewArtifacts: re-prepping a draft without --review must
-// scrub the prep_reviewed_at stamp and the .report.md left by a prior
-// --review run, so approve doesn't skip review on a stale stamp (I-992) and
-// downstream readers don't show an outdated report (I-933 review findings).
-func TestClearStaleReviewArtifacts(t *testing.T) {
-	_, cfg := setupTestEnv(t)
-	id := "T-001"
-	p := &plan.Plan{
-		Approach:       "Approach.",
-		ScopeRepos:     []string{"as"},
-		ACs:            []string{"cmd: go test ./..."},
-		PrepReviewedAt: plan.Now(),
-	}
-	if err := plan.Save(cfg.PlansDir(), id, p); err != nil {
-		t.Fatalf("save plan: %v", err)
-	}
-	if err := plan.SaveReport(cfg.PlansDir(), id, "stale review narrative"); err != nil {
-		t.Fatalf("save report: %v", err)
-	}
-
-	clearStaleReviewArtifacts(cfg, id, p)
-
-	if p.PrepReviewedAt != "" {
-		t.Error("prep_reviewed_at not cleared in memory")
-	}
-	if reloaded, _ := plan.Load(cfg.PlansDir(), id); reloaded == nil || reloaded.PrepReviewedAt != "" {
-		t.Errorf("prep_reviewed_at not cleared on disk: %+v", reloaded)
-	}
-	if plan.ReportExists(cfg.PlansDir(), id) {
-		t.Error("stale .report.md not deleted")
-	}
-}
-
 // setupPrepWriteOnlyEnv creates a fixture sprint with two unplanned
 // items, neither having a plan sidecar. Mirrors setupRunTestEnv but
 // the run pipeline is omitted (prep doesn't need it).
@@ -361,6 +328,10 @@ func TestPrepWriteOnlyIdempotent(t *testing.T) {
 	if err := plan.SaveReport(cfg.PlansDir(), "T-001", "pre-existing report"); err != nil {
 		t.Fatal(err)
 	}
+	// I-933: "already prepped" is signaled by plan_written_at (stamped by a
+	// completed prep run), not by the report sidecar. Stamp it so the
+	// idempotency guard skips T-001.
+	stampPrepSuccess(s, "T-001")
 
 	engine, prepCalls, reviewCalls := makeWriteOnlyEngine(nil, nil, nil, 0)
 	suppressStdout(t, func() {

@@ -73,23 +73,26 @@ type PrepOpts struct {
 	Review bool
 }
 
-// clearStaleReviewArtifacts removes review artifacts left by a prior --review
-// run when prep runs WITHOUT --review (I-933): it clears the prep_reviewed_at
-// stamp (so `st plan approve` doesn't skip review via the I-992 short-circuit)
-// and deletes the now-outdated .report.md sidecar (so `st plan show` and the
-// UAT artifact facet don't surface a review of a superseded plan). Best-effort
-// — warns on failure but never aborts prep.
-func clearStaleReviewArtifacts(cfg *config.Config, itemID string, p *plan.Plan) {
-	if p != nil && p.PrepReviewedAt != "" {
-		p.PrepReviewedAt = ""
-		if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to clear stale prep_reviewed_at: %v\n", itemID, err)
-		}
+// prepCompleted reports whether an item's draft prep already finished —
+// plan_written_at is stamped by stampPrepSuccess at the end of a successful
+// prepItemWriteOnly run. I-933 replaced the old ReportExists signal here: the
+// .report.md is now only written on --review, so it no longer marks "prepped"
+// and re-running prep would otherwise re-process every already-drafted item.
+func prepCompleted(s *store.Store, itemID string) bool {
+	if it, ok := s.Get(itemID); ok {
+		return it.PlanWrittenAt != ""
 	}
-	if plan.ReportExists(cfg.PlansDir(), itemID) {
-		if err := plan.DeleteReport(cfg.PlansDir(), itemID); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to remove stale review report: %v\n", itemID, err)
-		}
+	return false
+}
+
+// printThinSBARHint emits the I-933 --review nudge when an item's SBAR looks
+// thin and prep ran without --review. Shared by the interactive and write-only
+// paths so the message stays identical. Deterministic and non-blocking.
+func printThinSBARHint(item *model.Item, itemID string) {
+	if thin, why := sbarLooksThin(item); thin {
+		fmt.Fprintf(os.Stderr,
+			"[%s] hint: SBAR looks thin (%s) — consider `st plan prep %s --review` (or `st plan approve %s --review`) for an independent scope check.\n",
+			itemID, why, itemID, itemID)
 	}
 }
 
@@ -201,11 +204,12 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 			if p != nil && p.Rejected && !opts.IncludeRejected {
 				continue // explicitly rejected — skip unless overridden
 			}
-			// I-565: in --write-only mode, an item with BOTH a draft
-			// plan AND a report sidecar has been fully prepped and is
-			// awaiting `st plan approve`. Skip it so re-running the
-			// same prep doesn't re-pay the LLM cost.
-			if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && plan.ReportExists(cfg.PlansDir(), itemID) {
+			// I-565: in --write-only mode, an item whose draft prep already
+			// completed (plan_written_at stamped) is awaiting `st plan
+			// approve`. Skip it so re-running the same prep doesn't re-pay the
+			// LLM cost. I-933: keyed on plan_written_at, not the .report.md
+			// (now only written on --review).
+			if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && prepCompleted(s, itemID) {
 				continue
 			}
 		}
@@ -317,7 +321,7 @@ func PrepStandalone(s *store.Store, cfg *config.Config, itemID string, opts Prep
 			fmt.Printf("Item %s has a rejected plan — re-run with --include-rejected to re-process\n", itemID)
 			return 0
 		}
-		if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && plan.ReportExists(cfg.PlansDir(), itemID) {
+		if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && prepCompleted(s, itemID) {
 			fmt.Printf("Item %s already has draft plan + report — approve with `st plan approve %s`\n", itemID, itemID)
 			return 0
 		}
@@ -467,14 +471,9 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 	}
 
 	// I-933: when not opting into the review sub-agent, nudge toward --review
-	// on genuinely thin SBARs (same heuristic as the write-only path). Printed
-	// once, before the decision loop; non-blocking.
+	// on genuinely thin SBARs. Printed once, before the decision loop.
 	if !opts.Review {
-		if thin, why := sbarLooksThin(item); thin {
-			fmt.Fprintf(os.Stderr,
-				"[%s] hint: SBAR looks thin (%s) — consider `st plan prep %s --review` for an independent scope check.\n",
-				itemID, why, itemID)
-		}
+		printThinSBARHint(item, itemID)
 	}
 
 	// Check for an existing draft plan — resume review instead of re-running Claude
@@ -741,27 +740,21 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				fmt.Println()
 				continue // back to menu
 			}
+			// I-933: the AC-format linter runs at `st plan approve`, but the
+			// interactive accept stamps PlanApproved directly, so run it here
+			// too — otherwise an invalid (always-exit-0) AC slips past until UAT.
+			if acFindings := plan.ValidateACs(p.ACs); len(acFindings) > 0 {
+				fmt.Printf("\n⚠ %d acceptance criterion/criteria not verifiable — fix before accepting:\n", len(acFindings))
+				for _, f := range acFindings {
+					fmt.Printf("  %s\n", f)
+				}
+				fmt.Println()
+				continue // back to menu
+			}
 
-			// Accept — save plan sidecar. Stamp prep_reviewed_at here (not
-			// earlier) so it is only persisted once the review has fully
-			// converged — avoids a mid-loop crash leaving a stale stamp.
-			// I-933: only stamp when the review sub-agent actually ran
-			// (--review); otherwise a later `st plan approve --review` would
-			// be wrongly skipped by the I-992 prep_reviewed_at short-circuit.
-			// When not reviewing, scrub any stale stamp/report carried by a
-			// resumed draft from a prior --review run.
+			// Accept — save the plan sidecar as approved.
 			p.Approved = true
 			p.ApprovedAt = plan.Now()
-			if opts.Review {
-				p.PrepReviewedAt = plan.Now()
-			} else {
-				p.PrepReviewedAt = ""
-				if plan.ReportExists(cfg.PlansDir(), itemID) {
-					if err := plan.DeleteReport(cfg.PlansDir(), itemID); err != nil {
-						fmt.Fprintf(os.Stderr, "[%s] Warning: failed to remove stale review report: %v\n", itemID, err)
-					}
-				}
-			}
 			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 				fmt.Fprintf(os.Stderr, "saving plan: %v\n", err)
 				return "rejected"
@@ -1009,12 +1002,11 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 
 	// I-933: the cold-re-explore plan-review sub-agent is opt-in (--review).
 	// By default, prep writes the draft and stops — the deterministic gates
-	// (SBAR substance + ValidatePlan incl. the hollow-AC linter) run at
+	// (SBAR substance + ValidatePlan incl. the AC-format linter) run at
 	// `st plan approve` and are sufficient for the common case. Only when
-	// opted in do we spawn the sub-agent, capture its narrative to the
-	// .report.md sidecar, and stamp prep_reviewed_at so approve doesn't
-	// re-run it (I-992). The thin-SBAR hint below nudges toward --review when
-	// scope looks uncertain.
+	// opted in do we spawn the sub-agent and capture its narrative to the
+	// .report.md sidecar. The thin-SBAR hint nudges toward --review when scope
+	// looks uncertain.
 	if opts.Review {
 		reviewPrompt := buildPlanReviewPrompt(itemID, item)
 		reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
@@ -1035,28 +1027,8 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 			stampPrepFailure(s, itemID, "save report: "+err.Error())
 			return "rejected"
 		}
-
-		// Stamp prep_reviewed_at AFTER SaveReport succeeds so the stamp is only
-		// on disk when the review is complete. A failed SaveReport leaves no stamp
-		// and st plan approve will run its own sub-agent (correct fail-safe).
-		p.PrepReviewedAt = plan.Now()
-		if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to stamp prep_reviewed_at: %v — approve will fall back to full review\n", itemID, err)
-		}
 	} else {
-		// I-933: no review this run — scrub any stale review artifacts from a
-		// PRIOR --review run on this draft. Otherwise (a) `st plan approve`'s
-		// I-992 short-circuit would skip review on a stale prep_reviewed_at
-		// stamp, and (b) `st plan show` / the UAT artifact facet would surface
-		// an outdated .report.md as if it reviewed the current plan.
-		clearStaleReviewArtifacts(cfg, itemID, p)
-		if thin, why := sbarLooksThin(item); thin {
-			// Deterministic, non-blocking nudge — when scope is genuinely
-			// uncertain, an independent re-explore may still earn its cost.
-			fmt.Fprintf(os.Stderr,
-				"[%s] hint: SBAR looks thin (%s) — consider `st plan prep %s --review` (or `st plan approve %s --review`) for an independent scope check.\n",
-				itemID, why, itemID, itemID)
-		}
+		printThinSBARHint(item, itemID)
 	}
 
 	// I-833: stamp plan_written_at BEFORE the final GitSync so the field is
