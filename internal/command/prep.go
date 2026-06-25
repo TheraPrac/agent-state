@@ -10,6 +10,7 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
 	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/jfinlinson/agent-state/internal/quality"
 	"github.com/jfinlinson/agent-state/internal/registry"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
@@ -209,7 +210,7 @@ func Prep(s *store.Store, cfg *config.Config, sprintID string, opts PrepOpts, en
 			// approve`. Skip it so re-running the same prep doesn't re-pay the
 			// LLM cost. I-933: keyed on plan_written_at, not the .report.md
 			// (now only written on --review).
-			if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && prepCompleted(s, itemID) {
+			if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && !opts.Review && prepCompleted(s, itemID) {
 				continue
 			}
 		}
@@ -321,8 +322,8 @@ func PrepStandalone(s *store.Store, cfg *config.Config, itemID string, opts Prep
 			fmt.Printf("Item %s has a rejected plan — re-run with --include-rejected to re-process\n", itemID)
 			return 0
 		}
-		if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && prepCompleted(s, itemID) {
-			fmt.Printf("Item %s already has draft plan + report — approve with `st plan approve %s`\n", itemID, itemID)
+		if opts.WriteOnly && p != nil && !p.Approved && !p.Rejected && !opts.Review && prepCompleted(s, itemID) {
+			fmt.Printf("Item %s already has a draft plan — approve with `st plan approve %s`, or `st plan reset %s` to regenerate (add --review for an independent scope check)\n", itemID, itemID, itemID)
 			return 0
 		}
 	}
@@ -740,13 +741,15 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 				fmt.Println()
 				continue // back to menu
 			}
-			// I-933: the AC-format linter runs at `st plan approve`, but the
-			// interactive accept stamps PlanApproved directly, so run it here
-			// too — otherwise an invalid (always-exit-0) AC slips past until UAT.
-			if acFindings := plan.ValidateACs(p.ACs); len(acFindings) > 0 {
-				fmt.Printf("\n⚠ %d acceptance criterion/criteria not verifiable — fix before accepting:\n", len(acFindings))
-				for _, f := range acFindings {
-					fmt.Printf("  %s\n", f)
+			// I-933: interactive accept stamps PlanApproved directly, so it
+			// must enforce the SAME substance gate as `st plan approve`
+			// (quality.ValidatePlan — Approach/Scope/Tests/Out-of-scope/Risks
+			// + the AC-format linter), not just a subset. Otherwise a plan
+			// that `st plan approve` would reject slips through this path.
+			if vios := quality.ValidatePlan(p); quality.HasError(vios) {
+				fmt.Printf("\n⚠ %d plan substance issue(s) — fix before accepting:\n", len(vios))
+				for _, v := range vios {
+					fmt.Printf("  %s\n", v)
 				}
 				fmt.Println()
 				continue // back to menu

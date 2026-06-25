@@ -16,6 +16,36 @@ import (
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
+// TestPrepWriteOnlyReviewBypassesIdempotencySkip: an explicit --review on an
+// already-drafted item must run the review sub-agent, even though the
+// plan_written_at idempotency guard would otherwise skip it (I-933 review
+// finding — the guard must yield to an explicit --review).
+func TestPrepWriteOnlyReviewBypassesIdempotencySkip(t *testing.T) {
+	s, cfg := setupPrepWriteOnlyEnv(t)
+	engine, _, reviewCalls := makeWriteOnlyEngine(nil, nil, nil, 0)
+
+	// First pass: draft T-001 without --review → stamps plan_written_at, no report.
+	suppressStdout(t, func() {
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, ItemFilter: "T-001"}, engine)
+	})
+	if plan.ReportExists(cfg.PlansDir(), "T-001") {
+		t.Fatal("no-review prep must not write a report")
+	}
+	before := reviewCalls.get()
+
+	// Second pass: same item WITH --review must NOT be skipped.
+	s, _ = store.New(cfg)
+	suppressStdout(t, func() {
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true, ItemFilter: "T-001"}, engine)
+	})
+	if reviewCalls.get() == before {
+		t.Error("--review on an already-drafted item must run the review sub-agent (idempotency skip must yield to --review)")
+	}
+	if !plan.ReportExists(cfg.PlansDir(), "T-001") {
+		t.Error("--review run should write the .report.md")
+	}
+}
+
 // setupPrepWriteOnlyEnv creates a fixture sprint with two unplanned
 // items, neither having a plan sidecar. Mirrors setupRunTestEnv but
 // the run pipeline is omitted (prep doesn't need it).
@@ -335,16 +365,17 @@ func TestPrepWriteOnlyIdempotent(t *testing.T) {
 
 	engine, prepCalls, reviewCalls := makeWriteOnlyEngine(nil, nil, nil, 0)
 	suppressStdout(t, func() {
-		// I-933: review/report opt-in.
-		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true}, engine)
+		// No --review: exercises the idempotency skip (an explicit --review
+		// intentionally bypasses it — see TestPrepWriteOnlyReviewBypassesIdempotencySkip).
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
 	})
 
-	// Only T-002 should have been planned: 1 prep call + 1 review call.
+	// Only T-002 should have been planned: 1 prep call, no review (opt-in off).
 	if got := prepCalls.get(); got != 1 {
 		t.Errorf("prep RunClaude calls = %d, want 1 (T-001 should be skipped)", got)
 	}
-	if got := reviewCalls.get(); got != 1 {
-		t.Errorf("review RunClaude calls = %d, want 1 (T-001 should be skipped)", got)
+	if got := reviewCalls.get(); got != 0 {
+		t.Errorf("review RunClaude calls = %d, want 0 (review is opt-in)", got)
 	}
 
 	// T-001's pre-existing sidecars are untouched.
@@ -353,9 +384,9 @@ func TestPrepWriteOnlyIdempotent(t *testing.T) {
 		t.Errorf("T-001 report was overwritten; got %q", body)
 	}
 
-	// T-002 has both new sidecars.
-	if !plan.ReportExists(cfg.PlansDir(), "T-002") {
-		t.Error("T-002 report missing — sibling should still be prepped")
+	// T-002 has a fresh draft (no report without --review).
+	if !plan.Exists(cfg.PlansDir(), "T-002") {
+		t.Error("T-002 draft missing — sibling should still be prepped")
 	}
 }
 

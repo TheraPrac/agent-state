@@ -62,7 +62,7 @@ func TestValidateACsHollow(t *testing.T) {
 		t.Run("hollow/"+ac, func(t *testing.T) {
 			findings := ValidateACs([]string{ac})
 			if !hasReasonContaining(findings, "always exits 0") {
-				t.Errorf("expected a 'hollow AC' finding for %q; got: %v", ac, findings)
+				t.Errorf("expected an always-exit-0 (invalid AC) finding for %q; got: %v", ac, findings)
 			}
 		})
 	}
@@ -91,7 +91,7 @@ func TestValidateACsHollow(t *testing.T) {
 		t.Run("legit/"+ac, func(t *testing.T) {
 			findings := ValidateACs([]string{ac})
 			if hasReasonContaining(findings, "always exits 0") {
-				t.Errorf("did not expect a 'hollow AC' finding for %q; got: %v", ac, findings)
+				t.Errorf("did not expect an always-exit-0 (invalid AC) finding for %q; got: %v", ac, findings)
 			}
 		})
 	}
