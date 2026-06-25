@@ -88,7 +88,8 @@ func TestPrepStandaloneItemWithoutSprintWritesPlan(t *testing.T) {
 
 	var exit int
 	suppressStdout(t, func() {
-		exit = PrepStandalone(s, cfg, "T-100", PrepOpts{WriteOnly: true}, engine)
+		// I-933: report + review are opt-in now.
+		exit = PrepStandalone(s, cfg, "T-100", PrepOpts{WriteOnly: true, Review: true}, engine)
 	})
 
 	if exit != 0 {
@@ -188,7 +189,7 @@ func TestPrepStandaloneIncludeRejectedReprocesses(t *testing.T) {
 		// draft (so it may not need a fresh prep call), but the review call
 		// always runs — that's enough to prove the standalone path didn't
 		// hit the "rejected ⇒ skip" early return.
-		exit = PrepStandalone(s, cfg, "T-100", PrepOpts{WriteOnly: true, IncludeRejected: true}, engine)
+		exit = PrepStandalone(s, cfg, "T-100", PrepOpts{WriteOnly: true, IncludeRejected: true, Review: true}, engine)
 	})
 
 	if exit != 0 {

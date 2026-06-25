@@ -42,7 +42,7 @@ func TestPlanReviewTimeoutEnvOverride(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 on wall-time error; got %d", code)
 	}
 
@@ -150,7 +150,7 @@ func TestPlanReviewDefaultFirstPassCap(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0 on accept verdict; got %d", code)
 		}
 	})
@@ -213,7 +213,7 @@ func TestPlanReviewWrapUpSkippedOnCleanPass(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0; got %d", code)
 		}
 	})
@@ -269,7 +269,7 @@ func TestPlanReviewWrapUpYieldsVerdict(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0 after wrap-up verdict; got %d", code)
 		}
 	})
@@ -326,7 +326,7 @@ func TestPlanReviewWrapUpNonZeroExitRefusesApproval(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 when wrap-up exits non-zero; got %d", code)
 	}
 
@@ -368,7 +368,7 @@ func TestPlanReviewWrapUpDoubleTimeout(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 on double timeout; got %d", code)
 	}
 
@@ -415,7 +415,7 @@ func TestPlanReviewWrapUpDisabledForShortCap(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2; got %d", code)
 	}
 
@@ -467,7 +467,7 @@ func TestPlanReviewSkippedForPrepGeneratedPlan(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 		t.Errorf("expected exit 0 for prep-stamped plan; got %d", code)
 	}
 
@@ -527,7 +527,7 @@ func TestPlanReviewCalledForHandAuthoredPlan(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 		t.Errorf("expected exit 0; got %d", code)
 	}
 

@@ -66,7 +66,18 @@ type PlanApproveOpts struct {
 	// hatch when the sub-agent is broken or the plan has been manually
 	// reviewed). I-752: added after I-738 hung 53min on the unbounded
 	// sub-agent. The validator gates (SBAR, AC verifiability) still run.
+	//
+	// I-933: the sub-agent is now OFF by default, so BypassReview is a
+	// no-op back-compat alias — it only triggers a deprecation notice.
 	BypassReview bool
+	// Review opts INTO the I-710 plan-review sub-agent (I-933). A full-corpus
+	// audit showed the mandatory cold re-explore never vetoed a plan and that
+	// ~half its value is now covered by the deterministic hollow-AC linter, so
+	// the slow LLM re-exploration moved from default-on to this explicit
+	// opt-in — reserved for genuinely thin/exploratory SBARs where scope is
+	// uncertain. The static gates (SBAR, AC verifiability incl. the hollow-AC
+	// linter) still fire on every approval regardless of this flag.
+	Review bool
 	// I-591: RequireEstimate blocks approval when the item has no
 	// time_tracking.estimated_hours set (or the value is zero/missing).
 	RequireEstimate bool
@@ -147,12 +158,15 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		}
 	}
 
-	// I-710: plan-review sub-agent runs BEFORE the AC validator gates.
-	// Engine-nil path (in-process tests) skips the review entirely.
-	// Review failure (Reject / Feedback / claude error) = approval
-	// refused (fail closed) — the gate is load-bearing for the
-	// plan-before-code hook.
-	if opts.Engine != nil && !opts.BypassReview {
+	// I-710 / I-933: the plan-review sub-agent is now OFF by default and runs
+	// only when explicitly opted in via --review (Review=true). The audit in
+	// I-933 found the mandatory cold re-explore never vetoed a plan; its
+	// mechanizable value is now the deterministic hollow-AC linter, which runs
+	// in the unconditional ValidatePlan gate below. When opted in, review runs
+	// BEFORE the AC validator gates and a Reject/Feedback/engine error fails
+	// closed (approval refused) — the gate is load-bearing for the
+	// plan-before-code hook. Engine-nil (in-process tests) skips review.
+	if opts.Engine != nil && opts.Review {
 		if code := runPlanReview(s, cfg, id, item, *opts.Engine); code != 0 {
 			return code
 		}
@@ -161,12 +175,11 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 			item = refreshed
 		}
 	} else if opts.Engine != nil && opts.BypassReview {
-		// I-752: warn loudly so the escape hatch is never silently exercised.
-		// Guard on Engine != nil so the documented "Engine-nil path skips
-		// the review entirely" invariant stays silent for test callers
-		// that pass Engine: nil + BypassReview: true.
+		// I-933: --bypass-review is a no-op now that review is off by default.
+		// Keep a one-line deprecation notice so old CI/agent invocations are
+		// nudged toward dropping the flag (or using --review to opt in).
 		fmt.Fprintf(os.Stderr,
-			"%s: --bypass-review set — plan-review sub-agent skipped\n", id)
+			"%s: --bypass-review is deprecated — the plan-review sub-agent is off by default (I-933); pass --review to opt in.\n", id)
 	}
 
 	// I-710: plan substance gate fires unconditionally (lifted out

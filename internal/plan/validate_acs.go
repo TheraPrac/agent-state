@@ -75,7 +75,106 @@ func ValidateACs(acs []string) []ACFinding {
 		}
 	}
 
+	// Pass 3: hollow / false-pass detection (I-933). A full-corpus audit of
+	// the plan-review sub-agent showed ~half its value was catching one
+	// recurring shape — an AC that exits 0 without actually exercising the
+	// behavior it claims to verify. These patterns are mechanizable, so they
+	// move from a 4-6min LLM re-explore into this <1s deterministic gate.
+	//
+	// The checks are deliberately HIGH-PRECISION (only unambiguous
+	// always-pass shapes are errors). The fuzzier semantic case — a
+	// `go test -run X` / `pytest -k X` filter that silently matches zero
+	// tests — is NOT flagged here because a static check cannot tell a typo
+	// from a legitimate filter without false-flagging good ACs; that judgment
+	// is left to the opt-in `--review` sub-agent. Keeping this gate correct
+	// (no new flaky friction) is the governing constraint (I-1478).
+	for i, ac := range acs {
+		trimmed := strings.TrimSpace(ac)
+		if !strings.HasPrefix(strings.ToLower(trimmed), "cmd:") {
+			continue
+		}
+		cmd := strings.TrimSpace(trimmed[4:])
+		switch {
+		case isFailureMasked(cmd):
+			findings = append(findings, ACFinding{
+				Index:  i + 1,
+				AC:     trimmed,
+				Reason: "hollow AC — failure is masked by an always-succeeding fallback (`|| true`, `|| :`, `|| echo`, `; true`, `; exit 0`); the check passes regardless of the real result. Remove the fallback so a failure actually fails the AC",
+			})
+		case isNoOpVerification(cmd):
+			findings = append(findings, ACFinding{
+				Index:  i + 1,
+				AC:     trimmed,
+				Reason: "hollow AC — every command always exits 0 (true/:/echo/printf/pwd) so nothing is actually asserted. Replace with a check that fails when the behavior is wrong (run a test, grep with a non-zero-on-absence assertion, or compare output)",
+			})
+		case hasDisabledTestMarker(cmd):
+			findings = append(findings, ACFinding{
+				Index:  i + 1,
+				AC:     trimmed,
+				Reason: "hollow AC — invokes a disabled/skipped test (`xit(`, `it.skip`, `describe.skip`, `t.Skip(`, `@pytest.mark.skip`); a skipped test verifies nothing. Enable the test or point the AC at one that runs",
+			})
+		}
+	}
+
 	return findings
+}
+
+// failureMaskPattern matches always-succeeding fallbacks that make a cmd:
+// AC pass regardless of the real result. `|| true|:|exit 0|echo` mask
+// failure wherever they appear (they are the error branch); `; true|:|exit 0`
+// mask only as the terminal command, so they are anchored to end-of-string.
+var failureMaskPattern = regexp.MustCompile(`(?i)\|\|\s*(?::|true\b|echo\b|exit\s+0\b)|;\s*(?::|true|exit\s+0)\s*$`)
+
+func isFailureMasked(cmd string) bool {
+	return failureMaskPattern.MatchString(cmd)
+}
+
+// disabledTestPattern matches references to a disabled/skipped test.
+var disabledTestPattern = regexp.MustCompile(`(?i)\bx(?:it|describe|test)\s*\(|\b(?:it|test|describe)\.skip\b|\.skip\s*\(|@pytest\.mark\.skip|\bt\.Skip\s*\(`)
+
+// testSearchTool matches commands that SEARCH for a pattern (rather than run
+// it) — an AC that greps for skip markers to PROVE their absence must not be
+// flagged as invoking one. Carve-out keeps hasDisabledTestMarker precise.
+var testSearchTool = regexp.MustCompile(`\b(?:grep|rg|ag|ripgrep|find|ack)\b`)
+
+func hasDisabledTestMarker(cmd string) bool {
+	if testSearchTool.MatchString(cmd) {
+		return false
+	}
+	return disabledTestPattern.MatchString(cmd)
+}
+
+// alwaysZeroExitHeads are command heads that always exit 0 (or are pure
+// shell builtins with no observable assertion). An AC whose every
+// pipeline/sequence segment begins with one of these asserts nothing.
+var alwaysZeroExitHeads = map[string]bool{
+	"true": true, ":": true, "echo": true, "printf": true,
+	"pwd": true, "cd": true, "export": true, "sleep": true,
+}
+
+// segmentSplitter splits a shell command into segments on the operators that
+// separate distinct commands. If even one segment is a "real" command (its
+// head is not in alwaysZeroExitHeads), the AC can fail and is not hollow.
+var segmentSplitter = regexp.MustCompile(`&&|\|\||;|\|`)
+
+func isNoOpVerification(cmd string) bool {
+	segments := segmentSplitter.Split(cmd, -1)
+	sawSegment := false
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		sawSegment = true
+		fields := strings.Fields(seg)
+		if len(fields) == 0 {
+			continue
+		}
+		if !alwaysZeroExitHeads[strings.ToLower(fields[0])] {
+			return false // a segment that can fail — not hollow
+		}
+	}
+	return sawSegment
 }
 
 // bareWorkspacePathPatterns are substrings whose presence in a cmd: AC

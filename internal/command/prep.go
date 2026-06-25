@@ -66,6 +66,24 @@ type PrepOpts struct {
 	// is then a separate step via `st plan approve <id>`. I-565.
 	WriteOnly   bool
 	AgentEngine string // --agent-engine/--ae: "claude" (default) or "codex"
+	// Review opts INTO the cold-re-explore plan-review sub-agent (I-933).
+	// Off by default: the audit found it never vetoed a plan and its
+	// mechanizable value moved to the deterministic hollow-AC linter. Reserved
+	// for thin/exploratory SBARs where scope is genuinely uncertain.
+	Review bool
+}
+
+// sbarLooksThin is a deterministic heuristic for the I-933 --review nudge: a
+// sparse SBAR (little Background/Assessment depth) is exactly the case where
+// an independent scope re-explore can still earn its cost. Returns a short
+// reason for the hint. Non-blocking — never gates anything.
+func sbarLooksThin(item *model.Item) (bool, string) {
+	bg := len(strings.TrimSpace(item.SBAR.Background))
+	as := len(strings.TrimSpace(item.SBAR.Assessment))
+	if bg+as < 160 {
+		return true, fmt.Sprintf("background+assessment ~%d chars", bg+as)
+	}
+	return false, ""
 }
 
 // PrepInteractive shows sprint selection and runs prep on the selected sprint.
@@ -583,32 +601,41 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			}
 		}
 
-		// Launch claude to critically review the plan
-		reviewPrompt := buildPlanReviewPrompt(itemID, item)
-		reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
-		reviewStep.SetName("plan_review")
-		runOpts := RunOpts{Model: opts.Model}
-		reviewStart := time.Now()
-		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
-		reviewDur := time.Since(reviewStart)
-		rec := extractRecommendation(reviewSR.FullOutput)
+		// I-933: the cold-re-explore plan-review sub-agent is opt-in
+		// (--review). The audit found it never vetoed a plan and its
+		// mechanizable value now lives in the deterministic hollow-AC linter
+		// (ValidateACs) that fires at approval. When opted out, go straight to
+		// the decision menu with no recommendation.
+		var rec string
+		var reviewDur time.Duration
+		if opts.Review {
+			// Launch claude to critically review the plan
+			reviewPrompt := buildPlanReviewPrompt(itemID, item)
+			reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+			reviewStep.SetName("plan_review")
+			runOpts := RunOpts{Model: opts.Model}
+			reviewStart := time.Now()
+			reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
+			reviewDur = time.Since(reviewStart)
+			rec = extractRecommendation(reviewSR.FullOutput)
 
-		// Auto-fix "Accept with notes" — feed notes back to claude without user input
-		if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
-			autoFixCount++
-			fmt.Printf("[%s] Review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
-				itemID, autoFixCount, maxAutoFixIterations)
-			notes := extractNotesFromReview(reviewSR.FullOutput)
-			s, _ = store.New(cfg)
-			item, _ = s.Get(itemID)
-			var sr StepResult
-			// I-985: pass the same wall cap as the plan-generation step.
-			runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + resolvePrepTimeout().String()}, &sr)
-			// Re-save draft after auto-fix
-			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)
+			// Auto-fix "Accept with notes" — feed notes back to claude without user input
+			if isAcceptWithNotes(rec) && autoFixCount < maxAutoFixIterations {
+				autoFixCount++
+				fmt.Printf("[%s] Review returned 'Accept with notes' — auto-fixing (attempt %d/%d)\n",
+					itemID, autoFixCount, maxAutoFixIterations)
+				notes := extractNotesFromReview(reviewSR.FullOutput)
+				s, _ = store.New(cfg)
+				item, _ = s.Get(itemID)
+				var sr StepResult
+				// I-985: pass the same wall cap as the plan-generation step.
+				runAutoFixFromNotes(s, cfg, itemID, "", item, "plan review", notes, RunOpts{Model: opts.Model}, engine, cwd, "", []string{"AS_CLAUDE_WALL_TIMEOUT=" + resolvePrepTimeout().String()}, &sr)
+				// Re-save draft after auto-fix
+				if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save revised plan: %v\n", itemID, err)
+				}
+				continue // re-run review
 			}
-			continue // re-run review
 		}
 
 		// I-180: full-stack split candidate detection. When the plan
@@ -687,9 +714,14 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			// Accept — save plan sidecar. Stamp prep_reviewed_at here (not
 			// earlier) so it is only persisted once the review has fully
 			// converged — avoids a mid-loop crash leaving a stale stamp.
+			// I-933: only stamp when the review sub-agent actually ran
+			// (--review); otherwise a later `st plan approve --review` would
+			// be wrongly skipped by the I-992 prep_reviewed_at short-circuit.
 			p.Approved = true
 			p.ApprovedAt = plan.Now()
-			p.PrepReviewedAt = plan.Now()
+			if opts.Review {
+				p.PrepReviewedAt = plan.Now()
+			}
 			if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
 				fmt.Fprintf(os.Stderr, "saving plan: %v\n", err)
 				return "rejected"
@@ -935,35 +967,48 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		fmt.Fprintf(os.Stderr, "[%s] Warning: GitSync on resume: %v — pending item writes may not be committed\n", itemID, syncErr)
 	}
 
-	// Run the plan-review subprocess (same call shape as prepItem)
-	// but capture the narrative output to a sidecar instead of
-	// gating on the recommendation interactively.
-	reviewPrompt := buildPlanReviewPrompt(itemID, item)
-	reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
-	reviewStep.SetName("plan_review")
-	runOpts := RunOpts{Model: opts.Model}
-	reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
-	// Any non-empty Error means the review subprocess failed. Even if
-	// it produced partial output before the failure, that output is
-	// not a complete review and must not be persisted as the report.
-	if reviewSR.Error != "" {
-		fmt.Printf("[%s] FAILED: plan-review error: %s\n", itemID, reviewSR.Error)
-		stampPrepFailure(s, itemID, "plan-review error: "+reviewSR.Error)
-		return "rejected"
-	}
+	// I-933: the cold-re-explore plan-review sub-agent is opt-in (--review).
+	// By default, prep writes the draft and stops — the deterministic gates
+	// (SBAR substance + ValidatePlan incl. the hollow-AC linter) run at
+	// `st plan approve` and are sufficient for the common case. Only when
+	// opted in do we spawn the sub-agent, capture its narrative to the
+	// .report.md sidecar, and stamp prep_reviewed_at so approve doesn't
+	// re-run it (I-992). The thin-SBAR hint below nudges toward --review when
+	// scope looks uncertain.
+	if opts.Review {
+		reviewPrompt := buildPlanReviewPrompt(itemID, item)
+		reviewStep := config.RunStepDef{Type: "claude", Prompt: reviewPrompt}
+		reviewStep.SetName("plan_review")
+		runOpts := RunOpts{Model: opts.Model}
+		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, runOpts, engine, cwd, "", false)
+		// Any non-empty Error means the review subprocess failed. Even if
+		// it produced partial output before the failure, that output is
+		// not a complete review and must not be persisted as the report.
+		if reviewSR.Error != "" {
+			fmt.Printf("[%s] FAILED: plan-review error: %s\n", itemID, reviewSR.Error)
+			stampPrepFailure(s, itemID, "plan-review error: "+reviewSR.Error)
+			return "rejected"
+		}
 
-	if err := plan.SaveReport(cfg.PlansDir(), itemID, reviewSR.FullOutput); err != nil {
-		fmt.Printf("[%s] FAILED: save report: %v\n", itemID, err)
-		stampPrepFailure(s, itemID, "save report: "+err.Error())
-		return "rejected"
-	}
+		if err := plan.SaveReport(cfg.PlansDir(), itemID, reviewSR.FullOutput); err != nil {
+			fmt.Printf("[%s] FAILED: save report: %v\n", itemID, err)
+			stampPrepFailure(s, itemID, "save report: "+err.Error())
+			return "rejected"
+		}
 
-	// Stamp prep_reviewed_at AFTER SaveReport succeeds so the stamp is only
-	// on disk when the review is complete. A failed SaveReport leaves no stamp
-	// and st plan approve will run its own sub-agent (correct fail-safe).
-	p.PrepReviewedAt = plan.Now()
-	if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to stamp prep_reviewed_at: %v — approve will fall back to full review\n", itemID, err)
+		// Stamp prep_reviewed_at AFTER SaveReport succeeds so the stamp is only
+		// on disk when the review is complete. A failed SaveReport leaves no stamp
+		// and st plan approve will run its own sub-agent (correct fail-safe).
+		p.PrepReviewedAt = plan.Now()
+		if err := plan.Save(cfg.PlansDir(), itemID, p); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to stamp prep_reviewed_at: %v — approve will fall back to full review\n", itemID, err)
+		}
+	} else if thin, why := sbarLooksThin(item); thin {
+		// I-933: deterministic, non-blocking nudge — when scope is genuinely
+		// uncertain, an independent re-explore may still earn its cost.
+		fmt.Fprintf(os.Stderr,
+			"[%s] hint: SBAR looks thin (%s) — consider `st plan prep %s --review` (or `st plan approve %s --review`) for an independent scope check.\n",
+			itemID, why, itemID, itemID)
 	}
 
 	// I-833: stamp plan_written_at BEFORE the final GitSync so the field is

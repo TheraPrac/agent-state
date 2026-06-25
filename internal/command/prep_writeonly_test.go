@@ -252,7 +252,8 @@ func TestPrepWriteOnlyProducesBothFiles(t *testing.T) {
 
 	var code int
 	suppressStdout(t, func() {
-		code = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+		// I-933: report + review are opt-in now; this test asserts both files.
+		code = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true}, engine)
 	})
 	if code != 0 {
 		t.Fatalf("Prep returned %d, want 0", code)
@@ -330,7 +331,8 @@ func TestPrepWriteOnlyIdempotent(t *testing.T) {
 
 	engine, prepCalls, reviewCalls := makeWriteOnlyEngine(nil, nil, nil, 0)
 	suppressStdout(t, func() {
-		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+		// I-933: review/report opt-in.
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true}, engine)
 	})
 
 	// Only T-002 should have been planned: 1 prep call + 1 review call.
@@ -361,7 +363,8 @@ func TestPrepWriteOnlyContinuesAfterFailure(t *testing.T) {
 	engine, _, _ := makeWriteOnlyEngine(nil, nil, nil, 1) // first prep call fails
 
 	output := captureStdout(t, func() {
-		code := Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+		// I-933: review/report opt-in.
+		code := Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true}, engine)
 		if code != 0 {
 			t.Errorf("Prep returned %d, want 0 (per-item failure must not abort)", code)
 		}
@@ -638,7 +641,8 @@ func TestPrepWriteOnlyStampsFailureOnReviewError(t *testing.T) {
 	}
 
 	suppressStdout(t, func() {
-		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true}, engine)
+		// I-933: review is opt-in; this test exercises the review-error path.
+		_ = Prep(s, cfg, "wo-sprint", PrepOpts{WriteOnly: true, Review: true}, engine)
 	})
 
 	s2, err := store.New(cfg)

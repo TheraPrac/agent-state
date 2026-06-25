@@ -33,6 +33,59 @@ func TestValidateACs_VerifiableShapes(t *testing.T) {
 	}
 }
 
+func TestValidateACsHollow(t *testing.T) {
+	// Each of these is a cmd: AC that passes without actually testing
+	// anything — the I-933 hollow/false-pass shapes the linter must catch.
+	hollow := []string{
+		"cmd: go test ./... || true",
+		"cmd: npm run build || echo failed",
+		"cmd: ./check.sh ; true",
+		"cmd: make test; exit 0",
+		"cmd: go vet ./... || :",
+		"cmd: echo done",
+		"cmd: true",
+		"cmd: pwd && echo ok",
+		"cmd: ./run.sh && it.skip('regression')",
+		"cmd: node -e \"xdescribe('suite', () => {})\"",
+	}
+	for _, ac := range hollow {
+		t.Run("hollow/"+ac, func(t *testing.T) {
+			findings := ValidateACs([]string{ac})
+			if !hasReasonContaining(findings, "hollow AC") {
+				t.Errorf("expected a 'hollow AC' finding for %q; got: %v", ac, findings)
+			}
+		})
+	}
+
+	// These are legitimate cmd: ACs that exit non-zero on real failure —
+	// the linter must NOT flag them as hollow (precision over recall).
+	legit := []string{
+		"cmd: go test -run TestFoo -count=1",
+		"cmd: cd as && go build ./...",
+		"cmd: go run ./cmd/as plan approve --help 2>&1 | grep -q -- --review",
+		`cmd: rg "\.skip\(" src/ && exit 1`, // searches for skips to prove absence
+		"cmd: ls dist/ && cat dist/out.txt",
+		"cmd: ./check.sh && echo ok", // && echo: echo only runs on success, prior already passed
+	}
+	for _, ac := range legit {
+		t.Run("legit/"+ac, func(t *testing.T) {
+			findings := ValidateACs([]string{ac})
+			if hasReasonContaining(findings, "hollow AC") {
+				t.Errorf("did not expect a 'hollow AC' finding for %q; got: %v", ac, findings)
+			}
+		})
+	}
+}
+
+func hasReasonContaining(findings []ACFinding, sub string) bool {
+	for _, f := range findings {
+		if strings.Contains(f.Reason, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestValidateACs_UnverifiableShapes(t *testing.T) {
 	unverifiable := []string{
 		"fix the bug",
