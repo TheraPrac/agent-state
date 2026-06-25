@@ -338,6 +338,62 @@ func TestTestRunFail(t *testing.T) {
 	}
 }
 
+// I-1587: `st test` always mirrors the suite output to a local plain-text file
+// under .as/test-logs/<id>/<suite>-<ts>.log, for both pass and fail, so a
+// failure is never lost to scrollback / a truncated background tail.
+func TestTestRunWritesLocalLog(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		out      []byte
+		exitCode int
+	}{
+		{"pass", []byte("PASS\nok  tests 0.5s\n"), 0},
+		{"fail", []byte("FAIL\n--- FAIL: TestBilling\n"), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cfg := setupPRTestEnv(t)
+			opts := TestRecordOpts{
+				Run:        true,
+				GitHeadSHA: func(dir string) (string, error) { return "abc1234567890", nil },
+				RunCmd:     func(command string) ([]byte, int, error) { return tc.out, tc.exitCode, nil },
+				Backend:    &evidence.LocalBackend{Dir: t.TempDir()},
+			}
+			_ = TestRecord(s, cfg, "T-003", "api_unit", opts)
+
+			dir := filepath.Join(cfg.Root(), ".as", "test-logs", "T-003")
+			matches, _ := filepath.Glob(filepath.Join(dir, "api_unit-*.log"))
+			if len(matches) != 1 {
+				t.Fatalf("found %d log file(s) in %s, want 1", len(matches), dir)
+			}
+			got, err := os.ReadFile(matches[0])
+			if err != nil {
+				t.Fatalf("read local log: %v", err)
+			}
+			if string(got) != string(tc.out) {
+				t.Errorf("local log = %q, want %q", got, tc.out)
+			}
+		})
+	}
+}
+
+// writeLocalTestLog is best-effort: when the target directory cannot be created
+// it returns "" without panicking and never affects the test outcome.
+func TestWriteLocalTestLog_UnwritableReturnsEmpty(t *testing.T) {
+	_, cfg := setupPRTestEnv(t)
+	// Plant a regular file where the test-logs tree needs a directory, so
+	// MkdirAll under it fails.
+	blocker := filepath.Join(cfg.Root(), ".as", "test-logs")
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := writeLocalTestLog(cfg, "T-003", "api_unit", "20260101T000000", []byte("data")); got != "" {
+		t.Errorf("writeLocalTestLog = %q, want empty string on unwritable target", got)
+	}
+}
+
 func TestTestRunNoCommand(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	// Override suite to have empty command

@@ -458,6 +458,11 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	keyPrefix := fmt.Sprintf("%s/%s/%s/%s", id, suite, sha, ts)
 	logURI := ""
 
+	// I-1587: always mirror the suite output to a local plain-text file so a
+	// failure is never lost to terminal scrollback or a truncated background
+	// tail. Best-effort and independent of the S3 evidence upload below.
+	localLog := writeLocalTestLog(cfg, id, suite, ts, output)
+
 	if backend != nil {
 		// Upload log.txt (gzipped)
 		uri, err := evidence.GzipUpload(backend, keyPrefix+"/log.txt", output)
@@ -506,6 +511,9 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 		})
 
 		fmt.Printf("FAIL %s on %s (exit %d, %dms)\n", suite, id, exitCode, duration.Milliseconds())
+		if localLog != "" {
+			fmt.Printf("  log: %s\n", localLog)
+		}
 		autoSync(s, fmt.Sprintf("st test fail: %s %s", id, suite)) //nolint:errcheck
 		return 1
 	}
@@ -542,10 +550,31 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 	})
 
 	fmt.Printf("PASS %s on %s (%dms) evidence:%s\n", suite, id, duration.Milliseconds(), logURI)
+	if localLog != "" {
+		fmt.Printf("  log: %s\n", localLog)
+	}
 	if err := autoSync(s, fmt.Sprintf("st test: %s %s", id, suite)); err != nil {
 		return 1
 	}
 	return 0
+}
+
+// writeLocalTestLog mirrors a suite's combined output to a plain-text file under
+// <root>/.as/test-logs/<id>/<suite>-<ts>.log so the full run is always readable
+// locally — independent of the gzipped S3 evidence log. I-1587: terminal
+// scrollback and truncated background tails were losing early-suite failures,
+// forcing full re-runs. Best-effort: returns "" on any error and never fails the
+// test recording. `st close <id>` removes the per-item directory.
+func writeLocalTestLog(cfg *config.Config, id, suite, ts string, output []byte) string {
+	dir := filepath.Join(cfg.Root(), ".as", "test-logs", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s-%s.log", suite, ts))
+	if err := os.WriteFile(path, output, 0o644); err != nil {
+		return ""
+	}
+	return path
 }
 
 // enforceCoverage parses coverage reports and checks thresholds against manifest files.

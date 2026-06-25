@@ -2,12 +2,39 @@ package command
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
+
+// I-1587: `st close` removes the item's local test-log mirror directory so
+// `st test` logs do not accumulate after an item is done.
+func TestCloseRemovesTestLogs(t *testing.T) {
+	root := setupTestEnvRoot(t)
+	cfg, _ := config.Load(root)
+	s, _ := store.New(cfg)
+	os.MkdirAll(cfg.ChangelogDir(), 0755)
+	Create(s, cfg, "task", "Has test logs", CreateOpts{Priority: 2})
+	Start(s, cfg, "T-001", StartOpts{})
+
+	logDir := filepath.Join(cfg.Root(), ".as", "test-logs", "T-001")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "api_unit-20260101T000000.log"), []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if rc := Close(s, cfg, "T-001", "done", CloseOpts{}); rc != 0 {
+		t.Fatalf("Close rc=%d, want 0", rc)
+	}
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Errorf("test-log dir still present after close (stat err=%v)", err)
+	}
+}
 
 // I-1305: `st close` ergonomics — near-miss resolutions are corrected and
 // confirmed, and every parse-error path prints the full corrected

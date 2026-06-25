@@ -536,6 +536,10 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		fmt.Printf("  also finished worktree\n")
 	}
 
+	// I-1587: remove the item's local test-log mirror directory written by
+	// `st test`. Best-effort — a missing directory is a no-op.
+	_ = os.RemoveAll(filepath.Join(cfg.Root(), ".as", "test-logs", id))
+
 	if syncErr != nil {
 		return 1
 	}
