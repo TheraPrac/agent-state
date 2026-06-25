@@ -235,7 +235,7 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	// verifiability at this write surface, so fixtures use `cmd:`
 	// prefixes (the replace-vs-append test is about list-block
 	// rewriting, not AC content shape).
-	input1 := "- cmd: echo test1\n- cmd: echo test2\n"
+	input1 := "- cmd: go test ./pkg1\n- cmd: go test ./pkg2\n"
 	oldStdin := os.Stdin
 	r, w, _ := os.Pipe()
 	os.Stdin = r
@@ -249,7 +249,7 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	}
 
 	// Now replace with different content via stdin — this should REPLACE, not append
-	input2 := "- cmd: echo replaced\n"
+	input2 := "- cmd: go test ./pkg3\n"
 	r2, w2, _ := os.Pipe()
 	os.Stdin = r2
 	w2.WriteString(input2)
@@ -264,21 +264,21 @@ func TestEditListFieldPreservesIndentation(t *testing.T) {
 	// Re-read item and verify: should have only the replacement, not both
 	item, _ := s.Get("T-001")
 	raw := item.Doc.String()
-	// Count occurrences of "echo " in the acceptance_criteria block.
+	// Count `- cmd: go test ./pkg` lines in the acceptance_criteria block.
 	// Pre-I-713: the test counted "description:" (the old YAML mapping
-	// shape). Post-I-713 the canonical shape is `- cmd: ...` lines.
-	echoCount := strings.Count(raw, "echo ")
-	if echoCount != 1 {
-		t.Errorf("expected 1 echo command in ACs after replacement, got %d.\nRaw doc:\n%s", echoCount, raw)
+	// shape). Post-I-713 the canonical shape is `- cmd: ...` lines; I-933
+	// requires non-hollow ACs, so the fixtures use real `go test` commands.
+	cmdCount := strings.Count(raw, "go test ./pkg")
+	if cmdCount != 1 {
+		t.Errorf("expected 1 cmd in ACs after replacement, got %d.\nRaw doc:\n%s", cmdCount, raw)
 	}
 	// Verify the old content is gone — the first write used
-	// `echo test1`/`echo test2`; after replacement only `echo replaced`
-	// should remain.
-	if strings.Contains(raw, "echo test1") || strings.Contains(raw, "echo test2") {
-		t.Errorf("old AC content (echo test1/echo test2) still present after replacement:\n%s", raw)
+	// `go test ./pkg1`/`./pkg2`; after replacement only `./pkg3` should remain.
+	if strings.Contains(raw, "go test ./pkg1") || strings.Contains(raw, "go test ./pkg2") {
+		t.Errorf("old AC content (go test ./pkg1|./pkg2) still present after replacement:\n%s", raw)
 	}
-	if !strings.Contains(raw, "echo replaced") {
-		t.Errorf("replacement AC (echo replaced) missing:\n%s", raw)
+	if !strings.Contains(raw, "go test ./pkg3") {
+		t.Errorf("replacement AC (go test ./pkg3) missing:\n%s", raw)
 	}
 }
 

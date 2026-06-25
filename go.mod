@@ -10,6 +10,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.41.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (

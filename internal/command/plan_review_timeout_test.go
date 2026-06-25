@@ -42,7 +42,7 @@ func TestPlanReviewTimeoutEnvOverride(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 on wall-time error; got %d", code)
 	}
 
@@ -150,7 +150,7 @@ func TestPlanReviewDefaultFirstPassCap(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0 on accept verdict; got %d", code)
 		}
 	})
@@ -213,7 +213,7 @@ func TestPlanReviewWrapUpSkippedOnCleanPass(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0; got %d", code)
 		}
 	})
@@ -269,7 +269,7 @@ func TestPlanReviewWrapUpYieldsVerdict(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0 after wrap-up verdict; got %d", code)
 		}
 	})
@@ -326,7 +326,7 @@ func TestPlanReviewWrapUpNonZeroExitRefusesApproval(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 when wrap-up exits non-zero; got %d", code)
 	}
 
@@ -368,7 +368,7 @@ func TestPlanReviewWrapUpDoubleTimeout(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2 on double timeout; got %d", code)
 	}
 
@@ -415,7 +415,7 @@ func TestPlanReviewWrapUpDisabledForShortCap(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 		t.Errorf("expected exit 2; got %d", code)
 	}
 
@@ -427,11 +427,11 @@ func TestPlanReviewWrapUpDisabledForShortCap(t *testing.T) {
 	}
 }
 
-// TestPlanReviewSkippedForPrepGeneratedPlan asserts that when the plan
-// sidecar carries a prep_reviewed_at stamp (set by prepItem or
-// prepItemWriteOnly after their LLM review pass), runPlanReview returns 0
-// without invoking the sub-agent engine. I-992.
-func TestPlanReviewSkippedForPrepGeneratedPlan(t *testing.T) {
+// TestPlanReviewRunsEvenWithPrepStamp asserts that an explicit --review runs
+// the sub-agent even when the plan carries a prep_reviewed_at stamp. I-933
+// removed the I-992 short-circuit (it could skip review of a plan edited after
+// the prep-time review); an explicit --review always honors the request.
+func TestPlanReviewRunsEvenWithPrepStamp(t *testing.T) {
 	t.Setenv("AS_AGENT_ID", "")
 	s, cfg := setupTestEnv(t)
 
@@ -463,24 +463,23 @@ func TestPlanReviewSkippedForPrepGeneratedPlan(t *testing.T) {
 			mu.Lock()
 			reviewCalls++
 			mu.Unlock()
-			return nil, 1, errors.New("unexpected review call")
+			body, _ := json.Marshal(ClaudeResult{
+				Type: "result", Subtype: "success",
+				Result: "RECOMMENDATION: Accept — looks good",
+			})
+			return body, 0, nil
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
-		t.Errorf("expected exit 0 for prep-stamped plan; got %d", code)
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
+		t.Errorf("expected exit 0 with accept verdict; got %d", code)
 	}
 
 	mu.Lock()
 	calls := reviewCalls
 	mu.Unlock()
-	if calls != 0 {
-		t.Errorf("sub-agent should not be called for prep-stamped plan; called %d time(s)", calls)
-	}
-
-	item, _ := s.Get("T-001")
-	if !item.PlanApproved {
-		t.Error("PlanApproved should be true after skipping the sub-agent on a prep-stamped plan")
+	if calls == 0 {
+		t.Error("sub-agent MUST run on explicit --review even with a prep_reviewed_at stamp (I-992 short-circuit removed)")
 	}
 }
 
@@ -527,7 +526,7 @@ func TestPlanReviewCalledForHandAuthoredPlan(t *testing.T) {
 		},
 	}
 
-	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 		t.Errorf("expected exit 0; got %d", code)
 	}
 

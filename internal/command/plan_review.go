@@ -9,7 +9,6 @@ import (
 
 	"github.com/jfinlinson/agent-state/internal/config"
 	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
 	"github.com/jfinlinson/agent-state/internal/store"
 )
 
@@ -78,15 +77,13 @@ func runPlanReview(s *store.Store, cfg *config.Config, id string, item *model.It
 		return 0
 	}
 
-	// I-992: skip the duplicate LLM sub-agent when the plan was already
-	// reviewed by prepItem or prepItemWriteOnly (prep_reviewed_at stamp
-	// present). The static validator gates in PlanApprove still run
-	// unconditionally; only this sub-agent is elided.
-	if p, err := plan.Load(cfg.PlansDir(), id); err == nil && p != nil && p.PrepReviewedAt != "" {
-		fmt.Fprintf(os.Stderr, "%s: plan already reviewed during prep (prep_reviewed_at: %s) — skipping sub-agent\n", id, p.PrepReviewedAt)
-		return 0
-	}
-
+	// I-933: review is opt-in now (`--review` on prep / approve), so this
+	// sub-agent runs only when the operator explicitly asked for it. The old
+	// I-992 prep_reviewed_at short-circuit (skip if prep already reviewed) was
+	// removed: it could skip a review of a plan that was edited after the
+	// prep-time review (stale-stamp bug), and an explicit `--review` should
+	// always honor the request. The static validator gates in PlanApprove
+	// still run unconditionally regardless.
 	cwd := cfg.Root()
 	wallCap := resolvePlanReviewTimeout()
 

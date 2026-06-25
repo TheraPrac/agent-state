@@ -195,7 +195,7 @@ func TestPlanApproveRunsPlanReviewSubAgent(t *testing.T) {
 	engine := RunEngine{RunClaude: fake.run}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected 0 with engine + accept verdict; got %d", code)
 		}
 	})
@@ -205,6 +205,42 @@ func TestPlanApproveRunsPlanReviewSubAgent(t *testing.T) {
 	item, _ := s.Get("T-001")
 	if !item.PlanApproved {
 		t.Error("PlanApproved should be true after accept verdict")
+	}
+}
+
+// TestPlanApproveDefaultSkipsReview confirms the I-933 default flip: with an
+// engine supplied but Review unset, the cold-re-explore sub-agent does NOT
+// fire. Proof: a seeded "Reject" verdict would force code 2 if the review ran;
+// because it is skipped by default, approval proceeds on the static gates and
+// returns 0.
+func TestPlanApproveDefaultSkipsReview(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Approach.",
+		ScopeRepos: []string{"as"},
+		ACs:        []string{"cmd: go test ./..."},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+	}); err != nil {
+		t.Fatalf("seeding sidecar: %v", err)
+	}
+
+	// A Reject verdict that must never be consulted — if the review ran by
+	// default, PlanApprove would return 2 and leave the plan unapproved.
+	fake := &fakeClaude{stepResults: []string{"RECOMMENDATION: Reject — should never be consulted"}}
+	engine := RunEngine{RunClaude: fake.run}
+
+	suppressOutput(t, func() {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+			t.Errorf("expected 0 (review skipped by default, static gates pass); got %d", code)
+		}
+	})
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Error("PlanApproved should be true — approved on static gates, default review skipped")
 	}
 }
 
@@ -252,7 +288,7 @@ func TestPlanApproveRefusesOnRejectVerdict(t *testing.T) {
 	engine := RunEngine{RunClaude: fake.run}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 			t.Errorf("expected exit 2 on review reject; got %d", code)
 		}
 	})
@@ -285,7 +321,7 @@ func TestPlanApproveRefusesOnEngineExecError(t *testing.T) {
 	engine := RunEngine{RunClaude: fake.run}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 			t.Errorf("expected exit 2 on engine exec error; got %d", code)
 		}
 	})
@@ -330,7 +366,7 @@ func TestPlanApproveAcceptsOnAutoFixCapExhaustion(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0 (accept-as-advisory) on auto-fix cap exhaustion; got %d", code)
 		}
 	})
@@ -391,7 +427,7 @@ func TestPlanReviewAutoFixTimeoutPropagated(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0; got %d", code)
 		}
 	})
@@ -461,7 +497,7 @@ func TestPlanApproveAutoFixFailureRefusesApproval(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 2 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 2 {
 			t.Errorf("expected exit 2 when auto-fix engine fails; got %d", code)
 		}
 	})
@@ -504,7 +540,7 @@ func TestPlanApproveAcceptWithNotesExhaustionPersistsNotes(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine}); code != 0 {
+		if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine, Review: true}); code != 0 {
 			t.Errorf("expected exit 0; got %d", code)
 		}
 	})
@@ -534,7 +570,7 @@ func TestPlanApproveAcceptWithNotesExhaustionPersistsNotes(t *testing.T) {
 		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string { return "1" },
 	}
 	suppressOutput(t, func() {
-		PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine2}) //nolint:errcheck
+		PlanApprove(s, cfg, "T-001", PlanApproveOpts{Engine: &engine2, Review: true}) //nolint:errcheck
 	})
 	data2, err := os.ReadFile(sidecarPath)
 	if err != nil {

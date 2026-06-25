@@ -2660,6 +2660,7 @@ lets you pick one, validates the plan, and starts execution.`,
 		model, _ := cmd.Flags().GetString("model")
 		includeRejected, _ := cmd.Flags().GetBool("include-rejected")
 		writeOnly, _ := cmd.Flags().GetBool("write-only")
+		review, _ := cmd.Flags().GetBool("review")
 		agentEngine, _ := cmd.Flags().GetString("agent-engine")
 		if agentEngine == "" {
 			agentEngine, _ = cmd.Flags().GetString("ae")
@@ -2674,6 +2675,7 @@ lets you pick one, validates the plan, and starts execution.`,
 			ItemFilter:      item,
 			IncludeRejected: includeRejected,
 			WriteOnly:       writeOnly,
+			Review:          review,
 			AgentEngine:     agentEngine,
 		}
 		engine := command.DefaultRunEngine()
@@ -2723,6 +2725,7 @@ lets you pick one, validates the plan, and starts execution.`,
 		c.Flags().String("model", "", "model to use (overrides config)")
 		c.Flags().Bool("include-rejected", false, "re-process previously rejected plans")
 		c.Flags().Bool("write-only", false, "skip interactive review; write plan + report sidecars and exit")
+		c.Flags().Bool("review", false, "I-933: opt IN to the cold-re-explore plan-review sub-agent (off by default; reserved for thin/exploratory SBARs). Static gates (SBAR + hollow-AC linter) always run regardless.")
 		c.Flags().String("agent-engine", "", "agent engine to use: claude (default) or codex")
 		c.Flags().String("ae", "", "alias for --agent-engine")
 	}
@@ -2985,18 +2988,21 @@ rates. I-180.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			strict, _ := cmd.Flags().GetBool("strict")
 			bypassReview, _ := cmd.Flags().GetBool("bypass-review")
+			review, _ := cmd.Flags().GetBool("review")
 			requireEst, _ := cmd.Flags().GetBool("require-estimate")
 			engine := command.DefaultRunEngine()
 			exitCode = command.PlanApprove(appStore, appCfg, args[0], command.PlanApproveOpts{
 				Strict:          strict,
 				Engine:          &engine,
 				BypassReview:    bypassReview,
+				Review:          review,
 				RequireEstimate: requireEst,
 			})
 		},
 	}
 	planApproveCmd.Flags().Bool("strict", false, "deprecated alias — AC verifiability gate now fires unconditionally (I-710); flag preserved for CI back-compat")
-	planApproveCmd.Flags().Bool("bypass-review", false, "skip the I-710 plan-review sub-agent (operator escape hatch when the sub-agent is broken or the plan has been manually reviewed) — I-752")
+	planApproveCmd.Flags().Bool("review", false, "I-933: opt IN to the cold-re-explore plan-review sub-agent (off by default; reserved for thin/exploratory SBARs). The static SBAR + AC verifiability + hollow-AC gates always run regardless.")
+	planApproveCmd.Flags().Bool("bypass-review", false, "DEPRECATED no-op — the plan-review sub-agent is off by default now (I-933); use --review to opt in")
 	planApproveCmd.Flags().Bool("require-estimate", false, "I-591: block approval unless time_tracking.estimated_hours is set (> 0)")
 	planResetCmd := &cobra.Command{
 		Use:   "reset <id>",

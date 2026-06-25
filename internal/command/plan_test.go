@@ -395,7 +395,7 @@ func TestPlanApproveStampsLinkedPlansFromSidecar(t *testing.T) {
 	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
 		Approach:   "Test approach.",
 		ScopeRepos: []string{"as"},
-		ACs:        []string{"cmd: echo ok"},
+		ACs:        []string{"cmd: go test ./..."},
 		Tests:      "Covered by existing test suite.",
 		OutOfScope: "None",
 		Risks:      "Low risk.",

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // ACFinding describes one un-verifiable acceptance criterion. The
@@ -75,7 +77,234 @@ func ValidateACs(acs []string) []ACFinding {
 		}
 	}
 
+	// Pass 3: AC-format requirement (I-933). A full-corpus audit of the
+	// plan-review sub-agent showed a recurring shape it kept catching — an AC
+	// that "passes" without exercising the behavior it claims, because its
+	// result is always 0 (headline case: a trailing `|| true`).
+	//
+	// This is framed as a REQUIREMENT, not a heuristic detector. Deciding
+	// whether an arbitrary command is "hollow" is undecidable in general
+	// (shell options like pipefail, runtime values), so instead a verification
+	// AC must be written in a form that actually fails on a bad result. A
+	// command whose success is structurally independent of the work — a no-op
+	// (`true`/`echo`), a masked result (`… || true`, `… ; echo`, `… | cat`),
+	// or one whose outcome hinges on hidden shell state — is INVALID, and the
+	// author is told to rewrite it as a direct assertion. So a rejection is
+	// never a "false positive": it means "not a valid AC form, write it
+	// clearly", which is what we want regardless (I-1478 — a gate must be
+	// cheap, correct, and judge a property the author controls).
+	for i, ac := range acs {
+		trimmed := strings.TrimSpace(ac)
+		if !strings.HasPrefix(strings.ToLower(trimmed), "cmd:") {
+			continue
+		}
+		cmd := strings.TrimSpace(trimmed[4:])
+		if acAlwaysZeroExit(cmd) {
+			findings = append(findings, ACFinding{
+				Index:  i + 1,
+				AC:     trimmed,
+				Reason: "invalid AC — it always exits 0, so it can't fail the way a verification must. It is a no-op (`true`/`echo`) or its result is masked (`|| true`, `; echo`, `| cat`, `> /dev/null`). Rewrite it as a direct assertion that exits non-zero on a bad result (run a test, `grep` with non-zero-on-absence, or compare output); avoid trailing fallbacks and `set -o pipefail` tricks",
+			})
+		}
+	}
+
 	return findings
+}
+
+// acAlwaysZeroExit reports whether a cmd: AC can never exit non-zero — i.e. it
+// is structurally a no-op or its result is masked, so it "passes" without
+// testing anything (I-933). It parses the command into a real shell AST
+// (mvdan.cc/sh) and walks the exit-status structure, which stays correct under
+// quoting, escapes, command substitution, and redirects that defeated the
+// earlier regex/tokenizer approximations.
+//
+// It is deliberately conservative: anything it cannot PROVE always-zero (an
+// unknown command head, a redirect to an arbitrary path, a subshell / loop /
+// conditional, or a parse error) is treated as "can fail" and NOT flagged, so
+// a false positive never hard-blocks a valid plan (I-1478). It DOES prove the
+// concrete syntactic shapes — a pipeline ending in `cat`/`tee` reading stdin,
+// an output redirect to /dev/null, a conversion-free `printf` — that earlier
+// looked "runtime-only". What genuinely remains for the opt-in `--review` is
+// only the runtime-VARIABLE residue: a `printf '%d' "$x"` / `cat "$f"` / a
+// redirect target that depends on a value unknown until the AC runs.
+func acAlwaysZeroExit(cmd string) bool {
+	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil || f == nil || len(f.Stmts) == 0 {
+		return false
+	}
+	// A shell script's exit status is that of its last statement.
+	return !stmtCanFail(f.Stmts[len(f.Stmts)-1])
+}
+
+// stmtCanFail reports whether a statement can produce a non-zero exit status.
+func stmtCanFail(st *syntax.Stmt) bool {
+	if st == nil {
+		return true
+	}
+	// `! cmd` can yield non-zero. A redirect to an arbitrary path can fail
+	// (permission, missing dir); a redirect to an always-writable device
+	// (/dev/null, …) cannot, so it doesn't rescue an otherwise-hollow command.
+	if st.Negated {
+		return true
+	}
+	for _, rd := range st.Redirs {
+		if !isSafeRedirect(rd) {
+			return true
+		}
+	}
+	return cmdCanFail(st.Cmd)
+}
+
+// safeRedirectTargets are device paths that an output redirect can always
+// write to, so redirecting to them cannot itself make a command fail.
+var safeRedirectTargets = map[string]bool{
+	"/dev/null": true, "/dev/stdout": true, "/dev/stderr": true,
+}
+
+// isSafeRedirect reports whether a redirect cannot itself introduce a failure
+// — an OUTPUT redirect to a known always-writable device. Input redirects and
+// redirects to arbitrary paths/fds can fail and are treated as failable.
+func isSafeRedirect(rd *syntax.Redirect) bool {
+	if rd == nil {
+		return false
+	}
+	switch rd.Op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrClob:
+		// output redirections — fall through to target check
+	default:
+		return false // input / here-doc / fd-dup — assume failable
+	}
+	target, ok := wordConst(rd.Word)
+	return ok && safeRedirectTargets[target]
+}
+
+// cmdCanFail walks the exit-status structure of a command node.
+func cmdCanFail(cmd syntax.Command) bool {
+	switch c := cmd.(type) {
+	case *syntax.CallExpr:
+		return !callAlwaysZero(c)
+	case *syntax.BinaryCmd:
+		switch c.Op {
+		case syntax.Pipe, syntax.PipeAll:
+			return stmtCanFail(c.Y) // exit = last pipeline stage (no pipefail)
+		case syntax.AndStmt: // &&
+			return stmtCanFail(c.X) || stmtCanFail(c.Y)
+		case syntax.OrStmt: // ||
+			return stmtCanFail(c.X) && stmtCanFail(c.Y)
+		}
+		return true
+	default:
+		// Subshell, block, if/for/while/case, etc. — not provably zero.
+		return true
+	}
+}
+
+// callAlwaysZero reports whether a simple command always exits 0. The set is
+// limited to cases that are PROVABLY always-zero from the syntax alone, so the
+// gate never false-positives; commands whose success depends on runtime values
+// (a variable head, `printf '%d' "$x"`, `cat file` that may be missing) are
+// not claimed.
+func callAlwaysZero(c *syntax.CallExpr) bool {
+	if c == nil || len(c.Args) == 0 {
+		return false // bare assignment / empty — can fail (cmdsubst, etc.)
+	}
+	head, ok := wordLit(c.Args[0])
+	if !ok {
+		return false // non-literal head (variable / cmdsubst) — unknown
+	}
+	args := c.Args[1:]
+	switch head {
+	case "true", ":", "echo":
+		// echo effectively never fails (ignoring SIGPIPE, irrelevant here).
+		return true
+	case "exit":
+		// `exit 0` always succeeds; `exit <n>` / bare exit can be non-zero.
+		if len(args) >= 1 {
+			if v, ok := wordLit(args[0]); ok {
+				return v == "0"
+			}
+		}
+		return false
+	case "cat", "tee":
+		// Reading stdin (no file operand) these are status-swallowing
+		// terminals — the canonical hollow pipeline tail (`… | cat`). With a
+		// file operand they can fail (missing file / unwritable), so require
+		// no operand (flags / bare `-` only).
+		return !hasFileOperand(args)
+	case "printf":
+		// A printf whose format is a constant string with NO `%` conversion
+		// cannot fail on a bad conversion (`printf '%d' x` can). Variable
+		// formats are unknown and not claimed.
+		if len(args) >= 1 {
+			if format, ok := wordConst(args[0]); ok && !strings.Contains(format, "%") {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// hasFileOperand reports whether any arg is a file operand (not a flag and not
+// the bare `-` stdin marker). Distinguishes `cat`/`tee` reading stdin (always
+// 0) from `cat file` (can fail). Non-literal args are treated as possible file
+// operands (conservative — keeps the gate false-positive-free).
+func hasFileOperand(args []*syntax.Word) bool {
+	for _, w := range args {
+		lit, ok := wordLit(w)
+		if !ok {
+			return true // variable / cmdsubst — could be a file
+		}
+		if lit == "-" || strings.HasPrefix(lit, "-") {
+			continue // stdin marker or a flag
+		}
+		return true
+	}
+	return false
+}
+
+// wordLit returns the literal string of a word when it is a single unquoted
+// literal (e.g. `echo`, `true`, `exit`); ok is false for anything else
+// (quoted, expanded, or command-substituted words).
+func wordLit(w *syntax.Word) (string, bool) {
+	if w == nil || len(w.Parts) != 1 {
+		return "", false
+	}
+	lit, ok := w.Parts[0].(*syntax.Lit)
+	if !ok {
+		return "", false
+	}
+	return lit.Value, true
+}
+
+// wordConst returns a word's constant string value when it is composed only of
+// literal and quoted-literal parts (e.g. `/dev/null`, `"all good\n"`, `'x'`);
+// ok is false if any part is an expansion or command substitution, whose value
+// is unknown until runtime.
+func wordConst(w *syntax.Word) (string, bool) {
+	if w == nil {
+		return "", false
+	}
+	var b strings.Builder
+	for _, part := range w.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range p.Parts {
+				lit, ok := dp.(*syntax.Lit)
+				if !ok {
+					return "", false // expansion inside the quotes
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return "", false // param/cmd/arith expansion — not constant
+		}
+	}
+	return b.String(), true
 }
 
 // bareWorkspacePathPatterns are substrings whose presence in a cmd: AC

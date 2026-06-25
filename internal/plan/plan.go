@@ -19,7 +19,7 @@ type Plan struct {
 	ApprovedAt     string     // timestamp of approval
 	Rejected       bool       // user explicitly rejected the plan
 	RejectedAt     string     // timestamp of rejection
-	PrepReviewedAt string     // RFC3339; set by prepItem/prepItemWriteOnly after LLM review — signals st plan approve to skip duplicate sub-agent
+	PrepReviewedAt string     // DEPRECATED (I-933): no longer written or consumed — the I-992 prep_reviewed_at skip was removed when review became opt-in. Retained only so existing sidecars carrying the line still parse; do not reintroduce a reader.
 	Approach       string     // high-level approach description
 	Tests          string     // T-394: what tests cover this plan
 	OutOfScope     string     // T-394: explicitly acknowledged out-of-scope items
