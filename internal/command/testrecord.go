@@ -1006,6 +1006,11 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 				"cd ../" + repo,
 			} {
 				if strings.Contains(suiteCmd, pattern) {
+					// I-1588: announce the clone+commit the suite runs against and
+					// warn loudly if it is behind origin/main — the case where a
+					// sibling PR merged to main but this checkout has not caught up,
+					// so the suite would silently test stale code.
+					warnIfCloneStale(repo, targetRepo)
 					suiteCmd = strings.Replace(suiteCmd, pattern, "cd "+targetRepo, 1)
 					return suiteCmd
 				}
@@ -1030,6 +1035,51 @@ func worktreeRepoOnSameCommit(wtRepo, mainRepo string) bool {
 		return false
 	}
 	return strings.TrimSpace(wtSHA) == strings.TrimSpace(mainSHA)
+}
+
+// cloneFreshness reports targetRepo's short HEAD and how many commits it is
+// behind origin/main, refreshing the remote ref with a best-effort
+// `git fetch -q origin main` first so the count reflects merges that landed
+// after this clone last synced. ok=false on any git error (offline, non-repo,
+// detached/unknown ref) so callers degrade gracefully and never block a run.
+// behind is the raw `rev-list --count` string ("0", "3", …). I-1588.
+func cloneFreshness(targetRepo string) (head, behind string, ok bool) {
+	h, err := runGit(targetRepo, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return "", "", false
+	}
+	head = strings.TrimSpace(h)
+	// Best-effort ref refresh; offline simply leaves origin/main as last known.
+	_, _ = runGit(targetRepo, "fetch", "-q", "origin", "main")
+	out, err := runGit(targetRepo, "rev-list", "--count", "HEAD..origin/main")
+	if err != nil {
+		return head, "", false
+	}
+	return head, strings.TrimSpace(out), true
+}
+
+// warnIfCloneStale announces which clone + commit a suite is about to run
+// against, and emits a prominent advisory when that clone is behind origin/main.
+// That is the I-1588 failure mode: a sibling PR merged to main but this checkout
+// (worktree feature branch, or the warm main checkout) has not caught up, so the
+// suite silently tests stale code. Announce-only — it never mutates the working
+// tree; the message names the exact `git merge` to run. Best-effort: on any git
+// error it prints just the clone/commit with no freshness claim.
+func warnIfCloneStale(repoLabel, targetRepo string) {
+	head, behind, ok := cloneFreshness(targetRepo)
+	if !ok {
+		if head != "" {
+			fmt.Printf("[suite-clone] %s: %s @ %s\n", repoLabel, targetRepo, head)
+		}
+		return
+	}
+	if behind == "" || behind == "0" {
+		fmt.Printf("[suite-clone] %s: %s @ %s (current with origin/main)\n", repoLabel, targetRepo, head)
+		return
+	}
+	fmt.Printf("[suite-clone] %s: %s @ %s\n", repoLabel, targetRepo, head)
+	fmt.Printf("⚠  [stale-clone] %s is %s commit(s) behind origin/main — this suite may be testing stale code.\n", repoLabel, behind)
+	fmt.Printf("   sync first:  git -C %s merge origin/main\n", targetRepo)
 }
 
 type testAgentRuntime struct {
