@@ -579,7 +579,7 @@ func evaluateCriterion(criterion string, item *model.Item, cfg *config.Config, r
 			// test-name filter, check per-test PASS/FAIL lines to distinguish
 			// the targeted test failing from an unrelated test failing.
 			if override, warning := evaluateFilteredCmd(cmd, string(output)); override != nil && *override {
-				return checkResult{Label: criterion, Mode: "cmd", Passed: true, Detail: warning}
+				return checkResult{Label: criterion, Mode: "cmd", Passed: true, Detail: warning + "; " + detail}
 			}
 		}
 		return checkResult{Label: criterion, Mode: "cmd", Passed: exitCode == 0, Detail: detail}

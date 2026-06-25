@@ -1,6 +1,7 @@
 package command
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jfinlinson/agent-state/internal/model"
@@ -32,9 +33,9 @@ func TestDetectTestFilter(t *testing.T) {
 			runner: "go", test: "TestBar",
 		},
 		{
-			name:   "jest -t flag",
+			name:   "jest -t flag with quoted multi-word name",
 			cmd:    "npx jest -t \"my test name\"",
-			runner: "jest", test: "my",
+			runner: "jest", test: "my test name",
 		},
 		{
 			name:   "vitest --grep",
@@ -42,14 +43,19 @@ func TestDetectTestFilter(t *testing.T) {
 			runner: "vitest", test: "MyComponent",
 		},
 		{
-			name:   "playwright --grep",
+			name:   "playwright --grep with quoted multi-word name",
 			cmd:    "npx playwright test --grep \"login flow\"",
-			runner: "playwright", test: "login",
+			runner: "playwright", test: "login flow",
 		},
 		{
 			name:   "pytest -k",
 			cmd:    "pytest -k test_login",
 			runner: "pytest", test: "test_login",
+		},
+		{
+			name:   "go -run compound regex",
+			cmd:    `go test ./... -run "TestAuth|TestLogin" -v`,
+			runner: "go", test: "TestAuth|TestLogin",
 		},
 		{
 			name:    "no filter — plain go test",
@@ -110,6 +116,14 @@ PASS
 const goNonVerboseNoPerTestLines = `FAIL	github.com/theraprac/as/internal/command	0.042s
 `
 
+const goVerboseCompoundPassAndUnrelatedFail = `=== RUN   TestAuth
+--- PASS: TestAuth (0.00s)
+=== RUN   TestUnrelated
+--- FAIL: TestUnrelated (0.01s)
+    unrelated_test.go:55: wrong value
+FAIL
+`
+
 func TestParseFilteredTestResult(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -146,6 +160,18 @@ func TestParseFilteredTestResult(t *testing.T) {
 		{
 			name:       "go: different test name → found=false",
 			runner:     "go", testName: "TestOtherTest",
+			output:     goVerboseOnlyPass,
+			wantPassed: false, wantFound: false,
+		},
+		{
+			name:       "go: compound -run regex matches first alt → passed=true found=true",
+			runner:     "go", testName: "TestAuth|TestLogin",
+			output:     goVerboseCompoundPassAndUnrelatedFail,
+			wantPassed: true, wantFound: true,
+		},
+		{
+			name:       "go: invalid -run regex → found=false (safe fallback)",
+			runner:     "go", testName: "Test[invalid",
 			output:     goVerboseOnlyPass,
 			wantPassed: false, wantFound: false,
 		},
@@ -251,6 +277,9 @@ func TestEvaluateCriterion_FilteredPassDespiteSuiteFail(t *testing.T) {
 	}
 	if result.Detail == "" {
 		t.Error("expected non-empty Detail (warning about unrelated failure)")
+	}
+	if !strings.Contains(result.Detail, "exit 1") {
+		t.Errorf("expected Detail to include exit code, got %q", result.Detail)
 	}
 	if result.Mode != "cmd" {
 		t.Errorf("expected Mode=cmd, got %q", result.Mode)
