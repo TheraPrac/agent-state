@@ -51,6 +51,11 @@ func TestValidateACsHollow(t *testing.T) {
 		"cmd: true",
 		"cmd: :",
 		"cmd: go test ./... | true", // pipeline exit = last stage (true)
+		"cmd: go test ./... | cat",  // cat reading stdin swallows status
+		"cmd: go test ./... | tee",  // tee reading stdin swallows status
+		"cmd: echo done > /dev/null", // output redirect to /dev/null can't fail
+		"cmd: grep -q x f || echo missing > /dev/null", // mask via echo+/dev/null
+		`cmd: printf "all good\n"`,   // conversion-free printf always succeeds
 	}
 	for _, ac := range hollow {
 		t.Run("hollow/"+ac, func(t *testing.T) {
