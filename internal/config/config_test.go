@@ -865,6 +865,15 @@ func TestAgentRootFromWorkspaceYaml(t *testing.T) {
 // (the one whose .as/agent-workspace.yaml lives at the invocation
 // site).
 func TestAgentRootSTRootLeakRegression(t *testing.T) {
+	// Isolate the ambient identity env. This test exercises ST_ROOT-leak
+	// recovery via the CWD-anchored .as/agent-workspace.yaml; a leaked
+	// AS_AGENT_ID from the surrounding session (e.g. when run under
+	// `st test --auto`, which exports AS_AGENT_ID) would otherwise resolve
+	// AgentRoot() from env and mask the path under test. The deeper
+	// CWD-over-env precedence question is tracked separately (I-936).
+	for _, k := range []string{"AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "ST_ROOT"} {
+		t.Setenv(k, "")
+	}
 	tmp := t.TempDir()
 	// Peer agent (the leaked ST_ROOT target) — has a workspace, no marker yaml.
 	peerAgent := filepath.Join(tmp, "theraprac-agent-a")
