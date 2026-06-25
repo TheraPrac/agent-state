@@ -20,6 +20,10 @@ import (
 // (the test would hang ~600s and wedge `make test`). Keep these targeted —
 // no bare `go test` (use -run), no `make test-*`, no `npm run test` without
 // --testPathPattern.
+//
+// I-987: the Accept gate also runs quality.ValidatePlan (I-933), which requires
+// the Tests / Out-of-scope / Risks sections. They must be present or Accept
+// `continue`s on the substance error and re-loops just like a bad AC would.
 const fullStackPlanText = `## Approach
 Cross-cutting api + web feature.
 
@@ -37,6 +41,15 @@ Repos: theraprac-api, theraprac-web
 ## Files to Modify
 - theraprac-api/api/openapi/api.yaml
 - theraprac-web/src/lib/api/foo.ts
+
+## Tests
+Unit + integration named above cover the handler and page.
+
+## Out-of-scope
+None.
+
+## Risks
+None — fixture plan for the split-banner test.
 
 ## Acceptance Criteria
 - cmd: cd ../theraprac-api && make integration-local

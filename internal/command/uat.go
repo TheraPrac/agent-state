@@ -187,7 +187,7 @@ func checkTestSuites(item *model.Item, cfg *config.Config) []checkResult {
 	// scope class, surface an advisory hint. Rendered as ⊘ (Skipped) so it
 	// does not count as auto-fail — it is informational, not a gate.
 	if item.ScopeClass == "" {
-		if suggestedClass := cfg.Testing.ScopeClassForGoalTags(item.Tags); suggestedClass != "" {
+		if suggestedClass := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); suggestedClass != "" {
 			results = append(results, checkResult{
 				Label:   "scope_class_hint",
 				Mode:    "auto",

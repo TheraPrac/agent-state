@@ -357,9 +357,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		item.Goals = opts.Goals
 	}
 
-	// I-830: auto-assign scope_class from goal tags when not explicitly set.
+	// I-830: auto-assign scope_class from goal tags/membership when not set.
 	if item.ScopeClass == "" {
-		if cls := cfg.Testing.ScopeClassForGoalTags(item.Tags); cls != "" {
+		if cls := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); cls != "" {
 			item.ScopeClass = cls
 			item.Doc.SetField("scope_class", cls)
 		}

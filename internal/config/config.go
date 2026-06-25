@@ -188,29 +188,37 @@ func (t *TestingConfig) RequiredSuitesFor(scopeClass string) (map[string]SuiteCo
 	return class.RequiredSuites, true
 }
 
-// ScopeClassForGoalTags returns the first scope class name whose AppliesToGoals
-// list contains a slug matching a "goal:<slug>" tag in tags. Returns "" if none
-// match. I-830: used by create/start to auto-assign scope_class from goal tags.
-func (t *TestingConfig) ScopeClassForGoalTags(tags []string) string {
+// ScopeClassForItem returns the first scope class (by sorted class name, for
+// deterministic precedence) whose AppliesToGoals list matches the item. A class
+// target matches when it appears in the item's goal IDs (e.g. "G-014") OR in the
+// item's tag set — either as a bare tag or as the slug of a "goal:<slug>" tag.
+// Returns "" if none match. I-830 introduced goal-tag matching; I-987 broadened
+// it to goal-ID membership (item.Goals) because items reliably carry their goal
+// IDs but inconsistently carry goal:<slug> tags, leaving auto-assign dormant.
+func (t *TestingConfig) ScopeClassForItem(tags, goals []string) string {
 	if t == nil {
 		return ""
+	}
+	// Build the match set: goal IDs, plus tags both verbatim and goal:-stripped.
+	matchSet := make(map[string]bool, len(tags)+len(goals))
+	for _, g := range goals {
+		matchSet[g] = true
+	}
+	for _, tag := range tags {
+		matchSet[tag] = true
+		if slug, ok := strings.CutPrefix(tag, "goal:"); ok {
+			matchSet[slug] = true
+		}
 	}
 	classNames := make([]string, 0, len(t.ScopeClasses))
 	for cn := range t.ScopeClasses {
 		classNames = append(classNames, cn)
 	}
 	sort.Strings(classNames)
-	for _, tag := range tags {
-		slug, ok := strings.CutPrefix(tag, "goal:")
-		if !ok {
-			continue
-		}
-		for _, className := range classNames {
-			class := t.ScopeClasses[className]
-			for _, g := range class.AppliesToGoals {
-				if g == slug {
-					return className
-				}
+	for _, className := range classNames {
+		for _, target := range t.ScopeClasses[className].AppliesToGoals {
+			if matchSet[target] {
+				return className
 			}
 		}
 	}

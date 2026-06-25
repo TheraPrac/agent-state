@@ -27,6 +27,23 @@ func addGoalScopeClass(cfg *config.Config) {
 	}
 }
 
+// addAgentStateScopeClass injects the I-987 agent-state class, which auto-assigns
+// to the G-014 goal via goal-ID membership (not a goal:<slug> tag).
+func addAgentStateScopeClass(cfg *config.Config) {
+	if cfg.Testing == nil {
+		cfg.Testing = &config.TestingConfig{}
+	}
+	if cfg.Testing.ScopeClasses == nil {
+		cfg.Testing.ScopeClasses = make(map[string]config.ScopeClassConfig)
+	}
+	cfg.Testing.ScopeClasses["agent-state"] = config.ScopeClassConfig{
+		RequiredSuites: map[string]config.SuiteConfig{
+			"as_test": {Command: "cd ../as && go build ./... && go vet ./... && go test ./... -count=1"},
+		},
+		AppliesToGoals: []string{"G-014", "st-tooling"},
+	}
+}
+
 func TestCreateAutoSetsScopeClassForGoalTag(t *testing.T) {
 	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
 	s, cfg := setupTestEnv(t)
@@ -206,5 +223,82 @@ Repos: as
 	}
 	if parsed.ScopeClass != "workspace-config" {
 		t.Errorf("parse.File ScopeClass = %q, want workspace-config", parsed.ScopeClass)
+	}
+}
+
+// I-987: an item that belongs to the G-014 goal but carries no goal:<slug> tag
+// must still auto-assign the agent-state scope class at Start — goal-ID
+// membership is the reliable signal that tag-only matching missed.
+func TestStartBackfillsScopeClassFromGoalID(t *testing.T) {
+	resetIdentityEnv(t)
+	t.Setenv("AS_AGENT_ID", "agent-test")
+	t.Setenv("AS_SESSION_ID", "test-session-goalid")
+	defer t.Setenv("AS_SESSION_ID", "")
+
+	s, cfg := setupTestEnv(t)
+	addAgentStateScopeClass(cfg)
+
+	// Queued task in goal G-014 with NO tags — the case tag matching missed.
+	goalTaskPath := filepath.Join(cfg.ItemDir(), "tasks", "T-011-goalid-task.md")
+	writeFile(t, goalTaskPath, `id: T-011
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: Goal-member task without scope_class or tags
+
+goals:
+- G-014
+
+depends_on:
+- []
+
+next_actions:
+- []
+
+sbar:
+  situation: |-
+    Fixture for I-987 goal-ID backfill test.
+  background: |-
+    Item belongs to G-014 but carries no goal:<slug> tag.
+  assessment: |-
+    scope_class should resolve from goal membership at Start time.
+  recommendation: |-
+    Start command backfills agent-state from goal ID.
+`)
+
+	if err := os.MkdirAll(cfg.PlansDir(), 0755); err != nil {
+		t.Fatalf("MkdirAll plans: %v", err)
+	}
+	writeFile(t, filepath.Join(cfg.PlansDir(), "T-011.md"), `# Plan: T-011
+## Approach
+Test plan.
+## Scope
+Repos: as
+## Acceptance Criteria
+- cmd: go test ./...
+`)
+
+	s2, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	_ = s
+
+	if rc := Start(s2, cfg, "T-011", StartOpts{}); rc != 0 {
+		t.Fatalf("Start = %d, want 0", rc)
+	}
+
+	s3, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New reload: %v", err)
+	}
+	item, ok := s3.Get("T-011")
+	if !ok {
+		t.Fatal("T-011 not found after Start")
+	}
+	if item.ScopeClass != "agent-state" {
+		t.Errorf("ScopeClass = %q, want agent-state", item.ScopeClass)
 	}
 }

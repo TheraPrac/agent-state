@@ -343,7 +343,7 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		// I-830: backfill scope_class from goal tags for items that were
 		// queued before auto-set was in place (idempotent — skips if already set).
 		if item.ScopeClass == "" {
-			if cls := cfg.Testing.ScopeClassForGoalTags(item.Tags); cls != "" {
+			if cls := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); cls != "" {
 				item.ScopeClass = cls
 				item.Doc.SetField("scope_class", cls)
 			}

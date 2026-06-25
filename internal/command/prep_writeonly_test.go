@@ -145,6 +145,11 @@ sprint: wo-sprint
 
 // cannedPlanText is a syntactically valid plan body that plan.Parse
 // can consume and Save will accept.
+// cannedPlanText is a substance-complete plan: it carries every section
+// quality.ValidatePlan requires (Approach, Scope, Tests, Out-of-scope, Risks)
+// so the interactive Accept path (prepItem) passes the substance gate instead
+// of looping back to the menu forever when a stub SelectMenu keeps choosing
+// Accept.
 const cannedPlanText = `## Approach
 Canned plan body for the write-only test.
 
@@ -160,6 +165,15 @@ Repos: as
 
 ## Files to Modify
 - main.go
+
+## Tests
+Unit: go test ./internal/foo -run TestBar covers the change.
+
+## Out-of-scope
+None.
+
+## Risks
+None — low-risk test fixture.
 
 ## Acceptance Criteria
 - cmd: go test ./internal/foo -run TestBar
