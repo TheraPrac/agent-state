@@ -10,9 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func tasksFile(t *testing.T, cfg *config.Config, name string) string {

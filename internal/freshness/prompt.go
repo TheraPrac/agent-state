@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 // promptDepRecommendationCap caps the per-dep recommendation text

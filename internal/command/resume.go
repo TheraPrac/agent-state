@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/extract"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/extract"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // ResumeOpts controls `st resume` / `st prime --resume` (I-679).

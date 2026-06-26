@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // Revert restores an item to its state before the most recent snapshot for the given step.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 var (

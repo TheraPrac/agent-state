@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // SprintAdd adds items to a sprint and updates each item's sprint field.

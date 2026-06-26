@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // recommend.go is part of the pure DECISION CORE (see loop.go's header).

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // setupTestEnvWithChangelog creates a standard test env with a .changelog directory.

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // I-1477(f): detectPartialStarts flags an item ONLY when a worktree dir exists

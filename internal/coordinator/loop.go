@@ -3,7 +3,7 @@ package coordinator
 import (
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // This file is the pure DECISION CORE of the coordinator loop. The

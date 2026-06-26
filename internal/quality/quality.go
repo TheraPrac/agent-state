@@ -14,8 +14,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 // Severity classifies a Violation. errors block the gate they are

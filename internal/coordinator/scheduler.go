@@ -3,7 +3,7 @@ package coordinator
 import (
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 // scheduler.go is the PURE scheduling layer for T-364 multi-worker fan-out.

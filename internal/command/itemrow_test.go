@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func ptrInt(v int) *int { return &v }

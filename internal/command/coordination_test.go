@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/mail"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/mail"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 func setupCoordEnv(t *testing.T) (*store.Store, *config.Config) {

@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // ReviewCheckOpts holds injectable dependencies for review-check.

@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/agentprogress"
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/mail"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
-	"github.com/jfinlinson/agent-state/internal/transcript"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/agentprogress"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/mail"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/transcript"
 )
 
 // Phase 3 of T-353: `st transcript <item|agent|session>` — the

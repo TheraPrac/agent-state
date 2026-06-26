@@ -7,7 +7,7 @@ import (
 )
 
 const defaultConfig = `# st configuration
-# See: https://github.com/JoeFinlinson/agent-state
+# See: https://github.com/TheraPrac/agent-state
 
 project:
   name: my-project

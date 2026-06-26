@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func TestQueueAddShow(t *testing.T) {

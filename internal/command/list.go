@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // ListOpts holds flags for the list command.

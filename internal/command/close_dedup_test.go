@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // TestClose_RemovesStaleDuplicate verifies the I-472 fix: when an item

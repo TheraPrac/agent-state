@@ -10,15 +10,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/coordinator"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/mail"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/coordinator"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/mail"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // workerResult reports a finished worker's item and terminal exit code back to

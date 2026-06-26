@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/migrate"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/migrate"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // MigrateOpts configures the migrate command.

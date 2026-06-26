@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // writeOrphan appends a JSON line to .as/sessions/orphan.log mimicking

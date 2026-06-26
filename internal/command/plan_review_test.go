@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 // writeFileErr is a small helper that returns the os.WriteFile error

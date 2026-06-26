@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/registry"
 )
 
 // I-673: write-side cap, display truncation, and the st-index

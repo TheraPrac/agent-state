@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/mail"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/mail"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // artifact.go (T-370) — `st artifact <id> <kind>`: the per-facet item

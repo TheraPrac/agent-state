@@ -24,8 +24,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/buildinfo"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/buildinfo"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // Registration is the on-disk record for one live st process.

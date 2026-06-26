@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/classify"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/classify"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // TestClassify_DenyListPersists covers the end-to-end happy path of

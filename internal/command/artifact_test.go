@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // Every declared kind dispatches, returns rc 0, and prints non-empty

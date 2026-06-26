@@ -8,9 +8,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // status_me.go (T-377, I-712) — `st status --me`: the substrate-derived

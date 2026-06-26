@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 func TestRenderTimeTracking_QuietWhenNoMetrics(t *testing.T) {

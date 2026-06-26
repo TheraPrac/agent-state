@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // fileEntry represents one file in a git diff analysis.

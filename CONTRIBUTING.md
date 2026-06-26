@@ -5,7 +5,7 @@
 **Requirements:** Go 1.24+, `make`
 
 ```bash
-git clone https://github.com/JoeFinlinson/agent-state.git
+git clone https://github.com/TheraPrac/agent-state.git
 cd agent-state
 make install   # build and install bin/st → /usr/local/bin/st
 ```

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 func TestExtractReferencedPaths_FindsSourcePaths(t *testing.T) {

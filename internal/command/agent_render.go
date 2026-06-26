@@ -1,7 +1,7 @@
 package command
 
 import (
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // formatAssignment returns a human-readable assignment label that includes

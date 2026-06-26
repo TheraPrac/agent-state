@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // --- Spec parsing ---

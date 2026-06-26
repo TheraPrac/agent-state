@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // TestMutateUpdatesItemAndDoc verifies the basic happy path: a Mutate

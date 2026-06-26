@@ -31,7 +31,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // fileResult tracks one item migration outcome for the final report.

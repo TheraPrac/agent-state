@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // writeTestWorkinfo writes a .workinfo file into workDir for test use.

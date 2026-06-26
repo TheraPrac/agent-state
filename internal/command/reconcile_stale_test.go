@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // staleFetchNone is a no-op PRFetch for stale-active tests where no PR exists.

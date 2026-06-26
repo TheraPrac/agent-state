@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // empiricalClaimREs are patterns that match observation-shaped sentences —

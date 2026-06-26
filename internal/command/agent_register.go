@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // AgentRegisterOpts are the `st agent register` flags.

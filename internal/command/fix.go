@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
-	"github.com/jfinlinson/agent-state/internal/validate"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/validate"
 )
 
 var slugPattern = regexp.MustCompile(`^([A-Z]-\d{3,})-\S+`)

@@ -3,7 +3,7 @@ package coordinator
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 func TestConflictSensitivePaths(t *testing.T) {

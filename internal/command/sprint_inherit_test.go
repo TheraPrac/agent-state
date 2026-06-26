@@ -3,7 +3,7 @@ package command
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/registry"
 )
 
 // These tests wire the canonical I-681 shape onto the shared fixture: the

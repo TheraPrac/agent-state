@@ -3,9 +3,9 @@ package command
 import (
 	"fmt"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/quality"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/quality"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // SbarEvidenceAuditOpts holds flags for the sbar-evidence-audit command.

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/buildinfo"
-	"github.com/jfinlinson/agent-state/internal/command"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/freshness"
-	"github.com/jfinlinson/agent-state/internal/session"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/buildinfo"
+	"github.com/theraprac/agent-state/internal/command"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/freshness"
+	"github.com/theraprac/agent-state/internal/session"
+	"github.com/theraprac/agent-state/internal/store"
 	"github.com/spf13/cobra"
 )
 

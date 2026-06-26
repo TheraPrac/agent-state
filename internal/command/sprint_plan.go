@@ -5,9 +5,9 @@ import (
 	"os"
 	"sort"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // SprintPlan analyzes a sprint's items using the dependency graph,

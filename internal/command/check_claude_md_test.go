@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // I-736 integration tests: confirm the CLAUDE.md drift sentinel is

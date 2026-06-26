@@ -20,16 +20,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/plan"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/session"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/manifest"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/session"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // registerRunProcess writes an agent registration for this `st run`

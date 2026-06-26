@@ -3,8 +3,8 @@ package deps
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func testItems() map[string]*model.Item {

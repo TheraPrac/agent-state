@@ -1,8 +1,8 @@
 package command
 
 import (
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/pricing"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/pricing"
 )
 
 // SyntheticCostLabel is the canonical user-facing label for any number

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // seedWSClone creates a bare origin and a working clone named `name` under

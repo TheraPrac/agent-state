@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // TestClose_FreezesDurationsAndLOC verifies that st close writes:

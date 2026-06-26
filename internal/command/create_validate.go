@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // sbarVerdict is the JSON shape returned by the Layer-2+3 semantic validator.

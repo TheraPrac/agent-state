@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // setupAgentTestCfg builds a Config rooted at a temp dir with a minimal

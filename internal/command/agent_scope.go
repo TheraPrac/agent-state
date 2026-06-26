@@ -1,7 +1,7 @@
 package command
 
 import (
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // filterByAgent returns the subset of items whose AssignedTo matches

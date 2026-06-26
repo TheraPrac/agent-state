@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // Record is one agent-progress entry.

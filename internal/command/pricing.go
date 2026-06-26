@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/pricing"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/pricing"
 )
 
 // PricingRefreshOpts controls st pricing refresh behaviour.
@@ -134,7 +134,7 @@ func runExec(dir string, args ...string) error {
 	return cmd.Run()
 }
 
-// createSanityIssue files a GitHub issue in JoeFinlinson/agent-state with the
+// createSanityIssue files a GitHub issue in TheraPrac/agent-state with the
 // diff body using the provided runner. The sanityPct is included in the title
 // and body so the issue accurately reflects the configured threshold.
 // Failures are non-fatal — the command still returns 1.
@@ -145,7 +145,7 @@ func createSanityIssue(diffText string, sanityPct float64, runner func(dir strin
 		sanityPct, strings.TrimSpace(diffText),
 	)
 	return runner("", "gh", "issue", "create",
-		"--repo", "JoeFinlinson/agent-state",
+		"--repo", "TheraPrac/agent-state",
 		"--title", title,
 		"--body", body,
 	)

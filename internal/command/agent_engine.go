@@ -3,8 +3,8 @@ package command
 import (
 	"fmt"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // AgentEngine is the adapter interface for executing one pipeline step.

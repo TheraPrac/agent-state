@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // Kind enumerates the message taxonomy. Receiver behavior in st run's

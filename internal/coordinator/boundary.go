@@ -26,7 +26,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/spawn"
+	"github.com/theraprac/agent-state/internal/spawn"
 )
 
 // CoordinatorYAMLPath is re-exported from internal/spawn so the coordinator

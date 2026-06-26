@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // Graph represents the dependency DAG for all items.

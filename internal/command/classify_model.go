@@ -3,8 +3,8 @@ package command
 import (
 	"fmt"
 
-	"github.com/jfinlinson/agent-state/internal/classify"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/classify"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // ClaudeModel is the production classify.Model implementation: it

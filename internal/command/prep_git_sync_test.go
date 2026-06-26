@@ -3,7 +3,7 @@ package command
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // TestPrepGitSyncNonFatal verifies that when GitSync fails during

@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/quality"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/quality"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // CreateOpts holds flags for the create command.

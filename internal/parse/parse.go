@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // state tracks the parser's current position in nested structures.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // Kind classifies a changelog entry by its role in cross-session continuity

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/coordinator"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/coordinator"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // ReadyOpts holds flags for the ready command.

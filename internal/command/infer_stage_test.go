@@ -3,8 +3,8 @@ package command
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // stubBranchCheck returns a BranchCheck stub that always returns the given value.

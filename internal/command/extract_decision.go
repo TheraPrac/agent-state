@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/extract"
-	"github.com/jfinlinson/agent-state/internal/store"
-	"github.com/jfinlinson/agent-state/internal/transcript"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/extract"
+	"github.com/theraprac/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/transcript"
 )
 
 // ExtractDecisionsOpts controls `st extract-decisions` (I-679 Phase C). It is

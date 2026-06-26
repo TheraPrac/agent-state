@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/namegen"
+	"github.com/theraprac/agent-state/internal/namegen"
 )
 
 // MaxNoteBytes caps a single note message. A note is a short session

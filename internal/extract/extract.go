@@ -29,7 +29,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/transcript"
+	"github.com/theraprac/agent-state/internal/transcript"
 )
 
 // ConfirmThreshold is the confidence at/above which an extracted decision is

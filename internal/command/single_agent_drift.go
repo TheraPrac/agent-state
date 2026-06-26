@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/buildinfo"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/buildinfo"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // driftWarnTTL throttles the in-session drift warning so a tight loop of

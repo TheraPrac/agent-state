@@ -3,7 +3,7 @@ package command
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func seedReviewEvidence(t *testing.T, s interface {

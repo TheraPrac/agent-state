@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 func Sync(s *store.Store, message string, allowNonState bool) int {

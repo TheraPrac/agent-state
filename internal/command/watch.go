@@ -8,12 +8,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
-	"github.com/jfinlinson/agent-state/internal/agentprogress"
-	"github.com/jfinlinson/agent-state/internal/agentps"
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/transcript"
+	"github.com/theraprac/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/agentprogress"
+	"github.com/theraprac/agent-state/internal/agentps"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/transcript"
 )
 
 // Phase 4 of T-353 (+ T-356 roster fallback): `st watch` (no arg) —

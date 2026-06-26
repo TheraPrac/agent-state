@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // RosterAgent is one entry from the canonical agent-workspaces

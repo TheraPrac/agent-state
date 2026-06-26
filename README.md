@@ -10,8 +10,8 @@ The project was originally called **agent-state** (abbreviated `as`). The user-f
 |---|---|
 | Installed binary | `st` |
 | CLI verb | `st <cmd>` |
-| GitHub repo | `github.com/JoeFinlinson/agent-state` |
-| Go module | `github.com/jfinlinson/agent-state` |
+| GitHub repo | `github.com/TheraPrac/agent-state` |
+| Go module | `github.com/theraprac/agent-state` |
 | Inner package | `cmd/as/` |
 
 A full rename (repo + module path + package tree + GitHub repo) was considered and declined — not worth the churn across every import. If you see `as` in a path and `st` on the command line, that is expected, not a bug.
@@ -21,14 +21,14 @@ A full rename (repo + module path + package tree + GitHub repo) was considered a
 **From source:**
 
 ```bash
-git clone https://github.com/JoeFinlinson/agent-state.git
+git clone https://github.com/TheraPrac/agent-state.git
 cd agent-state
 make install   # builds cmd/as → bin/st, then installs to /usr/local/bin/st
 ```
 
 Never `go install` — use `make install`. See `Makefile` for details.
 
-**Binary releases:** See [Releases](https://github.com/JoeFinlinson/agent-state/releases) for pre-built binaries (macOS arm64/amd64, Linux amd64/arm64).
+**Binary releases:** See [Releases](https://github.com/TheraPrac/agent-state/releases) for pre-built binaries (macOS arm64/amd64, Linux amd64/arm64).
 
 ## Quickstart
 

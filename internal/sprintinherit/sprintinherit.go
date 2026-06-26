@@ -19,11 +19,11 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/validate"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/validate"
 )
 
 // Target describes the in-progress sprint a mid-sprint follow-up should

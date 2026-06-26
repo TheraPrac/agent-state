@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/pricing"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/pricing"
 )
 
 // StatsMetaOpts holds flags for `st stats meta`.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // statusMeRender drives statusMeTo against a buffer + a custom agent so

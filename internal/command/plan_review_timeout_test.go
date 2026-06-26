@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/plan"
+	"github.com/theraprac/agent-state/internal/plan"
 )
 
 // I-752 motivating incident: I-738 plan approval hung a Claude sub-agent

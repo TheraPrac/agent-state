@@ -33,8 +33,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/parse"
 )
 
 type fileResult struct {

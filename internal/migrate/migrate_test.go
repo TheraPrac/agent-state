@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/parse"
 )
 
 // testConfig returns a config with testing and delivery enabled.

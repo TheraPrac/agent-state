@@ -3,7 +3,7 @@ package command
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // I-1439 defect 3: a goal's lifecycle "active" is NOT a work-item active

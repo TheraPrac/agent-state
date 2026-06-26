@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // gitLockWaiterTimeout is how long a waiter spins before giving up on the

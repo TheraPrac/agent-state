@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // I-569 step 2: real_tokens is the canonical cumulative-tokens block written

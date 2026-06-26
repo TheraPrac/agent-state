@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/parse"
-	"github.com/jfinlinson/agent-state/internal/validate"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/validate"
 )
 
 // ErrLockTimeout is returned by Mutate / MutateMany when an exclusive

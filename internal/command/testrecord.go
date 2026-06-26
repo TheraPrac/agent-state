@@ -19,14 +19,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/awsauth"
-	"github.com/jfinlinson/agent-state/internal/changelog"
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/coverage"
-	"github.com/jfinlinson/agent-state/internal/evidence"
-	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/awsauth"
+	"github.com/theraprac/agent-state/internal/changelog"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/coverage"
+	"github.com/theraprac/agent-state/internal/evidence"
+	"github.com/theraprac/agent-state/internal/manifest"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // TestRecordOpts holds flags and injectable functions for the test command.

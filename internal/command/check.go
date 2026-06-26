@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/quality"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/sprintinherit"
-	"github.com/jfinlinson/agent-state/internal/store"
-	"github.com/jfinlinson/agent-state/internal/validate"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/quality"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/sprintinherit"
+	"github.com/theraprac/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/validate"
 )
 
 func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {

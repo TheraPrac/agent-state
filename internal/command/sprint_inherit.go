@@ -1,11 +1,11 @@
 package command
 
 import (
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/deps"
-	"github.com/jfinlinson/agent-state/internal/registry"
-	"github.com/jfinlinson/agent-state/internal/sprintinherit"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/deps"
+	"github.com/theraprac/agent-state/internal/registry"
+	"github.com/theraprac/agent-state/internal/sprintinherit"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // resolveSprintInheritance applies the I-681 mid-sprint follow-up rule for

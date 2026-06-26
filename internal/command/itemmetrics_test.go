@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 func itemWithTimeTracking(tt map[string]interface{}) *model.Item {

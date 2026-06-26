@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
-	"github.com/jfinlinson/agent-state/internal/evidence"
-	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/evidence"
+	"github.com/theraprac/agent-state/internal/manifest"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func gzipNewReader(b []byte) (io.Reader, error) {

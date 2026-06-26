@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // bySessionLine mirrors the format produced by

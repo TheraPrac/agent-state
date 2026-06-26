@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // substantiveSBAR is a valid SBAR with all fields above their minimum floors.

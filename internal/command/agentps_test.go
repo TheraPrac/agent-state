@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/agentps"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/agentps"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 func TestAgentPS_RendersFleetWithLiveAndActiveItem(t *testing.T) {

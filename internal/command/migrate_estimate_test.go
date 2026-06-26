@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/migrate"
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/migrate"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/parse"
 )
 
 // TestMigrateEstimateDefaults verifies that migrate.Canonical injects

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/parse"
 )
 
 // TestCanonical_RewritesLegacyTimeTrackingFields verifies that canonical

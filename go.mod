@@ -1,4 +1,4 @@
-module github.com/jfinlinson/agent-state
+module github.com/theraprac/agent-state
 
 go 1.25.0
 

@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // AgentIdentityShow prints the resolved agent identity to stdout. Used by

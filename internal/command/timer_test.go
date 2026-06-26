@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // seedSessionStartedAt writes session_started_at on item id, t seconds in the past.

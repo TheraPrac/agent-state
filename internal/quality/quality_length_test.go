@@ -3,7 +3,7 @@ package quality
 import (
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // TestValidateSBARLength_PassesLongEnough verifies that SBAR content meeting

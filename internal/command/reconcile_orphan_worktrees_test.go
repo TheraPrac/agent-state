@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // legacyWorktreeDir returns the legacy (pre-I-407) worktree path for an item —

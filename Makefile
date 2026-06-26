@@ -14,9 +14,9 @@ WRAPPER_PATH ?= $(HOME)/bin/st
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 GIT_DIRTY  := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo 1 || echo 0)
 BUILT_AT   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS    := -X 'github.com/jfinlinson/agent-state/internal/buildinfo.Commit=$(GIT_COMMIT)' \
-              -X 'github.com/jfinlinson/agent-state/internal/buildinfo.Dirty=$(GIT_DIRTY)' \
-              -X 'github.com/jfinlinson/agent-state/internal/buildinfo.Built=$(BUILT_AT)'
+LDFLAGS    := -X 'github.com/theraprac/agent-state/internal/buildinfo.Commit=$(GIT_COMMIT)' \
+              -X 'github.com/theraprac/agent-state/internal/buildinfo.Dirty=$(GIT_DIRTY)' \
+              -X 'github.com/theraprac/agent-state/internal/buildinfo.Built=$(BUILT_AT)'
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/st ./cmd/as

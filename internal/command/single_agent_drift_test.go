@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/buildinfo"
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/buildinfo"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // withStampedBinary temporarily overrides buildinfo.Commit so a test

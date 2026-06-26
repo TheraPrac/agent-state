@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // getNestedField reads a value from a nested map on the item.

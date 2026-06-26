@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/testutil"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // TestCloseDeprecatedResolutionRejectsWithMessage verifies that I-433

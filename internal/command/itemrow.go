@@ -3,7 +3,7 @@ package command
 import (
 	"fmt"
 
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // I-440: shared per-item row formatter for st status + st run status.

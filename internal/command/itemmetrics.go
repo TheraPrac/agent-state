@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfinlinson/agent-state/internal/manifest"
-	"github.com/jfinlinson/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/manifest"
+	"github.com/theraprac/agent-state/internal/model"
 )
 
 // ItemMetrics is the rolled-up per-item view of time/cost/tokens/LOC used

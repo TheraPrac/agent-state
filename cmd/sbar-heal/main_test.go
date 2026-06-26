@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/parse"
+	"github.com/theraprac/agent-state/internal/parse"
 )
 
 // corruptFixture mirrors the real post-edit T-196 shape: all four sbar

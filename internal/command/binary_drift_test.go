@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // reapedPID returns a PID that's guaranteed dead at the time of return:

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jfinlinson/agent-state/internal/agent"
+	"github.com/theraprac/agent-state/internal/agent"
 )
 
 func TestAgentRegisterAndDeregister(t *testing.T) {
