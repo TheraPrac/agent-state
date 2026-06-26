@@ -26,9 +26,9 @@ func TestAutoScopeRepo(t *testing.T) {
 		{"web_integration", "theraprac-web"},
 		{"web_e2e", "theraprac-web"},
 		{"infra_validate", "theraprac-infra"},
-		{"workspace_test", "as"},
-		{"as_unit", "as"},        // as_ prefix — same repo as workspace_
-		{"live_acceptance", ""},  // no prefix match
+		{"workspace_test", ""}, // I-1597: workspace_* unmapped (hooks suite, not the as repo)
+		{"as_unit", "as"},
+		{"live_acceptance", ""}, // no prefix match
 		{"unknown_suite", ""},
 	}
 	for _, tt := range tests {
@@ -379,6 +379,79 @@ func TestAutoRecordSkips_DoesNotSkipScopeSuiteForChangedRepo(t *testing.T) {
 	ev, ok := getNestedField(item, "testing_evidence", "api_unit")
 	if !ok || !strings.HasPrefix(ev, "auto-skip:") {
 		t.Errorf("api_unit testing_evidence = %q, want auto-skip (required, api unchanged)", ev)
+	}
+}
+
+// I-1597 regression: workspace_test (workspace-config class) verifies
+// claude-config hooks, not the `as` repo. It must NOT be auto-skipped or
+// impact-scoped to `as` — otherwise a workspace-config item whose hooks changed
+// (but `as` did not) would auto-skip its only suite and pass the gate green with
+// zero suites run. autoScopeRepo leaves `workspace_*` unmapped so it always runs.
+func TestWorkspaceTest_NotAutoSkipped_AlwaysRuns(t *testing.T) {
+	if r := autoScopeRepo("workspace_test"); r != "" {
+		t.Fatalf("autoScopeRepo(workspace_test) = %q, want \"\" (unmapped, self-scoping)", r)
+	}
+
+	cfg := &config.Config{}
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{},
+		ScopeSuites:    map[string]config.ScopeSuiteConfig{},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"workspace-config": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"workspace_test": {Command: "bash claude-config/hooks/run-changed-hook-tests.sh"},
+				},
+			},
+		},
+	}
+	item := &model.Item{ScopeClass: "workspace-config"}
+
+	// No `as` changes (and theraprac-workspace isn't even a scoped repo) →
+	// workspace_test must still be selected to run.
+	tier1, _ := selectAutoSuites(cfg, item, map[string][]string{})
+	if len(tier1) != 1 || tier1[0] != "workspace_test" {
+		t.Errorf("tier1 = %v, want [workspace_test] (always runs)", tier1)
+	}
+
+	// And it must NOT be recorded auto-skip.
+	s, scfg := setupTestEnvWithChangelog(t)
+	scfg.Testing = cfg.Testing
+	if code := autoRecordSkips(s, scfg, "T-001", item, map[string][]string{}); code != 0 {
+		t.Fatalf("autoRecordSkips returned %d, want 0", code)
+	}
+	stored, _ := s.Get("T-001")
+	if _, ok := getNestedField(stored, "testing_evidence", "workspace_test"); ok {
+		t.Error("workspace_test must not be auto-skipped — it always runs")
+	}
+}
+
+// I-1597: live_acceptance is a manual gate. Even if a class declares it a
+// required suite, selectAutoSuites must NOT add it to tier1 (which AutoTest
+// would auto-run), and autoRecordSkips must NOT auto-skip it (repo==""). The
+// gate then forces an explicit operator record rather than a silent satisfy.
+func TestSelectAutoSuites_LiveAcceptanceNeverAutoRun(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{},
+		ScopeSuites:    map[string]config.ScopeSuiteConfig{},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"manual-gated": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"live_acceptance": {Command: "true"},
+					"as_test":         {Command: "go test ./..."},
+				},
+			},
+		},
+	}
+	item := &model.Item{ScopeClass: "manual-gated"}
+	tier1, _ := selectAutoSuites(cfg, item, map[string][]string{"as": {"x.go"}})
+	for _, n := range tier1 {
+		if n == "live_acceptance" {
+			t.Errorf("live_acceptance must never be in tier1 (auto-run); got %v", tier1)
+		}
+	}
+	if len(tier1) != 1 || tier1[0] != "as_test" {
+		t.Errorf("tier1 = %v, want [as_test] only", tier1)
 	}
 }
 

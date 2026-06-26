@@ -273,6 +273,14 @@ func selectAutoSuites(cfg *config.Config, item *model.Item, touched map[string][
 		if seen[name] {
 			continue
 		}
+		if name == "live_acceptance" {
+			// live_acceptance is a manual gate — never auto-runnable, even if a
+			// class declares it required. Leaving it out of tier1 (and it is also
+			// not auto-skipped, since repo=="") forces an explicit operator
+			// `st test … live_acceptance` record rather than a silent auto-satisfy.
+			seen[name] = true
+			continue
+		}
 		repo := autoScopeRepo(name)
 		if repo == "" {
 			// No repo mapping — can't impact-scope. Run it (self-scoping suites
@@ -310,6 +318,17 @@ func selectAutoSuites(cfg *config.Config, item *model.Item, touched map[string][
 
 // autoScopeRepo maps a suite name to its worktree repo directory name using the
 // suite-name prefix convention: api_* → theraprac-api, web_* → theraprac-web, etc.
+// Suites with no repo mapping return "" and are treated as un-impact-scopable
+// (always run; never auto-skipped) by the callers.
+//
+// I-1597: `workspace_*` is deliberately NOT mapped. `workspace_test`
+// (`run-changed-hook-tests.sh`) verifies claude-config hooks in the
+// theraprac-workspace repo — which is not in worktree.repos and is unrelated to
+// the `as` Go repo. Mapping it to `as` made impact-scoping auto-skip it whenever
+// `as` was untouched, producing a false-green gate that ran zero suites for a
+// workspace-config item whose hooks actually changed. Leaving it unmapped makes
+// it self-scoping (always runs; the script no-ops fast when no hooks changed),
+// identical to the equivalent `hook_test` suite.
 func autoScopeRepo(suiteName string) string {
 	prefix, _, _ := strings.Cut(suiteName, "_")
 	switch prefix {
@@ -319,7 +338,7 @@ func autoScopeRepo(suiteName string) string {
 		return "theraprac-web"
 	case "infra":
 		return "theraprac-infra"
-	case "workspace", "as":
+	case "as":
 		return "as"
 	default:
 		return ""

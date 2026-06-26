@@ -149,19 +149,21 @@ func TestTestRecord_ScopeClassSuite(t *testing.T) {
 // verified, so the skip is refused conservatively (same as default class) —
 // the scope_class itself is no longer the reason for refusal (I-1597 removed
 // the blanket class block; impact-aware skip applies when a worktree is set).
+// Uses as_test (a repo-mapped class suite) so the refusal exercises the
+// "worktree not configured" branch rather than the unmapped-suite branch.
 func TestTestRecord_ScopeClassSuiteRefusesSkipWithoutWorktree(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
-		"workspace-config": {
+		"agent-state": {
 			RequiredSuites: map[string]config.SuiteConfig{
-				"workspace_test": {Command: "bash run.sh"},
+				"as_test": {Command: "cd ../as && go test ./..."},
 			},
 		},
 	}
 
 	if err := s.Mutate("T-003", func(it *model.Item) error {
-		it.ScopeClass = "workspace-config"
-		it.Doc.SetField("scope_class", "workspace-config")
+		it.ScopeClass = "agent-state"
+		it.Doc.SetField("scope_class", "agent-state")
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-003: %v", err)
@@ -171,7 +173,7 @@ func TestTestRecord_ScopeClassSuiteRefusesSkipWithoutWorktree(t *testing.T) {
 	opts.Skip = "not applicable"
 	stderr := captureStderrStr(t, func() {
 		captureStdout(t, func() {
-			code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
+			code := TestRecord(s, cfg, "T-003", "as_test", opts)
 			if code == 0 {
 				t.Error("TestRecord should refuse --skip on a class's required suite without a worktree (got exit 0)")
 			}
