@@ -121,12 +121,12 @@ func TestRecord(s *store.Store, cfg *config.Config, id, suite string, opts TestR
 	// diff (not-applicable). Record as "auto-skip: ..." (same format as
 	// --auto) so the UAT gate accepts it identically. If the repo DOES have
 	// changes the suite is applicable and the skip is rejected as before.
+	// I-1597 (Inv 5/6): class-required suites take the SAME impact-aware path —
+	// a scope_class no longer makes a suite un-skippable when its repo is
+	// untouched. Unmapped class suites (repo == "", e.g. hook_test) still can't
+	// be skipped: the repo == "" branch below rejects with a clear reason.
 	if opts.Skip != "" {
 		if isRequired {
-			if item.ScopeClass != "" {
-				fmt.Fprintf(os.Stderr, "cannot skip required suite %q on class item — class suites must always run (use --run or --auto)\n", suite)
-				return 1
-			}
 			repo := autoScopeRepo(suite)
 			notApplicable := false
 			if repo != "" && cfg.Worktree != nil {

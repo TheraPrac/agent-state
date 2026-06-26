@@ -240,7 +240,10 @@ func TestSelectAutoSuites_WebE2ETriggerFires(t *testing.T) {
 	}
 }
 
-func TestSelectAutoSuites_ScopeClassRunsAllClassSuites(t *testing.T) {
+// I-1597 (Inv 5): class-required suites are impact-scoped, not run-regardless.
+// A class suite whose mapped repo is touched runs; a mapped+untouched suite is
+// omitted (autoRecordSkips records it auto-skip); an unmapped suite always runs.
+func TestSelectAutoSuites_ScopeClassImpactScoped(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Testing = &config.TestingConfig{
 		RequiredSuites: map[string]config.SuiteConfig{
@@ -249,27 +252,37 @@ func TestSelectAutoSuites_ScopeClassRunsAllClassSuites(t *testing.T) {
 		},
 		ScopeSuites: map[string]config.ScopeSuiteConfig{},
 		ScopeClasses: map[string]config.ScopeClassConfig{
-			"workspace-config": {
+			"agent-state": {
 				RequiredSuites: map[string]config.SuiteConfig{
-					"workspace_test": makeSuiteConfig("bash run-changed-hook-tests.sh"),
+					// as_test → prefix "as" → repo "as" (mapped, impact-scopable).
+					"as_test": makeSuiteConfig("cd ../as && go test ./..."),
+					// hook_test → prefix "hook" → unmapped (autoScopeRepo "").
+					"hook_test": makeSuiteConfig("bash run-changed-hook-tests.sh"),
 				},
 			},
 		},
 	}
 
-	item := &model.Item{ScopeClass: "workspace-config"}
-	// Even if no "theraprac-api" or "theraprac-web" touched, class suites run
-	touched := map[string][]string{
+	item := &model.Item{ScopeClass: "agent-state"}
+
+	// Case 1: as repo touched → as_test runs; hook_test (unmapped) always runs.
+	tier1, tier2 := selectAutoSuites(cfg, item, map[string][]string{
 		"as": {"internal/command/test_auto.go"},
-	}
-
-	tier1, tier2 := selectAutoSuites(cfg, item, touched)
-
+	})
 	if len(tier2) != 0 {
-		t.Errorf("scope suites should be empty for workspace-config items, got %v", tier2)
+		t.Errorf("scope suites should be empty for class items, got %v", tier2)
 	}
-	if len(tier1) != 1 || tier1[0] != "workspace_test" {
-		t.Errorf("tier1 should be [workspace_test], got %v", tier1)
+	if len(tier1) != 2 || tier1[0] != "as_test" || tier1[1] != "hook_test" {
+		t.Errorf("as touched: tier1 = %v, want [as_test hook_test]", tier1)
+	}
+
+	// Case 2: as repo NOT touched → as_test omitted (auto-skipped elsewhere);
+	// hook_test still runs because it can't be impact-scoped.
+	tier1, _ = selectAutoSuites(cfg, item, map[string][]string{
+		"theraprac-api": {"internal/billing/client.go"},
+	})
+	if len(tier1) != 1 || tier1[0] != "hook_test" {
+		t.Errorf("as untouched: tier1 = %v, want [hook_test] only", tier1)
 	}
 }
 
@@ -366,6 +379,46 @@ func TestAutoRecordSkips_DoesNotSkipScopeSuiteForChangedRepo(t *testing.T) {
 	ev, ok := getNestedField(item, "testing_evidence", "api_unit")
 	if !ok || !strings.HasPrefix(ev, "auto-skip:") {
 		t.Errorf("api_unit testing_evidence = %q, want auto-skip (required, api unchanged)", ev)
+	}
+}
+
+// I-1597 (Inv 5/6): a class item's mapped+untouched required suite is recorded
+// auto-skip; its unmapped required suite (no repo mapping) records nothing and
+// runs. Before I-1597, autoRecordSkips returned early for any class item.
+func TestAutoRecordSkips_ClassItem_ImpactScoped(t *testing.T) {
+	s, cfg := setupTestEnvWithChangelog(t)
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{},
+		ScopeSuites:    map[string]config.ScopeSuiteConfig{},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"agent-state": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"as_test":   {Command: "cd ../as && go test ./..."},
+					"hook_test": {Command: "bash run-changed-hook-tests.sh"},
+				},
+			},
+		},
+	}
+
+	item := &model.Item{ScopeClass: "agent-state"}
+	// as repo untouched (only a hooks change, which maps to no repo prefix).
+	touched := map[string][]string{
+		"theraprac-api": {"internal/billing/client.go"},
+	}
+
+	if code := autoRecordSkips(s, cfg, "T-001", item, touched); code != 0 {
+		t.Fatalf("autoRecordSkips returned %d, want 0", code)
+	}
+
+	stored, _ := s.Get("T-001")
+	// as_test (mapped, untouched) → auto-skip recorded with its reason.
+	ev, ok := getNestedField(stored, "testing_evidence", "as_test")
+	if !ok || !strings.HasPrefix(ev, "auto-skip: no files changed in as") {
+		t.Errorf("as_test evidence = %q, want auto-skip prefix", ev)
+	}
+	// hook_test (unmapped) → nothing recorded; it runs instead.
+	if _, ok := getNestedField(stored, "testing_evidence", "hook_test"); ok {
+		t.Error("hook_test (unmapped) must not be auto-skipped — it always runs")
 	}
 }
 

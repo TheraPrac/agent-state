@@ -144,11 +144,12 @@ func TestTestRecord_ScopeClassSuite(t *testing.T) {
 	}
 }
 
-// I-776: agents must not be able to `--skip` a class's required suite —
-// same enforcement as default-class required suites. Workspace-config
-// items still need their workspace_test evidence; skipping it would
-// re-create the gate-bypass problem the scope-class mechanism solves.
-func TestTestRecord_ScopeClassSuiteRefusesSkip(t *testing.T) {
+// I-776 / I-1597: a class's required suite is treated like any default-class
+// required suite for --skip. With NO worktree configured the diff can't be
+// verified, so the skip is refused conservatively (same as default class) —
+// the scope_class itself is no longer the reason for refusal (I-1597 removed
+// the blanket class block; impact-aware skip applies when a worktree is set).
+func TestTestRecord_ScopeClassSuiteRefusesSkipWithoutWorktree(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
 		"workspace-config": {
@@ -168,9 +169,17 @@ func TestTestRecord_ScopeClassSuiteRefusesSkip(t *testing.T) {
 
 	opts := testRecordOpts()
 	opts.Skip = "not applicable"
-	code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
-	if code == 0 {
-		t.Error("TestRecord should refuse --skip on a class's required suite (got exit 0)")
+	stderr := captureStderrStr(t, func() {
+		captureStdout(t, func() {
+			code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
+			if code == 0 {
+				t.Error("TestRecord should refuse --skip on a class's required suite without a worktree (got exit 0)")
+			}
+		})
+	})
+	// Refusal reason is now the missing worktree, not class-ness.
+	if !strings.Contains(stderr, "worktree not configured") {
+		t.Errorf("expected 'worktree not configured' in error; got: %s", stderr)
 	}
 }
 
@@ -1865,21 +1874,21 @@ func TestTestRecord_SkipRequiredSuite_NotApplicable_I1304(t *testing.T) {
 	}
 }
 
-// I-1304: --skip on a class-required suite must be rejected even when the
-// suite's repo has no diff. Before the ScopeClass guard was added to the
-// --skip path, a class item with cfg.Worktree != nil and no repo changes
-// would silently accept the skip — violating the class-suite invariant.
-func TestTestRecord_SkipRequiredSuite_ClassItem_Rejected_I1304(t *testing.T) {
+// I-1597 (Inv 5/6): --skip on a class-required suite is now ACCEPTED when the
+// suite's mapped repo has no diff — recorded as "auto-skip: ..." identical to a
+// default-class suite. A scope_class no longer makes a suite un-skippable for an
+// untouched repo (the old behavior this test used to assert). The suite here is
+// `as_test`, which maps (prefix "as") to repo "as"; with a temp-dir worktree and
+// no real git repos, detectTouchedRepos returns empty → as untouched → skip OK.
+func TestTestRecord_SkipRequiredSuite_ClassItem_AutoSkips_I1597(t *testing.T) {
 	s, cfg := setupPRTestEnv(t)
 	cfg.Testing.ScopeClasses = map[string]config.ScopeClassConfig{
-		"workspace-config": {
+		"agent-state": {
 			RequiredSuites: map[string]config.SuiteConfig{
-				"workspace_test": {Command: "bash run.sh"},
+				"as_test": {Command: "cd ../as && go test ./..."},
 			},
 		},
 	}
-	// Worktree configured with temp dir — detectTouchedRepos returns empty map
-	// (no real git repos). Pre-fix this made notApplicable=true and skip accepted.
 	cfg.Worktree = &config.WorktreeConfig{
 		Enabled: true,
 		Repos:   []string{"as"},
@@ -1888,26 +1897,32 @@ func TestTestRecord_SkipRequiredSuite_ClassItem_Rejected_I1304(t *testing.T) {
 	}
 
 	if err := s.Mutate("T-003", func(it *model.Item) error {
-		it.ScopeClass = "workspace-config"
-		it.Doc.SetField("scope_class", "workspace-config")
+		it.ScopeClass = "agent-state"
+		it.Doc.SetField("scope_class", "agent-state")
 		return nil
 	}); err != nil {
 		t.Fatalf("mutate T-003: %v", err)
 	}
 
 	opts := testRecordOpts()
-	opts.Skip = "no workspace changes"
+	opts.Skip = "no as changes"
 
 	stderr := captureStderrStr(t, func() {
 		captureStdout(t, func() {
-			code := TestRecord(s, cfg, "T-003", "workspace_test", opts)
-			if code == 0 {
-				t.Error("TestRecord should reject --skip on class-required suite even when repo has no diff")
+			code := TestRecord(s, cfg, "T-003", "as_test", opts)
+			if code != 0 {
+				t.Errorf("TestRecord returned %d, want 0 (class suite not applicable, repo untouched)", code)
 			}
 		})
 	})
-	if !strings.Contains(stderr, "class item") {
-		t.Errorf("expected 'class item' in error message; got: %s", stderr)
+	if strings.Contains(stderr, "cannot skip") {
+		t.Errorf("should not reject skip on class suite when repo untouched; stderr: %s", stderr)
+	}
+
+	item, _ := s.Get("T-003")
+	ev, ok := getNestedField(item, "testing_evidence", "as_test")
+	if !ok || !strings.HasPrefix(ev, "auto-skip:") {
+		t.Errorf("testing_evidence.as_test = %q, want auto-skip:...", ev)
 	}
 }
 

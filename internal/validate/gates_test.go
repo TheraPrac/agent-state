@@ -361,6 +361,43 @@ func TestTestingComplete_ScopeClassUsesClassRequiredSuites(t *testing.T) {
 	}
 }
 
+// I-1597 (Inv 5/6): a class item whose mapped required suite is recorded
+// auto-skip (repo untouched) and whose unmapped self-scoping suite passed must
+// pass the gate end-to-end — impact-scoped class verification, audited.
+func TestTestingComplete_ScopeClassAutoSkipPassesGate_I1597(t *testing.T) {
+	cfg := testConfig()
+	cfg.Testing = &config.TestingConfig{
+		RequiredSuites: map[string]config.SuiteConfig{},
+		ScopeClasses: map[string]config.ScopeClassConfig{
+			"agent-state": {
+				RequiredSuites: map[string]config.SuiteConfig{
+					"as_test":   {Command: "cd ../as && go test ./..."},
+					"hook_test": {Command: "bash claude-config/hooks/run-changed-hook-tests.sh"},
+				},
+			},
+		},
+	}
+	cfg.Gates = map[string][]config.GateConfig{
+		"close": {{Type: "testing_complete"}},
+	}
+
+	item := testItem("I-1597", "active")
+	item.ScopeClass = "agent-state"
+	item.TestingEvidence = map[string]interface{}{
+		// as repo untouched → auto-skipped (satisfied-by-absence, with reason).
+		"as_test": "auto-skip: no files changed in as",
+		// hook_test (unmapped) always runs → recorded pass.
+		"hook_test": "pass abc1234 2026-06-26T07:00:00-06:00",
+	}
+	allItems := map[string]*model.Item{"I-1597": item}
+
+	results := EvaluateGates(item, "close", cfg, allItems)
+	if !GatesPassed(results) {
+		f := FirstFailure(results)
+		t.Errorf("class item with auto-skipped as_test + passing hook_test should pass; got %s: %s", f.Gate, f.Message)
+	}
+}
+
 // I-776: if an item declares a scope_class but the class's required suite
 // is missing evidence, the gate fails with the standard "required suite
 // not recorded" message — same shape as the default-class failure, so the
