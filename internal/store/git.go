@@ -684,49 +684,55 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	if err != nil {
 		return fmt.Errorf("git diff --cached: %w", err)
 	}
-	if strings.TrimSpace(cached) == "" {
-		return nil
+	// I-1593: do NOT early-return when there is nothing NEW to stage. Agent-state
+	// commits that were committed locally but never pushed — e.g. a prior sync that
+	// committed then failed to push, or a push skipped while a feature branch was
+	// checked out — must still be pushed + ground-truth-verified. Returning nil here
+	// printed "Synced." while local main stayed AHEAD of origin (the false-success
+	// this fixes). So: the COMMIT step is conditional on having staged changes, but
+	// the push + verifyPushLanded below run UNCONDITIONALLY, so a "Synced." always
+	// means local main == origin/main (Inv 3: sync success is a verified postcondition).
+	if strings.TrimSpace(cached) != "" {
+		// I-594: detect cross-attribution — parallel `st update` calls each write
+		// to the working tree before holding the git lock, so `git add -u` above
+		// may have staged OTHER items' files alongside this call's intended changes.
+		// When detected, replace the caller's single-item message with a bundle
+		// message listing all staged files so git history stays accurate.
+		//
+		// Pass `root` so the function can normalize git-toplevel-relative paths
+		// (e.g. "agent-state/tasks/I-123.md") to ItemDir-relative paths
+		// ("tasks/I-123.md") before classifying them — required for nested-layout
+		// workspaces where ItemDir is a subdirectory of the git repository root.
+		message = synthesizeBundleMessage(root, message, cached)
+
+		// I-1313: commit the staged agent-state onto refs/heads/main via
+		// plumbing, NEVER `git commit` onto HEAD. When a code feature branch is
+		// checked out, `git commit` would strand the agent-state commit on that
+		// branch (PR pollution + "unpushed" nag) while pushWithRetry pushes the
+		// LOCAL main ref that never received it — the routing bug this fixes.
+		// Building the commit on refs/heads/main keeps agent-state fully
+		// decoupled from the working-tree branch; the existing pushWithRetry /
+		// replay handle staleness and same-file peer conflicts at push time.
+		if _, err := s.commitStagedOntoMain(root, message); err != nil {
+			return fmt.Errorf("commit onto main: %w", err)
+		}
+
+		// Clear the real index. The just-staged changes were committed onto
+		// refs/heads/main, not onto HEAD, so they must not linger staged
+		// against the working-tree branch (a subsequent `git add -u` / sync
+		// would otherwise re-stage and re-commit them). Mixed reset to HEAD
+		// leaves the working-tree files intact (they now match main) while
+		// unstaging them. On main this is a no-op (HEAD already advanced).
+		if err := gitCmdQuiet(root, "reset", "-q"); err != nil {
+			return fmt.Errorf("git reset after main commit: %w", err)
+		}
+
+		// I-1451: on feature branches, git reset -q resets the real index to the
+		// feature branch HEAD, which may still have .st-git.lock tracked (the
+		// deletion was committed only onto refs/heads/main). Remove it again so
+		// git add -u on the next sync doesn't re-stage it and dirty the index.
+		_ = gitCmdQuiet(root, "rm", "--cached", "--ignore-unmatch", "--", ".st-git.lock")
 	}
-
-	// I-594: detect cross-attribution — parallel `st update` calls each write
-	// to the working tree before holding the git lock, so `git add -u` above
-	// may have staged OTHER items' files alongside this call's intended changes.
-	// When detected, replace the caller's single-item message with a bundle
-	// message listing all staged files so git history stays accurate.
-	//
-	// Pass `root` so the function can normalize git-toplevel-relative paths
-	// (e.g. "agent-state/tasks/I-123.md") to ItemDir-relative paths
-	// ("tasks/I-123.md") before classifying them — required for nested-layout
-	// workspaces where ItemDir is a subdirectory of the git repository root.
-	message = synthesizeBundleMessage(root, message, cached)
-
-	// I-1313: commit the staged agent-state onto refs/heads/main via
-	// plumbing, NEVER `git commit` onto HEAD. When a code feature branch is
-	// checked out, `git commit` would strand the agent-state commit on that
-	// branch (PR pollution + "unpushed" nag) while pushWithRetry pushes the
-	// LOCAL main ref that never received it — the routing bug this fixes.
-	// Building the commit on refs/heads/main keeps agent-state fully
-	// decoupled from the working-tree branch; the existing pushWithRetry /
-	// replay handle staleness and same-file peer conflicts at push time.
-	if _, err := s.commitStagedOntoMain(root, message); err != nil {
-		return fmt.Errorf("commit onto main: %w", err)
-	}
-
-	// Clear the real index. The just-staged changes were committed onto
-	// refs/heads/main, not onto HEAD, so they must not linger staged
-	// against the working-tree branch (a subsequent `git add -u` / sync
-	// would otherwise re-stage and re-commit them). Mixed reset to HEAD
-	// leaves the working-tree files intact (they now match main) while
-	// unstaging them. On main this is a no-op (HEAD already advanced).
-	if err := gitCmdQuiet(root, "reset", "-q"); err != nil {
-		return fmt.Errorf("git reset after main commit: %w", err)
-	}
-
-	// I-1451: on feature branches, git reset -q resets the real index to the
-	// feature branch HEAD, which may still have .st-git.lock tracked (the
-	// deletion was committed only onto refs/heads/main). Remove it again so
-	// git add -u on the next sync doesn't re-stage it and dirty the index.
-	_ = gitCmdQuiet(root, "rm", "--cached", "--ignore-unmatch", "--", ".st-git.lock")
 
 	// Push with retry
 	if s.cfg.Git.AutoPush {

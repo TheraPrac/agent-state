@@ -568,6 +568,57 @@ func TestGitSyncWithPushNoRemote(t *testing.T) {
 	}
 }
 
+// TestGitSyncPushesPreexistingUnpushedCommits (I-1593): a sync with NOTHING new to
+// stage must still push agent-state commits that were committed locally but never
+// pushed (e.g. a prior sync that committed then failed to push). Before the fix,
+// GitSync early-returned nil on "nothing to commit", so `st sync` printed "Synced."
+// while local main stayed AHEAD of origin — the false-success this regression guards.
+func TestGitSyncPushesPreexistingUnpushedCommits(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	gitBareRemote(t, root)
+
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	out := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	// Establish the remote-tracking ref, then strand an agent-state commit on local
+	// main WITHOUT pushing it (simulating a prior committed-but-not-pushed sync).
+	run("fetch", "origin")
+	run("commit", "--allow-empty", "-m", "stranded agent-state commit")
+	if ahead := out("rev-list", "--count", "origin/main..main"); ahead == "0" {
+		t.Fatalf("setup: expected local main ahead of origin, got %s", ahead)
+	}
+
+	cfg, _ := config.Load(root)
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, _ := New(cfg)
+
+	// Sync with NO new working-tree change — must push the stranded commit, not
+	// early-return a false success.
+	if err := s.GitSync("noop sync"); err != nil {
+		t.Fatalf("GitSync should succeed and push the stranded commit, got: %v", err)
+	}
+	if unpushed := out("rev-list", "--count", "origin/main..main"); unpushed != "0" {
+		t.Errorf("I-1593: sync left %s unpushed commit(s) — false 'Synced' (local main ahead of origin)", unpushed)
+	}
+}
+
 func TestWriteNoDirectory(t *testing.T) {
 	root, _ := setupTestDir(t)
 	s := newTestStore(t, root)
