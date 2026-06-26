@@ -1137,11 +1137,16 @@ func Load(startDir string) (*Config, error) {
 	cfg := Defaults()
 	cfg.startDir, _ = filepath.Abs(startDir)
 
-	configPath, found := discover(startDir)
+	configPath, found, explicitTarget := discover(startDir)
 	if !found {
-		// Fallback: check ST_ROOT env var
+		// Fallback: check ST_ROOT env var. ST_ROOT explicitly names the state
+		// root, so — like a `.st-root` redirect or `--config` — a config reached
+		// through it is an operator override and must NOT be canonicalized away.
 		if root := os.Getenv("ST_ROOT"); root != "" {
-			configPath, found = discover(root)
+			configPath, found, _ = discover(root)
+			if found {
+				explicitTarget = true
+			}
 		}
 	}
 
@@ -1155,6 +1160,24 @@ func Load(startDir string) (*Config, error) {
 		cfg.root = startDir
 	}
 
+	// I-1596: identity-anchor the state root for an ordinary discovery only — not
+	// an explicit --config/.st-root/ST_ROOT override, and not the no-config
+	// startDir fallback. When the discovered root is a worktree snapshot, RE-LOAD
+	// from the canonical store's own config.yaml so cfg's config values and
+	// cfg.root come from the SAME store: never frozen-snapshot config applied over
+	// live canonical state (split-brain).
+	if cfg.Discovered && !explicitTarget {
+		if canonical := cfg.canonicalStateRoot(); canonical != "" {
+			canonicalCfg := Defaults()
+			canonicalCfg.startDir = cfg.startDir
+			if err := parseConfigFile(canonicalCfg, filepath.Join(canonical, ".as", "config.yaml")); err != nil {
+				return nil, fmt.Errorf("loading canonical config under %s: %w", canonical, err)
+			}
+			canonicalCfg.root = canonical
+			canonicalCfg.Discovered = true
+			cfg = canonicalCfg
+		}
+	}
 	return cfg, nil
 }
 
@@ -1173,17 +1196,142 @@ func LoadFrom(configPath string) (*Config, error) {
 	} else {
 		cfg.startDir = cfg.root
 	}
+	// I-1596: do NOT canonicalize here. `--config <path>` is an explicit operator
+	// override — the whole point is to target that exact store (e.g. to inspect or
+	// repair a worktree snapshot). Redirecting it to the canonical workspace would
+	// defeat the override and silently read/write the wrong store.
 	return cfg, nil
+}
+
+// canonicalStateRoot returns the canonical per-agent workspace that cfg.root
+// should be redirected to — resolved from the agent-workspace identity
+// (.as/agent-workspace.yaml at the agent root) — or "" if no redirect applies.
+// It is PURE: the caller (Load) re-loads config from the returned store so that
+// cfg.root and cfg's config values always come from the same place. I-1596 / Inv 1/2.
+//
+// discover() walks up from CWD for .as/config.yaml, so running st from inside a
+// worktree (<agent-root>/worktrees/<id>/theraprac-workspace) resolves cfg.root to
+// the worktree's FROZEN agent-state snapshot. Because every state accessor
+// (ItemDir/ChangelogDir/PlansDir/...) joins cfg.root, all reads/writes would then
+// hit the snapshot instead of the one canonical store. Re-anchor cfg.root to the
+// workspace directly under the identity-resolved agent root.
+//
+// AgentRoot() walks .as/agent-workspace.yaml from startDir (ST_ROOT-immune,
+// agent_id-validated). The marker lives at the agent root, not inside the
+// theraprac-workspace repo, so a worktree checkout never carries it — AgentRoot()
+// resolves the real agent root even from a worktree CWD.
+//
+// The redirect fires ONLY when ALL of the following hold (each guard closes a
+// way the redirect could otherwise hijack a store the caller meant to target):
+//
+//   - The config was discovered by an ordinary walk-up, NOT an explicit override
+//     (`--config` via LoadFrom, a `.st-root` redirect file, or an ST_ROOT target)
+//     and NOT the no-config startDir fallback. Enforced by the caller (Load gates
+//     on Discovered && !explicitTarget; LoadFrom never calls this).
+//   - cfg.root is a strict nested descendant of the resolved agent root — i.e. an
+//     actual per-agent worktree snapshot of THIS agent. AgentRoot() resolves from
+//     startDir/CWD, which (e.g. under `go test`) can be inside a real agent tree
+//     while cfg.root points at an unrelated temp workspace; the descendant check
+//     stops us hijacking that unrelated root into a bogus <realAgentRoot>/<base>.
+//   - cfg.root is not already the canonical workspace (inode-equal → no-op).
+//   - The canonical target <agentRoot>/<base> ALREADY EXISTS as a real store
+//     (.as/config.yaml present). Without this, a worktree whose basename has no
+//     matching sibling under the agent root, or a main clone that isn't checked
+//     out yet, would repoint root at a phantom directory — every state accessor
+//     would then read an empty store or MkdirAll a stray one (apparent data loss).
+//
+// All "is X the same dir as / under Y" checks compare by INODE (os.SameFile),
+// not by string prefix: the agent-workspace marker's path: and the discovered
+// cfg.root routinely differ in string form (case-insensitive macOS — Dev vs dev
+// — and the I-418 workspace symlink) while naming the same directory. A
+// string HasPrefix check silently fails to fire in exactly those cases (caught
+// in live acceptance: a worktree-cwd record still landed in the frozen copy).
+func (c *Config) canonicalStateRoot() string {
+	if c.root == "" {
+		return ""
+	}
+	agentRoot := c.AgentRoot()
+	if agentRoot == "" {
+		return ""
+	}
+	canonical := filepath.Join(agentRoot, filepath.Base(c.root))
+	if sameDir(canonical, c.root) {
+		return "" // already the one canonical workspace (inode-equal)
+	}
+	if !dirIsUnder(c.root, agentRoot) {
+		return "" // cfg.root lives outside this agent's tree — never touch it
+	}
+	// Only redirect to a canonical workspace that actually exists and is a real
+	// store. Guards the phantom-directory case where <agentRoot>/<base> is absent
+	// (missing main clone, or a worktree basename with no top-level sibling):
+	// repointing there would lose all existing state behind an empty/stray store.
+	if _, err := os.Stat(filepath.Join(canonical, ".as", "config.yaml")); err != nil {
+		return ""
+	}
+	return canonical
+}
+
+// sameDir / dirIsUnder compare paths by INODE (os.SameFile) rather than by
+// string. This is deliberate and not duplication-by-accident with the
+// EvalSymlinks+ToLower helpers in internal/store/git.go (I-835): config is a
+// lower-level package that store imports, so it cannot import store back without
+// a cycle; and inode comparison is strictly more robust here — it tolerates BOTH
+// the macOS case-insensitive (Dev vs dev) and symlink (I-418) path-string
+// differences with one mechanism, where a lowercase+EvalSymlinks string compare
+// can still diverge on case the resolver does not normalize.
+
+// sameDir reports whether a and b name the same directory by inode, tolerating
+// case-insensitive and symlinked path-string differences. False if either is
+// unstat-able.
+func sameDir(a, b string) bool {
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
+
+// dirIsUnder reports whether dir is a strict descendant of ancestor, comparing
+// each parent by inode (os.SameFile) rather than string prefix — immune to
+// case/symlink path-string differences. I-1596.
+//
+// The walk is bounded by dir's own depth (it terminates at the filesystem root)
+// and runs at most a handful of os.Stat calls per Load — only on the discovered,
+// non-override path. We deliberately do NOT add a string-length / separator-depth
+// early-exit: under the symlink/case differences this inode walk exists to handle,
+// the lexical parent of a true descendant can be longer OR shorter than ancestor's
+// string form, so a length bound risks a false negative — silently reinstating the
+// frozen-snapshot reads this fix removes. Correctness over saving a few stats.
+func dirIsUnder(dir, ancestor string) bool {
+	aStat, err := os.Stat(ancestor)
+	if err != nil {
+		return false
+	}
+	cur := dir
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false // reached filesystem root without matching
+		}
+		if pStat, err := os.Stat(parent); err == nil && os.SameFile(pStat, aStat) {
+			return true
+		}
+		cur = parent
+	}
 }
 
 // discover walks up from dir looking for .as/config.yaml.
 // If a .st-root file is found first, its content is used as a redirect path.
-func discover(dir string) (string, bool) {
+// viaRedirect reports whether the returned config was reached by following a
+// .st-root redirect file (an explicit operator override) rather than a direct
+// .as/config.yaml hit — I-1596 canonicalization must defer to that override.
+func discover(dir string) (path string, found bool, viaRedirect bool) {
 	dir, _ = filepath.Abs(dir)
 	for {
 		candidate := filepath.Join(dir, ".as", "config.yaml")
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate, true
+			return candidate, true, false
 		}
 		// Check for .st-root redirect file
 		rootFile := filepath.Join(dir, ".st-root")
@@ -1195,13 +1343,13 @@ func discover(dir string) (string, bool) {
 				}
 				redirected := filepath.Join(target, ".as", "config.yaml")
 				if _, err := os.Stat(redirected); err == nil {
-					return redirected, true
+					return redirected, true, true
 				}
 			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false
+			return "", false, false
 		}
 		dir = parent
 	}
