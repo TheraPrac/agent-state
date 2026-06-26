@@ -360,23 +360,7 @@ func writeFileMk(t *testing.T, path, data string) {
 // per-agent workspace, never the worktree snapshot — and the main clone must
 // resolve to the same location (Inv 1: one authority from identity, not CWD).
 func TestCanonicalStateRoot_WorktreeResolvesToCanonical(t *testing.T) {
-	clearHeritage(t)
-	t.Setenv("AS_AGENT_ID", "")
-	t.Setenv("ST_ROOT", "")
-
-	tmp := t.TempDir()
-	agentRoot := filepath.Join(tmp, "theraprac-agent-a")
-
-	// Identity marker lives at the AGENT ROOT, not inside the workspace repo —
-	// so a worktree checkout never carries it.
-	writeFileMk(t, filepath.Join(agentRoot, ".as", "agent-workspace.yaml"),
-		"agent_id: agent-a\npath: "+agentRoot+"\n")
-
-	// Canonical workspace + its frozen worktree copy (same basename, no marker).
-	canonicalWS := filepath.Join(agentRoot, "theraprac-workspace")
-	worktreeWS := filepath.Join(agentRoot, "worktrees", "T-1", "theraprac-workspace")
-	writeFileMk(t, filepath.Join(canonicalWS, ".as", "config.yaml"), "")
-	writeFileMk(t, filepath.Join(worktreeWS, ".as", "config.yaml"), "")
+	_, canonicalWS, worktreeWS := canonAgentTree(t, true)
 
 	for _, tc := range []struct {
 		name, loadFrom string
@@ -529,6 +513,51 @@ func TestCanonicalStateRoot_NoConfigFallbackNotHijacked(t *testing.T) {
 	}
 	if got := cfg.Root(); got != startDir {
 		t.Errorf("Root() = %q, want unchanged %q (no-config fallback must not redirect)", got, startDir)
+	}
+}
+
+// TestCanonicalStateRoot_ReloadsCanonicalConfig is the split-brain guard: when a
+// worktree snapshot is redirected to the canonical store, cfg's config VALUES must
+// come from the canonical config.yaml, not the frozen worktree one — otherwise
+// stale snapshot config (required fields, git behavior) is applied to live state.
+func TestCanonicalStateRoot_ReloadsCanonicalConfig(t *testing.T) {
+	_, canonicalWS, worktreeWS := canonAgentTree(t, true)
+	// Distinct project.name in each store so we can tell which config was parsed.
+	writeFileMk(t, filepath.Join(canonicalWS, ".as", "config.yaml"), "project:\n  name: canonical-live\n")
+	writeFileMk(t, filepath.Join(worktreeWS, ".as", "config.yaml"), "project:\n  name: frozen-snapshot\n")
+
+	cfg, err := Load(worktreeWS)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Root(); got != canonicalWS {
+		t.Fatalf("Root() = %q, want canonical %q", got, canonicalWS)
+	}
+	if cfg.Project.Name != "canonical-live" {
+		t.Errorf("Project.Name = %q, want %q (config must come from the canonical store, not the frozen snapshot)",
+			cfg.Project.Name, "canonical-live")
+	}
+}
+
+// TestCanonicalStateRoot_StRootTargetNotHijacked: ST_ROOT explicitly names the
+// state root and is an operator override; a config reached via the ST_ROOT
+// fallback must NOT be canonicalized to the canonical workspace.
+func TestCanonicalStateRoot_StRootTargetNotHijacked(t *testing.T) {
+	agentRoot, _, worktreeWS := canonAgentTree(t, true)
+	t.Setenv("ST_ROOT", worktreeWS)
+
+	// startDir has no config of its own, forcing the ST_ROOT discovery fallback.
+	startDir := filepath.Join(agentRoot, "nocfg")
+	if err := os.MkdirAll(startDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(startDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Root(); got != worktreeWS {
+		t.Errorf("Root() = %q, want ST_ROOT target %q (explicit override must win)", got, worktreeWS)
 	}
 }
 
