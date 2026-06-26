@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -667,6 +668,14 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 		}
 	}
 
+	// I-1477(f): if a prior `st start` was interrupted, the per-item dir exists
+	// with some repo subdirs but no .workinfo (written only on full success).
+	// Note that we're completing it rather than starting fresh — re-runs are
+	// idempotent (provisionSingleRepoWorktree skips present worktrees).
+	if _, err := os.Stat(filepath.Join(workDir, ".workinfo")); err != nil && dirHasSubdir(workDir) {
+		fmt.Printf("  recovering partial start for %s (a prior st start was interrupted)\n", id)
+	}
+
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", fmt.Errorf("creating worktree dir: %w", err)
 	}
@@ -683,6 +692,74 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	fmt.Printf("  Branch: %s\n", branch)
 	fmt.Printf("  Dir:    %s\n", workDir)
 	return branch, nil
+}
+
+// detectPartialStarts scans the worktree base for item directories left in a
+// half-built state by an interrupted `st start`. The reliable signal is STATUS,
+// not a filesystem marker: a successful start ends by flipping the item to its
+// active status and pushing it onto the stack. So a per-item worktree that
+// exists on disk while the item is still in its START status (queued) means the
+// start was interrupted before completing — regardless of whether .workinfo got
+// written (which happens mid-start and can fail independently). Fully-started
+// items (active) and finished items (terminal) are never flagged. I-1477(f):
+// surfaced in `st prime` so the agent re-runs `st start <id>` (idempotent —
+// completes the start) instead of treating the item as un-started.
+func detectPartialStarts(s *store.Store, cfg *config.Config) []string {
+	base := cfg.WorktreeBase()
+	if base == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var partial []string
+	for _, e := range entries {
+		if !e.IsDir() || !looksLikeItemDir(e.Name()) {
+			continue
+		}
+		id := e.Name()
+		item, ok := s.Get(id)
+		if !ok {
+			continue // orphan worktree (no such item) — a different cleanup concern
+		}
+		tc, ok := cfg.Types[item.Type]
+		if !ok {
+			continue
+		}
+		if item.Status == tc.StartStatus {
+			partial = append(partial, id)
+		}
+	}
+	sort.Strings(partial)
+	return partial
+}
+
+// looksLikeItemDir reports whether name has the I-<n> / T-<n> item-id shape.
+func looksLikeItemDir(name string) bool {
+	if len(name) < 3 || (name[0] != 'I' && name[0] != 'T') || name[1] != '-' {
+		return false
+	}
+	for _, r := range name[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// dirHasSubdir reports whether dir contains at least one subdirectory.
+func dirHasSubdir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func branchExists(repoDir, branch string) bool {

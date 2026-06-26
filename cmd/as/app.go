@@ -21,6 +21,31 @@ import (
 var exitCode int
 
 // newApp builds the full cobra command tree.
+// flagHints maps a commonly-mistyped flag (as it appears in cobra's parse
+// error) to canonical guidance. Order matters: more-specific entries first,
+// since matching is substring-based on the error text. I-1477(a).
+var flagHints = []struct{ flag, hint string }{
+	{"--description", "st create takes SBAR flags, not --description — use --sbar-situation / --sbar-background / --sbar-assessment / --sbar-recommendation"},
+	{"--situation", "prefix SBAR flags with sbar-: --sbar-situation (likewise --sbar-background / --sbar-assessment / --sbar-recommendation)"},
+	{"--sbar", "the SBAR flags are --sbar-situation / --sbar-background / --sbar-assessment / --sbar-recommendation"},
+	{"--review-skip", "review skips are a config field (review_skips), not a flag — see `st help` / docs for the review_skips YAML shape"},
+}
+
+// flagErrorWithHint augments cobra's flag parse errors with a did-you-mean hint
+// for known mis-invocations, falling through to the original error otherwise.
+func flagErrorWithHint(_ *cobra.Command, ferr error) error {
+	if ferr == nil {
+		return nil
+	}
+	msg := ferr.Error()
+	for _, h := range flagHints {
+		if strings.Contains(msg, h.flag) {
+			return fmt.Errorf("%w\n\n  hint: %s", ferr, h.hint)
+		}
+	}
+	return ferr
+}
+
 func newApp(cwd string) *cobra.Command {
 	var appCfg *config.Config
 	var appStore *store.Store
@@ -99,6 +124,14 @@ context for LLM agents. Works standalone or with CI/hooks.`,
 		},
 		SilenceUsage: true,
 	}
+
+	// I-1477(a): did-you-mean for mis-invocations. cobra already suggests
+	// near-miss SUBcommands (e.g. `st creAte` → `st create`); set the distance
+	// explicitly so it stays on. Add a flag-error hook (inherited by every
+	// subcommand) that maps commonly-wrong flags to the canonical ones, so an
+	// agent gets a one-line correction instead of only a bare parse error.
+	root.SuggestionsMinimumDistance = 2
+	root.SetFlagErrorFunc(flagErrorWithHint)
 
 	// Groups surfaced in `st help` and rendered as section headers by
 	// the docgen subcommand. Group titles are user-facing copy.
@@ -402,16 +435,16 @@ To list goals with weights use:
 			requireEst, _ := cmd.Flags().GetBool("require-estimate")
 			exitCode = command.Create(appStore, appCfg, args[0], title, command.CreateOpts{
 				Priority: priority, Severity: severity, Tag: tag, Depends: depends, Sprint: sprint,
-				Goals:          goals,
-				Situation:      situation,
-				Background:     background,
-				Assessment:     assessment,
-				Recommendation: recommendation,
-				EnforceGate:    true,
-				NoValidate:     noValidate,
-				NoDedup:        noDedup,
-				EvidenceSkip:   createEvidenceSkip,
-				EstimatedHours: estimateHrs,
+				Goals:           goals,
+				Situation:       situation,
+				Background:      background,
+				Assessment:      assessment,
+				Recommendation:  recommendation,
+				EnforceGate:     true,
+				NoValidate:      noValidate,
+				NoDedup:         noDedup,
+				EvidenceSkip:    createEvidenceSkip,
+				EstimatedHours:  estimateHrs,
 				RequireEstimate: requireEst,
 				// I-588: wire the run engine so post-create spawns the
 				// SBAR/title sub-agent self-review. In-process callers
@@ -3750,16 +3783,16 @@ var commandGroupAssignments = map[string]string{
 	"item":   "state-mgmt",
 
 	// Workflow
-	"start":        "workflow",
-	"close":        "workflow",
-	"finish":       "workflow",
-	"release":      "workflow",
-	"commit":       "workflow",
-	"plan":         "workflow",
-	"revert":       "workflow",
-	"split":        "workflow",
-	"unlock":       "workflow",
-	"infer-stage":  "workflow",
+	"start":       "workflow",
+	"close":       "workflow",
+	"finish":      "workflow",
+	"release":     "workflow",
+	"commit":      "workflow",
+	"plan":        "workflow",
+	"revert":      "workflow",
+	"split":       "workflow",
+	"unlock":      "workflow",
+	"infer-stage": "workflow",
 
 	// Testing & Evidence
 	"test": "testing",
