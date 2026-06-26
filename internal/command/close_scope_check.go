@@ -68,16 +68,11 @@ func closeScopeSuiteCheck(item *model.Item, cfg *config.Config, opts CloseScopeC
 		if wt == "" {
 			continue
 		}
-		// I-1477(e): anchor the diff at merge-base(origin/main, HEAD), matching
-		// test_auto.go / ComputeFileChanges, so a stale local main ref can't skew
-		// the result. Fall back to main..HEAD when origin/main is unavailable.
-		var out string
-		var err error
-		if base, baseErr := gitRunner(wt, "merge-base", "origin/main", "HEAD"); baseErr == nil {
-			out, err = gitRunner(wt, "diff", "--name-only", strings.TrimSpace(base)+"..HEAD")
-		} else {
-			out, err = gitRunner(wt, "diff", "--name-only", "main..HEAD")
-		}
+		// Three-dot `origin/main...HEAD` already diffs from merge-base(origin/main,
+		// HEAD) to HEAD in a single subprocess — the item's own changes, immune to
+		// a stale local main. When origin/main is unavailable the diff errors and
+		// we skip this repo conservatively (the pre-push gate already enforced it).
+		out, err := gitRunner(wt, "diff", "--name-only", "origin/main...HEAD")
 		if err != nil {
 			continue // git unavailable or no remote — skip this repo conservatively
 		}

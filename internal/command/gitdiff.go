@@ -38,106 +38,101 @@ func resolveRepoDir(cfg *config.Config, repo string) string {
 	return filepath.Join(parentDir, repo)
 }
 
-// resolveRepoDirForItem checks for a worktree first, falls back to main repo.
-// I-407: WorktreeForItem prefers the new agent-root location, falls back to
-// the legacy shared-workspace location for old worktrees.
-func resolveRepoDirForItem(cfg *config.Config, itemID, repo string) string {
-	if cfg.Worktree != nil && cfg.Worktree.BaseDir != "" {
-		// Pattern 1: <base_dir>/<item-id>/<repo> (st start pattern)
-		wtBase := cfg.WorktreeForItem(itemID)
-		if wtBase == "" {
-			return repo
-		}
-		for _, name := range []string{repo} {
-			candidate := filepath.Join(wtBase, name)
-			if isGitDir(candidate) {
-				return candidate
-			}
+// resolveItemWorktree returns the item's OWN worktree path for (itemID, repo)
+// using the I-407 Pattern 1/2/3 lookup, or "" when no item worktree exists on
+// disk. It does NOT fall back to the main repo — callers wanting that fallback
+// use resolveRepoDirForItem. Shared by resolveRepoDirForItem and the strict
+// close-time resolver (itemWorktreeRepoDir) so the worktree-location logic lives
+// in one place (I-1477).
+func resolveItemWorktree(cfg *config.Config, itemID, repo string) string {
+	if cfg.Worktree == nil || cfg.Worktree.BaseDir == "" {
+		return ""
+	}
+	// Pattern 1: <base_dir>/<item-id>/<repo> (st start pattern), with RepoMap.
+	if wtBase := cfg.WorktreeForItem(itemID); wtBase != "" {
+		if candidate := filepath.Join(wtBase, repo); isGitDir(candidate) {
+			return candidate
 		}
 		if cfg.Worktree.RepoMap != nil {
 			if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
-				candidate := filepath.Join(wtBase, mapped)
-				if isGitDir(candidate) {
+				if candidate := filepath.Join(wtBase, mapped); isGitDir(candidate) {
 					return candidate
 				}
 			}
 		}
+	}
 
-		// Patterns 2 & 3 scan the worktree base dir — check both the new
-		// (agent-root) and legacy (workspace) bases since manual/legacy
-		// worktrees may live in either location during the I-407
-		// migration window.
-		for _, wtRoot := range []string{cfg.WorktreeBase(), cfg.WorktreeBaseLegacy()} {
-			if wtRoot == "" {
+	// Patterns 2 & 3 scan the worktree base dir — check both the new
+	// (agent-root) and legacy (workspace) bases since manual/legacy
+	// worktrees may live in either location during the I-407 migration window.
+	for _, wtRoot := range []string{cfg.WorktreeBase(), cfg.WorktreeBaseLegacy()} {
+		if wtRoot == "" {
+			continue
+		}
+		// Pattern 2: <base_dir>/<repo> (manual/legacy worktree)
+		if candidate := filepath.Join(wtRoot, repo); isGitDir(candidate) {
+			return candidate
+		}
+		// Pattern 3: scan all worktree dirs for a repo matching the name
+		entries, err := os.ReadDir(wtRoot)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
 				continue
 			}
-			// Pattern 2: <base_dir>/<repo> (manual/legacy worktree)
-			candidate := filepath.Join(wtRoot, repo)
-			if isGitDir(candidate) {
-				return candidate
+			if strings.Contains(e.Name(), repo) {
+				if candidate := filepath.Join(wtRoot, e.Name()); isGitDir(candidate) {
+					return candidate
+				}
 			}
-
-			// Pattern 3: scan all worktree dirs for a repo matching the name
-			entries, err := os.ReadDir(wtRoot)
-			if err == nil {
-				for _, e := range entries {
-					if !e.IsDir() {
-						continue
-					}
-					if strings.Contains(e.Name(), repo) {
-						candidate := filepath.Join(wtRoot, e.Name())
-						if isGitDir(candidate) {
-							return candidate
-						}
-					}
-					subEntries, err := os.ReadDir(filepath.Join(wtRoot, e.Name()))
-					if err == nil {
-						for _, sub := range subEntries {
-							if sub.IsDir() && strings.Contains(sub.Name(), repo) {
-								candidate := filepath.Join(wtRoot, e.Name(), sub.Name())
-								if isGitDir(candidate) {
-									return candidate
-								}
-							}
-						}
+			subEntries, err := os.ReadDir(filepath.Join(wtRoot, e.Name()))
+			if err != nil {
+				continue
+			}
+			for _, sub := range subEntries {
+				if sub.IsDir() && strings.Contains(sub.Name(), repo) {
+					if candidate := filepath.Join(wtRoot, e.Name(), sub.Name()); isGitDir(candidate) {
+						return candidate
 					}
 				}
 			}
+		}
+	}
+	return ""
+}
+
+// resolveRepoDirForItem checks for the item's worktree first, falls back to the
+// main repo. I-407: WorktreeForItem prefers the new agent-root location, falls
+// back to the legacy shared-workspace location for old worktrees.
+func resolveRepoDirForItem(cfg *config.Config, itemID, repo string) string {
+	if cfg.Worktree != nil && cfg.Worktree.BaseDir != "" {
+		// Legacy quirk preserved: a configured base with no per-item worktree
+		// dir resolves to the bare repo name (callers depend on this).
+		if cfg.WorktreeForItem(itemID) == "" {
+			return repo
+		}
+		if wt := resolveItemWorktree(cfg, itemID, repo); wt != "" {
+			return wt
 		}
 	}
 	return resolveRepoDir(cfg, repo)
 }
 
-// itemWorktreeRepoDir returns ONLY the item-specific worktree path for
-// (itemID, repo) — the `<base_dir>/<item-id>/<repo>` Pattern-1 location used by
-// `st start`. Unlike resolveRepoDirForItem it does NOT fall back to the main
-// repo, a legacy/scan location, or a different item's worktree. It returns ""
-// when the item has no live worktree for that repo.
-//
-// I-1477(e): close-time Tier-2 revalidation must inspect only the item's OWN
-// changes. When an item is already merged its worktree is gone; falling back to
-// the main repo there diffs unrelated divergence and falsely flags suites (e.g.
-// api_integration on an item that only touched shell hooks). Returning "" lets
-// the caller skip the repo — the pre-push gate already enforced the real diff.
+// itemWorktreeRepoDir resolves where close-time Tier-2 revalidation should look
+// for the item's diff (I-1477(e)). When worktree integration is ENABLED it
+// returns the item's OWN worktree (Patterns 1-3) and "" when that worktree is
+// gone — a merged item, where the pre-push gate already enforced Tier 2 and
+// diffing the main repo would pick up unrelated divergence (the phantom-diff bug
+// that falsely flagged api_integration on a hooks-only item). When worktree
+// integration is DISABLED the agent works on a feature branch in the main clone,
+// so the item's changes live there and we diff the main repo directly.
 func itemWorktreeRepoDir(cfg *config.Config, itemID, repo string) string {
-	if cfg.Worktree == nil || cfg.Worktree.BaseDir == "" {
-		return ""
+	if cfg.Worktree == nil || !cfg.Worktree.Enabled {
+		return resolveRepoDir(cfg, repo)
 	}
-	wtBase := cfg.WorktreeForItem(itemID)
-	if wtBase == "" {
-		return ""
-	}
-	if candidate := filepath.Join(wtBase, repo); isGitDir(candidate) {
-		return candidate
-	}
-	if cfg.Worktree.RepoMap != nil {
-		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
-			if candidate := filepath.Join(wtBase, mapped); isGitDir(candidate) {
-				return candidate
-			}
-		}
-	}
-	return ""
+	return resolveItemWorktree(cfg, itemID, repo)
 }
 
 // isGitDir returns true if the path contains a .git directory or file.

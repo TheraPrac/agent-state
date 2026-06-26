@@ -695,12 +695,16 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 }
 
 // detectPartialStarts scans the worktree base for item directories left in a
-// half-built state by an interrupted `st start`: the per-item dir was created
-// (and may hold some repo subdirs) but the final `.workinfo` marker was never
-// written, so the status flip to active and the stack push never ran. I-1477(f):
+// half-built state by an interrupted `st start`. The reliable signal is STATUS,
+// not a filesystem marker: a successful start ends by flipping the item to its
+// active status and pushing it onto the stack. So a per-item worktree that
+// exists on disk while the item is still in its START status (queued) means the
+// start was interrupted before completing — regardless of whether .workinfo got
+// written (which happens mid-start and can fail independently). Fully-started
+// items (active) and finished items (terminal) are never flagged. I-1477(f):
 // surfaced in `st prime` so the agent re-runs `st start <id>` (idempotent —
-// completes the start) instead of silently treating the item as un-started.
-func detectPartialStarts(cfg *config.Config) []string {
+// completes the start) instead of treating the item as un-started.
+func detectPartialStarts(s *store.Store, cfg *config.Config) []string {
 	base := cfg.WorktreeBase()
 	if base == "" {
 		return nil
@@ -714,15 +718,17 @@ func detectPartialStarts(cfg *config.Config) []string {
 		if !e.IsDir() || !looksLikeItemDir(e.Name()) {
 			continue
 		}
-		dir := filepath.Join(base, e.Name())
-		// .workinfo is written as the LAST step of a successful start.
-		if _, err := os.Stat(filepath.Join(dir, ".workinfo")); err == nil {
+		id := e.Name()
+		item, ok := s.Get(id)
+		if !ok {
+			continue // orphan worktree (no such item) — a different cleanup concern
+		}
+		tc, ok := cfg.Types[item.Type]
+		if !ok {
 			continue
 		}
-		// No marker — flag only when at least one repo subdir exists; an empty
-		// leftover dir is noise, not an interrupted start.
-		if dirHasSubdir(dir) {
-			partial = append(partial, e.Name())
+		if item.Status == tc.StartStatus {
+			partial = append(partial, id)
 		}
 	}
 	sort.Strings(partial)

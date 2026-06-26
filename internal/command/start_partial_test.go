@@ -9,45 +9,31 @@ import (
 	"github.com/jfinlinson/agent-state/internal/config"
 )
 
-// I-1477(f): detectPartialStarts flags item worktree dirs left without a
-// .workinfo marker (interrupted `st start`), and only those.
+// I-1477(f): detectPartialStarts flags an item ONLY when a worktree dir exists
+// for it AND the item is still in its START status (queued) — i.e. `st start`
+// was interrupted before the status flip/stack push. Fully-started (active) and
+// finished (terminal) items are never flagged, regardless of .workinfo state.
 func TestDetectPartialStarts(t *testing.T) {
-	_, cfg := setupTestEnv(t)
-	base := t.TempDir()
+	// setupTestEnv seeds T-001 (queued), T-002 (queued), T-003 (active).
+	s, cfg := setupTestEnv(t)
 	cfg.Worktree = &config.WorktreeConfig{
-		Enabled:   true,
-		BaseDir:   "wt",
-		ParentDir: base,
-		Repos:     []string{"repo"},
+		Enabled: true, BaseDir: "wt", ParentDir: t.TempDir(), Repos: []string{"theraprac-api"},
 	}
 	wtBase := cfg.WorktreeBase()
 	if wtBase == "" {
-		t.Fatal("WorktreeBase() empty")
+		t.Fatal("WorktreeBase empty")
 	}
 
-	mk := func(parts ...string) {
-		if err := os.MkdirAll(filepath.Join(append([]string{wtBase}, parts...)...), 0755); err != nil {
-			t.Fatalf("mkdir %v: %v", parts, err)
-		}
-	}
-	touch := func(parts ...string) {
-		if err := os.WriteFile(filepath.Join(append([]string{wtBase}, parts...)...), []byte("x"), 0644); err != nil {
-			t.Fatalf("write %v: %v", parts, err)
+	// Worktree dirs: T-001 queued → partial; T-003 active → not; T-999 no such
+	// item → skip; scratch not item-shaped → ignored. (T-002 has no worktree.)
+	for _, d := range []string{"T-001", "T-003", "T-999", "scratch"} {
+		if err := os.MkdirAll(filepath.Join(wtBase, d, "theraprac-api"), 0755); err != nil {
+			t.Fatal(err)
 		}
 	}
 
-	// I-9001: interrupted — has a repo subdir but NO .workinfo → flagged.
-	mk("I-9001", "theraprac-api")
-	// I-9002: complete — repo subdir AND .workinfo → not flagged.
-	mk("I-9002", "theraprac-api")
-	touch("I-9002", ".workinfo")
-	// I-9003: empty leftover dir, no subdir → not flagged (noise).
-	mk("I-9003")
-	// not-an-item: wrong shape → ignored.
-	mk("scratch", "theraprac-api")
-
-	got := detectPartialStarts(cfg)
-	want := []string{"I-9001"}
+	got := detectPartialStarts(s, cfg)
+	want := []string{"T-001"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("detectPartialStarts = %v, want %v", got, want)
 	}

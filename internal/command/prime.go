@@ -114,8 +114,8 @@ func resumePointer(arrow, id string) string {
 // writePartialStartWarning surfaces interrupted `st start` runs (I-1477(f)) at
 // the top of the prime dashboard, so a half-built worktree set isn't mistaken
 // for un-started work. Re-running `st start <id>` is idempotent and completes it.
-func writePartialStartWarning(b *strings.Builder, cfg *config.Config) {
-	partial := detectPartialStarts(cfg)
+func writePartialStartWarning(b *strings.Builder, s *store.Store, cfg *config.Config) {
+	partial := detectPartialStarts(s, cfg)
 	if len(partial) == 0 {
 		return
 	}
@@ -266,7 +266,7 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
 	}
 
-	writePartialStartWarning(&b, cfg)
+	writePartialStartWarning(&b, s, cfg)
 
 	// Sprint header
 	b.WriteString(fmt.Sprintf("## Sprint: %s — %s\n", sp.ID, sp.Title))
@@ -415,7 +415,7 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
 	}
 
-	writePartialStartWarning(&b, cfg)
+	writePartialStartWarning(&b, s, cfg)
 
 	// Active work
 	b.WriteString("## Active Work\n")
