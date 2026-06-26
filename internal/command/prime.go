@@ -33,7 +33,7 @@ type primeData struct {
 	Active           []primeItem    `json:"active"`
 	Ready            []primeItem    `json:"ready"`
 	Issues           int            `json:"open_issues"`
-	IssuesByPriority map[int]int `json:"issues_by_priority"` // I-406: priority-bucketed open issues
+	IssuesByPriority map[int]int    `json:"issues_by_priority"` // I-406: priority-bucketed open issues
 	Queued           int            `json:"queued_tasks"`
 	Archive          int            `json:"archived"`
 	Guidance         string         `json:"guidance,omitempty"`
@@ -41,18 +41,18 @@ type primeData struct {
 }
 
 type sprintContext struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Total      int    `json:"total"`
-	Complete   int    `json:"complete"`
-	InProgress int    `json:"in_progress"`
-	Blocked    int    `json:"blocked"`
+	ID         string     `json:"id"`
+	Title      string     `json:"title"`
+	Total      int        `json:"total"`
+	Complete   int        `json:"complete"`
+	InProgress int        `json:"in_progress"`
+	Blocked    int        `json:"blocked"`
 	CrossDeps  []crossDep `json:"cross_deps,omitempty"`
 }
 
 type crossDep struct {
-	ItemID string `json:"item_id"`
-	DepID  string `json:"dep_id"`
+	ItemID    string `json:"item_id"`
+	DepID     string `json:"dep_id"`
 	DepSprint string `json:"dep_sprint,omitempty"`
 }
 
@@ -109,6 +109,21 @@ func (pi *primeItem) fillSBAR(item *model.Item) {
 // centralizes the message text, which is the real anti-drift concern.
 func resumePointer(arrow, id string) string {
 	return fmt.Sprintf("  %s load the cross-session record first:  st resume %s\n", arrow, id)
+}
+
+// writePartialStartWarning surfaces interrupted `st start` runs (I-1477(f)) at
+// the top of the prime dashboard, so a half-built worktree set isn't mistaken
+// for un-started work. Re-running `st start <id>` is idempotent and completes it.
+func writePartialStartWarning(b *strings.Builder, cfg *config.Config) {
+	partial := detectPartialStarts(cfg)
+	if len(partial) == 0 {
+		return
+	}
+	b.WriteString(fmt.Sprintf(
+		"⚠ partial start: %s — a prior `st start` was interrupted before completing. "+
+			"Re-run `st start <id>` to finish (idempotent).\n\n",
+		strings.Join(partial, ", "),
+	))
 }
 
 func Prime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
@@ -250,6 +265,8 @@ func sprintScopedPrime(s *store.Store, cfg *config.Config, opts PrimeOpts, sprin
 	if pending := PendingApprovalCount(s, cfg); pending > 0 {
 		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
 	}
+
+	writePartialStartWarning(&b, cfg)
 
 	// Sprint header
 	b.WriteString(fmt.Sprintf("## Sprint: %s — %s\n", sp.ID, sp.Title))
@@ -397,6 +414,8 @@ func globalPrime(s *store.Store, cfg *config.Config, opts PrimeOpts) int {
 	if pending := PendingApprovalCount(s, cfg); pending > 0 {
 		b.WriteString(fmt.Sprintf("⏳ %d item(s) awaiting operator approval — run `st queue approve <id>` (or `st queue approve --sprint <slug>` for bulk)\n\n", pending))
 	}
+
+	writePartialStartWarning(&b, cfg)
 
 	// Active work
 	b.WriteString("## Active Work\n")

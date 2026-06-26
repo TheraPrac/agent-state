@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -667,6 +668,14 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 		}
 	}
 
+	// I-1477(f): if a prior `st start` was interrupted, the per-item dir exists
+	// with some repo subdirs but no .workinfo (written only on full success).
+	// Note that we're completing it rather than starting fresh — re-runs are
+	// idempotent (provisionSingleRepoWorktree skips present worktrees).
+	if _, err := os.Stat(filepath.Join(workDir, ".workinfo")); err != nil && dirHasSubdir(workDir) {
+		fmt.Printf("  recovering partial start for %s (a prior st start was interrupted)\n", id)
+	}
+
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return "", fmt.Errorf("creating worktree dir: %w", err)
 	}
@@ -683,6 +692,68 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	fmt.Printf("  Branch: %s\n", branch)
 	fmt.Printf("  Dir:    %s\n", workDir)
 	return branch, nil
+}
+
+// detectPartialStarts scans the worktree base for item directories left in a
+// half-built state by an interrupted `st start`: the per-item dir was created
+// (and may hold some repo subdirs) but the final `.workinfo` marker was never
+// written, so the status flip to active and the stack push never ran. I-1477(f):
+// surfaced in `st prime` so the agent re-runs `st start <id>` (idempotent —
+// completes the start) instead of silently treating the item as un-started.
+func detectPartialStarts(cfg *config.Config) []string {
+	base := cfg.WorktreeBase()
+	if base == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var partial []string
+	for _, e := range entries {
+		if !e.IsDir() || !looksLikeItemDir(e.Name()) {
+			continue
+		}
+		dir := filepath.Join(base, e.Name())
+		// .workinfo is written as the LAST step of a successful start.
+		if _, err := os.Stat(filepath.Join(dir, ".workinfo")); err == nil {
+			continue
+		}
+		// No marker — flag only when at least one repo subdir exists; an empty
+		// leftover dir is noise, not an interrupted start.
+		if dirHasSubdir(dir) {
+			partial = append(partial, e.Name())
+		}
+	}
+	sort.Strings(partial)
+	return partial
+}
+
+// looksLikeItemDir reports whether name has the I-<n> / T-<n> item-id shape.
+func looksLikeItemDir(name string) bool {
+	if len(name) < 3 || (name[0] != 'I' && name[0] != 'T') || name[1] != '-' {
+		return false
+	}
+	for _, r := range name[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// dirHasSubdir reports whether dir contains at least one subdirectory.
+func dirHasSubdir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func branchExists(repoDir, branch string) bool {

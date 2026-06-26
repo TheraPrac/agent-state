@@ -108,6 +108,38 @@ func resolveRepoDirForItem(cfg *config.Config, itemID, repo string) string {
 	return resolveRepoDir(cfg, repo)
 }
 
+// itemWorktreeRepoDir returns ONLY the item-specific worktree path for
+// (itemID, repo) — the `<base_dir>/<item-id>/<repo>` Pattern-1 location used by
+// `st start`. Unlike resolveRepoDirForItem it does NOT fall back to the main
+// repo, a legacy/scan location, or a different item's worktree. It returns ""
+// when the item has no live worktree for that repo.
+//
+// I-1477(e): close-time Tier-2 revalidation must inspect only the item's OWN
+// changes. When an item is already merged its worktree is gone; falling back to
+// the main repo there diffs unrelated divergence and falsely flags suites (e.g.
+// api_integration on an item that only touched shell hooks). Returning "" lets
+// the caller skip the repo — the pre-push gate already enforced the real diff.
+func itemWorktreeRepoDir(cfg *config.Config, itemID, repo string) string {
+	if cfg.Worktree == nil || cfg.Worktree.BaseDir == "" {
+		return ""
+	}
+	wtBase := cfg.WorktreeForItem(itemID)
+	if wtBase == "" {
+		return ""
+	}
+	if candidate := filepath.Join(wtBase, repo); isGitDir(candidate) {
+		return candidate
+	}
+	if cfg.Worktree.RepoMap != nil {
+		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok {
+			if candidate := filepath.Join(wtBase, mapped); isGitDir(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
 // isGitDir returns true if the path contains a .git directory or file.
 func isGitDir(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))

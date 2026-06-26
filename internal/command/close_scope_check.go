@@ -44,7 +44,12 @@ func closeScopeSuiteCheck(item *model.Item, cfg *config.Config, opts CloseScopeC
 
 	resolveWt := opts.ResolveWorktree
 	if resolveWt == nil {
-		resolveWt = resolveRepoDirForItem
+		// I-1477(e): use the strict item-only resolver, not resolveRepoDirForItem.
+		// The latter falls back to the main repo when the item's worktree is gone
+		// (already merged), where origin/main...HEAD picks up unrelated divergence
+		// and falsely flags suites. itemWorktreeRepoDir returns "" instead, so a
+		// merged item with no worktree contributes no changed files.
+		resolveWt = itemWorktreeRepoDir
 	}
 	gitRunner := opts.RunGit
 	if gitRunner == nil {
@@ -63,7 +68,16 @@ func closeScopeSuiteCheck(item *model.Item, cfg *config.Config, opts CloseScopeC
 		if wt == "" {
 			continue
 		}
-		out, err := gitRunner(wt, "diff", "--name-only", "origin/main...HEAD")
+		// I-1477(e): anchor the diff at merge-base(origin/main, HEAD), matching
+		// test_auto.go / ComputeFileChanges, so a stale local main ref can't skew
+		// the result. Fall back to main..HEAD when origin/main is unavailable.
+		var out string
+		var err error
+		if base, baseErr := gitRunner(wt, "merge-base", "origin/main", "HEAD"); baseErr == nil {
+			out, err = gitRunner(wt, "diff", "--name-only", strings.TrimSpace(base)+"..HEAD")
+		} else {
+			out, err = gitRunner(wt, "diff", "--name-only", "main..HEAD")
+		}
 		if err != nil {
 			continue // git unavailable or no remote — skip this repo conservatively
 		}

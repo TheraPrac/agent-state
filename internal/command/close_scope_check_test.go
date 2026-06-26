@@ -89,6 +89,51 @@ func stubbedOpts(repoFiles map[string][]string, resolvedRepos []string) CloseSco
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// I-1477(e): the strict resolver returns the item-specific worktree when it
+// exists on disk and "" otherwise — it must NOT fall back to the main repo.
+func TestItemWorktreeRepoDir_OnlyItemSpecific(t *testing.T) {
+	cfg := buildScopeCheckCfg(t)
+
+	// No worktree on disk for the item → "".
+	if got := itemWorktreeRepoDir(cfg, "T-777", "theraprac-api"); got != "" {
+		t.Errorf("expected empty when no item worktree, got %q", got)
+	}
+
+	// Create an item-specific worktree with a .git marker → returns that path.
+	wtBase := cfg.WorktreeForItem("T-777")
+	if wtBase == "" {
+		t.Fatal("WorktreeForItem returned empty")
+	}
+	repoDir := filepath.Join(wtBase, "theraprac-api")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if got := itemWorktreeRepoDir(cfg, "T-777", "theraprac-api"); got != repoDir {
+		t.Errorf("expected %q, got %q", repoDir, got)
+	}
+}
+
+// I-1477(e): regression for the phantom-diff bug. Using the PRODUCTION default
+// resolver (nil ResolveWorktree), an item with no worktree on disk (already
+// merged) and missing api_integration evidence must still pass close — the
+// revalidation has nothing of the item's to inspect, so it must not fall back
+// to the main repo and falsely demand api_integration.
+func TestCloseScopeSuiteCheck_NoItemWorktree_SkipsRevalidation(t *testing.T) {
+	cfg := buildScopeCheckCfg(t)
+	item := buildScopeItem("T-778", nil) // no evidence recorded at all
+	// nil ResolveWorktree → uses itemWorktreeRepoDir; no worktree dirs exist in
+	// this temp cfg, so every repo resolves to "" and is skipped.
+	opts := CloseScopeCheckOpts{
+		RunGit: func(dir string, args ...string) (string, error) {
+			t.Fatalf("RunGit must not be called when no item worktree resolves (dir=%s)", dir)
+			return "", nil
+		},
+	}
+	if msg := closeScopeSuiteCheck(item, cfg, opts); msg != "" {
+		t.Errorf("expected empty message (no item worktree → skip), got: %s", msg)
+	}
+}
+
 func TestCloseScopeSuiteCheck_NoChanges(t *testing.T) {
 	cfg := buildScopeCheckCfg(t)
 	item := buildScopeItem("T-001", nil)
