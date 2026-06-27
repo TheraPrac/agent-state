@@ -376,52 +376,6 @@ func ParseStatusZ(out string) []StatusEntry {
 	return entries
 }
 
-// ComputeItemsPrefix resolves the agent-state items-root prefix RELATIVE to the
-// git toplevel for `root` (the configured items root). It de-inlines the prefix
-// derivation checkNonStateGate previously did inline (I-1621), so the symlink +
-// lowercase normalization (I-835) lives in one tested place.
-//
-// Returns (prefix, true) on success: prefix is "" for a flat layout (items root
-// == git toplevel — no items-vs-non-items distinction to enforce), or a slash-
-// suffixed lowercased prefix like "agent-state/" for a nested layout. Returns
-// ("", false) when the git toplevel cannot be resolved or filepath.Rel fails —
-// callers fail open on false.
-func ComputeItemsPrefix(root string) (string, bool) {
-	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", false
-	}
-	return itemsPrefixFromToplevel(root, strings.TrimSpace(toplevelOut))
-}
-
-// itemsPrefixFromToplevel derives the items prefix from an already-resolved git
-// toplevel, so a caller that needs the toplevel anyway (checkNonStateGate runs
-// status/log in it) does not pay a second `rev-parse --show-toplevel`. Same
-// (prefix, ok) contract as ComputeItemsPrefix.
-func itemsPrefixFromToplevel(root, toplevel string) (string, bool) {
-	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
-	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
-	// canonical and raw forms and emits a `../../private/var/...` traversal
-	// that mis-classifies every path as non-state. Use the raw forms on
-	// either side's failure. I-835: also lowercase both inputs before Rel —
-	// on case-insensitive/-preserving APFS, EvalSymlinks can return different
-	// casings, making Rel emit a `../../...` traversal.
-	canonRoot, errRoot := filepath.EvalSymlinks(root)
-	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
-	if errRoot != nil || errTop != nil {
-		canonRoot = root
-		canonToplevel = toplevel
-	}
-	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
-	if err != nil {
-		return "", false
-	}
-	if itemsRel == "." {
-		return "", true
-	}
-	return strings.ToLower(filepath.ToSlash(itemsRel)) + "/", true
-}
-
 // checkNonStateGate is the I-807/I-765 defense-in-depth gate. It fails
 // closed when any tracked / staged / committed-but-unpushed mutation outside
 // the agent-state allowlist (`<itemsPrefix>`, `.as/`) is present, on ANY
@@ -500,18 +454,38 @@ func checkNonStateGate(root string) error {
 
 	// Resolve git toplevel so porcelain paths come back relative to the
 	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
-	// not relative to ItemDir which would emit `../claude-config/...`. The
-	// toplevel is also where status/log run below, so resolve it once here and
-	// feed it to itemsPrefixFromToplevel (I-1621) for the symlink/lowercase Rel
-	// normalization (I-835) — avoids a second `rev-parse --show-toplevel`.
+	// not relative to ItemDir which would emit `../claude-config/...`.
 	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil // fail-open
 	}
 	toplevel := strings.TrimSpace(toplevelOut)
-	itemsPrefix, ok := itemsPrefixFromToplevel(root, toplevel)
-	if !ok {
+
+	// Compute the items-root prefix relative to the git toplevel.
+	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
+	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
+	// canonical and raw forms and emits a `../../private/var/...`
+	// traversal that mis-classifies every path as non-state. Use the
+	// raw forms on either side's failure (or fail-open).
+	// I-835: also lowercase both inputs before Rel. On macOS APFS
+	// (case-insensitive, case-preserving), EvalSymlinks can return
+	// different casings for the two paths — e.g. /Users/x/Dev/...
+	// vs /Users/x/dev/... — making Rel emit a ../../... traversal
+	// path. Lowercasing both is a no-op on correctly-cased paths and
+	// on case-sensitive filesystems.
+	canonRoot, errRoot := filepath.EvalSymlinks(root)
+	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
+	if errRoot != nil || errTop != nil {
+		canonRoot = root
+		canonToplevel = toplevel
+	}
+	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
+	if err != nil {
 		return nil // fail-open
+	}
+	itemsPrefix := ""
+	if itemsRel != "." {
+		itemsPrefix = strings.ToLower(filepath.ToSlash(itemsRel)) + "/"
 	}
 
 	// Flat layout has no items-vs-non-items distinction to enforce.

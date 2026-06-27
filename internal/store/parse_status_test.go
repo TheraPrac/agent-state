@@ -1,8 +1,6 @@
 package store
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -100,44 +98,4 @@ func TestParseStatusZ(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestComputeItemsPrefix covers the gate's toplevel-relative prefix derivation
-// (I-1621): nested layout yields a slash-suffixed lowercased prefix, flat layout
-// (items root == toplevel) yields "", and a non-repo root fails open (ok=false).
-func TestComputeItemsPrefix(t *testing.T) {
-	t.Run("nested layout yields slash-suffixed prefix", func(t *testing.T) {
-		top := t.TempDir()
-		initGitRepo(t, top)
-		itemsRoot := filepath.Join(top, "agent-state")
-		if err := os.MkdirAll(itemsRoot, 0755); err != nil {
-			t.Fatal(err)
-		}
-		prefix, ok := ComputeItemsPrefix(itemsRoot)
-		if !ok {
-			t.Fatalf("ComputeItemsPrefix(nested) ok=false, want true")
-		}
-		if prefix != "agent-state/" {
-			t.Errorf("prefix = %q, want %q", prefix, "agent-state/")
-		}
-	})
-
-	t.Run("flat layout (root == toplevel) yields empty prefix", func(t *testing.T) {
-		top := t.TempDir()
-		initGitRepo(t, top)
-		prefix, ok := ComputeItemsPrefix(top)
-		if !ok {
-			t.Fatalf("ComputeItemsPrefix(flat) ok=false, want true")
-		}
-		if prefix != "" {
-			t.Errorf("prefix = %q, want \"\" (flat layout)", prefix)
-		}
-	})
-
-	t.Run("non-repo root fails open", func(t *testing.T) {
-		dir := t.TempDir() // not a git repo
-		if _, ok := ComputeItemsPrefix(dir); ok {
-			t.Errorf("ComputeItemsPrefix(non-repo) ok=true, want false (fail-open)")
-		}
-	})
 }
