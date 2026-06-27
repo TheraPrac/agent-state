@@ -2182,3 +2182,219 @@ func gitRun(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
+// TestGitSync_StagesDotAsInNestedLayout_I1622 is the I-1622 regression guard:
+// in a NESTED layout (paths.root: agent-state), st-owned canonical `.as/` state
+// (epics+sprints, queue, notes, the agent's stack) is a SIBLING of ItemDir at
+// the git toplevel. Before the fix, GitSync's ItemDir-cwd-scoped `git add -u --
+// .` never reached it, so those mutations were silently dropped from sync while
+// "Synced." still printed (the Inv-1 honest-sync violation found live on
+// 2026-06-27). The test asserts the fix AND its PR-#300 review properties:
+//   - a tracked-MODIFIED canonical file (epics.yaml) lands on origin/main;
+//   - an UNTRACKED-NEW canonical file (queue.yaml) ALSO lands (not just `-u`);
+//   - a peer's tracked-modified `.as/` file (mailbox/) is NOT swept;
+//   - no exit-128 hard-fail (sync succeeds).
+func TestGitSync_StagesDotAsInNestedLayout_I1622(t *testing.T) {
+	top := t.TempDir()
+	itemsRoot := filepath.Join(top, "agent-state")
+	for _, d := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(itemsRoot, d), 0755)
+	}
+	asDir := filepath.Join(top, ".as")
+	os.MkdirAll(asDir, 0755)
+	// Nested config: items live under agent-state/, .as/ stays at the toplevel.
+	os.WriteFile(filepath.Join(asDir, "config.yaml"),
+		[]byte("paths:\n  root: agent-state\n"), 0644)
+	// A tracked canonical .as/ state file (the kind that was going unpersisted).
+	os.WriteFile(filepath.Join(asDir, "epics.yaml"),
+		[]byte("epics: []\nsprints: []\n"), 0644)
+	// A peer-owned, tracked .as/ file that must NOT be swept by this agent's sync.
+	peerMail := filepath.Join(asDir, "mailbox", "agent-zz")
+	os.MkdirAll(peerMail, 0755)
+	os.WriteFile(filepath.Join(peerMail, "m.yaml"), []byte("body: v1\n"), 0644)
+	// An item under ItemDir so the ItemDir staging path also has content.
+	writeItem(t, filepath.Join(itemsRoot, "tasks", "T-001-first-task.md"), `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: First task
+`)
+
+	initGitRepo(t, top)
+	gitBareRemote(t, top)
+
+	cfg, err := config.Load(top)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Sanity: nested layout (ItemDir is a subdir of the toplevel).
+	if filepath.Clean(cfg.ItemDir()) == filepath.Clean(top) {
+		t.Fatalf("expected nested layout, but ItemDir == toplevel (%s)", top)
+	}
+
+	// (a) Mutate the canonical .as/epics.yaml — exactly what `st sprint add` /
+	// `st epic create` do. Tracked-modified, lives OUTSIDE ItemDir.
+	const epicMarker = "test-epic-i1622"
+	os.WriteFile(filepath.Join(asDir, "epics.yaml"),
+		[]byte("epics:\n  - id: "+epicMarker+"\n    title: T\n    status: active\nsprints: []\n"), 0644)
+	// (b) Create an UNTRACKED-NEW canonical file (queue.yaml) — `-u` would skip
+	// this; the fix must still persist it.
+	const queueMarker = "queued-i1622"
+	os.WriteFile(filepath.Join(asDir, "queue.yaml"),
+		[]byte("queue:\n  - "+queueMarker+"\n"), 0644)
+	// (c) Modify a PEER's tracked .as/ file — must NOT be swept into this sync.
+	os.WriteFile(filepath.Join(peerMail, "m.yaml"), []byte("body: v2-peer-wip\n"), 0644)
+
+	if err := s.GitSync("st sprint add: i1622 test"); err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
+
+	run := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	// (a) tracked-modified canonical file landed.
+	if blob := run("show", "refs/remotes/origin/main:.as/epics.yaml"); !strings.Contains(blob, epicMarker) {
+		t.Errorf("origin/main:.as/epics.yaml missing %q — GitSync did not persist tracked-modified canonical .as/ state (I-1622). Got:\n%s", epicMarker, blob)
+	}
+	// (b) untracked-NEW canonical file landed (PR #300 finding 3).
+	if blob := run("show", "refs/remotes/origin/main:.as/queue.yaml"); !strings.Contains(blob, queueMarker) {
+		t.Errorf("origin/main:.as/queue.yaml missing %q — untracked-new canonical .as/ file was dropped (PR #300 finding 3). Got:\n%s", queueMarker, blob)
+	}
+	// (c) peer's tracked-modified .as/ file was NOT swept (PR #300 finding 2).
+	if blob := run("show", "refs/remotes/origin/main:.as/mailbox/agent-zz/m.yaml"); strings.Contains(blob, "v2-peer-wip") {
+		t.Errorf("origin/main swept a PEER's tracked-modified .as/ file into this agent's sync (PR #300 finding 2). Got:\n%s", blob)
+	}
+}
+
+// TestGitSync_NestedLayout_NoCanonicalDotAsFiles_I1622 guards PR #300 finding 1:
+// a nested-layout workspace whose `.as/` holds NO st-owned canonical files (only
+// config / untracked junk) must sync cleanly. The first cut (`git add -u -- .as`)
+// returned exit 128 ("pathspec '.as' did not match any file(s)") here, aborting
+// every sync. The explicit per-file `git add` with an os.Stat guard cannot.
+func TestGitSync_NestedLayout_NoCanonicalDotAsFiles_I1622(t *testing.T) {
+	top := t.TempDir()
+	itemsRoot := filepath.Join(top, "agent-state")
+	for _, d := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(itemsRoot, d), 0755)
+	}
+	asDir := filepath.Join(top, ".as")
+	os.MkdirAll(asDir, 0755)
+	// Only config.yaml under .as/ — no epics/queue/notes/stack canonical files.
+	os.WriteFile(filepath.Join(asDir, "config.yaml"),
+		[]byte("paths:\n  root: agent-state\n"), 0644)
+	writeItem(t, filepath.Join(itemsRoot, "tasks", "T-001-first-task.md"), `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: First task
+`)
+	initGitRepo(t, top)
+	gitBareRemote(t, top)
+
+	cfg, err := config.Load(top)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Mutate an ITEM (so there is something to sync) — .as/ has no canonical files.
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("st update: T-001"); err != nil {
+		t.Fatalf("GitSync must not hard-fail when .as/ has no canonical files (PR #300 finding 1), got: %v", err)
+	}
+}
+
+// TestGitSync_StagesDotAsDeletion_I1622 guards PR #300 finding 6: deleting a
+// canonical .as/ file (e.g. retiring queue.yaml) must sync the DELETION to
+// origin/main. The os.Stat-then-skip first cut dropped deletions; `git add -A`
+// over the existing-or-tracked filter records them.
+func TestGitSync_StagesDotAsDeletion_I1622(t *testing.T) {
+	top := t.TempDir()
+	itemsRoot := filepath.Join(top, "agent-state")
+	for _, d := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(itemsRoot, d), 0755)
+	}
+	asDir := filepath.Join(top, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: agent-state\n"), 0644)
+	os.WriteFile(filepath.Join(asDir, "queue.yaml"), []byte("queue: [X]\n"), 0644)
+	writeItem(t, filepath.Join(itemsRoot, "tasks", "T-001-first-task.md"), "id: T-001\ntype: task\nstatus: queued\ncreated: 2026-03-25T10:00:00-06:00\nlast_touched: 2026-03-25T10:00:00-06:00\n\ntitle: First task\n")
+	initGitRepo(t, top)
+	gitBareRemote(t, top)
+
+	cfg, err := config.Load(top)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, _ := New(cfg)
+
+	// Retire the canonical queue.yaml.
+	if err := os.Remove(filepath.Join(asDir, "queue.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.GitSync("st: retire queue.yaml"); err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = top
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, _ := run("ls-tree", "refs/remotes/origin/main", ".as/queue.yaml"); strings.TrimSpace(out) != "" {
+		t.Errorf("origin/main still has .as/queue.yaml — deletion was not synced (PR #300 finding 6): %q", out)
+	}
+}
+
+// TestGitSync_FlatLayout_StagesUntrackedNewCanonical_I1622 guards PR #300
+// finding 1: in a FLAT layout, the ItemDir `git add -u -- .` reaches .as/ but
+// `-u` ignores untracked-NEW files, so a first-ever canonical file was dropped.
+// The canonical-staging block now runs in flat layout too.
+func TestGitSync_FlatLayout_StagesUntrackedNewCanonical_I1622(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	gitBareRemote(t, root)
+
+	s := gitSyncStore(t, root)
+	dirtyItem(t, s) // something for the ItemDir path to stage
+
+	// First-ever (untracked) canonical queue.yaml.
+	const marker = "flat-new-i1622"
+	os.WriteFile(filepath.Join(asDir, "queue.yaml"), []byte("queue: ["+marker+"]\n"), 0644)
+
+	if err := s.GitSync("st queue add: flat"); err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
+	cmd := exec.Command("git", "show", "refs/remotes/origin/main:.as/queue.yaml")
+	cmd.Dir = root
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), marker) {
+		t.Errorf("origin/main:.as/queue.yaml missing %q — untracked-new canonical file dropped in flat layout (PR #300 finding 1). Got:\n%s", marker, out)
+	}
+}

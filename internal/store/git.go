@@ -739,6 +739,66 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		}
 	}
 
+	// I-1622: st-owned canonical state in `.as/` (epics + sprints, queue, notes,
+	// this agent's work stack) lives at the workspace root. In a nested layout
+	// (paths.root: agent-state) it is a SIBLING of ItemDir, so the ItemDir-cwd-
+	// scoped `git add -u -- .` above can never reach it; in a flat layout `-u`
+	// reaches it but still misses untracked-NEW files. Without this, an epic/
+	// sprint/queue/stack mutation is silently dropped while "Synced." prints (Inv 1
+	// honest-sync violation, proven 2026-06-27: origin/main:.as/epics.yaml frozen
+	// at the 2026-06-06 era). Stage each canonical file by EXPLICIT path, anchored
+	// at cfg.Root(), so it flows through commitStagedOntoMain → push →
+	// verifyPushLanded.
+	//
+	// Mechanics (addresses PR #300 review):
+	//   - runs in BOTH layouts — flat `-u` would still drop untracked-NEW files.
+	//   - `git add -A -- <path>` per canonical path stages adds, modifications,
+	//     AND deletions (retiring/migrating a canonical file must sync too).
+	//   - the batch contains only paths that EXIST on disk or are TRACKED (a
+	//     tracked-but-deleted file → stage the deletion; a never-present path →
+	//     skip, so no exit-128), built in one `git add` call (not one fork/path).
+	//   - a non-ENOENT stat error FAILS LOUD rather than silently dropping the
+	//     mutation (that silent drop is the exact Inv-1 hole this block closes).
+	//   - touches ONLY this agent's own stack + the shared epics/queue/notes
+	//     singletons; peers' mailbox/sessions/other-agent stacks are never swept.
+	//     The shared singletons are inherently last-writer-wins on the single
+	//     shared clone (commitStagedOntoMain's CAS + pushWithRetry replay handle
+	//     same-file races); a peer's uncommitted edit to a shared singleton can
+	//     ride this commit — accepted, the alternative is not syncing them at all.
+	//     Other `.as/` config/coordination files (config.yaml, coordinator.yaml,
+	//     active-envs.yaml) are intentionally NOT staged here. StackPath() trusts
+	//     cfg.AgentID(); a leaked identity (I-936) would target a peer's stack —
+	//     that is the I-936 bug, tracked separately, not re-litigated here.
+	ws := s.cfg.Root()
+	var canonical []string
+	for _, p := range []string{
+		s.cfg.EpicsPath(), // epics + sprints
+		s.cfg.QueuePath(),
+		s.cfg.NotesPath(),
+		s.cfg.StackPath(), // this agent's own work stack
+	} {
+		if _, statErr := os.Stat(p); statErr == nil {
+			canonical = append(canonical, p) // present on disk (add/modify)
+			continue
+		} else if !os.IsNotExist(statErr) {
+			// A non-ENOENT stat error must not silently drop the file — fail loud.
+			return fmt.Errorf("stat canonical .as path %q: %w", p, statErr)
+		}
+		// Absent on disk: include only if git tracks it, so a DELETION is staged
+		// (`git add -A` records the removal); a never-present path is skipped so
+		// the batch can't hit `git add`'s no-match exit-128.
+		if err := gitCmdQuiet(ws, "ls-files", "--error-unmatch", "--", p); err == nil {
+			canonical = append(canonical, p)
+		}
+	}
+	if len(canonical) > 0 {
+		// One batched `git add -A` (absolute paths accepted); -A covers add /
+		// modify / delete. The filter above guarantees every path matches.
+		if err := gitCmd(ws, append([]string{"add", "-A", "--"}, canonical...)...); err != nil {
+			return fmt.Errorf("git add canonical .as state: %w", err)
+		}
+	}
+
 	// Check if there's anything STAGED to commit. `git status
 	// --porcelain` would also show untracked files (e.g.
 	// `.st-git.lock`, peer agents' WIP) which we intentionally don't
