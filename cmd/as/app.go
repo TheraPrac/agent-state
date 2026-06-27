@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/theraprac/agent-state/internal/buildinfo"
 	"github.com/theraprac/agent-state/internal/command"
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/freshness"
 	"github.com/theraprac/agent-state/internal/session"
 	"github.com/theraprac/agent-state/internal/store"
-	"github.com/spf13/cobra"
 )
 
 // exitCode captures the return code from command functions.
@@ -1701,6 +1701,27 @@ Example:
 	_ = prCmd.MarkFlagRequired("repo")
 	_ = prCmd.MarkFlagRequired("pr")
 	root.AddCommand(prCmd)
+
+	reviewTargetCmd := &cobra.Command{
+		Use:   "review-target <pr-number>",
+		Short: "Resolve a bare PR number to a repo-qualified target (owner/repo#num) for code review",
+		Long: "Resolves a bare PR number across the workspace repos by reading each repo's " +
+			"origin remote and querying GitHub, preferring the active item's scope_repos when " +
+			"more than one repo carries that number. Prints owner/repo#num on success; errors " +
+			"(non-zero) on ambiguity or no match rather than guessing. Use its output as the " +
+			"/code-review target so a bare number can't silently resolve to the wrong repo.",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			num, err := strconv.Atoi(args[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "review-target: %q is not a PR number\n", args[0])
+				exitCode = 2
+				return
+			}
+			exitCode = command.ReviewTarget(appStore, appCfg, num, command.ReviewTargetOpts{})
+		},
+	}
+	root.AddCommand(reviewTargetCmd)
 
 	testRecordCmd := &cobra.Command{
 		Use:   "test <id> [<suite>]",
