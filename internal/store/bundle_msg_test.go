@@ -141,3 +141,33 @@ func TestGitSync_CrossAttributionBundlesMessage(t *testing.T) {
 		t.Errorf("bundle message should mention T-002, got %q", msg)
 	}
 }
+
+// TestSynthesizeBundleMessage_NestedLayout_I1624 exercises the prefix-stripping
+// path through the shared itemsPrefixFromToplevel helper (I-1624). In a nested
+// layout (ItemDir = <top>/agent-state) the cached paths are toplevel-relative
+// ("agent-state/tasks/..."); the prefix must be stripped to bare "tasks/..." so
+// item-ID classification works and an unexpected item triggers a bundle message.
+// The prior raw filepath.Rel could emit a `../` prefix that never matched,
+// silently mis-classifying every path.
+func TestSynthesizeBundleMessage_NestedLayout_I1624(t *testing.T) {
+	top := t.TempDir()
+	itemsRoot := filepath.Join(top, "agent-state")
+	os.MkdirAll(filepath.Join(itemsRoot, "tasks"), 0755)
+	// NOTE: synthesizeBundleMessage derives the prefix from `git rev-parse
+	// --show-toplevel` relative to itemsRoot — it does NOT read config.yaml. The
+	// nested layout is established purely by itemsRoot being a subdir of the git
+	// toplevel; no .as/config.yaml scaffolding is needed.
+	initGitRepo(t, top)
+
+	// cached paths come back toplevel-relative from `git diff --cached`.
+	cached := "agent-state/tasks/T-100-alpha.md\nagent-state/tasks/T-200-beta.md"
+	msg := synthesizeBundleMessage(itemsRoot, "st update: T-100.sbar.situation", cached)
+
+	// The prefix was stripped → T-200 recognized as an unexpected item → bundle.
+	if msg == "st update: T-100.sbar.situation" {
+		t.Fatalf("expected a bundle message (T-200 is unexpected), got the unchanged single-item message — prefix stripping failed (I-1624)")
+	}
+	if !strings.Contains(msg, "T-200") || !strings.Contains(msg, "T-100") {
+		t.Errorf("bundle message should name both staged items; got %q", msg)
+	}
+}

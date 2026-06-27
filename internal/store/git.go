@@ -376,6 +376,43 @@ func ParseStatusZ(out string) []StatusEntry {
 	return entries
 }
 
+// itemsPrefixFromToplevel derives the agent-state items-root prefix RELATIVE to
+// an already-resolved git toplevel (I-1624). It is the single shared, I-835-
+// normalized prefix derivation used by both checkNonStateGate and
+// synthesizeBundleMessage — previously each computed it inline, and the
+// bundle-message copy did a RAW filepath.Rel that mis-classified paths on
+// case/symlink-divergent roots.
+//
+// It takes STRINGS (no git call) so each caller keeps its own git runner
+// (gateGitOutput vs gitOutput) — same decoupling as ParseStatusZ.
+//
+// Returns (prefix, true) on success: prefix is "" for a flat layout (root ==
+// toplevel) or a lowercased slash-suffixed prefix like "agent-state/" for a
+// nested layout. Returns ("", false) when filepath.Rel fails (callers fail open).
+//
+// I-835: resolve symlinks on BOTH sides (macOS routes /var → /private/var) and
+// lowercase BOTH before Rel. If only one EvalSymlinks succeeds, Rel mixes
+// canonical and raw forms and emits a `../../private/var/...` traversal; on
+// case-insensitive/-preserving APFS, EvalSymlinks can return divergent casing
+// (/Users/x/Dev vs /Users/x/dev) making Rel emit a `../../...` traversal. Both
+// are no-ops on correctly-cased, non-symlinked paths and on case-sensitive FSes.
+func itemsPrefixFromToplevel(root, toplevel string) (string, bool) {
+	canonRoot, errRoot := filepath.EvalSymlinks(root)
+	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
+	if errRoot != nil || errTop != nil {
+		canonRoot = root
+		canonToplevel = toplevel
+	}
+	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
+	if err != nil {
+		return "", false
+	}
+	if itemsRel == "." {
+		return "", true
+	}
+	return strings.ToLower(filepath.ToSlash(itemsRel)) + "/", true
+}
+
 // checkNonStateGate is the I-807/I-765 defense-in-depth gate. It fails
 // closed when any tracked / staged / committed-but-unpushed mutation outside
 // the agent-state allowlist (`<itemsPrefix>`, `.as/`) is present, on ANY
@@ -461,31 +498,11 @@ func checkNonStateGate(root string) error {
 	}
 	toplevel := strings.TrimSpace(toplevelOut)
 
-	// Compute the items-root prefix relative to the git toplevel.
-	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
-	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
-	// canonical and raw forms and emits a `../../private/var/...`
-	// traversal that mis-classifies every path as non-state. Use the
-	// raw forms on either side's failure (or fail-open).
-	// I-835: also lowercase both inputs before Rel. On macOS APFS
-	// (case-insensitive, case-preserving), EvalSymlinks can return
-	// different casings for the two paths — e.g. /Users/x/Dev/...
-	// vs /Users/x/dev/... — making Rel emit a ../../... traversal
-	// path. Lowercasing both is a no-op on correctly-cased paths and
-	// on case-sensitive filesystems.
-	canonRoot, errRoot := filepath.EvalSymlinks(root)
-	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
-	if errRoot != nil || errTop != nil {
-		canonRoot = root
-		canonToplevel = toplevel
-	}
-	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
-	if err != nil {
+	// Items-root prefix relative to the git toplevel, via the shared I-835-
+	// normalized derivation (I-1624). ok=false (Rel failure) is fail-open.
+	itemsPrefix, ok := itemsPrefixFromToplevel(root, toplevel)
+	if !ok {
 		return nil // fail-open
-	}
-	itemsPrefix := ""
-	if itemsRel != "." {
-		itemsPrefix = strings.ToLower(filepath.ToSlash(itemsRel)) + "/"
 	}
 
 	// Flat layout has no items-vs-non-items distinction to enforce.
@@ -1603,18 +1620,29 @@ func synthesizeBundleMessage(root, message, cached string) string {
 
 	// Strip the git-root prefix so all path comparisons use bare names like
 	// "tasks/I-123.md" regardless of nested-layout depth. In flat layout
-	// (ItemDir == git root) the prefix is "." and no stripping is needed.
+	// (ItemDir == git root) the prefix is "" and no stripping is needed.
+	// I-1624: use the shared I-835-normalized derivation — the prior raw
+	// filepath.Rel(top, root) here emitted a `../..` traversal on case/symlink-
+	// divergent roots (macOS), so the prefix never matched and item paths were
+	// mis-classified. itemsPrefixFromToplevel returns a LOWERCASED prefix, so
+	// strip case-insensitively against the original-cased `git diff` paths.
 	prefix := ""
 	if top, err := gitOutput(root, "rev-parse", "--show-toplevel"); err == nil {
-		top = strings.TrimSpace(top)
-		if rel, err := filepath.Rel(top, root); err == nil && rel != "." && rel != "" {
-			prefix = rel + "/"
+		if p, ok := itemsPrefixFromToplevel(root, strings.TrimSpace(top)); ok {
+			prefix = p
 		}
 	}
 
 	stripPrefix := func(p string) string {
-		if prefix != "" {
-			return strings.TrimPrefix(p, prefix)
+		// Case-insensitive head match: the prefix is lowercased, but git-diff
+		// paths keep their on-disk casing (on macOS the items dir may be
+		// "Agent-State"). EqualFold over exactly len(prefix) ORIGINAL bytes
+		// (never ToLower(p)) avoids the byte-length misalignment a non-ASCII
+		// root could introduce under case-folding, and the slice runs only on a
+		// real match — so a non-ASCII near-miss degrades to no-strip, never a
+		// corrupted path.
+		if prefix != "" && len(p) >= len(prefix) && strings.EqualFold(p[:len(prefix)], prefix) {
+			return p[len(prefix):]
 		}
 		return p
 	}
