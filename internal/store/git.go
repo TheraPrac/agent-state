@@ -300,6 +300,19 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 	return false
 }
 
+// IsGateSkippedStatus reports whether a `git status --porcelain` XY code is one
+// checkNonStateGate deliberately ignores: pure-untracked (`??`) or
+// working-tree-only / unstaged (index slot blank, `code[0] == ' '`). Only STAGED
+// (index-side) entries can trip the gate. Shared so st orphan clear-nonstate
+// clears exactly the staged set the gate blocks on — no classifier drift
+// (I-1594). A short (<2 char) code is treated as not-skipped (caller guards len).
+func IsGateSkippedStatus(code string) bool {
+	if len(code) < 2 {
+		return false
+	}
+	return code == "??" || code[0] == ' '
+}
+
 // IsManagedStatePath is the exported wrapper around isManagedStatePath so the
 // command package (st orphan stash-nonstate, I-1594) classifies paths with the
 // EXACT same allowlist as checkNonStateGate — `.as/` or itemsPrefix, lowercased
@@ -458,7 +471,7 @@ func checkNonStateGate(root string) error {
 		// because `git add -u -- .` is scoped to agent-state/ and will
 		// never stage files outside that prefix; blocking on them fires
 		// false alarms for peer agents' uncommitted edits. I-1472.
-		if code == "??" || code[0] == ' ' {
+		if IsGateSkippedStatus(code) {
 			continue
 		}
 		// Rename / copy: -z format puts the OLD path in the next token

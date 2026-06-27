@@ -3556,12 +3556,15 @@ Kinds:
 	}
 	orphanStashCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
 	orphanStashCmd.Flags().String("agent", "", "current agent ID (default: from config)")
-	// I-1594: park uncommitted NON-state residue (scripts/, docs/) left in the
-	// shared main checkout so it cannot silently block the next agent's state
-	// sync or the session-start pull. Strict no-op off main/master.
-	orphanStashNonStateCmd := &cobra.Command{
-		Use:   "stash-nonstate",
-		Short: "Stash uncommitted non-state residue from the shared main checkout (no-op off main)",
+	// I-1594: un-stage STAGED non-state residue (scripts/, docs/) left in the
+	// shared main checkout so it cannot silently block the next agent's st sync
+	// (the non-state gate). Non-destructive (content stays in the tree). Strict
+	// no-op off main/master. `stash-nonstate` is kept as a back-compat alias for
+	// the original (since-corrected) name still referenced by older callers.
+	orphanClearNonStateCmd := &cobra.Command{
+		Use:     "clear-nonstate",
+		Aliases: []string{"stash-nonstate"},
+		Short:   "Un-stage staged non-state residue in the shared main checkout (no-op off main)",
 		Run: func(cmd *cobra.Command, args []string) {
 			ws, _ := cmd.Flags().GetString("workspace")
 			agent, _ := cmd.Flags().GetString("agent")
@@ -3571,11 +3574,11 @@ Kinds:
 			if agent == "" {
 				agent = appCfg.AgentID()
 			}
-			command.NonStateStash(ws, appCfg.Paths.Root, agent)
+			command.ClearStagedNonState(ws, appCfg.Paths.Root, agent)
 		},
 	}
-	orphanStashNonStateCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
-	orphanStashNonStateCmd.Flags().String("agent", "", "current agent ID (default: from config)")
+	orphanClearNonStateCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
+	orphanClearNonStateCmd.Flags().String("agent", "", "current agent ID (default: from config)")
 	orphanListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List orphan stashes created by st orphan stash",
@@ -3588,7 +3591,7 @@ Kinds:
 		},
 	}
 	orphanListCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
-	orphanCmd.AddCommand(orphanStashCmd, orphanStashNonStateCmd, orphanListCmd)
+	orphanCmd.AddCommand(orphanStashCmd, orphanClearNonStateCmd, orphanListCmd)
 	root.AddCommand(orphanCmd)
 
 	inferStageCmd := &cobra.Command{
