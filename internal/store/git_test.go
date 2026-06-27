@@ -2184,12 +2184,16 @@ func gitRun(t *testing.T, dir string, args ...string) {
 }
 
 // TestGitSync_StagesDotAsInNestedLayout_I1622 is the I-1622 regression guard:
-// in a NESTED layout (paths.root: agent-state), `.as/` (epics/sprints/queue/
-// stacks) is a SIBLING of ItemDir at the git toplevel. Before the fix, GitSync's
-// ItemDir-cwd-scoped `git add -u -- .` never reached it, so a `.as/epics.yaml`
-// mutation was silently dropped from sync while "Synced." still printed (the
-// Inv-1 honest-sync violation found live on 2026-06-27). This test fails without
-// the toplevel `.as/` staging in GitSync.
+// in a NESTED layout (paths.root: agent-state), st-owned canonical `.as/` state
+// (epics+sprints, queue, notes, the agent's stack) is a SIBLING of ItemDir at
+// the git toplevel. Before the fix, GitSync's ItemDir-cwd-scoped `git add -u --
+// .` never reached it, so those mutations were silently dropped from sync while
+// "Synced." still printed (the Inv-1 honest-sync violation found live on
+// 2026-06-27). The test asserts the fix AND its PR-#300 review properties:
+//   - a tracked-MODIFIED canonical file (epics.yaml) lands on origin/main;
+//   - an UNTRACKED-NEW canonical file (queue.yaml) ALSO lands (not just `-u`);
+//   - a peer's tracked-modified `.as/` file (mailbox/) is NOT swept;
+//   - no exit-128 hard-fail (sync succeeds).
 func TestGitSync_StagesDotAsInNestedLayout_I1622(t *testing.T) {
 	top := t.TempDir()
 	itemsRoot := filepath.Join(top, "agent-state")
@@ -2204,6 +2208,10 @@ func TestGitSync_StagesDotAsInNestedLayout_I1622(t *testing.T) {
 	// A tracked canonical .as/ state file (the kind that was going unpersisted).
 	os.WriteFile(filepath.Join(asDir, "epics.yaml"),
 		[]byte("epics: []\nsprints: []\n"), 0644)
+	// A peer-owned, tracked .as/ file that must NOT be swept by this agent's sync.
+	peerMail := filepath.Join(asDir, "mailbox", "agent-zz")
+	os.MkdirAll(peerMail, 0755)
+	os.WriteFile(filepath.Join(peerMail, "m.yaml"), []byte("body: v1\n"), 0644)
 	// An item under ItemDir so the ItemDir staging path also has content.
 	writeItem(t, filepath.Join(itemsRoot, "tasks", "T-001-first-task.md"), `id: T-001
 type: task
@@ -2231,18 +2239,23 @@ title: First task
 		t.Fatalf("expected nested layout, but ItemDir == toplevel (%s)", top)
 	}
 
-	// Mutate the canonical .as/epics.yaml in the working tree — exactly what
-	// `st sprint add` / `st epic create` do. This lives OUTSIDE ItemDir.
-	const marker = "test-epic-i1622"
+	// (a) Mutate the canonical .as/epics.yaml — exactly what `st sprint add` /
+	// `st epic create` do. Tracked-modified, lives OUTSIDE ItemDir.
+	const epicMarker = "test-epic-i1622"
 	os.WriteFile(filepath.Join(asDir, "epics.yaml"),
-		[]byte("epics:\n  - id: "+marker+"\n    title: T\n    status: active\nsprints: []\n"), 0644)
+		[]byte("epics:\n  - id: "+epicMarker+"\n    title: T\n    status: active\nsprints: []\n"), 0644)
+	// (b) Create an UNTRACKED-NEW canonical file (queue.yaml) — `-u` would skip
+	// this; the fix must still persist it.
+	const queueMarker = "queued-i1622"
+	os.WriteFile(filepath.Join(asDir, "queue.yaml"),
+		[]byte("queue:\n  - "+queueMarker+"\n"), 0644)
+	// (c) Modify a PEER's tracked .as/ file — must NOT be swept into this sync.
+	os.WriteFile(filepath.Join(peerMail, "m.yaml"), []byte("body: v2-peer-wip\n"), 0644)
 
 	if err := s.GitSync("st sprint add: i1622 test"); err != nil {
 		t.Fatalf("GitSync: %v", err)
 	}
 
-	// The fix's contract: the .as/epics.yaml change must have been staged,
-	// committed onto main, and pushed — so origin/main now carries it.
 	run := func(args ...string) string {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = top
@@ -2252,8 +2265,63 @@ title: First task
 		}
 		return string(out)
 	}
-	blob := run("show", "refs/remotes/origin/main:.as/epics.yaml")
-	if !strings.Contains(blob, marker) {
-		t.Errorf("origin/main:.as/epics.yaml is missing the mutation %q — GitSync did not stage/commit/push sibling .as/ state (I-1622). Got:\n%s", marker, blob)
+	// (a) tracked-modified canonical file landed.
+	if blob := run("show", "refs/remotes/origin/main:.as/epics.yaml"); !strings.Contains(blob, epicMarker) {
+		t.Errorf("origin/main:.as/epics.yaml missing %q — GitSync did not persist tracked-modified canonical .as/ state (I-1622). Got:\n%s", epicMarker, blob)
+	}
+	// (b) untracked-NEW canonical file landed (PR #300 finding 3).
+	if blob := run("show", "refs/remotes/origin/main:.as/queue.yaml"); !strings.Contains(blob, queueMarker) {
+		t.Errorf("origin/main:.as/queue.yaml missing %q — untracked-new canonical .as/ file was dropped (PR #300 finding 3). Got:\n%s", queueMarker, blob)
+	}
+	// (c) peer's tracked-modified .as/ file was NOT swept (PR #300 finding 2).
+	if blob := run("show", "refs/remotes/origin/main:.as/mailbox/agent-zz/m.yaml"); strings.Contains(blob, "v2-peer-wip") {
+		t.Errorf("origin/main swept a PEER's tracked-modified .as/ file into this agent's sync (PR #300 finding 2). Got:\n%s", blob)
+	}
+}
+
+// TestGitSync_NestedLayout_NoCanonicalDotAsFiles_I1622 guards PR #300 finding 1:
+// a nested-layout workspace whose `.as/` holds NO st-owned canonical files (only
+// config / untracked junk) must sync cleanly. The first cut (`git add -u -- .as`)
+// returned exit 128 ("pathspec '.as' did not match any file(s)") here, aborting
+// every sync. The explicit per-file `git add` with an os.Stat guard cannot.
+func TestGitSync_NestedLayout_NoCanonicalDotAsFiles_I1622(t *testing.T) {
+	top := t.TempDir()
+	itemsRoot := filepath.Join(top, "agent-state")
+	for _, d := range []string{"tasks", "issues", "archive"} {
+		os.MkdirAll(filepath.Join(itemsRoot, d), 0755)
+	}
+	asDir := filepath.Join(top, ".as")
+	os.MkdirAll(asDir, 0755)
+	// Only config.yaml under .as/ — no epics/queue/notes/stack canonical files.
+	os.WriteFile(filepath.Join(asDir, "config.yaml"),
+		[]byte("paths:\n  root: agent-state\n"), 0644)
+	writeItem(t, filepath.Join(itemsRoot, "tasks", "T-001-first-task.md"), `id: T-001
+type: task
+status: queued
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+
+title: First task
+`)
+	initGitRepo(t, top)
+	gitBareRemote(t, top)
+
+	cfg, err := config.Load(top)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Mutate an ITEM (so there is something to sync) — .as/ has no canonical files.
+	item, _ := s.Get("T-001")
+	item.Doc.SetField("status", "active")
+	s.write(item)
+
+	if err := s.GitSync("st update: T-001"); err != nil {
+		t.Fatalf("GitSync must not hard-fail when .as/ has no canonical files (PR #300 finding 1), got: %v", err)
 	}
 }

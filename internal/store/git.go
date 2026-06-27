@@ -696,25 +696,46 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		}
 	}
 
-	// I-1622: `.as/` (epics, sprints, queue, stacks) is canonical shared state
-	// that lives at the git TOPLEVEL — a SIBLING of ItemDir in a nested layout
-	// (paths.root: agent-state), which the ItemDir-cwd-scoped `git add -u -- .`
-	// above can NEVER reach. Without this, every epic/sprint/queue/stack mutation
-	// is silently dropped from sync while "Synced." still prints (Inv 1 honest-
-	// sync violation, proven 2026-06-27: origin/main:.as/epics.yaml frozen at the
-	// 2026-06-06 flat-layout era). Stage tracked-modified `.as/` anchored at the
-	// toplevel so it flows through commitStagedOntoMain → push → verifyPushLanded.
-	// `-u` ignores untracked, preserving I-442/I-1472 peer-WIP + session-junk
-	// protection; the non-state gate allowlists `.as/`, so this never trips it.
-	// Skipped in flat layout (toplevel == root), where `add -u -- .` already
-	// covered `.as/`.
-	if top, e := gitOutput(root, "rev-parse", "--show-toplevel"); e == nil {
-		top = strings.TrimSpace(top)
-		if filepath.Clean(top) != filepath.Clean(root) {
-			if _, statErr := os.Stat(filepath.Join(top, ".as")); statErr == nil {
-				if err := gitCmd(top, "add", "-u", "--", ".as"); err != nil {
-					return fmt.Errorf("git add .as: %w", err)
-				}
+	// I-1622: st-owned canonical state in `.as/` (epics + sprints, queue, notes,
+	// this agent's work stack) lives at the workspace root — a SIBLING of ItemDir
+	// in a nested layout (paths.root: agent-state) — so the ItemDir-cwd-scoped
+	// `git add -u -- .` above can NEVER reach it. Without this, every epic/sprint/
+	// queue/stack mutation is silently dropped from sync while "Synced." still
+	// prints (Inv 1 honest-sync violation, proven 2026-06-27: origin/main:.as/
+	// epics.yaml frozen at the 2026-06-06 flat-layout era). Stage each canonical
+	// file by EXPLICIT path, anchored at cfg.Root() (the git toplevel here — no
+	// second `rev-parse`), so it flows through commitStagedOntoMain → push →
+	// verifyPushLanded.
+	//
+	// Explicit `git add -- <file>` (NOT `git add -u -- .as`) is deliberate:
+	//   - never exit-128: a named existing path always matches; a `-u .as`
+	//     pathspec errors when `.as/` has zero tracked files, aborting the sync.
+	//   - stages untracked-NEW canonical files too (a first-ever epics/queue/stack),
+	//     which `-u` would silently skip — the other half of the honest-sync gap.
+	//   - touches ONLY this agent's own files + the shared epics/queue/notes — it
+	//     never sweeps peers' tracked-modified `.as/` (mailbox/, sessions/, other
+	//     agents' stacks), so no cross-attribution of peer WIP.
+	// Skipped in flat layout (root == ItemDir), where `add -u -- .` already
+	// covered `.as/`. Other `.as/` config/coordination files (config.yaml,
+	// coordinator.yaml, active-envs.yaml) are intentionally NOT swept here — they
+	// are not routine st-mutated work state and sweeping cross-agent coordination
+	// has attribution hazards (deferred).
+	if ws := s.cfg.Root(); filepath.Clean(ws) != filepath.Clean(root) {
+		for _, p := range []string{
+			s.cfg.EpicsPath(), // epics + sprints
+			s.cfg.QueuePath(),
+			s.cfg.NotesPath(),
+			s.cfg.StackPath(), // this agent's own work stack
+		} {
+			if _, statErr := os.Stat(p); statErr != nil {
+				continue // not present in this workspace — nothing to stage
+			}
+			rel, relErr := filepath.Rel(ws, p)
+			if relErr != nil {
+				return fmt.Errorf("git add canonical .as path %q: %w", p, relErr)
+			}
+			if err := gitCmd(ws, "add", "--", rel); err != nil {
+				return fmt.Errorf("git add %s: %w", rel, err)
 			}
 		}
 	}
