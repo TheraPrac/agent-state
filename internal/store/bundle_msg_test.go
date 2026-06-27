@@ -153,8 +153,10 @@ func TestSynthesizeBundleMessage_NestedLayout_I1624(t *testing.T) {
 	top := t.TempDir()
 	itemsRoot := filepath.Join(top, "agent-state")
 	os.MkdirAll(filepath.Join(itemsRoot, "tasks"), 0755)
-	os.MkdirAll(filepath.Join(top, ".as"), 0755)
-	os.WriteFile(filepath.Join(top, ".as", "config.yaml"), []byte("paths:\n  root: agent-state\n"), 0644)
+	// NOTE: synthesizeBundleMessage derives the prefix from `git rev-parse
+	// --show-toplevel` relative to itemsRoot — it does NOT read config.yaml. The
+	// nested layout is established purely by itemsRoot being a subdir of the git
+	// toplevel; no .as/config.yaml scaffolding is needed.
 	initGitRepo(t, top)
 
 	// cached paths come back toplevel-relative from `git diff --cached`.

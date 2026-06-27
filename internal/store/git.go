@@ -1634,7 +1634,14 @@ func synthesizeBundleMessage(root, message, cached string) string {
 	}
 
 	stripPrefix := func(p string) string {
-		if prefix != "" && strings.HasPrefix(strings.ToLower(p), prefix) {
+		// Case-insensitive head match: the prefix is lowercased, but git-diff
+		// paths keep their on-disk casing (on macOS the items dir may be
+		// "Agent-State"). EqualFold over exactly len(prefix) ORIGINAL bytes
+		// (never ToLower(p)) avoids the byte-length misalignment a non-ASCII
+		// root could introduce under case-folding, and the slice runs only on a
+		// real match — so a non-ASCII near-miss degrades to no-strip, never a
+		// corrupted path.
+		if prefix != "" && len(p) >= len(prefix) && strings.EqualFold(p[:len(prefix)], prefix) {
 			return p[len(prefix):]
 		}
 		return p
