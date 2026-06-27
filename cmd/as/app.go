@@ -3556,6 +3556,26 @@ Kinds:
 	}
 	orphanStashCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
 	orphanStashCmd.Flags().String("agent", "", "current agent ID (default: from config)")
+	// I-1594: park uncommitted NON-state residue (scripts/, docs/) left in the
+	// shared main checkout so it cannot silently block the next agent's state
+	// sync or the session-start pull. Strict no-op off main/master.
+	orphanStashNonStateCmd := &cobra.Command{
+		Use:   "stash-nonstate",
+		Short: "Stash uncommitted non-state residue from the shared main checkout (no-op off main)",
+		Run: func(cmd *cobra.Command, args []string) {
+			ws, _ := cmd.Flags().GetString("workspace")
+			agent, _ := cmd.Flags().GetString("agent")
+			if ws == "" {
+				ws = appCfg.Root()
+			}
+			if agent == "" {
+				agent = appCfg.AgentID()
+			}
+			command.NonStateStash(ws, appCfg.Paths.Root, agent)
+		},
+	}
+	orphanStashNonStateCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
+	orphanStashNonStateCmd.Flags().String("agent", "", "current agent ID (default: from config)")
 	orphanListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List orphan stashes created by st orphan stash",
@@ -3568,7 +3588,7 @@ Kinds:
 		},
 	}
 	orphanListCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
-	orphanCmd.AddCommand(orphanStashCmd, orphanListCmd)
+	orphanCmd.AddCommand(orphanStashCmd, orphanStashNonStateCmd, orphanListCmd)
 	root.AddCommand(orphanCmd)
 
 	inferStageCmd := &cobra.Command{
