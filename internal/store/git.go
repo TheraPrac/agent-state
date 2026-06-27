@@ -300,6 +300,15 @@ func isManagedStatePath(path, itemsPrefix string) bool {
 	return false
 }
 
+// IsManagedStatePath is the exported wrapper around isManagedStatePath so the
+// command package (st orphan stash-nonstate, I-1594) classifies paths with the
+// EXACT same allowlist as checkNonStateGate — `.as/` or itemsPrefix, lowercased
+// per I-835 — avoiding classifier drift between the gate and the residue-stash
+// command that exists to clear what the gate blocks.
+func IsManagedStatePath(path, itemsPrefix string) bool {
+	return isManagedStatePath(path, itemsPrefix)
+}
+
 // checkNonStateGate is the I-807/I-765 defense-in-depth gate. It fails
 // closed when any tracked / staged / committed-but-unpushed mutation outside
 // the agent-state allowlist (`<itemsPrefix>`, `.as/`) is present, on ANY

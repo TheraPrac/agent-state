@@ -95,8 +95,10 @@ func OrphanList(workspaceRoot string) {
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Format: "stash@{N}: On branch: st-orphan: ..."
-		if !strings.Contains(line, "st-orphan:") {
+		// Format: "stash@{N}: On branch: st-orphan: ..." or
+		// "...: st-nonstate-residue: ..." (I-1594 non-state residue parked
+		// from the shared main checkout). Surface both kinds.
+		if !strings.Contains(line, "st-orphan:") && !strings.Contains(line, "st-nonstate-residue:") {
 			continue
 		}
 		found++
