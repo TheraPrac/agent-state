@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/theraprac/agent-state/internal/store"
@@ -64,6 +65,40 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 		return nil // feature branch — legitimate staged non-state WIP, leave it
 	}
 
+	// Mid-operation guard: an in-progress merge / rebase / cherry-pick / revert
+	// keeps HEAD on the branch ref (so the symbolic-ref check above passes), yet
+	// `git reset` would collapse the operation's higher-stage index entries and
+	// corrupt the in-flight conflict resolution. Never mutate a checkout that is
+	// mid-operation — fail safe.
+	for _, marker := range []string{"MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
+		if _, e := execGitOrphan(workspaceRoot, "rev-parse", "-q", "--verify", marker); e == nil {
+			return nil
+		}
+	}
+
+	// Layout guard: this command derives "non-state" from itemsPrefix taken raw
+	// (e.g. "agent-state/"), and `git status` run in workspaceRoot reports paths
+	// relative to the git TOPLEVEL. Those agree only when workspaceRoot IS the
+	// toplevel — which is exactly how session-start invokes it (the shared
+	// workspace clone). If they diverge (a nested/parent-repo layout, the I-936
+	// class), the prefix would misclassify and a staged agent-state item could be
+	// un-staged → dropped by st sync. Rather than re-derive the gate's full
+	// Rel/EvalSymlinks prefix here, fail safe: no-op unless workspaceRoot is the
+	// toplevel. (Shared prefix derivation is tracked as a follow-up.)
+	topOut, topErr := execGitOrphan(workspaceRoot, "rev-parse", "--show-toplevel")
+	if topErr != nil {
+		return nil
+	}
+	top := strings.TrimSpace(string(topOut))
+	if cTop, e1 := filepath.EvalSymlinks(top); e1 == nil {
+		if cWS, e2 := filepath.EvalSymlinks(workspaceRoot); e2 == nil {
+			top, workspaceRoot = cTop, cWS
+		}
+	}
+	if !strings.EqualFold(filepath.Clean(top), filepath.Clean(workspaceRoot)) {
+		return nil
+	}
+
 	// Flat layout (items root == git toplevel, Paths.Root "." or ""): the gate
 	// fail-opens (no items-vs-non-items surface to enforce), so there is no
 	// non-state residue to clear — mirror that and no-op, rather than treating
@@ -87,18 +122,12 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 
 	var paths []string  // staged non-state paths to un-stage (incl. both rename sides)
 	var labels []string // primary paths, for the report
-	seen := make(map[string]bool)
-	markSeen := func(p string) {
-		if p != "" {
-			seen[p] = true
-		}
-	}
-	// addPath queues p to be un-staged; returns true if newly queued.
+	// `git status -z` lists each path exactly once, so no dedup map is needed.
+	// addPath queues a non-empty path; returns true if it appended.
 	addPath := func(p string) bool {
-		if p == "" || seen[p] {
+		if p == "" {
 			return false
 		}
-		seen[p] = true
 		paths = append(paths, p)
 		return true
 	}
@@ -130,8 +159,6 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 			// gates both rename sides, so the rename is surfaced, not auto-mutated.
 			// Only renames whose BOTH sides are non-state are un-staged.
 			if newManaged || oldManaged {
-				markSeen(path)
-				markSeen(oldPath)
 				continue
 			}
 			if addPath(path) {
@@ -168,10 +195,13 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 		return nil
 	}
 
-	fmt.Printf("clear-nonstate: un-staged %d staged non-state file(s) in the shared main checkout (by %s) so they no longer block st sync:\n", len(labels), agentID)
+	fmt.Printf("clear-nonstate: un-staged %d staged non-state file(s) in the shared main checkout (by %s):\n", len(labels), agentID)
 	for _, p := range labels {
 		fmt.Printf("  %s\n", p)
 	}
 	fmt.Printf("  (content left untouched in the working tree; re-stage with `git add` if intended)\n")
+	// Deliberately NOT claiming sync is unblocked: other gate offenders the gate
+	// also refuses on — committed-but-unpushed non-state, or a staged rename that
+	// touches agent-state (left intact above) — are not cleared here (I-1620).
 	return labels
 }
