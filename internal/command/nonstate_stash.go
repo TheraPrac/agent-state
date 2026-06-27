@@ -12,11 +12,12 @@ import (
 // nonStateResidue is one parkable unit. specs holds every pathspec that must be
 // stashed together to leave the tree clean — for a rename that is BOTH the new
 // path and the old (staged-deleted) path, so the index deletion does not linger
-// and re-block the gate (I-1594 review finding #3).
+// and re-block the gate.
 type nonStateResidue struct {
-	path   string // primary path, used in the stash label
-	specs  []string
-	rename bool // staged rename — unstage before stashing (see below)
+	path    string // primary path, used in the stash label
+	specs   []string
+	rename  bool   // staged rename of two non-state paths — unstage before stashing
+	oldPath string // rename source (exists at HEAD) — used to restore on stash failure
 }
 
 // NonStateStash parks uncommitted NON-state residue (scripts/, docs/, etc.)
@@ -92,34 +93,49 @@ func NonStateStash(workspaceRoot, itemsPrefix, agentID string) []string {
 		code := tok[:2]
 		path := tok[3:]
 		// Rename/copy: the OLD path is the next token (no XY prefix).
+		isRename := code[0] == 'R' || code[0] == 'C'
 		oldPath := ""
-		if code[0] == 'R' || code[0] == 'C' {
-			if i+1 < len(tokens) {
-				oldPath = tokens[i+1]
-				i++ // consume the old-path token
-			}
+		if isRename && i+1 < len(tokens) {
+			oldPath = tokens[i+1]
+			i++ // consume the old-path token
 		}
 		if path == "" || seen[path] {
 			continue
 		}
-		// Leave agent-state (.as/ + itemsPrefix) for OrphanStash's ownership-
-		// aware handling — identical rule to the gate.
+
+		if isRename {
+			newManaged := store.IsManagedStatePath(path, itemsPrefix)
+			oldManaged := oldPath != "" && store.IsManagedStatePath(oldPath, itemsPrefix)
+			// A cross-boundary rename — exactly one side under agent-state — is
+			// hazardous to auto-clear: clearing only the non-state side leaves
+			// the managed side as a staged deletion/addition that st sync would
+			// commit, deleting an agent-state item (finding #1) or leaving the
+			// gate blocked (finding #2). Only auto-park renames where BOTH sides
+			// are non-state; leave any rename touching agent-state for the gate
+			// to flag and the operator / OrphanStash to resolve. Mark both sides
+			// seen so neither is reprocessed.
+			seen[path] = true
+			if oldPath != "" {
+				seen[oldPath] = true
+			}
+			if newManaged || oldManaged {
+				continue
+			}
+			specs := []string{path}
+			if oldPath != "" {
+				specs = append(specs, oldPath)
+			}
+			items = append(items, nonStateResidue{path: path, specs: specs, rename: true, oldPath: oldPath})
+			continue
+		}
+
+		// Non-rename: leave agent-state (.as/ + itemsPrefix) for OrphanStash's
+		// ownership-aware handling — identical rule to the gate.
 		if store.IsManagedStatePath(path, itemsPrefix) {
 			continue
 		}
 		seen[path] = true
-		specs := []string{path}
-		isRename := false
-		// For a rename, also stash the old path so its staged deletion does not
-		// linger in the index and re-block the gate (finding #3). Skip when the
-		// old path is itself managed-state (a rename OUT of agent-state) —
-		// stashing only the new side still clears the non-state mutation.
-		if oldPath != "" && !seen[oldPath] && !store.IsManagedStatePath(oldPath, itemsPrefix) {
-			specs = append(specs, oldPath)
-			seen[oldPath] = true
-			isRename = true
-		}
-		items = append(items, nonStateResidue{path: path, specs: specs, rename: isRename})
+		items = append(items, nonStateResidue{path: path, specs: []string{path}})
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
@@ -142,6 +158,14 @@ func NonStateStash(workspaceRoot, itemsPrefix, agentID string) []string {
 		args := append([]string{"stash", "push", "-u", "-m", label, "--"}, r.specs...)
 		if _, stashErr := execGitOrphanCapture(workspaceRoot, args...); stashErr != nil {
 			fmt.Fprintf(os.Stderr, "nonstate-stash: failed to stash %s: %v\n", r.path, stashErr)
+			// If this was a rename, the reset above already removed the old
+			// committed file from the working tree (decomposed into a ` D`
+			// deletion the gate skips). The stash failed, so restore the old
+			// file from HEAD rather than leave it silently missing (finding #4);
+			// the untracked new path stays on disk and is re-seen next run.
+			if r.rename && r.oldPath != "" {
+				_, _ = execGitOrphanCapture(workspaceRoot, "checkout", "-q", "HEAD", "--", r.oldPath)
+			}
 			continue
 		}
 		stashed = append(stashed, r.path)

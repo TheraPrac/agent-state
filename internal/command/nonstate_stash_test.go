@@ -184,6 +184,63 @@ func TestNonStateStash_StagedRenameClearsBothSides(t *testing.T) {
 	}
 }
 
+func TestNonStateStash_RenameOutOfAgentStateLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// A staged rename of an agent-state item OUT to a non-state path. Auto-
+	// clearing only the non-state new side would leave the item's staged
+	// DELETION, which st sync would commit → silent data loss (finding #1).
+	// The whole rename must be left untouched for the gate / OrphanStash.
+	rel := filepath.Join(nsItemDir, "issues", "I-9.md")
+	addUntrackedFile(t, dir, rel, "id: I-9\n")
+	mustGit(t, dir, "add", rel)
+	mustGit(t, dir, "commit", "-m", "add item")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "mv", rel, "scripts/leaked.md")
+
+	before := gitPorcelain(t, dir)
+	stashed := NonStateStash(dir, nsItemDir, nsAgent)
+	if len(stashed) != 0 {
+		t.Fatalf("cross-boundary rename (agent-state→non-state) must not be auto-stashed; got %v", stashed)
+	}
+	if gitPorcelain(t, dir) != before {
+		t.Errorf("rename must be left fully intact; before=%q after=%q", before, gitPorcelain(t, dir))
+	}
+	// Critically: the item's staged deletion must still be present (not silently
+	// cleared in a way that st sync would then commit).
+	if !strings.Contains(gitPorcelain(t, dir), "I-9.md") {
+		t.Errorf("agent-state item rename source must remain visible to the gate; got %q", gitPorcelain(t, dir))
+	}
+}
+
+func TestNonStateStash_RenameIntoAgentStateLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// A staged rename of a non-state file INTO agent-state. The new side is a
+	// legitimate staged agent-state add that st sync should commit; the non-
+	// state old side must not be half-cleared. Leave the whole rename (finding #2).
+	addUntrackedFile(t, dir, "scripts/foo.py", "x\n")
+	mustGit(t, dir, "add", "scripts/foo.py")
+	mustGit(t, dir, "commit", "-m", "add foo")
+	if err := os.MkdirAll(filepath.Join(dir, nsItemDir, "issues"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "mv", "scripts/foo.py", filepath.Join(nsItemDir, "issues", "foo.py"))
+
+	before := gitPorcelain(t, dir)
+	stashed := NonStateStash(dir, nsItemDir, nsAgent)
+	if len(stashed) != 0 {
+		t.Fatalf("cross-boundary rename (non-state→agent-state) must not be auto-stashed; got %v", stashed)
+	}
+	if gitPorcelain(t, dir) != before {
+		t.Errorf("rename must be left fully intact; before=%q after=%q", before, gitPorcelain(t, dir))
+	}
+}
+
 func TestNonStateStash_NoopFlatLayout(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
