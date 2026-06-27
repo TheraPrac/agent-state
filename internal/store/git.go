@@ -322,6 +322,106 @@ func IsManagedStatePath(path, itemsPrefix string) bool {
 	return isManagedStatePath(path, itemsPrefix)
 }
 
+// StatusEntry is one classified `git status --porcelain -z` entry, as produced
+// by ParseStatusZ. It carries only the STRUCTURAL parse result — the two-char XY
+// code, the primary path (the NEW path for renames/copies), whether the entry is
+// a rename/copy, and the OLD path (rename/copy source). Skip / managed-path
+// classification is deliberately NOT done here: callers apply IsGateSkippedStatus
+// and IsManagedStatePath over these entries so the predicate logic stays in one
+// place per caller while the tokenizer stays shared (I-1621).
+type StatusEntry struct {
+	Code     string // 2-char XY porcelain code (e.g. "M ", " M", "??", "R ")
+	Path     string // primary path; the NEW path for renames/copies
+	IsRename bool   // Code[0] == 'R' || Code[0] == 'C'
+	OldPath  string // rename/copy source path; "" for non-renames
+}
+
+// ParseStatusZ parses the raw output of `git status --porcelain -z` (NUL-
+// terminated, no path quoting) into classified StatusEntry values, preserving
+// document order. It is the SINGLE structural parser shared by checkNonStateGate
+// and ClearStagedNonState (I-1621) — previously each hand-walked the same token
+// stream, a duplicated loop flagged as drift risk across I-1594 review rounds.
+//
+// It takes the raw output STRING rather than a repo root so each caller keeps its
+// own git invocation: the gate's env-scrubbed gateGitOutput and clear's mockable
+// execGitOrphan var (with --untracked-files=no) are unchanged, which keeps this a
+// behavior-preserving refactor and leaves the existing test mocks intact.
+//
+// Parse rules (identical to the loops it replaces):
+//   - split on NUL; tokens shorter than 4 bytes are skipped (a well-formed entry
+//     is "<XY> <path>", i.e. >=4 bytes).
+//   - Code = tok[:2], Path = tok[3:].
+//   - rename/copy (Code[0]=='R'||'C', per git-status(1) porcelain v1 R/C only
+//     appear in X) consume the NEXT NUL token as OldPath. Code[0] is the truth-
+//     of-rename, never a path-text substring search, so filenames containing
+//     " -> " are not mangled.
+func ParseStatusZ(out string) []StatusEntry {
+	tokens := strings.Split(out, "\x00")
+	entries := make([]StatusEntry, 0, len(tokens))
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		if len(tok) < 4 {
+			continue
+		}
+		e := StatusEntry{Code: tok[:2], Path: tok[3:]}
+		if e.Code[0] == 'R' || e.Code[0] == 'C' {
+			e.IsRename = true
+			if i+1 < len(tokens) {
+				e.OldPath = tokens[i+1]
+				i++ // consume the old-path token
+			}
+		}
+		entries = append(entries, e)
+	}
+	return entries
+}
+
+// ComputeItemsPrefix resolves the agent-state items-root prefix RELATIVE to the
+// git toplevel for `root` (the configured items root). It de-inlines the prefix
+// derivation checkNonStateGate previously did inline (I-1621), so the symlink +
+// lowercase normalization (I-835) lives in one tested place.
+//
+// Returns (prefix, true) on success: prefix is "" for a flat layout (items root
+// == git toplevel — no items-vs-non-items distinction to enforce), or a slash-
+// suffixed lowercased prefix like "agent-state/" for a nested layout. Returns
+// ("", false) when the git toplevel cannot be resolved or filepath.Rel fails —
+// callers fail open on false.
+func ComputeItemsPrefix(root string) (string, bool) {
+	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", false
+	}
+	return itemsPrefixFromToplevel(root, strings.TrimSpace(toplevelOut))
+}
+
+// itemsPrefixFromToplevel derives the items prefix from an already-resolved git
+// toplevel, so a caller that needs the toplevel anyway (checkNonStateGate runs
+// status/log in it) does not pay a second `rev-parse --show-toplevel`. Same
+// (prefix, ok) contract as ComputeItemsPrefix.
+func itemsPrefixFromToplevel(root, toplevel string) (string, bool) {
+	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
+	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
+	// canonical and raw forms and emits a `../../private/var/...` traversal
+	// that mis-classifies every path as non-state. Use the raw forms on
+	// either side's failure. I-835: also lowercase both inputs before Rel —
+	// on case-insensitive/-preserving APFS, EvalSymlinks can return different
+	// casings, making Rel emit a `../../...` traversal.
+	canonRoot, errRoot := filepath.EvalSymlinks(root)
+	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
+	if errRoot != nil || errTop != nil {
+		canonRoot = root
+		canonToplevel = toplevel
+	}
+	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
+	if err != nil {
+		return "", false
+	}
+	if itemsRel == "." {
+		return "", true
+	}
+	return strings.ToLower(filepath.ToSlash(itemsRel)) + "/", true
+}
+
 // checkNonStateGate is the I-807/I-765 defense-in-depth gate. It fails
 // closed when any tracked / staged / committed-but-unpushed mutation outside
 // the agent-state allowlist (`<itemsPrefix>`, `.as/`) is present, on ANY
@@ -400,38 +500,18 @@ func checkNonStateGate(root string) error {
 
 	// Resolve git toplevel so porcelain paths come back relative to the
 	// git root (e.g. `agent-state/issues/I-X.md`, `claude-config/hooks/foo.sh`),
-	// not relative to ItemDir which would emit `../claude-config/...`.
+	// not relative to ItemDir which would emit `../claude-config/...`. The
+	// toplevel is also where status/log run below, so resolve it once here and
+	// feed it to itemsPrefixFromToplevel (I-1621) for the symlink/lowercase Rel
+	// normalization (I-835) — avoids a second `rev-parse --show-toplevel`.
 	toplevelOut, err := gateGitOutput(root, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil // fail-open
 	}
 	toplevel := strings.TrimSpace(toplevelOut)
-
-	// Compute the items-root prefix relative to the git toplevel.
-	// Resolve symlinks on BOTH sides atomically: macOS routes /var →
-	// /private/var. If only one EvalSymlinks succeeds, Rel mixes the
-	// canonical and raw forms and emits a `../../private/var/...`
-	// traversal that mis-classifies every path as non-state. Use the
-	// raw forms on either side's failure (or fail-open).
-	// I-835: also lowercase both inputs before Rel. On macOS APFS
-	// (case-insensitive, case-preserving), EvalSymlinks can return
-	// different casings for the two paths — e.g. /Users/x/Dev/...
-	// vs /Users/x/dev/... — making Rel emit a ../../... traversal
-	// path. Lowercasing both is a no-op on correctly-cased paths and
-	// on case-sensitive filesystems.
-	canonRoot, errRoot := filepath.EvalSymlinks(root)
-	canonToplevel, errTop := filepath.EvalSymlinks(toplevel)
-	if errRoot != nil || errTop != nil {
-		canonRoot = root
-		canonToplevel = toplevel
-	}
-	itemsRel, err := filepath.Rel(strings.ToLower(canonToplevel), strings.ToLower(canonRoot))
-	if err != nil {
+	itemsPrefix, ok := itemsPrefixFromToplevel(root, toplevel)
+	if !ok {
 		return nil // fail-open
-	}
-	itemsPrefix := ""
-	if itemsRel != "." {
-		itemsPrefix = strings.ToLower(filepath.ToSlash(itemsRel)) + "/"
 	}
 
 	// Flat layout has no items-vs-non-items distinction to enforce.
@@ -457,53 +537,42 @@ func checkNonStateGate(root string) error {
 	// annotation suffixes) so the same file never appears twice when
 	// it's both working-tree-dirty AND mentioned in a stranded commit.
 	seen := make(map[string]bool)
-	tokens := strings.Split(statusOut, "\x00")
-	for i := 0; i < len(tokens); i++ {
-		tok := tokens[i]
-		if len(tok) < 4 {
-			continue
-		}
-		code := tok[:2]
-		path := tok[3:]
+	// ParseStatusZ (I-1621) does the shared NUL tokenization + rename pairing;
+	// the gate applies its own skip / managed-path / dedup predicates here.
+	for _, e := range ParseStatusZ(statusOut) {
 		// Skip pure-untracked and working-tree-only modifications.
 		// `??` files are skipped so untracked peer WIP (I-442) is safe.
 		// `code[0] == ' '` (index clean, working-tree dirty) is skipped
 		// because `git add -u -- .` is scoped to agent-state/ and will
 		// never stage files outside that prefix; blocking on them fires
 		// false alarms for peer agents' uncommitted edits. I-1472.
-		if IsGateSkippedStatus(code) {
+		// (Rename/copy codes start with R/C, so IsGateSkippedStatus never
+		// skips them — they fall through to the rename branch below.)
+		if IsGateSkippedStatus(e.Code) {
 			continue
 		}
-		// Rename / copy: -z format puts the OLD path in the next token
-		// (no XY prefix). XY[0] is the truth-of-rename. Per
-		// git-status(1) porcelain v1: R/C only appear in X (index),
-		// never in Y — so checking code[0] catches `R `, `RM`, `RD`,
-		// `C `, `CM`, etc. without any path-text substring search.
-		if code[0] == 'R' || code[0] == 'C' {
-			newPath := path
-			oldPath := ""
-			if i+1 < len(tokens) {
-				oldPath = tokens[i+1]
-				i++ // consume the old-path token
+		// Rename / copy: ParseStatusZ already paired the OLD path. Per
+		// git-status(1) porcelain v1, R/C only appear in X (index), never
+		// in Y, so e.IsRename is the truth-of-rename — no path-text search.
+		if e.IsRename {
+			if !isManagedStatePath(e.Path, itemsPrefix) && !seen[e.Path] {
+				offenders = append(offenders, e.Path+" (rename target)")
+				seen[e.Path] = true
 			}
-			if !isManagedStatePath(newPath, itemsPrefix) && !seen[newPath] {
-				offenders = append(offenders, newPath+" (rename target)")
-				seen[newPath] = true
-			}
-			if oldPath != "" && !isManagedStatePath(oldPath, itemsPrefix) && !seen[oldPath] {
-				offenders = append(offenders, oldPath+" (rename source)")
-				seen[oldPath] = true
+			if e.OldPath != "" && !isManagedStatePath(e.OldPath, itemsPrefix) && !seen[e.OldPath] {
+				offenders = append(offenders, e.OldPath+" (rename source)")
+				seen[e.OldPath] = true
 			}
 			continue
 		}
-		if isManagedStatePath(path, itemsPrefix) {
+		if isManagedStatePath(e.Path, itemsPrefix) {
 			continue
 		}
-		if seen[path] {
+		if seen[e.Path] {
 			continue
 		}
-		offenders = append(offenders, path)
-		seen[path] = true
+		offenders = append(offenders, e.Path)
+		seen[e.Path] = true
 	}
 
 	// Also scan for non-state files in locally-committed-but-unpushed

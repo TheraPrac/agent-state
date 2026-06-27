@@ -131,26 +131,17 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 		paths = append(paths, p)
 		return true
 	}
-	tokens := strings.Split(string(out), "\x00")
-	for i := 0; i < len(tokens); i++ {
-		tok := tokens[i]
-		if len(tok) < 4 {
-			continue
-		}
-		code := tok[:2]
-		path := tok[3:]
-
-		// Rename/copy: the OLD path is the next NUL token (no XY prefix). A
-		// rename is staged (code[0] is R/C, never gate-skipped), so handle it
-		// here before the staged/managed checks below.
-		if code[0] == 'R' || code[0] == 'C' {
-			oldPath := ""
-			if i+1 < len(tokens) {
-				oldPath = tokens[i+1]
-				i++
-			}
-			newManaged := store.IsManagedStatePath(path, itemsPrefix)
-			oldManaged := oldPath != "" && store.IsManagedStatePath(oldPath, itemsPrefix)
+	// ParseStatusZ (I-1621) does the shared NUL tokenization + rename pairing —
+	// the same structural parse the gate runs — so this command can never drift
+	// from checkNonStateGate on token/rename handling. The skip / managed-path
+	// predicates below are applied here, identical to the gate's.
+	for _, e := range store.ParseStatusZ(string(out)) {
+		// Rename/copy: ParseStatusZ already paired the OLD path. A rename is
+		// staged (code[0] is R/C, never gate-skipped), so handle it here before
+		// the staged/managed checks below.
+		if e.IsRename {
+			newManaged := store.IsManagedStatePath(e.Path, itemsPrefix)
+			oldManaged := e.OldPath != "" && store.IsManagedStatePath(e.OldPath, itemsPrefix)
 			// A rename touching agent-state on EITHER side is left ENTIRELY for
 			// the gate to flag and OrphanStash / the operator to resolve.
 			// Un-staging only the non-state side would either leave a staged
@@ -161,25 +152,25 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 			if newManaged || oldManaged {
 				continue
 			}
-			if addPath(path) {
-				labels = append(labels, path)
+			if addPath(e.Path) {
+				labels = append(labels, e.Path)
 			}
-			addPath(oldPath)
+			addPath(e.OldPath)
 			continue
 		}
 
 		// Mirror checkNonStateGate's skips EXACTLY via the shared predicate:
 		// only STAGED (index-side) entries reach the gate's offender list.
-		if store.IsGateSkippedStatus(code) {
+		if store.IsGateSkippedStatus(e.Code) {
 			continue
 		}
 		// Leave agent-state (.as/ + itemsPrefix) for OrphanStash's ownership-
 		// aware handling — identical rule to the gate.
-		if store.IsManagedStatePath(path, itemsPrefix) {
+		if store.IsManagedStatePath(e.Path, itemsPrefix) {
 			continue
 		}
-		if addPath(path) {
-			labels = append(labels, path)
+		if addPath(e.Path) {
+			labels = append(labels, e.Path)
 		}
 	}
 
