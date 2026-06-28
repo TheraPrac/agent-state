@@ -420,6 +420,21 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 
 	var oldValue string
 	mutateErr := s.Mutate(id, func(item *model.Item) error {
+		// I-1599: an active goal's weight write must respect the same
+		// ≤100 active-weight-sum invariant that `goal activate` enforces.
+		// `st update G-xxx weight=NN` reaches the store directly and would
+		// otherwise bypass the guard. Draft goals are exempt (only active
+		// goals count toward the budget). Run INSIDE the Mutate closure so
+		// the check and write are atomic.
+		if field == "weight" && item.Type == "goal" && item.Status == "active" {
+			n, convErr := strconv.Atoi(strings.TrimSpace(value))
+			if convErr != nil {
+				return fmt.Errorf("weight must be an integer (got %q)", value)
+			}
+			if err := CheckGoalWeightSum(s, id, n); err != nil {
+				return err
+			}
+		}
 		switch {
 		case listFields[field] && strings.Contains(value, "\n"):
 			// Multi-line value = list replacement.
@@ -1003,6 +1018,18 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 
 	mutateErr := s.Mutate(id, func(it *model.Item) error {
 		for _, p := range resolved {
+			// I-1599: same active-goal weight-sum guard as the single-field
+			// path — a batch `weight=NN` on an active goal must not push the
+			// active weight sum over 100. Draft goals are exempt.
+			if p.Field == "weight" && it.Type == "goal" && it.Status == "active" {
+				n, convErr := strconv.Atoi(strings.TrimSpace(p.Value))
+				if convErr != nil {
+					return fmt.Errorf("weight must be an integer (got %q)", p.Value)
+				}
+				if err := CheckGoalWeightSum(s, id, n); err != nil {
+					return err
+				}
+			}
 			var old string
 			switch {
 			case strings.Contains(p.Field, "."):

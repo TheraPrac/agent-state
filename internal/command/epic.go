@@ -3,7 +3,9 @@ package command
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/theraprac/agent-state/internal/changelog"
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/registry"
 	"github.com/theraprac/agent-state/internal/store"
@@ -105,6 +107,165 @@ func EpicSetGoal(s *store.Store, cfg *config.Config, epicID, goalID string) int 
 		fmt.Printf("Linked epic %s to goal %s\n", epicID, goalID)
 	}
 	if err := autoSync(s, fmt.Sprintf("st epic set-goal: %s -> %s", epicID, goalID)); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// epicEditableFields is the whitelist of fields `st epic edit` may set.
+// Epic has no description field; status/goal/order have dedicated commands
+// (archive / set-goal / move). id/type/created and everything else are
+// immutable here. I-1599.
+var epicEditableFields = map[string]bool{"title": true}
+
+// sprintEditableFields is the whitelist of fields `st sprint edit` may set.
+// Sprint id/epic/items/sequence/status are managed by dedicated commands and
+// are immutable here. I-1599.
+var sprintEditableFields = map[string]bool{"title": true, "description": true}
+
+// EpicEdit applies update-style field=value pairs to an epic in the registry,
+// reusing the `st update` arg surface (positional one-field, --stdin, or
+// field=value batch — parsed by the cobra layer into pairs). Whitelist-checked,
+// atomic all-or-nothing, changelog-logged per field, then autoSync. I-1599.
+func EpicEdit(s *store.Store, cfg *config.Config, id string, pairs []FieldValue) int {
+	if len(pairs) == 0 {
+		fmt.Fprintln(os.Stderr, "epic edit: no field=value pairs supplied")
+		return 2
+	}
+
+	// Validate the whole batch BEFORE any write (atomic).
+	seen := make(map[string]bool, len(pairs))
+	for _, p := range pairs {
+		if !epicEditableFields[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"epic edit: %q is not an editable epic field — allowed: title\n", p.Field)
+			return 2
+		}
+		if seen[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"epic edit: field %q appears more than once — collapse the pairs or split into separate calls.\n", p.Field)
+			return 2
+		}
+		seen[p.Field] = true
+	}
+
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+	idx := -1
+	for i, e := range r.Epics {
+		if e.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		fmt.Fprintf(os.Stderr, "epic not found: %s\n", id)
+		return 1
+	}
+
+	type change struct{ field, oldVal, newVal string }
+	var changes []change
+	for _, p := range pairs {
+		switch p.Field {
+		case "title":
+			changes = append(changes, change{"title", r.Epics[idx].Title, p.Value})
+			r.Epics[idx].Title = p.Value
+		}
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	for _, c := range changes {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op: "epic_edit", Field: c.field,
+			OldValue: c.oldVal, NewValue: c.newVal,
+		})
+	}
+
+	fields := make([]string, len(changes))
+	for i, c := range changes {
+		fields[i] = c.field
+	}
+	fmt.Printf("Updated epic %s: %s\n", id, strings.Join(fields, ", "))
+	if err := autoSync(s, fmt.Sprintf("st epic edit: %s (%s)", id, strings.Join(fields, ", "))); err != nil {
+		return 1
+	}
+	return 0
+}
+
+// SprintEdit applies update-style field=value pairs to a sprint in the
+// registry. Same arg surface, whitelist, atomicity, changelog, and autoSync as
+// EpicEdit. Editable fields: title, description. I-1599.
+func SprintEdit(s *store.Store, cfg *config.Config, id string, pairs []FieldValue) int {
+	if len(pairs) == 0 {
+		fmt.Fprintln(os.Stderr, "sprint edit: no field=value pairs supplied")
+		return 2
+	}
+
+	seen := make(map[string]bool, len(pairs))
+	for _, p := range pairs {
+		if !sprintEditableFields[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"sprint edit: %q is not an editable sprint field — allowed: title, description\n", p.Field)
+			return 2
+		}
+		if seen[p.Field] {
+			fmt.Fprintf(os.Stderr,
+				"sprint edit: field %q appears more than once — collapse the pairs or split into separate calls.\n", p.Field)
+			return 2
+		}
+		seen[p.Field] = true
+	}
+
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+	// SprintByID returns a pointer into r.Sprints, so writes survive Save.
+	sp, err := r.SprintByID(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	type change struct{ field, oldVal, newVal string }
+	var changes []change
+	for _, p := range pairs {
+		switch p.Field {
+		case "title":
+			changes = append(changes, change{"title", sp.Title, p.Value})
+			sp.Title = p.Value
+		case "description":
+			changes = append(changes, change{"description", sp.Description, p.Value})
+			sp.Description = p.Value
+		}
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	for _, c := range changes {
+		_ = changelog.Append(cfg, id, changelog.Entry{
+			Op: "sprint_edit", Field: c.field,
+			OldValue: c.oldVal, NewValue: c.newVal,
+		})
+	}
+
+	fields := make([]string, len(changes))
+	for i, c := range changes {
+		fields[i] = c.field
+	}
+	fmt.Printf("Updated sprint %s: %s\n", id, strings.Join(fields, ", "))
+	if err := autoSync(s, fmt.Sprintf("st sprint edit: %s (%s)", id, strings.Join(fields, ", "))); err != nil {
 		return 1
 	}
 	return 0

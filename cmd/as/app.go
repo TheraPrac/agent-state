@@ -1463,6 +1463,19 @@ in-flight, run 'st release' against the active items first.
 	closeCmd.Flags().Bool("skip-tier2-revalidation", false, "skip close-time recomputation of applicable scope suites (use when worktree is absent or push gate already enforced)")
 	root.AddCommand(closeCmd)
 
+	// I-1599: reverse of close — return a terminal item to active.
+	reopenCmd := &cobra.Command{
+		Use:   "reopen <id> --reason <text>",
+		Short: "Reopen a terminal item back to active (reverse of close)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			reason, _ := cmd.Flags().GetString("reason")
+			exitCode = command.Reopen(appStore, appCfg, args[0], reason)
+		},
+	}
+	reopenCmd.Flags().String("reason", "", "reason for reopening (required)")
+	root.AddCommand(reopenCmd)
+
 	classifyCmd := &cobra.Command{
 		Use:   "classify <id>",
 		Short: "Run the binary autonomy classifier on an item (green/red verdict)",
@@ -2239,6 +2252,30 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 			exitCode = command.EpicMove(appStore, appCfg, args[0], pos)
 		},
 	})
+	epicEditCmd := &cobra.Command{
+		Use:   "edit <epic-id> <field> [value] | <epic-id> field=value [...]",
+		Short: "Edit an epic field (title)",
+		Long: `Edit whitelisted epic fields using the st update arg surface.
+
+  st epic edit <id> title "New title"
+  st epic edit <id> title --stdin
+  st epic edit <id> title=value
+
+Editable fields: title. Other fields (status, goal, order) have dedicated
+commands (archive / set-goal / move); id/type/created are immutable.`,
+		Args: cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			stdinFlag, _ := cmd.Flags().GetBool("stdin")
+			pairs, rc := parseEditArgs("epic edit", args[1:], stdinFlag)
+			if rc != 0 {
+				exitCode = rc
+				return
+			}
+			exitCode = command.EpicEdit(appStore, appCfg, args[0], pairs)
+		},
+	}
+	epicEditCmd.Flags().Bool("stdin", false, "read value from stdin")
+	epicCmd.AddCommand(epicEditCmd)
 	root.AddCommand(epicCmd)
 
 	// T-407: Goal as first-class st type.
@@ -2537,7 +2574,31 @@ Note: "aged" is not a valid reason — goals are dropped by deliberate decision,
 		},
 	}
 
-	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintMoveCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd)
+	sprintEditCmd := &cobra.Command{
+		Use:   "edit <sprint-id> <field> [value] | <sprint-id> field=value [...]",
+		Short: "Edit a sprint field (title, description)",
+		Long: `Edit whitelisted sprint fields using the st update arg surface.
+
+  st sprint edit <id> title "New title"
+  st sprint edit <id> description --stdin
+  st sprint edit <id> title=value description=value
+
+Editable fields: title, description. id/epic/items/sequence/status are
+managed by dedicated commands and are immutable here.`,
+		Args: cobra.MinimumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			stdinFlag, _ := cmd.Flags().GetBool("stdin")
+			pairs, rc := parseEditArgs("sprint edit", args[1:], stdinFlag)
+			if rc != 0 {
+				exitCode = rc
+				return
+			}
+			exitCode = command.SprintEdit(appStore, appCfg, args[0], pairs)
+		},
+	}
+	sprintEditCmd.Flags().Bool("stdin", false, "read value from stdin")
+
+	sprintCmd.AddCommand(sprintCreateCmd, sprintListCmd, sprintAddCmd, sprintRmCmd, sprintShowCmd, sprintNextCmd, sprintMoveCmd, sprintPlanCmd, sprintRecoverCmd, sprintArchiveCmd, sprintDeleteCmd, sprintJoinCmd, sprintLeaveCmd, sprintStatusCmd, sprintEditCmd)
 	root.AddCommand(sprintCmd)
 
 	// I-1590: fleet-wide clone audit/sync — the per-agent session-start sync is
@@ -3925,4 +3986,62 @@ func allLookLikePairs(args []string) bool {
 		}
 	}
 	return true
+}
+
+// parseEditArgs turns the `st <kind> edit` arg surface into update-style
+// field=value pairs, mirroring `st update` (I-1599): positional
+// `<field> <value>`, `<field> --stdin` (value from stdin), or `field=value...`
+// batch. `rest` is the args AFTER the id. Returns (pairs, exitCode); exitCode
+// is 0 on success, non-zero (with a stderr message already printed) on a parse
+// error. The no-value `$EDITOR` form was removed in T-382 and is not offered.
+func parseEditArgs(label string, rest []string, stdinFlag bool) ([]command.FieldValue, int) {
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "%s: no field supplied\n", label)
+		return nil, 2
+	}
+	// Batch form: every arg looks like key=value (and not --stdin, which
+	// targets a single field).
+	if !stdinFlag && allLookLikePairs(rest) {
+		pairs := make([]command.FieldValue, 0, len(rest))
+		for _, a := range rest {
+			eq := strings.Index(a, "=")
+			pairs = append(pairs, command.FieldValue{Field: a[:eq], Value: a[eq+1:]})
+		}
+		return pairs, 0
+	}
+	if len(rest) > 2 {
+		fmt.Fprintf(os.Stderr,
+			"%s: too many args for single-field form. Use field=value pairs for batch mode.\n", label)
+		return nil, 2
+	}
+	field := rest[0]
+	readStdin := func() ([]command.FieldValue, int) {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: reading stdin: %v\n", label, err)
+			return nil, 1
+		}
+		value := strings.TrimRight(string(data), "\n")
+		if value == "" {
+			fmt.Fprintf(os.Stderr, "%s: empty input from stdin — no changes\n", label)
+			return nil, 1
+		}
+		return []command.FieldValue{{Field: field, Value: value}}, 0
+	}
+	switch {
+	case stdinFlag:
+		return readStdin()
+	case len(rest) == 2:
+		return []command.FieldValue{{Field: field, Value: rest[1]}}, 0
+	case command.StdinIsPiped():
+		return readStdin()
+	default:
+		fmt.Fprintf(os.Stderr,
+			"%s: no value supplied for %s\n"+
+				"  %s <id> <field> <value>     # short value\n"+
+				"  %s <id> <field> --stdin     # multi-line via stdin\n"+
+				"  %s <id> field1=v field2=v   # batch\n",
+			label, field, label, label, label)
+		return nil, 2
+	}
 }

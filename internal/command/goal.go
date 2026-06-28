@@ -111,6 +111,33 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int, op
 	return 0
 }
 
+// activeGoalWeightSumExcluding returns the summed weight of every ACTIVE goal
+// except excludeID. Shared by GoalActivate and CheckGoalWeightSum so the
+// weight-budget logic has a single definition.
+func activeGoalWeightSumExcluding(s *store.Store, excludeID string) int {
+	sum := 0
+	for _, g := range s.All() {
+		if g.Type == "goal" && g.Status == "active" && g.ID != excludeID && g.Weight != nil {
+			sum += *g.Weight
+		}
+	}
+	return sum
+}
+
+// CheckGoalWeightSum verifies that setting goal `id` to newWeight would not push
+// the sum of ALL active goals' weights above 100. The target goal is excluded
+// from the existing-sum tally (newWeight is the proposed value for it). Returns
+// nil when within budget, otherwise a descriptive error. Reused by both
+// `goal activate` and the `st update`/`st update` batch weight-write paths so
+// the ≤100 invariant is enforced at every active-goal weight mutation.
+func CheckGoalWeightSum(s *store.Store, id string, newWeight int) error {
+	sum := activeGoalWeightSumExcluding(s, id)
+	if sum+newWeight > 100 {
+		return fmt.Errorf("active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first", sum+newWeight, sum, newWeight)
+	}
+	return nil
+}
+
 // GoalActivate transitions a goal from draft to active, enforcing the ≤100 weight sum.
 func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 	goal, ok := s.Get(id)
@@ -133,20 +160,14 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 	// coordinating lock file would be needed for full protection.
 	var finalSum int
 	if err := s.Mutate(id, func(it *model.Item) error {
-		sum := 0
-		for _, g := range s.All() {
-			if g.Type == "goal" && g.Status == "active" && g.ID != id && g.Weight != nil {
-				sum += *g.Weight
-			}
-		}
 		w := 0
 		if it.Weight != nil {
 			w = *it.Weight
 		}
-		if sum+w > 100 {
-			return fmt.Errorf("active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first", sum+w, sum, w)
+		if err := CheckGoalWeightSum(s, id, w); err != nil {
+			return err
 		}
-		finalSum = sum + w
+		finalSum = activeGoalWeightSumExcluding(s, id) + w
 		it.Status = "active"
 		it.Doc.SetField("status", "active")
 		return nil
