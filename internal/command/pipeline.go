@@ -261,6 +261,12 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 			return 1
 		}
 		if exitCode != 0 {
+			// `gh pr checks --watch` exits 1 with "no checks reported" when a PR has no
+			// CI configured — there is nothing to wait on, so this is not a failure.
+			if strings.Contains(string(output), "no checks reported") {
+				fmt.Println("  pre-check: no checks reported — nothing to wait on, treating as pass")
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "pre-check failed (exit %d):\n%s\n", exitCode, string(output))
 			return 1
 		}

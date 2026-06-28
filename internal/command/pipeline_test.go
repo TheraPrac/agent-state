@@ -136,6 +136,27 @@ func TestMergePreCheckFail(t *testing.T) {
 	}
 }
 
+// A PR with no CI: `gh pr checks --watch` exits 1 with "no checks reported" — that is
+// nothing to wait on, not a failure, so the merge should still proceed (I-1629).
+func TestMergePreCheckNoChecksPasses(t *testing.T) {
+	s, cfg := setupPipelineTestEnv(t)
+	opts := PipelineOpts{
+		RunCmd: func(cmd string) ([]byte, int, error) {
+			if strings.Contains(cmd, "checks") {
+				return []byte("no checks reported on the 'feat/x' branch\n"), 1, nil
+			}
+			return []byte("Merged\n"), 0, nil
+		},
+		Backend:      &evidence.LocalBackend{Dir: t.TempDir()},
+		GitRemoteURL: stubGitRemoteURL,
+	}
+
+	code := Merge(s, cfg, "T-003", opts)
+	if code != 0 {
+		t.Errorf("Merge with no-checks pre-check returned %d, want 0", code)
+	}
+}
+
 func TestMergeNotConfigured(t *testing.T) {
 	s, cfg := setupPipelineTestEnv(t)
 	cfg.Pipeline.Merge = nil
