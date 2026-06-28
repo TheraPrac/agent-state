@@ -16,11 +16,13 @@ import (
 // active directory. A non-empty --reason is required for auditability (Inv 8).
 //
 // Only a genuinely terminal item can be reopened — calling reopen on an
-// already-active (non-terminal) item is an error. The active status is
-// resolved from the type's config (TypeConfig.ActiveStatus), never hardcoded,
-// so it stays correct if the vocabulary changes. The close-time markers are
-// undone symmetrically: `completed` is blanked and the `delivery.stage=closed`
-// marker (set by Close) is removed. I-1599.
+// already-active (non-terminal) item is an error, and only task/issue items
+// are eligible (goals have their own lifecycle). The active status is resolved
+// from the type's config (TypeConfig.ActiveStatus), never hardcoded, so it
+// stays correct if the vocabulary changes. The close-time markers are undone
+// symmetrically: `completed` is blanked, `delivery.stage=closed` is removed,
+// and the remaining completion stamps are cleared via clearCloseMarkers so the
+// item is not double-counted as completed. I-1599.
 func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 	if reason == "" {
 		fmt.Fprintln(os.Stderr, "reopen: --reason is required")
@@ -30,6 +32,17 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 	item, ok := s.Get(id)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "not found: %s\n", id)
+		return 1
+	}
+
+	// I-1599: reopen is for the task/issue lifecycle only. Goals have their
+	// own terminal vocabulary (met/dropped) and an active-weight budget that
+	// reactivation would have to re-satisfy; un-terminal of goals is
+	// explicitly out of scope, so refuse here rather than silently flip a
+	// goal to active with no weight check.
+	if item.Type != "task" && item.Type != "issue" {
+		fmt.Fprintf(os.Stderr,
+			"reopen supports task/issue items; %s items use their own lifecycle (goals: st goal activate/mark-met/drop)\n", item.Type)
 		return 1
 	}
 
@@ -64,6 +77,9 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 		// Reverse the close-time `delivery.stage=closed` marker so the item
 		// reads as freshly-active rather than closed (no-op if absent).
 		it.Doc.RemoveNestedField("delivery.stage")
+		// Clear the remaining completion stamps Close wrote so st show /
+		// metrics don't double-count a reopened item as completed.
+		clearCloseMarkers(it)
 		return nil
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
@@ -88,4 +104,33 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 		return 1
 	}
 	return 0
+}
+
+// clearCloseMarkers reverses the completion stamps that Close writes
+// (close.go ~250-372) so a reopened item is not double-counted as completed by
+// st show / metrics. DRIFT COUPLING: this set must mirror the fields Close
+// stamps on close — if Close adds a new completion marker, add its inverse
+// here. time_tracking.accumulated_seconds is deliberately KEPT: it is the
+// cumulative active-work total and must survive the close/reopen cycle.
+// RemoveNestedField handles dotted nested paths; top-level scalar fields use
+// SetField(key,"null") (there is no top-level remove on ParsedDocument).
+func clearCloseMarkers(it *model.Item) {
+	// Top-level completion fields → blank to null.
+	it.Doc.SetField("resolution", "null")
+	it.Doc.SetField("dropped_reason", "null")
+	// Nested time_tracking completion totals → remove (no-op if absent).
+	for _, path := range []string{
+		"time_tracking.completed_at",
+		"time_tracking.total_duration_seconds",
+		"time_tracking.total_wall_time",
+		"time_tracking.wall_time_hours",
+		"time_tracking.work_duration_seconds",
+		"time_tracking.total_ai_time",
+		"time_tracking.total_ai_cost_usd",
+		"time_tracking.total_input_tokens",
+		"time_tracking.total_output_tokens",
+		"time_tracking.total_tokens_final",
+	} {
+		it.Doc.RemoveNestedField(path)
+	}
 }

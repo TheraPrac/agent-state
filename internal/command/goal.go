@@ -127,15 +127,17 @@ func activeGoalWeightSumExcluding(s *store.Store, excludeID string) int {
 // CheckGoalWeightSum verifies that setting goal `id` to newWeight would not push
 // the sum of ALL active goals' weights above 100. The target goal is excluded
 // from the existing-sum tally (newWeight is the proposed value for it). Returns
-// nil when within budget, otherwise a descriptive error. Reused by both
-// `goal activate` and the `st update`/`st update` batch weight-write paths so
-// the ≤100 invariant is enforced at every active-goal weight mutation.
-func CheckGoalWeightSum(s *store.Store, id string, newWeight int) error {
+// the existing active-weight sum (excluding `id`) and a nil error when within
+// budget, otherwise the same sum and a descriptive error. Returning the sum
+// lets callers (GoalActivate) reuse it without a second store scan. Reused by
+// both `goal activate` and the `st update` / batch weight-write paths so the
+// ≤100 invariant is enforced at every active-goal weight mutation.
+func CheckGoalWeightSum(s *store.Store, id string, newWeight int) (int, error) {
 	sum := activeGoalWeightSumExcluding(s, id)
 	if sum+newWeight > 100 {
-		return fmt.Errorf("active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first", sum+newWeight, sum, newWeight)
+		return sum, fmt.Errorf("active weight sum would be %d/100 (current active=%d, this=%d); reduce another goal's weight first", sum+newWeight, sum, newWeight)
 	}
-	return nil
+	return sum, nil
 }
 
 // GoalActivate transitions a goal from draft to active, enforcing the ≤100 weight sum.
@@ -164,10 +166,11 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 		if it.Weight != nil {
 			w = *it.Weight
 		}
-		if err := CheckGoalWeightSum(s, id, w); err != nil {
+		sum, err := CheckGoalWeightSum(s, id, w)
+		if err != nil {
 			return err
 		}
-		finalSum = activeGoalWeightSumExcluding(s, id) + w
+		finalSum = sum + w
 		it.Status = "active"
 		it.Doc.SetField("status", "active")
 		return nil

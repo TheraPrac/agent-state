@@ -163,3 +163,88 @@ func TestUpdateBatchActiveGoalWeightGuard(t *testing.T) {
 		t.Errorf("G-002 weight = %d after applied batch update, want 40", got)
 	}
 }
+
+// TestUpdateGoalStatusRejected proves the I-1599 fix that goal status is not
+// editable via st update (single-field) — closing the draft→active bypass that
+// would otherwise skip the weight budget.
+func TestUpdateGoalStatusRejected(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 60)
+	seedGoalFile(t, cfg, "G-002", "draft", 30)
+	s := reloadStoreGoal(t, cfg)
+
+	if rc := Update(s, cfg, "G-002", "status", "active", UpdateModeValue); rc == 0 {
+		t.Error("Update of goal status must be rejected (lifecycle-managed)")
+	}
+	// G-002 must still be draft on disk.
+	s2 := reloadStoreGoal(t, cfg)
+	g, _ := s2.Get("G-002")
+	if g.Status != "draft" {
+		t.Errorf("G-002 status = %q after rejected status update, want draft", g.Status)
+	}
+
+	// A non-goal status edit must remain allowed: seed a task and flip it.
+	seedTaskInGoalEnv(t, cfg, "T-001", "queued")
+	s3 := reloadStoreGoal(t, cfg)
+	if rc := Update(s3, cfg, "T-001", "status", "active", UpdateModeValue); rc != 0 {
+		t.Errorf("task status edit must be unaffected by the goal guard, got rc=%d", rc)
+	}
+}
+
+// TestUpdateBatchGoalStatusRejected proves the same status guard on the batch
+// path, including the `status=active weight=80` bypass attempt.
+func TestUpdateBatchGoalStatusRejected(t *testing.T) {
+	_, _, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-001", "active", 60)
+	seedGoalFile(t, cfg, "G-002", "draft", 30)
+	s := reloadStoreGoal(t, cfg)
+
+	rc := UpdateBatch(s, cfg, "G-002", []FieldValue{
+		{Field: "status", Value: "active"},
+		{Field: "weight", Value: "80"},
+	})
+	if rc == 0 {
+		t.Error("batch goal status edit must be rejected (would bypass weight budget)")
+	}
+	s2 := reloadStoreGoal(t, cfg)
+	g, _ := s2.Get("G-002")
+	if g.Status != "draft" {
+		t.Errorf("G-002 status = %q after rejected batch, want draft (atomic abort)", g.Status)
+	}
+	if g.Weight == nil || *g.Weight != 30 {
+		t.Errorf("G-002 weight changed despite atomic abort: %v", g.Weight)
+	}
+}
+
+// TestUpdateGoalWeightLowerBound proves weight < 1 is rejected on both paths.
+func TestUpdateGoalWeightLowerBound(t *testing.T) {
+	for _, bad := range []string{"0", "-5"} {
+		_, _, cfg := newGoalEnv(t)
+		seedGoalFile(t, cfg, "G-001", "active", 60)
+		seedGoalFile(t, cfg, "G-002", "active", 30)
+		s := reloadStoreGoal(t, cfg)
+		if rc := Update(s, cfg, "G-002", "weight", bad, UpdateModeValue); rc == 0 {
+			t.Errorf("Update weight=%q must be rejected (< 1)", bad)
+		}
+		if rc := UpdateBatch(s, cfg, "G-002", []FieldValue{{Field: "weight", Value: bad}}); rc == 0 {
+			t.Errorf("UpdateBatch weight=%q must be rejected (< 1)", bad)
+		}
+		if got := reloadGoalWeight(t, cfg, "G-002"); got != 30 {
+			t.Errorf("G-002 weight = %d after rejected weight=%q, want unchanged 30", got, bad)
+		}
+	}
+}
+
+// TestUpdateGoalWeightBlankAllowed proves a blank/null weight clears the field
+// without tripping the int-parse / bounds / budget guards.
+func TestUpdateGoalWeightBlankAllowed(t *testing.T) {
+	for _, blank := range []string{"", "null"} {
+		_, _, cfg := newGoalEnv(t)
+		seedGoalFile(t, cfg, "G-001", "active", 60)
+		seedGoalFile(t, cfg, "G-002", "active", 30)
+		s := reloadStoreGoal(t, cfg)
+		if rc := Update(s, cfg, "G-002", "weight", blank, UpdateModeValue); rc != 0 {
+			t.Errorf("Update weight=%q (blank) on active goal must be allowed, got rc=%d", blank, rc)
+		}
+	}
+}

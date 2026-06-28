@@ -420,19 +420,35 @@ func Update(s *store.Store, cfg *config.Config, id, field, value string, mode Up
 
 	var oldValue string
 	mutateErr := s.Mutate(id, func(item *model.Item) error {
+		// I-1599: goal status is lifecycle-managed. Refuse to edit it via
+		// st update so the draft→active transition (and its weight-budget
+		// check) cannot be bypassed by `st update G-x status active`. Only
+		// goals — task/issue status edits are unaffected. Checked BEFORE the
+		// weight guard so a `status active` write can never slip the budget.
+		if item.Type == "goal" && field == "status" {
+			return fmt.Errorf("goal status is managed by 'st goal activate' / 'st goal mark-met' / 'st goal drop' — not editable via st update")
+		}
 		// I-1599: an active goal's weight write must respect the same
 		// ≤100 active-weight-sum invariant that `goal activate` enforces.
 		// `st update G-xxx weight=NN` reaches the store directly and would
 		// otherwise bypass the guard. Draft goals are exempt (only active
-		// goals count toward the budget). Run INSIDE the Mutate closure so
-		// the check and write are atomic.
+		// goals count toward the budget). A blank/null value clears the
+		// weight, so the int-parse + lower-bound + budget checks only run on
+		// a concrete value. Run INSIDE the Mutate closure so the check and
+		// write are atomic.
 		if field == "weight" && item.Type == "goal" && item.Status == "active" {
-			n, convErr := strconv.Atoi(strings.TrimSpace(value))
-			if convErr != nil {
-				return fmt.Errorf("weight must be an integer (got %q)", value)
-			}
-			if err := CheckGoalWeightSum(s, id, n); err != nil {
-				return err
+			tv := strings.TrimSpace(value)
+			if tv != "" && tv != "null" {
+				n, convErr := strconv.Atoi(tv)
+				if convErr != nil {
+					return fmt.Errorf("weight must be an integer (got %q)", value)
+				}
+				if n < 1 {
+					return fmt.Errorf("goal weight must be between 1 and 100 (got %d)", n)
+				}
+				if _, err := CheckGoalWeightSum(s, id, n); err != nil {
+					return err
+				}
 			}
 		}
 		switch {
@@ -1018,16 +1034,30 @@ func UpdateBatch(s *store.Store, cfg *config.Config, id string, pairs []FieldVal
 
 	mutateErr := s.Mutate(id, func(it *model.Item) error {
 		for _, p := range resolved {
+			// I-1599: goal status is lifecycle-managed — refuse to edit it via
+			// batch update (mirrors the single-field path) so `status=active
+			// weight=80` can't flip a draft goal active and skip the budget.
+			if it.Type == "goal" && p.Field == "status" {
+				return fmt.Errorf("goal status is managed by 'st goal activate' / 'st goal mark-met' / 'st goal drop' — not editable via st update")
+			}
 			// I-1599: same active-goal weight-sum guard as the single-field
 			// path — a batch `weight=NN` on an active goal must not push the
-			// active weight sum over 100. Draft goals are exempt.
+			// active weight sum over 100. Draft goals are exempt; a blank/null
+			// value clears the weight, so the checks only run on a concrete
+			// value.
 			if p.Field == "weight" && it.Type == "goal" && it.Status == "active" {
-				n, convErr := strconv.Atoi(strings.TrimSpace(p.Value))
-				if convErr != nil {
-					return fmt.Errorf("weight must be an integer (got %q)", p.Value)
-				}
-				if err := CheckGoalWeightSum(s, id, n); err != nil {
-					return err
+				tv := strings.TrimSpace(p.Value)
+				if tv != "" && tv != "null" {
+					n, convErr := strconv.Atoi(tv)
+					if convErr != nil {
+						return fmt.Errorf("weight must be an integer (got %q)", p.Value)
+					}
+					if n < 1 {
+						return fmt.Errorf("goal weight must be between 1 and 100 (got %d)", n)
+					}
+					if _, err := CheckGoalWeightSum(s, id, n); err != nil {
+						return err
+					}
 				}
 			}
 			var old string

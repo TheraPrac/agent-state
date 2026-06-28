@@ -3999,6 +3999,16 @@ func parseEditArgs(label string, rest []string, stdinFlag bool) ([]command.Field
 		fmt.Fprintf(os.Stderr, "%s: no field supplied\n", label)
 		return nil, 2
 	}
+	// I-1599: with --stdin the value comes from stdin, so exactly one BARE
+	// field name is allowed. Checked before batch detection so an arg like
+	// `title=a` isn't taken as the field name (or routed to batch parsing).
+	if stdinFlag {
+		if len(rest) != 1 || strings.Contains(rest[0], "=") {
+			fmt.Fprintf(os.Stderr,
+				"%s: with --stdin, pass exactly one bare field name (no value, no field=value pairs)\n", label)
+			return nil, 2
+		}
+	}
 	// Batch form: every arg looks like key=value (and not --stdin, which
 	// targets a single field).
 	if !stdinFlag && allLookLikePairs(rest) {
