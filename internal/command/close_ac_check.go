@@ -25,6 +25,12 @@ import (
 // actually commits, so a close that later fails another gate leaves no phantom
 // bypass entry.
 func closeACCheck(item *model.Item, opts CloseOpts) string {
+	// Marker check FIRST: a genuinely-verified item never needs (and must not be
+	// recorded as) a skip, so passing --skip-ac on an already-passing item is a
+	// no-op pass, not an audited bypass (review).
+	if uatMarkerPasses(item) {
+		return ""
+	}
 	if opts.SkipACRequested {
 		if strings.TrimSpace(opts.SkipAC) == "" {
 			return "close: --skip-ac requires a non-empty reason (why acceptance_criteria can't be verified via st uat)"
@@ -33,10 +39,6 @@ func closeACCheck(item *model.Item, opts CloseOpts) string {
 	}
 
 	val, ok := getNestedField(item, "testing_evidence", "uat")
-	if ok && strings.HasPrefix(strings.TrimSpace(val), "pass") {
-		return ""
-	}
-
 	detail := "no `st uat` run recorded"
 	if ok {
 		detail = "last st uat: " + strings.TrimSpace(val)
@@ -44,6 +46,12 @@ func closeACCheck(item *model.Item, opts CloseOpts) string {
 	return fmt.Sprintf("close: %s has no verified acceptance_criteria (%s).\n"+
 		"  Run `st uat %s` first — it evaluates every acceptance criterion and records the pass — then re-close.\n"+
 		"  bypass: --skip-ac \"<reason>\" (audited) or --force.", item.ID, detail, item.ID)
+}
+
+// uatMarkerPasses reports whether the item carries a passing st-uat marker.
+func uatMarkerPasses(item *model.Item) bool {
+	val, ok := getNestedField(item, "testing_evidence", "uat")
+	return ok && strings.HasPrefix(strings.TrimSpace(val), "pass")
 }
 
 // logACSkip appends a one-line audit record of a --skip-ac bypass to

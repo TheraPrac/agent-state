@@ -570,12 +570,19 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		}
 	}
 
-	// I-1486: audit a --skip-ac bypass AFTER the close commits (so a close that
-	// failed a later gate leaves no phantom skip record). Only when the AC gate
-	// actually applied (done, non-force) and the override was used. Recorded to
-	// .as/close-ac-skip.log (the logEvidenceSkip pattern), not the changelog.
-	if !opts.Force && captureRequired(resolution) && opts.SkipACRequested && strings.TrimSpace(opts.SkipAC) != "" {
-		logACSkip(cfg, id, opts.SkipAC)
+	// I-1486: audit an AC-gate bypass AFTER the close commits (so a close that
+	// failed a later gate leaves no phantom record). Only when the item was NOT
+	// actually uat-verified — a real bypass — recorded to .as/close-ac-skip.log
+	// (the logEvidenceSkip pattern). Covers both --skip-ac and --force closes of
+	// a `done` item lacking a passing st uat marker, so no unverified `done`
+	// close is silent.
+	if captureRequired(resolution) && !uatMarkerPasses(item) {
+		switch {
+		case opts.SkipACRequested && strings.TrimSpace(opts.SkipAC) != "":
+			logACSkip(cfg, id, "--skip-ac: "+strings.TrimSpace(opts.SkipAC))
+		case opts.Force:
+			logACSkip(cfg, id, "--force: closed done without a verified st uat pass")
+		}
 	}
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)

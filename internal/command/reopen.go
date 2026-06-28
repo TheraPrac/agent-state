@@ -118,6 +118,10 @@ func clearCloseMarkers(it *model.Item) {
 	// Top-level completion fields → blank to null.
 	it.Doc.SetField("resolution", "null")
 	it.Doc.SetField("dropped_reason", "null")
+	// I-1486: clear the UAT verification marker so a reopened+reworked item must
+	// pass `st uat` again before it can re-close `done` (a stale pre-rework pass
+	// must not silently gate the new work).
+	it.Doc.RemoveNestedField("testing_evidence.uat")
 	// Nested time_tracking completion totals → remove (no-op if absent).
 	for _, path := range []string{
 		"time_tracking.completed_at",
