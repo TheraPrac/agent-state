@@ -2137,3 +2137,39 @@ func TestTestRecord_EnvFrom(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSuiteWorkdir(t *testing.T) {
+	_, cfg := setupPRTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{
+		Enabled: true,
+		BaseDir: "worktrees",
+		Repos:   []string{"theraprac-api"},
+	}
+
+	wtBase := filepath.Join(cfg.Root(), "worktrees", "T-003")
+	wsDir := filepath.Join(wtBase, "theraprac-workspace")
+	if err := os.MkdirAll(wsDir, 0755); err != nil {
+		t.Fatalf("create workspace worktree dir: %v", err)
+	}
+
+	// (a) any suite when worktree workspace exists: returns worktree workspace path.
+	// Post-rewriteSuiteForWorktree, sibling-repo suites use absolute `cd /path`
+	// so the CWD returned here is irrelevant for them — they navigate themselves.
+	if got := resolveSuiteWorkdir(cfg, "T-003"); got != wsDir {
+		t.Errorf("suite with worktree: got %q, want %q", got, wsDir)
+	}
+
+	// (b) no worktree on disk (item T-999 dir absent): falls back to cfg.Root()
+	if got := resolveSuiteWorkdir(cfg, "T-999"); got != cfg.Root() {
+		t.Errorf("no worktree: got %q, want cfg.Root() %q", got, cfg.Root())
+	}
+
+	// (c) worktree configured but workspace subdir absent: falls back to cfg.Root()
+	wtBaseNoWs := filepath.Join(cfg.Root(), "worktrees", "T-004")
+	if err := os.MkdirAll(wtBaseNoWs, 0755); err != nil {
+		t.Fatalf("create worktree base without workspace: %v", err)
+	}
+	if got := resolveSuiteWorkdir(cfg, "T-004"); got != cfg.Root() {
+		t.Errorf("worktree base exists but no workspace subdir: got %q, want cfg.Root() %q", got, cfg.Root())
+	}
+}

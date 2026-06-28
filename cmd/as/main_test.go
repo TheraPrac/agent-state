@@ -615,7 +615,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// Step 5: CLOSE (active → completed)
-	_, _, code = runAs(t, ws, "close", id, "done", "--force")
+	_, _, code = runAs(t, ws, "close", id, "done", "--force", "--allow-missing-capture", "test fixture — synthetic item has no token/time data")
 	if code != 0 {
 		t.Fatalf("close exit %d", code)
 	}

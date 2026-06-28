@@ -399,13 +399,17 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 
 	start := time.Now()
 
+	// I-1634: workspace-scope suites inherit the CWD; run them from the item's
+	// theraprac-workspace worktree checkout so the hook diff is vs feature branch.
+	suiteWorkdir := resolveSuiteWorkdir(cfg, id)
+
 	// Execute suite command. Stream output to stderr so the user (and
 	// activity tracker) sees progress.
 	runOnce := func() ([]byte, int, error) {
 		if opts.RunCmd != nil {
 			return opts.RunCmd(cmd)
 		}
-		return runCmdInDirStreaming(cfg.Root(), cmd)
+		return runCmdInDirStreaming(suiteWorkdir, cmd)
 	}
 	result := runWithLockAwareRetry(suite, opts.RunCmd != nil, runOnce)
 	output, exitCode, runErr, retried := result.Output, result.ExitCode, result.RunErr, result.Retried
@@ -1019,6 +1023,25 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 	}
 
 	return suiteCmd
+}
+
+// resolveSuiteWorkdir picks the working directory for running a suite command.
+// cmd arrives post-rewriteSuiteForWorktree, so sibling-repo suites already
+// contain an absolute `cd /path/to/repo` and are unaffected by CWD. Workspace-
+// scope suites (hook_test / workspace_test) have no `cd` at all and inherit the
+// CWD directly — they must run from the item's theraprac-workspace worktree
+// checkout so run-changed-hook-tests.sh diffs origin/main..HEAD against the
+// feature branch, not the always-clean main checkout. I-1634.
+func resolveSuiteWorkdir(cfg *config.Config, id string) string {
+	wtBase := cfg.WorktreeForItem(id)
+	if wtBase == "" {
+		return cfg.Root()
+	}
+	wsDir := filepath.Join(wtBase, workspaceRepo)
+	if _, err := os.Stat(wsDir); err == nil {
+		return wsDir
+	}
+	return cfg.Root()
 }
 
 // worktreeRepoOnSameCommit returns true when the worktree repo and the main

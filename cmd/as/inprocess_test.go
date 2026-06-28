@@ -298,7 +298,7 @@ func TestInProcess_Close(t *testing.T) {
 	ws := setupInProcessWorkspace(t)
 	// Start first (must be active to close)
 	runInProcess(t, ws, "start", "T-001")
-	stdout, code := runInProcess(t, ws, "close", "T-001", "done", "--force")
+	stdout, code := runInProcess(t, ws, "close", "T-001", "done", "--force", "--allow-missing-capture", "test fixture — synthetic item has no token/time data")
 	if code != 0 {
 		t.Errorf("close exit %d", code)
 	}
@@ -506,7 +506,7 @@ func TestInProcess_FullLifecycle(t *testing.T) {
 	}
 
 	// Close
-	_, code = runInProcess(t, ws, "close", id, "done", "--force")
+	_, code = runInProcess(t, ws, "close", id, "done", "--force", "--allow-missing-capture", "test fixture — synthetic item has no token/time data")
 	if code != 0 {
 		t.Fatalf("close exit %d", code)
 	}
