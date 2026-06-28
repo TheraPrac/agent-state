@@ -80,7 +80,13 @@ func captureRequired(resolution string) bool {
 //     essential — ExtractItemMetrics ignores it for input/output, so a
 //     reconciled item would otherwise be falsely rejected (I-1614 review).
 func captureComplete(item *model.Item, now time.Time) (timeOK, tokensOK bool) {
-	timeOK = readFloatField(item, "time_tracking", "accumulated_seconds") > 0 ||
+	// Read via the typed TimeTracking map (numeric-aware, the same readers the
+	// fold uses) AND the Doc walker (string-stored values). A loaded item
+	// carries numeric YAML scalars in the typed map, while SetNested-written
+	// values live in the Doc as strings — the Doc-only readers miss numeric
+	// scalars, so both paths are checked (I-1614 review).
+	timeOK = readSecondsField(item.TimeTracking, "accumulated_seconds", "work_duration_seconds") > 0 ||
+		readFloatField(item, "time_tracking", "accumulated_seconds") > 0 ||
 		readFloatField(item, "time_tracking", "work_duration_seconds") > 0
 	if !timeOK {
 		if v, ok := getNestedField(item, "time_tracking", "session_started_at"); ok && strings.TrimSpace(v) != "" {
@@ -95,7 +101,11 @@ func captureComplete(item *model.Item, now time.Time) (timeOK, tokensOK bool) {
 
 // itemHasTokens reports whether an item carries any non-zero token count.
 // Prefers the canonical I-569 real_tokens blob, then falls back to the legacy
-// fields; short-circuits on the first non-zero source.
+// fields. Each legacy field is read from BOTH the typed TimeTracking map
+// (numeric scalars on loaded items, via intField) AND the Doc (string values
+// from SetNested) — the Doc-only reader silently returns 0 for numeric scalars,
+// which would falsely reject the 100+ items whose tokens live only in numeric
+// legacy fields (I-1614 review). Short-circuits on the first non-zero source.
 func itemHasTokens(item *model.Item) bool {
 	rt := readRealTokens(item)
 	if rt.Input+rt.Output+rt.CacheRead+rt.CacheCreation5m+rt.CacheCreation1h > 0 {
@@ -107,7 +117,7 @@ func itemHasTokens(item *model.Item) bool {
 		"cache_in_tokens", "cache_out_tokens", "cache_out_1h_tokens",
 		"input_tokens", "output_tokens", "total_tokens",
 	} {
-		if readIntField(item, "time_tracking", k) > 0 {
+		if intField(item.TimeTracking, k) > 0 || readIntField(item, "time_tracking", k) > 0 {
 			return true
 		}
 	}

@@ -34,6 +34,21 @@ func seedWorkTime(t *testing.T, env *testutil.Env, id string) {
 }
 
 // I-1614: helper unit table.
+// I-1614 review [0]: loaded items store legacy token / seconds fields as NUMERIC
+// YAML scalars in the typed TimeTracking map; the Doc-only readers miss them.
+// captureComplete must recognize numeric legacy capture.
+func TestCaptureComplete_NumericLegacyFields(t *testing.T) {
+	now := time.Now()
+	it := &model.Item{TimeTracking: map[string]interface{}{
+		"reg_input_tokens":    3562, // int scalar (as parsed from YAML)
+		"accumulated_seconds": 60.0, // float scalar
+	}}
+	timeOK, tokOK := captureComplete(it, now)
+	if !timeOK || !tokOK {
+		t.Errorf("numeric legacy fields not recognized: time=%v tok=%v (gate would falsely reject loaded items)", timeOK, tokOK)
+	}
+}
+
 func TestCaptureComplete(t *testing.T) {
 	now := time.Now()
 	mk := func(seed func(it *model.Item)) *model.Item {

@@ -1463,7 +1463,7 @@ in-flight, run 'st release' against the active items first.
 		},
 	}
 	closeCmd.Flags().String("reason", "", "reason for closing (required for abandon)")
-	closeCmd.Flags().Bool("force", false, "bypass gate checks")
+	closeCmd.Flags().Bool("force", false, "bypass the evidence/Tier-2/post-merge gate checks (does NOT bypass the I-1614 capture gate — use --allow-missing-capture for that)")
 	closeCmd.Flags().Bool("skip-tier2-revalidation", false, "skip close-time recomputation of applicable scope suites (use when worktree is absent or push gate already enforced)")
 	closeCmd.Flags().String("allow-missing-capture", "", "I-1614: close despite missing token/work-time capture, recording an audited reason (NOT bypassed by --force; the only escape for a legitimately untracked item)")
 	root.AddCommand(closeCmd)
