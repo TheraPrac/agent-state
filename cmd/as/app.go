@@ -3673,7 +3673,28 @@ Kinds:
 		},
 	}
 	orphanListCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
-	orphanCmd.AddCommand(orphanStashCmd, orphanClearNonStateCmd, orphanListCmd)
+	// I-1620: REACTIVE stash of only the untracked paths an incoming ff-pull would
+	// clobber (collision set = origin/main-added ∩ local-untracked), so session-start
+	// can retry the pull instead of going stale. Never blanket-stashes (the I-1594
+	// regression). Best-effort, always exits 0, strict no-op off main/master.
+	orphanStashPullConflictsCmd := &cobra.Command{
+		Use:   "stash-pull-conflicts",
+		Short: "Stash only the untracked files an incoming ff-pull would clobber (no-op off main)",
+		Run: func(cmd *cobra.Command, args []string) {
+			ws, _ := cmd.Flags().GetString("workspace")
+			agent, _ := cmd.Flags().GetString("agent")
+			if ws == "" {
+				ws = appCfg.Root()
+			}
+			if agent == "" {
+				agent = appCfg.AgentID()
+			}
+			os.Exit(command.StashPullConflicts(ws, agent))
+		},
+	}
+	orphanStashPullConflictsCmd.Flags().String("workspace", "", "path to workspace root (default: config root)")
+	orphanStashPullConflictsCmd.Flags().String("agent", "", "current agent ID (default: from config)")
+	orphanCmd.AddCommand(orphanStashCmd, orphanClearNonStateCmd, orphanListCmd, orphanStashPullConflictsCmd)
 	root.AddCommand(orphanCmd)
 
 	inferStageCmd := &cobra.Command{

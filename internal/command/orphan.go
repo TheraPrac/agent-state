@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/theraprac/agent-state/internal/store"
 )
 
 // OrphanStash scans the workspace for dirty agent-state files not owned by
@@ -76,6 +78,110 @@ func OrphanStash(workspaceRoot, itemDir, agentID string) []string {
 		fmt.Printf("  list: st orphan list --workspace %q\n", workspaceRoot)
 	}
 	return stashed
+}
+
+// StashPullConflicts is the REACTIVE, PRECISE half of I-1620: it stashes ONLY
+// the untracked files an incoming fast-forward merge would clobber, so a
+// session-start `git pull --ff-only` on the shared theraprac-workspace main
+// checkout can be retried instead of failing and leaving the session stale.
+//
+// It runs ONLY after a pull has already failed (session-start.sh calls it then
+// retries once). The collision set is computed deterministically — never by
+// parsing git's locale-dependent "would be overwritten by merge" English:
+//
+//	A = paths ADDED in origin/main that are absent from HEAD
+//	    (git diff --diff-filter=A --name-only HEAD origin/main)
+//	U = locally UNTRACKED paths (git status --porcelain, code "??")
+//	collisions = A ∩ U   ← exactly the untracked files the ff-merge can't write over
+//
+// Only that intersection is stashed. Untracked content origin does NOT add
+// (agent-memory/MEMORY.md, WIP docs/ — the legitimate files I-1594 was burned by
+// when it blanket-stashed) is left completely untouched. Stashed paths carry the
+// I-1594 `st-nonstate-residue` label so `st orphan list` surfaces them for
+// recovery.
+//
+// Best-effort throughout: every git step is tolerant of error and the function
+// ALWAYS returns 0 — it must never block session start. A non-collision pull
+// failure (genuine conflict, network, etc.) touches nothing and returns 0 so the
+// hook prints its normal diagnostics.
+func StashPullConflicts(workspaceRoot, agentID string) int {
+	// Branch guard: only the shared main/master checkout. A feature-branch
+	// worktree carries the agent's own legitimate untracked WIP — never touch it.
+	// Detached HEAD (mid-rebase/merge) returns non-zero here and no-ops (fail-safe).
+	refOut, refErr := execGitOrphan(workspaceRoot, "symbolic-ref", "-q", "HEAD")
+	if refErr != nil {
+		return 0
+	}
+	branch := strings.TrimPrefix(strings.TrimSpace(string(refOut)), "refs/heads/")
+	if branch != "main" && branch != "master" {
+		return 0
+	}
+
+	// Make origin/main current so the incoming-added diff reflects what the pull
+	// is actually trying to merge. Best-effort: a fetch failure just means we
+	// compare against the already-known origin/main.
+	_, _ = execGitOrphanCapture(workspaceRoot, "fetch", "-q", "origin", "main")
+
+	// A = paths ADDED in origin/main relative to HEAD (NUL-separated, raw, no
+	// quoting). These are the files the ff-merge would create in the worktree.
+	addedOut, addErr := execGitOrphan(workspaceRoot, "diff", "--diff-filter=A",
+		"--name-only", "-z", "HEAD", "origin/main")
+	if addErr != nil {
+		return 0
+	}
+	added := make(map[string]bool)
+	for _, p := range strings.Split(string(addedOut), "\x00") {
+		if p != "" {
+			added[p] = true
+		}
+	}
+	if len(added) == 0 {
+		return 0
+	}
+
+	// U = locally untracked paths. Reuse the package's shared NUL parse so the
+	// `??` detection can never drift from the gate's tokenization.
+	statusOut, statusErr := execGitOrphan(workspaceRoot, "status", "--porcelain",
+		"-z", "--untracked-files=all")
+	if statusErr != nil || len(statusOut) == 0 {
+		return 0
+	}
+
+	// collisions = A ∩ U, in origin/main's listed order for a stable label.
+	var collisions []string
+	seen := make(map[string]bool)
+	for _, e := range store.ParseStatusZ(string(statusOut)) {
+		if e.Code == "??" && added[e.Path] && !seen[e.Path] {
+			collisions = append(collisions, e.Path)
+			seen[e.Path] = true
+		}
+	}
+	if len(collisions) == 0 {
+		// The pull failed for some other reason (real conflict, network, a
+		// dirty TRACKED file). Touch nothing — the hook prints its diagnostics.
+		return 0
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	label := fmt.Sprintf("st-nonstate-residue: %s dropped-by:%s date:%s",
+		strings.Join(collisions, ", "), agentID, today)
+	// -u is REQUIRED: the colliding paths are untracked, and `git stash push`
+	// without --include-untracked silently ignores them (leaving the pull blocked).
+	args := append([]string{"stash", "push", "-u", "-m", label, "--"}, collisions...)
+	if out, stashErr := execGitOrphanCapture(workspaceRoot, args...); stashErr != nil {
+		fmt.Fprintf(os.Stderr, "stash-pull-conflicts: failed to stash %d colliding path(s): %v\n%s\n",
+			len(collisions), stashErr, strings.TrimSpace(string(out)))
+		return 0
+	}
+
+	fmt.Printf("stash-pull-conflicts: stashed %d untracked path(s) blocking the ff-pull (by %s):\n",
+		len(collisions), agentID)
+	for _, p := range collisions {
+		fmt.Printf("  %s\n", p)
+	}
+	fmt.Printf("  recover: git -C %q stash list   (or: st orphan list --workspace %q)\n",
+		workspaceRoot, workspaceRoot)
+	return 0
 }
 
 // OrphanList prints git stashes in workspaceRoot whose messages begin with
