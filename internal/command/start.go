@@ -211,16 +211,24 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// for that audit.
 	identity := cfg.Identity()
 	agentID := identity.ID
-	takeoverFrom := ""
+	takeoverReason := strings.TrimSpace(opts.Takeover)
 	if item.AssignedTo != "" && item.AssignedTo != agentID {
-		if strings.TrimSpace(opts.Takeover) == "" {
+		if takeoverReason == "" {
 			fmt.Fprintf(os.Stderr, "%s is assigned to %s (a peer) — not yours to start.\n", id, item.AssignedTo)
 			fmt.Fprintf(os.Stderr, "Per operating rule 10a, coordinate first: `st mail %s --kind request --body \"...\"`\n", item.AssignedTo)
 			fmt.Fprintf(os.Stderr, "If %s has handed it off (or their session is gone), take it over with an audited reason:\n", item.AssignedTo)
 			fmt.Fprintf(os.Stderr, "  st start %s --takeover \"<why>\"\n", id)
 			return 1
 		}
-		takeoverFrom = item.AssignedTo
+		// I-1633 review: a takeover reassigns the item to the caller, so a
+		// resolved identity is required. Without it the Mutate below (gated
+		// on agentID != "") would skip the reassignment, yet we'd still write
+		// a start_takeover audit — a false handoff record with the item still
+		// held by the peer.
+		if agentID == "" {
+			fmt.Fprintf(os.Stderr, "%s is assigned to %s — cannot --takeover without a resolved agent identity (set AS_AGENT_ID).\n", id, item.AssignedTo)
+			return 1
+		}
 	}
 
 	// Check: dependencies resolved
@@ -302,6 +310,13 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	if item.ClaimedBy != "" && item.ClaimedBy != sessionID && isSessionLive(cfg, item.ClaimedBy) {
 		fmt.Fprintf(os.Stderr, "%s is claimed by session %s (since %s)\n", id, item.ClaimedBy, item.ClaimedAt)
 		fmt.Fprintln(os.Stderr, "use `st release` to clear the claim, or wait for the session to expire")
+		// I-1633 review: --takeover resolves a stale/handed-off ASSIGNMENT but
+		// deliberately does NOT override a still-live session CLAIM, so say so
+		// here — otherwise a user who followed the takeover hint hits this
+		// generic message and can't tell why the documented path failed.
+		if takeoverReason != "" {
+			fmt.Fprintln(os.Stderr, "(--takeover only clears a peer's assignment, not a live session claim — that peer must exit or `st release` first)")
+		}
 		return 1
 	}
 
@@ -341,6 +356,12 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	}
 
 	now := time.Now().Format(time.RFC3339)
+
+	// I-1633 review: the prior owner for the start_takeover audit is captured
+	// from INSIDE the Mutate (the locked, freshly-read item) — not the
+	// pre-Mutate guard read — so a concurrent reassignment between the guard
+	// and the Mutate can't make the audit misattribute the handoff.
+	takeoverFrom := ""
 
 	if err := s.Mutate(id, func(item *model.Item) error {
 		// Authoritative claim check inside the lock. A concurrent st start
@@ -385,6 +406,16 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 		}
 
 		if agentID != "" {
+			// I-1633 review: if this run is taking over a peer's assignment,
+			// capture the actual prior owner (for the audit) and clear that
+			// owner's stale heritage so the reassigned item doesn't carry the
+			// previous agent's lineage — mirrors what `st release` does.
+			if item.AssignedTo != "" && item.AssignedTo != agentID {
+				takeoverFrom = item.AssignedTo
+				for _, key := range []string{"parent_id", "root_id", "role", "spawned_by", "delegated_item"} {
+					item.Doc.RemoveNestedField("assigned_to_meta." + key)
+				}
+			}
 			item.Doc.SetField("assigned_to", agentID)
 			item.AssignedTo = agentID
 		}
@@ -509,13 +540,26 @@ func Start(s *store.Store, cfg *config.Config, id string, opts StartOpts) int {
 	// the claim race writes no audit. Captures the prior owner so a handoff
 	// is auditable and distinguishable from a blunt `st release`.
 	if takeoverFrom != "" {
-		_ = changelog.Append(cfg, id, changelog.Entry{
+		// I-1633 review: the audit IS this feature's purpose, so unlike the
+		// best-effort bypass logs above, surface a write failure rather than
+		// silently leaving a reassigned item with no accountability record.
+		if err := changelog.Append(cfg, id, changelog.Entry{
 			Op:       "start_takeover",
 			Field:    "assigned_to",
 			OldValue: takeoverFrom,
 			NewValue: agentID,
-			Reason:   "took over peer assignment via --takeover: " + strings.TrimSpace(opts.Takeover),
-		})
+			Reason:   "took over peer assignment via --takeover: " + takeoverReason,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s reassigned to you but the start_takeover audit failed to write: %v\n", id, err)
+		} else {
+			fmt.Printf("  Took over from %s (audited): %s\n", takeoverFrom, takeoverReason)
+		}
+	} else if takeoverReason != "" {
+		// I-1633 review: --takeover supplied but the item wasn't assigned to a
+		// peer (unassigned or already yours) — nothing was taken over and no
+		// audit was written. Say so rather than letting the operator believe
+		// they recorded a handoff.
+		fmt.Fprintf(os.Stderr, "note: --takeover ignored — %s was not assigned to a peer; no takeover recorded\n", id)
 	}
 
 	fmt.Printf("Started %s — %s\n", id, item.Title)

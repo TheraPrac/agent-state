@@ -84,6 +84,31 @@ func TestStart_TakeoverReassignsAndAudits(t *testing.T) {
 	}
 }
 
+// I-1633 review (finding [1]): --takeover without a resolved agent identity
+// must refuse — otherwise the Mutate (gated on agentID != "") skips the
+// reassignment yet a start_takeover audit would still be written, a false
+// handoff record with the item still held by the peer.
+func TestStart_TakeoverWithoutIdentityDenied(t *testing.T) {
+	for _, k := range []string{"AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "AS_AGENT_SPAWNED_BY_SESSION", "AS_AGENT_DELEGATED_ITEM", "AS_AGENT_ROLE"} {
+		t.Setenv(k, "")
+	}
+	s, cfg := setupTestEnv(t)
+	if cfg.Identity().ID != "" {
+		t.Skipf("test env resolved a non-empty agent id (%q); cannot exercise the empty-identity path", cfg.Identity().ID)
+	}
+	assignPeerOnDisk(t, s, "T-001", "agent-a")
+
+	if code := Start(s, cfg, "T-001", StartOpts{Takeover: "handed off"}); code != 1 {
+		t.Fatalf("Start --takeover with no identity returned %d, want 1 (denied)", code)
+	}
+	entries, _ := changelog.Read(cfg, "T-001")
+	for _, e := range entries {
+		if e.Op == "start_takeover" {
+			t.Fatalf("start_takeover audit written despite denied takeover (false handoff record)")
+		}
+	}
+}
+
 // I-1633: a whitespace-only --takeover reason is NOT a takeover — the guard
 // still refuses (guards against an accidental empty flag stealing an item).
 func TestStart_TakeoverEmptyReasonStillDenied(t *testing.T) {
