@@ -721,6 +721,9 @@ func TestNotesPath(t *testing.T) {
 }
 
 func TestSessionID(t *testing.T) {
+	// Hermetic: the file fallback now consults $CLAUDE_PROJECT_DIR, so an
+	// ambient value from the surrounding session must not leak in.
+	t.Setenv("CLAUDE_PROJECT_DIR", "")
 	cfg := Defaults()
 	os.Unsetenv("AS_SESSION_ID")
 	if id := cfg.SessionID(); id != "" {
@@ -730,6 +733,74 @@ func TestSessionID(t *testing.T) {
 	defer os.Unsetenv("AS_SESSION_ID")
 	if id := cfg.SessionID(); id != "test-session-123" {
 		t.Errorf("SessionID() = %q, want %q", id, "test-session-123")
+	}
+}
+
+// I-1631: when AS_SESSION_ID is unset and neither c.root nor CWD holds a
+// .as/session file, SessionID() must still resolve the file the SessionStart
+// hook writes to the per-agent root (cfg.AgentRoot()). This is the live failure
+// mode: c.root and "." both resolve to the shared/symlinked workspace (no
+// per-session file), CLAUDE_PROJECT_DIR is not inherited by the Bash-tool
+// shell, so before the AgentRoot entry SessionID() returned empty.
+func TestSessionIDFromAgentRoot(t *testing.T) {
+	for _, k := range []string{"AS_SESSION_ID", "CLAUDE_PROJECT_DIR", "AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "ST_ROOT"} {
+		t.Setenv(k, "")
+	}
+	tmp := t.TempDir()
+	agentRoot := filepath.Join(tmp, "theraprac-agent-b")
+	workspace := filepath.Join(agentRoot, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(agentRoot, ".as"), 0755)
+	os.MkdirAll(workspace, 0755)
+	// Marker so AgentRoot() resolves to agentRoot.
+	yaml := "agent_id: agent-b\npath: " + agentRoot + "\n"
+	if err := os.WriteFile(filepath.Join(agentRoot, ".as", "agent-workspace.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Session file lives only at the per-agent root (where the hook writes it).
+	// c.root (the workspace) deliberately has none.
+	if err := os.WriteFile(filepath.Join(agentRoot, ".as", "session"), []byte("hook-written-session\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	if id := cfg.SessionID(); id != "hook-written-session" {
+		t.Errorf("SessionID() = %q, want %q (must resolve the per-agent-root session file)", id, "hook-written-session")
+	}
+}
+
+// I-1631 review (finding [0]): SessionID must NOT read a peer agent's session
+// file via AgentRoot's untrusted filepath.Dir(c.root) fallback under an
+// ST_ROOT leak. With no discoverable marker, the marker-only resolver returns
+// "" and SessionID must report empty (a safe miss) rather than the peer's live
+// id — otherwise two agents could claim the same item.
+func TestSessionIDDoesNotReadPeerRootUnderLeak(t *testing.T) {
+	for _, k := range []string{"AS_SESSION_ID", "CLAUDE_PROJECT_DIR", "AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "ST_ROOT"} {
+		t.Setenv(k, "")
+	}
+	tmp := t.TempDir()
+	// Peer agent root holds a live session file but NO marker yaml.
+	peerAgent := filepath.Join(tmp, "theraprac-agent-a")
+	peerWorkspace := filepath.Join(peerAgent, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(peerAgent, ".as"), 0755)
+	os.MkdirAll(peerWorkspace, 0755)
+	if err := os.WriteFile(filepath.Join(peerAgent, ".as", "session"), []byte("peer-live-session\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// startDir has no marker on its walk; c.root is the leaked peer workspace.
+	startDir := filepath.Join(tmp, "nocfg")
+	os.MkdirAll(startDir, 0755)
+
+	cfg := &Config{
+		root:     peerWorkspace, // ST_ROOT leak: cfg.root points at the peer
+		startDir: startDir,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	if id := cfg.SessionID(); id != "" {
+		t.Errorf("SessionID() = %q, want empty (must not read peer root's session under leak)", id)
 	}
 }
 
