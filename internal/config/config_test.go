@@ -721,6 +721,9 @@ func TestNotesPath(t *testing.T) {
 }
 
 func TestSessionID(t *testing.T) {
+	// Hermetic: the file fallback now consults $CLAUDE_PROJECT_DIR, so an
+	// ambient value from the surrounding session must not leak in.
+	t.Setenv("CLAUDE_PROJECT_DIR", "")
 	cfg := Defaults()
 	os.Unsetenv("AS_SESSION_ID")
 	if id := cfg.SessionID(); id != "" {
@@ -766,6 +769,38 @@ func TestSessionIDFromAgentRoot(t *testing.T) {
 	}
 	if id := cfg.SessionID(); id != "hook-written-session" {
 		t.Errorf("SessionID() = %q, want %q (must resolve the per-agent-root session file)", id, "hook-written-session")
+	}
+}
+
+// I-1631 review (finding [0]): SessionID must NOT read a peer agent's session
+// file via AgentRoot's untrusted filepath.Dir(c.root) fallback under an
+// ST_ROOT leak. With no discoverable marker, the marker-only resolver returns
+// "" and SessionID must report empty (a safe miss) rather than the peer's live
+// id — otherwise two agents could claim the same item.
+func TestSessionIDDoesNotReadPeerRootUnderLeak(t *testing.T) {
+	for _, k := range []string{"AS_SESSION_ID", "CLAUDE_PROJECT_DIR", "AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "ST_ROOT"} {
+		t.Setenv(k, "")
+	}
+	tmp := t.TempDir()
+	// Peer agent root holds a live session file but NO marker yaml.
+	peerAgent := filepath.Join(tmp, "theraprac-agent-a")
+	peerWorkspace := filepath.Join(peerAgent, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(peerAgent, ".as"), 0755)
+	os.MkdirAll(peerWorkspace, 0755)
+	if err := os.WriteFile(filepath.Join(peerAgent, ".as", "session"), []byte("peer-live-session\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// startDir has no marker on its walk; c.root is the leaked peer workspace.
+	startDir := filepath.Join(tmp, "nocfg")
+	os.MkdirAll(startDir, 0755)
+
+	cfg := &Config{
+		root:     peerWorkspace, // ST_ROOT leak: cfg.root points at the peer
+		startDir: startDir,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	if id := cfg.SessionID(); id != "" {
+		t.Errorf("SessionID() = %q, want empty (must not read peer root's session under leak)", id)
 	}
 }
 

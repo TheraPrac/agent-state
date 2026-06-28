@@ -617,45 +617,51 @@ func (c *Config) EvidenceDir() string {
 }
 
 // SessionID returns the current Claude Code session ID.
-// Checks in order: $AS_SESSION_ID env var, then the .as/session file (written
-// by the SessionStart hook) in the project root, CWD, the per-agent root, and
-// finally $CLAUDE_PROJECT_DIR.
 //
-// I-1631: the per-agent root (cfg.AgentRoot()) is where the hook actually
-// writes the file — it equals $CLAUDE_PROJECT_DIR but is resolvable without the
-// env var, which the Bash-tool shell does not inherit. c.root and "." both
-// resolve to the shared/symlinked workspace (no per-session file), so before
-// this entry every fallback missed and SessionID() returned empty, forcing
-// agents to hand-export a fabricated id. AgentRoot() walks up to the
-// .as/agent-workspace.yaml marker (ST_ROOT-leak immune) and is read-only, so
-// adding it only resolves more cases; empty/unresolvable dirs are skipped.
+// Resolution order (first non-empty wins):
+//  1. $AS_SESSION_ID env var (explicit override; back-compat).
+//  2. $CLAUDE_PROJECT_DIR/.as/session — the dir the SessionStart hook
+//     explicitly targets, when the env var is present.
+//  3. The per-agent root's .as/session, resolved via the marker-only walk
+//     (agentRootViaMarker) — the same location as (2) but reconstructed
+//     WITHOUT the env var, which the Bash-tool shell does not inherit.
+//  4. c.root/.as/session then ./.as/session — the shared/symlinked workspace
+//     and CWD, checked last for back-compat. They normally hold no per-session
+//     file, so they can no longer shadow the authoritative per-agent id.
+//
+// I-1631: before this change the file fallback searched only c.root and CWD,
+// both of which resolve to the shared workspace (no per-session file), so every
+// fallback missed and SessionID() returned empty — forcing agents to
+// hand-export a fabricated id. I-1631 review: SessionID uses agentRootViaMarker
+// (not AgentRoot) so an unresolvable root yields "" rather than a peer agent's
+// session id read out of AgentRoot's untrusted filepath.Dir(c.root) fallback
+// under an ST_ROOT leak. The residual leak surface (a compromised startDir) is
+// the separately-tracked I-936.
 func (c *Config) SessionID() string {
 	if id := os.Getenv("AS_SESSION_ID"); id != "" {
 		return id
 	}
-	// Fallback: read from session file (written by startup hook).
-	// Project root (st workspace) and CWD first for back-compat, then the
-	// per-agent root (AgentRoot) where the hook actually writes the file.
-	for _, dir := range []string{c.root, ".", c.AgentRoot()} {
+	// Read <dir>/.as/session, returning the trimmed id or "" (empty dir,
+	// missing file, or empty contents all yield "").
+	readSession := func(dir string) string {
 		if dir == "" {
-			continue
+			return ""
 		}
-		path := filepath.Join(dir, ".as", "session")
-		data, err := os.ReadFile(path)
-		if err == nil {
-			if id := strings.TrimSpace(string(data)); id != "" {
-				return id
-			}
+		data, err := os.ReadFile(filepath.Join(dir, ".as", "session"))
+		if err != nil {
+			return ""
 		}
+		return strings.TrimSpace(string(data))
 	}
-	// Also check $CLAUDE_PROJECT_DIR/.as/session (agent's project directory)
-	if projDir := os.Getenv("CLAUDE_PROJECT_DIR"); projDir != "" {
-		path := filepath.Join(projDir, ".as", "session")
-		data, err := os.ReadFile(path)
-		if err == nil {
-			if id := strings.TrimSpace(string(data)); id != "" {
-				return id
-			}
+	if id := readSession(os.Getenv("CLAUDE_PROJECT_DIR")); id != "" {
+		return id
+	}
+	if id := readSession(c.agentRootViaMarker()); id != "" {
+		return id
+	}
+	for _, dir := range []string{c.root, "."} {
+		if id := readSession(dir); id != "" {
+			return id
 		}
 	}
 	return ""
@@ -785,6 +791,25 @@ func (c *Config) resolveAgentRoot() string {
 			return found
 		}
 		return filepath.Dir(c.root)
+	}
+	return ""
+}
+
+// agentRootViaMarker resolves the per-agent root using ONLY the trusted,
+// ST_ROOT-leak-immune marker walk (.as/agent-workspace.yaml). Unlike
+// AgentRoot(), it does NOT fall back to filepath.Dir(c.root). Callers that
+// read per-agent files and must never risk picking up a peer agent's data
+// under a leaked cfg.root (e.g. SessionID) use this: an unresolvable root
+// yields "" — a safe miss — rather than a foreign directory. I-1631.
+func (c *Config) agentRootViaMarker() string {
+	wantAgentID := c.trustedAgentID()
+	if found := walkForAgentRoot(c.startDir, wantAgentID); found != "" {
+		return found
+	}
+	if c.root != "" {
+		if found := walkForAgentRoot(filepath.Dir(c.root), wantAgentID); found != "" {
+			return found
+		}
 	}
 	return ""
 }
