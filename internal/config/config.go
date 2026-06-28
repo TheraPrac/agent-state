@@ -617,14 +617,29 @@ func (c *Config) EvidenceDir() string {
 }
 
 // SessionID returns the current Claude Code session ID.
-// Checks in order: $AS_SESSION_ID env var, then .as/session file in CWD or project root.
+// Checks in order: $AS_SESSION_ID env var, then the .as/session file (written
+// by the SessionStart hook) in the project root, CWD, the per-agent root, and
+// finally $CLAUDE_PROJECT_DIR.
+//
+// I-1631: the per-agent root (cfg.AgentRoot()) is where the hook actually
+// writes the file — it equals $CLAUDE_PROJECT_DIR but is resolvable without the
+// env var, which the Bash-tool shell does not inherit. c.root and "." both
+// resolve to the shared/symlinked workspace (no per-session file), so before
+// this entry every fallback missed and SessionID() returned empty, forcing
+// agents to hand-export a fabricated id. AgentRoot() walks up to the
+// .as/agent-workspace.yaml marker (ST_ROOT-leak immune) and is read-only, so
+// adding it only resolves more cases; empty/unresolvable dirs are skipped.
 func (c *Config) SessionID() string {
 	if id := os.Getenv("AS_SESSION_ID"); id != "" {
 		return id
 	}
-	// Fallback: read from session file (written by startup hook)
-	// Check project root first (st workspace), then CWD's .as/ (agent project dir)
-	for _, dir := range []string{c.root, "."} {
+	// Fallback: read from session file (written by startup hook).
+	// Project root (st workspace) and CWD first for back-compat, then the
+	// per-agent root (AgentRoot) where the hook actually writes the file.
+	for _, dir := range []string{c.root, ".", c.AgentRoot()} {
+		if dir == "" {
+			continue
+		}
 		path := filepath.Join(dir, ".as", "session")
 		data, err := os.ReadFile(path)
 		if err == nil {

@@ -733,6 +733,42 @@ func TestSessionID(t *testing.T) {
 	}
 }
 
+// I-1631: when AS_SESSION_ID is unset and neither c.root nor CWD holds a
+// .as/session file, SessionID() must still resolve the file the SessionStart
+// hook writes to the per-agent root (cfg.AgentRoot()). This is the live failure
+// mode: c.root and "." both resolve to the shared/symlinked workspace (no
+// per-session file), CLAUDE_PROJECT_DIR is not inherited by the Bash-tool
+// shell, so before the AgentRoot entry SessionID() returned empty.
+func TestSessionIDFromAgentRoot(t *testing.T) {
+	for _, k := range []string{"AS_SESSION_ID", "CLAUDE_PROJECT_DIR", "AS_AGENT_ID", "AS_AGENT_PARENT_ID", "AS_AGENT_ROOT_ID", "ST_ROOT"} {
+		t.Setenv(k, "")
+	}
+	tmp := t.TempDir()
+	agentRoot := filepath.Join(tmp, "theraprac-agent-b")
+	workspace := filepath.Join(agentRoot, "theraprac-workspace")
+	os.MkdirAll(filepath.Join(agentRoot, ".as"), 0755)
+	os.MkdirAll(workspace, 0755)
+	// Marker so AgentRoot() resolves to agentRoot.
+	yaml := "agent_id: agent-b\npath: " + agentRoot + "\n"
+	if err := os.WriteFile(filepath.Join(agentRoot, ".as", "agent-workspace.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Session file lives only at the per-agent root (where the hook writes it).
+	// c.root (the workspace) deliberately has none.
+	if err := os.WriteFile(filepath.Join(agentRoot, ".as", "session"), []byte("hook-written-session\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		root:     workspace,
+		startDir: workspace,
+		Worktree: &WorktreeConfig{Enabled: true, BaseDir: "worktrees", ParentDir: ".."},
+	}
+	if id := cfg.SessionID(); id != "hook-written-session" {
+		t.Errorf("SessionID() = %q, want %q (must resolve the per-agent-root session file)", id, "hook-written-session")
+	}
+}
+
 func TestSplitKVNoColon(t *testing.T) {
 	key, val := splitKV("no-colon-here")
 	if key != "no-colon-here" || val != "" {
