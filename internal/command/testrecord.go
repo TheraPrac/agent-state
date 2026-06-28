@@ -399,13 +399,19 @@ func testRunMode(s *store.Store, cfg *config.Config, id, suite, suiteCmd, sha st
 
 	start := time.Now()
 
+	// I-1634: workspace-scope suites (hook_test / workspace_test) have no
+	// "cd ../" prefix so they inherit the CWD. Run them from the item's
+	// feature-branch theraprac-workspace worktree checkout, not cfg.Root()
+	// (which stays on main and produces a vacuous diff vs origin/main).
+	suiteWorkdir := resolveSuiteWorkdir(cfg, id, cmd)
+
 	// Execute suite command. Stream output to stderr so the user (and
 	// activity tracker) sees progress.
 	runOnce := func() ([]byte, int, error) {
 		if opts.RunCmd != nil {
 			return opts.RunCmd(cmd)
 		}
-		return runCmdInDirStreaming(cfg.Root(), cmd)
+		return runCmdInDirStreaming(suiteWorkdir, cmd)
 	}
 	result := runWithLockAwareRetry(suite, opts.RunCmd != nil, runOnce)
 	output, exitCode, runErr, retried := result.Output, result.ExitCode, result.RunErr, result.Retried
@@ -1019,6 +1025,29 @@ func rewriteSuiteForWorktree(cfg *config.Config, itemID, suiteCmd string) string
 	}
 
 	return suiteCmd
+}
+
+// resolveSuiteWorkdir picks the working directory for running a suite command.
+// Sibling-repo suites (those containing "cd ../") are always run from cfg.Root()
+// because rewriteSuiteForWorktree has already replaced the relative cd with an
+// absolute worktree path, making the CWD irrelevant. Workspace-scope suites (no
+// "cd ../", e.g. hook_test / workspace_test) inherit the CWD directly, so they
+// must run from the item's feature-branch theraprac-workspace checkout rather than
+// the main clone — otherwise run-changed-hook-tests.sh diffs origin/main..HEAD on
+// a clean main checkout and reports a vacuous pass. I-1634.
+func resolveSuiteWorkdir(cfg *config.Config, id, suiteCmd string) string {
+	if strings.Contains(suiteCmd, "cd ../") {
+		return cfg.Root()
+	}
+	wtBase := cfg.WorktreeForItem(id)
+	if wtBase == "" {
+		return cfg.Root()
+	}
+	wsDir := filepath.Join(wtBase, workspaceRepo)
+	if _, err := os.Stat(wsDir); err == nil {
+		return wsDir
+	}
+	return cfg.Root()
 }
 
 // worktreeRepoOnSameCommit returns true when the worktree repo and the main
