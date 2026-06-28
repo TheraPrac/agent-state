@@ -306,7 +306,9 @@ func TestReconcileStaleActiveSkipsRecentlyTouched(t *testing.T) {
 	}
 }
 
-func TestReconcileStaleActiveSkipsActiveWorktree(t *testing.T) {
+// I-1485: a CLEAN worktree from a non-live owner is just a husk and must be released
+// (previously any worktree-on-disk pinned the item active forever — the I-1470 case).
+func TestReconcileStaleActiveReleasesCleanWorktreeHusk(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	cfg.Worktree = &config.WorktreeConfig{Enabled: true, BaseDir: "worktrees", Repos: []string{"repo-a"}}
 	staleLastTouched(t, cfg, "T-003", 30*24*time.Hour)
@@ -315,10 +317,34 @@ func TestReconcileStaleActiveSkipsActiveWorktree(t *testing.T) {
 	}
 
 	freshStore := newStoreOrFail(t, cfg)
-	opts := ReconcileOpts{PRFetch: func(_ *config.Config, _ string) (string, []string) { return "", nil }}
+	opts := ReconcileOpts{
+		PRFetch:         func(_ *config.Config, _ string) (string, []string) { return "", nil },
+		WorktreeUnsaved: func(_ *config.Config, _ string) bool { return false }, // clean husk
+	}
+	n := reconcileStaleActive(freshStore, cfg, opts)
+	if n != 1 {
+		t.Errorf("clean worktree husk from a non-live owner should release, got %d releases", n)
+	}
+}
+
+// I-1485: a worktree holding unsaved work (uncommitted or unpushed) must NOT be reset —
+// keep the item active for operator review so nothing is silently stranded.
+func TestReconcileStaleActiveKeepsDirtyWorktree(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{Enabled: true, BaseDir: "worktrees", Repos: []string{"repo-a"}}
+	staleLastTouched(t, cfg, "T-003", 30*24*time.Hour)
+	if err := os.MkdirAll(filepath.Join(cfg.WorktreeBase(), "T-003"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	freshStore := newStoreOrFail(t, cfg)
+	opts := ReconcileOpts{
+		PRFetch:         func(_ *config.Config, _ string) (string, []string) { return "", nil },
+		WorktreeUnsaved: func(_ *config.Config, _ string) bool { return true }, // unsaved work present
+	}
 	n := reconcileStaleActive(freshStore, cfg, opts)
 	if n != 0 {
-		t.Errorf("active worktree should NOT release, got %d releases", n)
+		t.Errorf("worktree with unsaved work should NOT release, got %d releases", n)
 	}
 }
 

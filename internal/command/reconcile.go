@@ -25,10 +25,11 @@ type ReconcileOpts struct {
 	DryRun bool
 
 	// Injectable dependencies (nil = use defaults). Struct-based for thread safety.
-	ToolCheck   func(string) bool
-	BranchCheck func(*config.Config, string) bool
-	PRFetch     func(*config.Config, string) (string, []string)
-	S3Check     func(string) bool
+	ToolCheck       func(string) bool
+	BranchCheck     func(*config.Config, string) bool
+	PRFetch         func(*config.Config, string) (string, []string)
+	S3Check         func(string) bool
+	WorktreeUnsaved func(*config.Config, string) bool
 }
 
 func (o *ReconcileOpts) toolCheck() func(string) bool {
@@ -57,6 +58,13 @@ func (o *ReconcileOpts) s3Check() func(string) bool {
 		return o.S3Check
 	}
 	return s3Exists
+}
+
+func (o *ReconcileOpts) worktreeUnsaved() func(*config.Config, string) bool {
+	if o.WorktreeUnsaved != nil {
+		return o.WorktreeUnsaved
+	}
+	return worktreeHasUnsavedWork
 }
 
 // Reconcile syncs delivery stages with GitHub state and performs housekeeping.
@@ -970,13 +978,29 @@ func reconcileStaleActive(s *store.Store, cfg *config.Config, opts ReconcileOpts
 		if !activityAt.IsZero() && now.Sub(activityAt) < threshold {
 			continue
 		}
-		// Worktree present anywhere — owner has on-disk state.
-		wtNew := filepath.Join(cfg.WorktreeBase(), item.ID)
-		wtLegacy := filepath.Join(cfg.WorktreeBaseLegacy(), item.ID)
-		if _, err := os.Stat(wtNew); err == nil {
-			continue
+		// Worktree present — owner has on-disk state. The owning session is NOT live
+		// (live owners were skipped above), so a CLEAN worktree is just a husk from a
+		// dead session and must not pin the item active forever (I-1485 — the I-1470
+		// case: active/assigned, no live session, work never finished, looked owned).
+		// Keep the item active ONLY if a worktree holds unsaved work (uncommitted changes
+		// or unpushed commits); surface that loudly for operator review rather than
+		// resetting it. A clean (or absent) worktree falls through to Release below.
+		dirtyWT := ""
+		for _, wt := range []string{filepath.Join(cfg.WorktreeBase(), item.ID), filepath.Join(cfg.WorktreeBaseLegacy(), item.ID)} {
+			if wt == "" {
+				continue
+			}
+			if _, err := os.Stat(wt); err != nil {
+				continue
+			}
+			if opts.worktreeUnsaved()(cfg, wt) {
+				dirtyWT = wt
+				break
+			}
 		}
-		if _, err := os.Stat(wtLegacy); err == nil {
+		if dirtyWT != "" {
+			fmt.Printf("  %s: orphaned active (owner %q not live) with UNSAVED work in %s — keeping active for operator review (I-1485)\n",
+				item.ID, item.AssignedTo, dirtyWT)
 			continue
 		}
 		// Open PR — owner is mid-review.
@@ -995,6 +1019,32 @@ func reconcileStaleActive(s *store.Store, cfg *config.Config, opts ReconcileOpts
 		}
 	}
 	return updates
+}
+
+// worktreeHasUnsavedWork reports whether any repo checkout under a worktree dir holds
+// work a reset would strand: uncommitted changes (tracked, staged, or untracked) or
+// unpushed commits. Conservative — any ambiguity (e.g. a branch with no upstream)
+// counts as unsaved so genuine work is never silently discarded (mirrors finish.go).
+func worktreeHasUnsavedWork(cfg *config.Config, wtDir string) bool {
+	var repos []string
+	if cfg.Worktree != nil {
+		repos = cfg.Worktree.Repos
+	}
+	for _, repo := range repos {
+		repoDir := filepath.Join(wtDir, repo)
+		if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+			continue // no such repo checkout in this worktree
+		}
+		// Uncommitted (tracked/staged/untracked).
+		if out, err := runGit(repoDir, "status", "--porcelain"); err == nil && strings.TrimSpace(out) != "" {
+			return true
+		}
+		// Unpushed commits — or no upstream at all (err) → treat as unsaved.
+		if out, err := runGit(repoDir, "log", "--oneline", "@{u}..HEAD"); err != nil || strings.TrimSpace(out) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // changelogLatestTimestamp returns the timestamp of the most recent changelog
