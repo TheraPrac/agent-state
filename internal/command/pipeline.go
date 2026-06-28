@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/theraprac/agent-state/internal/changelog"
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/evidence"
+	"github.com/theraprac/agent-state/internal/manifest"
 	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/store"
 	"github.com/theraprac/agent-state/internal/validate"
@@ -21,9 +23,11 @@ import (
 
 // PipelineOpts holds injectable functions for pipeline commands.
 type PipelineOpts struct {
-	RunCmd    func(cmd string) ([]byte, int, error)
-	Backend   evidence.Backend
-	HTTPGet   func(url string) (int, string, error) // returns status code, body, error
+	RunCmd  func(cmd string) ([]byte, int, error)
+	Backend evidence.Backend
+	HTTPGet func(url string) (int, string, error) // returns status code, body, error
+	// GitRemoteURL returns a repo dir's origin remote URL (nil = real git); injected for tests.
+	GitRemoteURL func(repoDir string) (string, error)
 }
 
 // --- Merge ---
@@ -53,7 +57,68 @@ func Merge(s *store.Store, cfg *config.Config, id string, opts PipelineOpts) int
 		return 1
 	}
 
-	return runPipelineStep(s, cfg, id, "merge", "merged", stepCfg, opts)
+	// The configured gh commands (`gh pr merge`, `gh pr checks --watch`) carry no repo/PR
+	// context; run verbatim from cfg.Root() (a main checkout) they fail with "no pull
+	// requests found for branch main" (I-1629). Resolve each PR recorded via `st pr` and
+	// inject `<num> -R <slug>` so the commands work independent of cwd. Merge each recorded
+	// PR (cross-repo co-ship).
+	m, err := manifest.Load(cfg.ManifestDir(), id)
+	if err != nil || m == nil || len(m.PRs) == 0 {
+		fmt.Fprintf(os.Stderr, "merge: no PR recorded for %s — run `st pr %s --repo <repo> --pr <N>` first\n", id, id)
+		return 1
+	}
+
+	gitRemoteURL := opts.GitRemoteURL
+	if gitRemoteURL == nil {
+		gitRemoteURL = func(dir string) (string, error) { return runGit(dir, "remote", "get-url", "origin") }
+	}
+
+	for _, pr := range m.PRs {
+		slug, serr := slugForRepo(cfg, pr.Repo, gitRemoteURL)
+		if serr != nil {
+			fmt.Fprintf(os.Stderr, "merge: cannot resolve GitHub slug for repo %q: %v\n", pr.Repo, serr)
+			return 1
+		}
+		qStep := *stepCfg
+		qStep.Command = qualifyGhPR(stepCfg.Command, slug, pr.PRNumber)
+		qStep.PreChecks = make([]string, len(stepCfg.PreChecks))
+		for i, c := range stepCfg.PreChecks {
+			qStep.PreChecks[i] = qualifyGhPR(c, slug, pr.PRNumber)
+		}
+		fmt.Printf("merge: %s#%d\n", slug, pr.PRNumber)
+		if rc := runPipelineStep(s, cfg, id, "merge", "merged", &qStep, opts); rc != 0 {
+			return rc
+		}
+	}
+	return 0
+}
+
+// ghPRSubcmd matches `gh pr <subcommand>` at the start of a gh pr invocation.
+var ghPRSubcmd = regexp.MustCompile(`gh\s+pr\s+[a-z-]+`)
+
+// qualifyGhPR inserts `<num> -R <slug>` right after `gh pr <subcommand>` so the command
+// resolves the PR independent of cwd. Commands that aren't `gh pr <sub>` or that already
+// carry a `-R`/`--repo` are returned unchanged (so non-gh or pre-qualified configs are safe).
+func qualifyGhPR(cmd, slug string, num int) string {
+	if !ghPRSubcmd.MatchString(cmd) {
+		return cmd
+	}
+	if regexp.MustCompile(`(^|\s)(-R|--repo)(\s|=)`).MatchString(cmd) {
+		return cmd
+	}
+	return ghPRSubcmd.ReplaceAllStringFunc(cmd, func(m string) string {
+		return fmt.Sprintf("%s %d -R %s", m, num, slug)
+	})
+}
+
+// slugForRepo maps an item's short repo name (e.g. "as", "theraprac-workspace") to its
+// GitHub owner/repo slug via the repo's origin remote — no hardcoded mapping.
+func slugForRepo(cfg *config.Config, repo string, gitRemoteURL func(string) (string, error)) (string, error) {
+	url, err := gitRemoteURL(resolveRepoDir(cfg, repo))
+	if err != nil {
+		return "", err
+	}
+	return parseGitHubSlug(strings.TrimSpace(url))
 }
 
 // --- Deploy Check ---
@@ -196,6 +261,12 @@ func runPipelineStep(s *store.Store, cfg *config.Config, id, stepName, nextStage
 			return 1
 		}
 		if exitCode != 0 {
+			// `gh pr checks --watch` exits 1 with "no checks reported" when a PR has no
+			// CI configured — there is nothing to wait on, so this is not a failure.
+			if strings.Contains(string(output), "no checks reported") {
+				fmt.Println("  pre-check: no checks reported — nothing to wait on, treating as pass")
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "pre-check failed (exit %d):\n%s\n", exitCode, string(output))
 			return 1
 		}

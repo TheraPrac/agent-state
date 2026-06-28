@@ -8,9 +8,15 @@ import (
 
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/evidence"
+	"github.com/theraprac/agent-state/internal/manifest"
 	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/store"
 )
+
+// stubGitRemoteURL returns a github slug so slugForRepo resolves without a real remote.
+func stubGitRemoteURL(string) (string, error) {
+	return "git@github.com:TheraPrac/theraprac-api.git", nil
+}
 
 func setupPipelineTestEnv(t *testing.T) (*store.Store, *config.Config) {
 	t.Helper()
@@ -52,6 +58,11 @@ func setupPipelineTestEnv(t *testing.T) (*store.Store, *config.Config) {
 		t.Fatalf("mutate T-003: %v", err)
 	}
 
+	// Record a PR in the manifest sidecar so Merge can resolve a repo-qualified target.
+	if err := manifest.AppendPR(cfg.ManifestDir(), "T-003", manifest.PRRecord{Repo: "api", PRNumber: 42}); err != nil {
+		t.Fatalf("append manifest PR: %v", err)
+	}
+
 	return s, cfg
 }
 
@@ -60,7 +71,8 @@ func mockPipelineOpts(t *testing.T) PipelineOpts {
 		RunCmd: func(cmd string) ([]byte, int, error) {
 			return []byte(fmt.Sprintf("executed: %s\n", cmd)), 0, nil
 		},
-		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+		Backend:      &evidence.LocalBackend{Dir: t.TempDir()},
+		GitRemoteURL: stubGitRemoteURL,
 	}
 }
 
@@ -114,12 +126,34 @@ func TestMergePreCheckFail(t *testing.T) {
 			}
 			return []byte("ok\n"), 0, nil
 		},
-		Backend: &evidence.LocalBackend{Dir: t.TempDir()},
+		Backend:      &evidence.LocalBackend{Dir: t.TempDir()},
+		GitRemoteURL: stubGitRemoteURL,
 	}
 
 	code := Merge(s, cfg, "T-003", opts)
 	if code != 1 {
 		t.Errorf("Merge with failed pre-check returned %d, want 1", code)
+	}
+}
+
+// A PR with no CI: `gh pr checks --watch` exits 1 with "no checks reported" — that is
+// nothing to wait on, not a failure, so the merge should still proceed (I-1629).
+func TestMergePreCheckNoChecksPasses(t *testing.T) {
+	s, cfg := setupPipelineTestEnv(t)
+	opts := PipelineOpts{
+		RunCmd: func(cmd string) ([]byte, int, error) {
+			if strings.Contains(cmd, "checks") {
+				return []byte("no checks reported on the 'feat/x' branch\n"), 1, nil
+			}
+			return []byte("Merged\n"), 0, nil
+		},
+		Backend:      &evidence.LocalBackend{Dir: t.TempDir()},
+		GitRemoteURL: stubGitRemoteURL,
+	}
+
+	code := Merge(s, cfg, "T-003", opts)
+	if code != 0 {
+		t.Errorf("Merge with no-checks pre-check returned %d, want 0", code)
 	}
 }
 
