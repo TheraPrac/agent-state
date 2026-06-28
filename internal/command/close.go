@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -58,28 +57,31 @@ func webE2EScopeSkipped(item *model.Item) bool {
 	return strings.HasPrefix(strings.TrimSpace(s), "skip")
 }
 
+// captureRequired reports whether a close resolution implies real work was done
+// and therefore must have token + work-time capture. Only `done` qualifies:
+// `abandoned`/`declined` are drops and `archived`/other administrative terminals
+// may legitimately have never run an agent session (I-1614 review).
+func captureRequired(resolution string) bool {
+	return resolution == "done"
+}
+
 // captureComplete reports whether a closing item has recorded the two
-// dimensions I-1614 requires on every resolved item: measured work time and a
-// non-zero token total. It reads the exact inputs Close() folds into
+// dimensions I-1614 requires on a `done` item: measured work time and a
+// non-zero token total. It reads the exact sources Close() folds into
 // work_duration_seconds / real_tokens so the gate can never disagree with what
 // the close itself would record.
 //
 //   - timeOK: time_tracking.accumulated_seconds > 0, an already-set
 //     work_duration_seconds > 0, or a live session_started_at that folds to a
 //     positive span at `now`.
-//   - tokensOK: a non-zero aggregate token total from the canonical I-569
-//     real_tokens blob or the legacy reg_*/cache_*/input/output fields, via the
-//     same ExtractItemMetrics aggregator the dashboards use.
+//   - tokensOK: a non-zero total from the canonical I-569 real_tokens blob (the
+//     source the Stop hook and `reconcile-tokens apply` actually write) OR any
+//     legacy reg_*/cache_*/input/output/total_* field. Checking the blob is
+//     essential — ExtractItemMetrics ignores it for input/output, so a
+//     reconciled item would otherwise be falsely rejected (I-1614 review).
 func captureComplete(item *model.Item, now time.Time) (timeOK, tokensOK bool) {
-	posField := func(parent, key string) bool {
-		if v, ok := getNestedField(item, parent, key); ok {
-			if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && n > 0 {
-				return true
-			}
-		}
-		return false
-	}
-	timeOK = posField("time_tracking", "accumulated_seconds") || posField("time_tracking", "work_duration_seconds")
+	timeOK = readFloatField(item, "time_tracking", "accumulated_seconds") > 0 ||
+		readFloatField(item, "time_tracking", "work_duration_seconds") > 0
 	if !timeOK {
 		if v, ok := getNestedField(item, "time_tracking", "session_started_at"); ok && strings.TrimSpace(v) != "" {
 			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(v)); err == nil && now.After(t) {
@@ -87,9 +89,29 @@ func captureComplete(item *model.Item, now time.Time) (timeOK, tokensOK bool) {
 			}
 		}
 	}
-	m := ExtractItemMetrics(item, "", now, true)
-	tokensOK = m.InputTokens > 0 || m.OutputTokens > 0
+	tokensOK = itemHasTokens(item)
 	return timeOK, tokensOK
+}
+
+// itemHasTokens reports whether an item carries any non-zero token count.
+// Prefers the canonical I-569 real_tokens blob, then falls back to the legacy
+// fields; short-circuits on the first non-zero source.
+func itemHasTokens(item *model.Item) bool {
+	rt := readRealTokens(item)
+	if rt.Input+rt.Output+rt.CacheRead+rt.CacheCreation5m+rt.CacheCreation1h > 0 {
+		return true
+	}
+	for _, k := range []string{
+		"total_input_tokens", "total_output_tokens",
+		"reg_input_tokens", "reg_output_tokens",
+		"cache_in_tokens", "cache_out_tokens", "cache_out_1h_tokens",
+		"input_tokens", "output_tokens", "total_tokens",
+	} {
+		if readIntField(item, "time_tracking", k) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // closeUsage returns the canonical one-line usage plus a concrete example
@@ -282,12 +304,12 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	// items because both writers fail OPEN — work_duration_seconds is only
 	// written at close when the timer ran, and token fields are only written
 	// per-turn by the Stop hook. Enforce capture at close, the one place every
-	// item passes through. This runs INDEPENDENTLY of --force (a bare --force
-	// must not silently ship a lossy item); abandoned/declined skip it (no work
-	// to measure). The only bypass is the explicit, audit-logged
-	// --allow-missing-capture.
+	// `done` item passes through. This runs INDEPENDENTLY of --force (a bare
+	// --force must not silently ship a lossy item). Only `done` is gated —
+	// abandoned/declined/archived may legitimately have no work to measure. The
+	// only bypass is the explicit, audit-logged --allow-missing-capture.
 	captureOverride := false
-	if resolution != "abandoned" && resolution != "declined" {
+	if captureRequired(resolution) {
 		timeOK, tokensOK := captureComplete(item, now)
 		if !timeOK || !tokensOK {
 			if strings.TrimSpace(opts.AllowMissingCapture) == "" {
@@ -508,11 +530,15 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	})
 
 	// I-1614: audit every capture-gate bypass so a lossy close is never silent.
+	// Surface a write failure (the audit IS the point of the override path) —
+	// unlike the best-effort close entry above, this must not vanish quietly.
 	if captureOverride {
-		_ = changelog.Append(cfg, id, changelog.Entry{
+		if err := changelog.Append(cfg, id, changelog.Entry{
 			Op:     "close_allow_missing_capture",
 			Reason: "closed with missing token/work-time capture via --allow-missing-capture: " + strings.TrimSpace(opts.AllowMissingCapture),
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s closed with --allow-missing-capture but the audit entry failed to write: %v\n", id, err)
+		}
 	}
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)

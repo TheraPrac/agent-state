@@ -155,6 +155,39 @@ func TestClose_AllowMissingCaptureOverrideLogged(t *testing.T) {
 	}
 }
 
+// I-1614 review: tokens recorded ONLY in the canonical real_tokens blob (what
+// the Stop hook and `reconcile-tokens apply` write) must satisfy the gate.
+func TestClose_RealTokensBlobSatisfiesGate(t *testing.T) {
+	env := testutil.NewEnv(t)
+	seedWorkTime(t, env, "T-003")
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "real_tokens", "input=500 output=120 cache_read=0 cache_creation_5m=0 cache_creation_1h=0")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed real_tokens: %v", err)
+	}
+	if code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true}); code != 0 {
+		t.Fatalf("close should pass with real_tokens blob present, got %d", code)
+	}
+	it, _ := env.S.Get("T-003")
+	if it.Status != "done" {
+		t.Errorf("status = %q, want done", it.Status)
+	}
+}
+
+// I-1614 review: archived (administrative terminal) must NOT require capture.
+func TestClose_ArchivedSkipsCaptureGate(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// no capture seeded
+	if code := Close(env.S, env.Cfg, "T-003", "archived", CloseOpts{Force: true}); code != 0 {
+		t.Fatalf("archived close should skip the capture gate, got %d", code)
+	}
+	it, _ := env.S.Get("T-003")
+	if it.Status != "archived" {
+		t.Errorf("status = %q, want archived", it.Status)
+	}
+}
+
 func TestClose_AbandonSkipsCaptureGate(t *testing.T) {
 	env := testutil.NewEnv(t)
 	// abandoned with a valid drop reason closes despite empty capture.
