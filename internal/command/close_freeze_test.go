@@ -62,7 +62,7 @@ func TestClose_FreezesDurationsAndLOC(t *testing.T) {
 		return "", fmt.Errorf("unexpected git call: %s", key)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", 
 		Force: true, // bypass gates
 		FilesOpts: FilesOpts{
 			ResolveRepo: resolve,
@@ -143,7 +143,7 @@ func TestClose_DurationMetricsAgree(t *testing.T) {
 		t.Fatalf("seeding started_at: %v", err)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
@@ -202,7 +202,7 @@ func TestClose_DurationMetricsAgree(t *testing.T) {
 func TestClose_NoWorktreesWritesZeros(t *testing.T) {
 	env := testutil.NewEnv(t)
 	// No worktree config at all — configuredRepos returns nil → zero totals
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("close exit=%d", code)
 	}
@@ -245,7 +245,7 @@ func TestClose_DurationAccumulatedPlusElapsed(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
@@ -287,7 +287,7 @@ func TestClose_NoTimerDataOmitsWorkDuration(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
@@ -314,7 +314,7 @@ func TestClose_ClearsSessionStartedAt(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
@@ -340,7 +340,7 @@ func TestClose_SameSecondCloseKeepsSpanFields(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}

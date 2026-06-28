@@ -28,7 +28,7 @@ func TestCloseRemovesTestLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if rc := Close(s, cfg, "T-001", "done", CloseOpts{}); rc != 0 {
+	if rc := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", }); rc != 0 {
 		t.Fatalf("Close rc=%d, want 0", rc)
 	}
 	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
@@ -127,7 +127,7 @@ func TestCloseCaseCorrectionAccepted(t *testing.T) {
 
 	var rc int
 	stderr := captureStderr(t, func() int {
-		rc = Close(s, cfg, "T-001", "Archived", CloseOpts{})
+		rc = Close(s, cfg, "T-001", "Archived", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
 		return rc
 	})
 	if rc != 0 {

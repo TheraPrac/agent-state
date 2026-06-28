@@ -641,7 +641,7 @@ time_tracking:
 
 	// --- Close and verify human-readable totals ---
 	s3, _ := store.New(cfg)
-	closeCode := Close(s3, cfg, "T-010", "done", CloseOpts{Force: true})
+	closeCode := Close(s3, cfg, "T-010", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if closeCode != 0 {
 		t.Fatalf("close returned %d", closeCode)
 	}

@@ -31,6 +31,11 @@ type CloseOpts struct {
 	FilesOpts FilesOpts
 	// ScopeCheckOpts is passed to closeScopeSuiteCheck. Tests inject fakes here.
 	ScopeCheckOpts CloseScopeCheckOpts
+	// I-1614: AllowMissingCapture is the explicit, audit-logged override for the
+	// close-time capture gate. Empty = enforce (a done-style close must have
+	// measured work time AND a non-zero token total, even under --force). A
+	// non-empty reason closes the item anyway and records a changelog entry.
+	AllowMissingCapture string
 }
 
 // webE2EScopeSkipped reports whether the web_e2e scope suite was
@@ -50,6 +55,73 @@ func webE2EScopeSkipped(item *model.Item) bool {
 	}
 	s, _ := v.(string)
 	return strings.HasPrefix(strings.TrimSpace(s), "skip")
+}
+
+// captureRequired reports whether a close resolution implies real work was done
+// and therefore must have token + work-time capture. Only `done` qualifies:
+// `abandoned`/`declined` are drops and `archived`/other administrative terminals
+// may legitimately have never run an agent session (I-1614 review).
+func captureRequired(resolution string) bool {
+	return resolution == "done"
+}
+
+// captureComplete reports whether a closing item has recorded the two
+// dimensions I-1614 requires on a `done` item: measured work time and a
+// non-zero token total. It reads the exact sources Close() folds into
+// work_duration_seconds / real_tokens so the gate can never disagree with what
+// the close itself would record.
+//
+//   - timeOK: time_tracking.accumulated_seconds > 0, an already-set
+//     work_duration_seconds > 0, or a live session_started_at that folds to a
+//     positive span at `now`.
+//   - tokensOK: a non-zero total from the canonical I-569 real_tokens blob (the
+//     source the Stop hook and `reconcile-tokens apply` actually write) OR any
+//     legacy reg_*/cache_*/input/output/total_* field. Checking the blob is
+//     essential — ExtractItemMetrics ignores it for input/output, so a
+//     reconciled item would otherwise be falsely rejected (I-1614 review).
+func captureComplete(item *model.Item, now time.Time) (timeOK, tokensOK bool) {
+	// Read via the typed TimeTracking map (numeric-aware, the same readers the
+	// fold uses) AND the Doc walker (string-stored values). A loaded item
+	// carries numeric YAML scalars in the typed map, while SetNested-written
+	// values live in the Doc as strings — the Doc-only readers miss numeric
+	// scalars, so both paths are checked (I-1614 review).
+	timeOK = readSecondsField(item.TimeTracking, "accumulated_seconds", "work_duration_seconds") > 0 ||
+		readFloatField(item, "time_tracking", "accumulated_seconds") > 0 ||
+		readFloatField(item, "time_tracking", "work_duration_seconds") > 0
+	if !timeOK {
+		if v, ok := getNestedField(item, "time_tracking", "session_started_at"); ok && strings.TrimSpace(v) != "" {
+			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(v)); err == nil && now.After(t) {
+				timeOK = true
+			}
+		}
+	}
+	tokensOK = itemHasTokens(item)
+	return timeOK, tokensOK
+}
+
+// itemHasTokens reports whether an item carries any non-zero token count.
+// Prefers the canonical I-569 real_tokens blob, then falls back to the legacy
+// fields. Each legacy field is read from BOTH the typed TimeTracking map
+// (numeric scalars on loaded items, via intField) AND the Doc (string values
+// from SetNested) — the Doc-only reader silently returns 0 for numeric scalars,
+// which would falsely reject the 100+ items whose tokens live only in numeric
+// legacy fields (I-1614 review). Short-circuits on the first non-zero source.
+func itemHasTokens(item *model.Item) bool {
+	rt := readRealTokens(item)
+	if rt.Input+rt.Output+rt.CacheRead+rt.CacheCreation5m+rt.CacheCreation1h > 0 {
+		return true
+	}
+	for _, k := range []string{
+		"total_input_tokens", "total_output_tokens",
+		"reg_input_tokens", "reg_output_tokens",
+		"cache_in_tokens", "cache_out_tokens", "cache_out_1h_tokens",
+		"input_tokens", "output_tokens", "total_tokens",
+	} {
+		if intField(item.TimeTracking, k) > 0 || readIntField(item, "time_tracking", k) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // closeUsage returns the canonical one-line usage plus a concrete example
@@ -237,6 +309,37 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 	oldStatus := item.Status
 	now := time.Now()
 	nowStr := now.Format(time.RFC3339)
+
+	// I-1614: capture gate. Tokens and work time are lost on the majority of
+	// items because both writers fail OPEN — work_duration_seconds is only
+	// written at close when the timer ran, and token fields are only written
+	// per-turn by the Stop hook. Enforce capture at close, the one place every
+	// `done` item passes through. This runs INDEPENDENTLY of --force (a bare
+	// --force must not silently ship a lossy item). Only `done` is gated —
+	// abandoned/declined/archived may legitimately have no work to measure. The
+	// only bypass is the explicit, audit-logged --allow-missing-capture.
+	captureOverride := false
+	if captureRequired(resolution) {
+		timeOK, tokensOK := captureComplete(item, now)
+		if !timeOK || !tokensOK {
+			if strings.TrimSpace(opts.AllowMissingCapture) == "" {
+				var missing []string
+				if !timeOK {
+					missing = append(missing, "work time (time_tracking.accumulated_seconds / work_duration_seconds)")
+				}
+				if !tokensOK {
+					missing = append(missing, "tokens (time_tracking.real_tokens / reg_*+cache_* fields)")
+				}
+				fmt.Fprintf(os.Stderr, "close: %s is missing required capture: %s\n", id, strings.Join(missing, "; "))
+				fmt.Fprintln(os.Stderr, "  every resolved item must record measured work time AND a non-zero token total.")
+				fmt.Fprintln(os.Stderr, "  recover: ensure this session's Stop hook logged tokens and the work timer ran;")
+				fmt.Fprintln(os.Stderr, "           backfill already-closed items with `reconcile-tokens apply`.")
+				fmt.Fprintf(os.Stderr, "  override (audited): st close %s %s --allow-missing-capture \"<reason>\"\n", id, resolution)
+				return 1
+			}
+			captureOverride = true
+		}
+	}
 
 	// Compute the cross-repo LOC snapshot OUTSIDE the lock so the slow
 	// git diff doesn't block other Mutate callers waiting on this item.
@@ -435,6 +538,18 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		OldValue: oldStatus, NewValue: resolution,
 		Reason: opts.Reason,
 	})
+
+	// I-1614: audit every capture-gate bypass so a lossy close is never silent.
+	// Surface a write failure (the audit IS the point of the override path) —
+	// unlike the best-effort close entry above, this must not vanish quietly.
+	if captureOverride {
+		if err := changelog.Append(cfg, id, changelog.Entry{
+			Op:     "close_allow_missing_capture",
+			Reason: "closed with missing token/work-time capture via --allow-missing-capture: " + strings.TrimSpace(opts.AllowMissingCapture),
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s closed with --allow-missing-capture but the audit entry failed to write: %v\n", id, err)
+		}
+	}
 
 	fmt.Printf("Closed %s — %s (%s)\n", id, item.Title, resolution)
 

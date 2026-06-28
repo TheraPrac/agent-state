@@ -6,6 +6,7 @@ import (
 
 	"github.com/theraprac/agent-state/internal/changelog"
 	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/store"
 )
 
@@ -119,7 +120,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 7: Close T-006 to unblock T-005 ===
-	code = Close(s, cfg, "T-006", "done", CloseOpts{})
+	code = Close(s, cfg, "T-006", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
 	if code != 0 {
 		t.Fatalf("Close T-006 returned %d", code)
 	}
@@ -193,6 +194,14 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 13: Close T-005 ===
+	// I-1614: seed real capture so the close passes the capture gate WITHOUT the
+	// --allow-missing-capture override (which would add an extra changelog entry
+	// the count assertion below does not expect).
+	_ = s.Mutate("T-005", func(it *model.Item) error {
+		it.SetNested("time_tracking", "accumulated_seconds", "60")
+		it.SetNested("time_tracking", "reg_input_tokens", "100")
+		return nil
+	})
 	code = Close(s, cfg, "T-005", "done", CloseOpts{})
 	if code != 0 {
 		t.Fatalf("Close T-005 returned %d", code)
@@ -262,7 +271,7 @@ func TestLifecycleIssueWithPriority(t *testing.T) {
 	}
 
 	// Close as resolved
-	code = Close(s, cfg, "I-002", "done", CloseOpts{})
+	code = Close(s, cfg, "I-002", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
 	if code != 0 {
 		t.Fatalf("Close issue returned %d", code)
 	}

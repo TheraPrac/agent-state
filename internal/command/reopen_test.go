@@ -100,7 +100,7 @@ func TestReopenClearsCompletionMarkers(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 
 	// Close T-001 (queued→done) with a reason so `resolution` is also stamped.
-	if rc := Close(s, cfg, "T-001", "done", CloseOpts{Force: true, Reason: "superseded"}); rc != 0 {
+	if rc := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true, Reason: "superseded"}); rc != 0 {
 		t.Fatalf("Close rc=%d, want 0", rc)
 	}
 	// Precondition: completed_at and resolution are present post-close.
@@ -155,7 +155,7 @@ func TestReopenRejectsGoal(t *testing.T) {
 func TestReopenWorksForIssue(t *testing.T) {
 	s, cfg := setupTestEnv(t)
 	// I-001 is queued; close it to done first.
-	if rc := Close(s, cfg, "I-001", "done", CloseOpts{Force: true}); rc != 0 {
+	if rc := Close(s, cfg, "I-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true}); rc != 0 {
 		t.Fatalf("Close I-001 rc=%d, want 0", rc)
 	}
 	if rc := Reopen(s, cfg, "I-001", "needs more work"); rc != 0 {

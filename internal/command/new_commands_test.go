@@ -1123,7 +1123,7 @@ func TestStartRecordsChangelog(t *testing.T) {
 
 func TestCloseRecordsChangelog(t *testing.T) {
 	s, cfg := setupTestEnvWithChangelog(t)
-	Close(s, cfg, "T-003", "done", CloseOpts{})
+	Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
 
 	entries, _ := changelog.Read(cfg, "T-003")
 	found := false

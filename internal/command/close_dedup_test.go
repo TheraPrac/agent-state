@@ -38,7 +38,7 @@ title: Active task
 	}
 	env.Reload(t)
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
@@ -109,7 +109,7 @@ title: Active task
 
 	env.Reload(t)
 
-	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{Force: true})
+	code := Close(env.S, env.Cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
 	if code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
