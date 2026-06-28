@@ -52,7 +52,7 @@ func TestCloseRemovesGhostStackEntry(t *testing.T) {
 		t.Fatalf("seed stack: %v", err)
 	}
 
-	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true}); code != 0 {
+	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, Force: true}); code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
 
@@ -88,7 +88,7 @@ func TestCloseClearsStaleBranchField(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true}); code != 0 {
+	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, Force: true}); code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
 
@@ -114,7 +114,7 @@ func TestClosePreservesActiveBranchField(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true}); code != 0 {
+	if code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, Force: true}); code != 0 {
 		t.Fatalf("Close exit=%d", code)
 	}
 	freshStore := newStoreOrFail(t, cfg)

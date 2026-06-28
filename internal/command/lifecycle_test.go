@@ -120,7 +120,7 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// === Step 7: Close T-006 to unblock T-005 ===
-	code = Close(s, cfg, "T-006", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
+	code = Close(s, cfg, "T-006", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, })
 	if code != 0 {
 		t.Fatalf("Close T-006 returned %d", code)
 	}
@@ -202,7 +202,7 @@ func TestFullLifecycle(t *testing.T) {
 		it.SetNested("time_tracking", "reg_input_tokens", "100")
 		return nil
 	})
-	code = Close(s, cfg, "T-005", "done", CloseOpts{})
+	code = Close(s, cfg, "T-005", "done", CloseOpts{NoAC: true}) // I-1486: item has no cmd AC
 	if code != 0 {
 		t.Fatalf("Close T-005 returned %d", code)
 	}
@@ -271,7 +271,7 @@ func TestLifecycleIssueWithPriority(t *testing.T) {
 	}
 
 	// Close as resolved
-	code = Close(s, cfg, "I-002", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
+	code = Close(s, cfg, "I-002", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, })
 	if code != 0 {
 		t.Fatalf("Close issue returned %d", code)
 	}

@@ -603,7 +603,7 @@ func TestCloseRecordsTimeTracking(t *testing.T) {
 	Start(s, cfg, "T-001", StartOpts{})
 
 	// Close
-	code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", Force: true})
+	code := Close(s, cfg, "T-001", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, Force: true})
 	if code != 0 {
 		t.Fatalf("Close returned %d, want 0", code)
 	}

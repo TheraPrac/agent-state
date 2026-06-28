@@ -422,7 +422,7 @@ func TestStartUnqueuedItemAllowed(t *testing.T) {
 
 func TestCloseHappy(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
+	code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, })
 	if code != 0 {
 		t.Errorf("Close T-003 returned %d, want 0", code)
 	}
@@ -459,7 +459,7 @@ func TestCloseInvalidResolution(t *testing.T) {
 
 func TestCloseNotFound(t *testing.T) {
 	s, cfg := setupTestEnv(t)
-	code := Close(s, cfg, "T-999", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", })
+	code := Close(s, cfg, "T-999", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, })
 	if code != 1 {
 		t.Errorf("Close not found returned %d, want 1", code)
 	}
@@ -476,7 +476,7 @@ func TestCloseAutoRemovesFromQueue(t *testing.T) {
 		t.Fatalf("QueueAdd T-001 = %d", code)
 	}
 
-	if code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", }); code != 0 {
+	if code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, }); code != 0 {
 		t.Fatalf("Close T-003 = %d", code)
 	}
 
@@ -489,7 +489,7 @@ func TestCloseAutoRemovesFromQueue(t *testing.T) {
 func TestCloseQueueAutoRemoveSilentOnUnqueuedItem(t *testing.T) {
 	// Closing an item that isn't in the queue must not error.
 	s, cfg := setupTestEnv(t)
-	if code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", }); code != 0 {
+	if code := Close(s, cfg, "T-003", "done", CloseOpts{AllowMissingCapture: "test: capture gate not under test", NoAC: true, }); code != 0 {
 		t.Errorf("Close on unqueued item returned %d, want 0", code)
 	}
 }
