@@ -38,6 +38,21 @@ func resolveRepoDir(cfg *config.Config, repo string) string {
 	return filepath.Join(parentDir, repo)
 }
 
+// repoDirNameMatches returns true when name is an exact match for repo or its
+// RepoMap alias. Used by Pattern 3 so short repo names like "as" do not
+// over-match directory names that merely contain them as a substring.
+func repoDirNameMatches(cfg *config.Config, name, repo string) bool {
+	if name == repo {
+		return true
+	}
+	if cfg.Worktree != nil && cfg.Worktree.RepoMap != nil {
+		if mapped, ok := cfg.Worktree.RepoMap[repo]; ok && name == mapped {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveItemWorktree returns the item's OWN worktree path for (itemID, repo)
 // using the I-407 Pattern 1/2/3 lookup, or "" when no item worktree exists on
 // disk. It does NOT fall back to the main repo — callers wanting that fallback
@@ -73,7 +88,8 @@ func resolveItemWorktree(cfg *config.Config, itemID, repo string) string {
 		if candidate := filepath.Join(wtRoot, repo); isGitDir(candidate) {
 			return candidate
 		}
-		// Pattern 3: scan all worktree dirs for a repo matching the name
+		// Pattern 3: scan for a repo matching the name — exact-match and
+		// item-bounded so the scan never crosses into a sibling item's worktree.
 		entries, err := os.ReadDir(wtRoot)
 		if err != nil {
 			continue
@@ -82,17 +98,21 @@ func resolveItemWorktree(cfg *config.Config, itemID, repo string) string {
 			if !e.IsDir() {
 				continue
 			}
-			if strings.Contains(e.Name(), repo) {
+			if repoDirNameMatches(cfg, e.Name(), repo) {
 				if candidate := filepath.Join(wtRoot, e.Name()); isGitDir(candidate) {
 					return candidate
 				}
+			}
+			// Only descend into the target item's own worktree dir.
+			if e.Name() != itemID {
+				continue
 			}
 			subEntries, err := os.ReadDir(filepath.Join(wtRoot, e.Name()))
 			if err != nil {
 				continue
 			}
 			for _, sub := range subEntries {
-				if sub.IsDir() && strings.Contains(sub.Name(), repo) {
+				if sub.IsDir() && repoDirNameMatches(cfg, sub.Name(), repo) {
 					if candidate := filepath.Join(wtRoot, e.Name(), sub.Name()); isGitDir(candidate) {
 						return candidate
 					}
