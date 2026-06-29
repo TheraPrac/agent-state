@@ -80,19 +80,25 @@ func ReviewCheck(s *store.Store, cfg *config.Config, id string, opts ReviewCheck
 	return 0
 }
 
-// resolveCurrentSHA returns the short HEAD SHA for the item's primary worktree repo.
-// Returns "" when the SHA cannot be resolved (non-blocking — skip SHA check).
-// When GitHeadSHA is injected (tests), falls back to calling it with "." when
-// no worktree repo dir is found, so tests can exercise the SHA-mismatch path.
+// resolveCurrentSHA returns the short HEAD SHA of the repo whose code was
+// reviewed — the first worktree repo with an item diff against origin/main,
+// matching how `st review` records reviewed_sha (collectItemDiff). Picking the
+// "first repo with a diff" rather than the "first existing repo" is the I-1651
+// fix: with per-item worktrees created for every repo, the first repo (often an
+// untouched theraprac-api at main) used to win, so an as-only item's recorded
+// SHA was compared against the wrong repo's HEAD and spuriously mismatched.
+// When no repo has a diff, falls back to the first existing repo's HEAD
+// (prior behavior). Returns "" when the SHA cannot be resolved (non-blocking —
+// skip SHA check). When GitHeadSHA is injected (tests), falls back to calling
+// it with "." when no worktree repo dir is found, so tests can exercise the
+// SHA-mismatch path.
 func resolveCurrentSHA(cfg *config.Config, id string, opts ReviewCheckOpts) string {
-	gitFn := func(dir string) (string, error) {
-		if opts.GitHeadSHA != nil {
-			return opts.GitHeadSHA(dir)
-		}
-		return runGit(dir, "rev-parse", "HEAD")
-	}
-
+	// The worktree loop runs against real git repos (production has nil
+	// GitHeadSHA; the regression test seeds real repos), so reviewedRepoSHA gets
+	// runGit directly. GitHeadSHA only stubs the no-worktree fallback below —
+	// review-check has no full-git injection seam (unlike review's RunGit).
 	if cfg.Worktree != nil && len(cfg.Worktree.Repos) > 0 {
+		firstExisting := ""
 		for _, repo := range cfg.Worktree.Repos {
 			dir := resolveRepoDirForItem(cfg, id, repo)
 			if dir == "" || dir == repo {
@@ -101,22 +107,27 @@ func resolveCurrentSHA(cfg *config.Config, id string, opts ReviewCheckOpts) stri
 			if _, err := os.Stat(dir); err != nil {
 				continue
 			}
-			out, err := gitFn(dir)
-			if err != nil {
+			sha, _, hasDiff := reviewedRepoSHA(dir, runGit)
+			if sha == "" {
 				continue
 			}
-			sha := strings.TrimSpace(out)
-			if len(sha) > 7 {
-				sha = sha[:7]
+			if hasDiff {
+				return sha // the repo whose code was reviewed — matches reviewed_sha
 			}
-			return sha
+			if firstExisting == "" {
+				firstExisting = sha
+			}
+		}
+		// No repo had an item diff — fall back to the first existing repo's HEAD.
+		if firstExisting != "" {
+			return firstExisting
 		}
 	}
 
 	// No worktree dir found — if GitHeadSHA is injected, call it with "." so
 	// tests that inject a specific SHA can still exercise the SHA-mismatch path.
 	if opts.GitHeadSHA != nil {
-		out, err := gitFn(".")
+		out, err := opts.GitHeadSHA(".")
 		if err != nil || strings.TrimSpace(out) == "" {
 			return ""
 		}

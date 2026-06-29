@@ -169,6 +169,46 @@ func runGit(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// reviewedRepoSHA reports, for a single worktree repo dir, the short HEAD SHA,
+// the item diff body, and whether the repo has an item-specific diff against
+// origin/main. It is the single source of truth for the "which repo, which SHA"
+// selection shared by `st review` (collectItemDiff) and `st review-check`
+// (resolveCurrentSHA) — keeping them from drifting (I-1651). Selection mirrors
+// review's original inline logic: prefer `origin/main...HEAD`; when that is
+// empty, fall back to `HEAD^...HEAD` ONLY for genuine orphan branches (commits
+// ahead of origin/main but the diff command produced nothing — e.g. origin/main
+// not fetched), never when the branch is simply level with origin/main. A repo
+// with no diff returns hasDiff=false. gitFn lets callers inject git execution.
+func reviewedRepoSHA(dir string, gitFn func(string, ...string) (string, error)) (sha, diffText string, hasDiff bool) {
+	headOut, err := gitFn(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", false
+	}
+	sha = strings.TrimSpace(headOut)
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+
+	diffOut, err := gitFn(dir, "diff", "origin/main...HEAD")
+	if err != nil || strings.TrimSpace(diffOut) == "" {
+		// Only skip when the log succeeds and confirms zero commits ahead.
+		// If the log itself errors (e.g. origin/main not fetched on a fresh
+		// clone), fall through to HEAD^...HEAD.
+		commitsAhead, caErr := gitFn(dir, "log", "--oneline", "origin/main..HEAD")
+		if caErr == nil && strings.TrimSpace(commitsAhead) == "" {
+			return sha, "", false
+		}
+		diffOut, err = gitFn(dir, "diff", "HEAD^...HEAD")
+		if err != nil {
+			return sha, "", false
+		}
+	}
+	if strings.TrimSpace(diffOut) == "" {
+		return sha, "", false
+	}
+	return sha, diffOut, true
+}
+
 // parseNameStatus parses `git diff --name-status` output into fileEntry records.
 func parseNameStatus(output string) []fileEntry {
 	var files []fileEntry

@@ -1,10 +1,70 @@
 package command
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/model"
 )
+
+// seedRepoLevelWithMain creates a git repo whose HEAD equals origin/main
+// (no commits ahead) — reviewedRepoSHA reports hasDiff=false for it.
+// Uses the shared gitOutput helper (close_dedup_test.go).
+func seedRepoLevelWithMain(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, dir, "init", "-q")
+	gitOutput(t, dir, "config", "user.email", "t@t.test")
+	gitOutput(t, dir, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("base\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, dir, "add", "-A")
+	gitOutput(t, dir, "commit", "-q", "-m", "base")
+	// Point origin/main at HEAD — no real remote needed.
+	gitOutput(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+}
+
+// seedRepoAheadOfMain creates a git repo with one commit ahead of origin/main —
+// reviewedRepoSHA reports hasDiff=true and the SHA of that ahead commit.
+func seedRepoAheadOfMain(t *testing.T, dir string) string {
+	t.Helper()
+	seedRepoLevelWithMain(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("base\nchange\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, dir, "add", "-A")
+	gitOutput(t, dir, "commit", "-q", "-m", "item change")
+	sha := gitOutput(t, dir, "rev-parse", "HEAD")
+	short := sha
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	return short
+}
+
+// I-1651 regression: resolveCurrentSHA must return the HEAD of the repo that has
+// an item diff, not the first existing worktree repo. Reproduces the I-1641 case
+// where the first repo (repo-a) is untouched at origin/main and a later repo
+// (repo-b) holds the item's commit.
+func TestResolveCurrentSHAPicksRepoWithDiff(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	cfg.Worktree = &config.WorktreeConfig{Enabled: true, BaseDir: "worktrees", Repos: []string{"repo-a", "repo-b"}}
+
+	// Pattern 1 layout: <worktree-base>/<item-id>/<repo>.
+	base := filepath.Join(cfg.WorktreeBase(), "T-003")
+	seedRepoLevelWithMain(t, filepath.Join(base, "repo-a")) // first repo: no diff
+	wantSHA := seedRepoAheadOfMain(t, filepath.Join(base, "repo-b"))
+
+	got := resolveCurrentSHA(cfg, "T-003", ReviewCheckOpts{})
+	if got != wantSHA {
+		t.Errorf("resolveCurrentSHA = %q, want %q (repo-b, the repo with the diff)", got, wantSHA)
+	}
+}
 
 func seedDocField(t *testing.T, s interface {
 	Mutate(string, func(*model.Item) error) error
