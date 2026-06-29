@@ -3,8 +3,13 @@ package command
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/theraprac/agent-state/internal/config"
 )
 
 // TestGoalBreakdownNoActiveGoals: with no active goals, prints a sentinel
@@ -165,5 +170,126 @@ func TestGoalBreakdownEmptyGoalSection(t *testing.T) {
 	}
 	if !strings.Contains(out, "no workable items") {
 		t.Errorf("expected 'no workable items' in output, got: %q", out)
+	}
+}
+
+// TestGoalBreakdownJSONEmptyItems: in JSON mode, a goal with no workable items
+// must emit items:[] rather than running the scoring pipeline on an empty slice
+// (I-1657 — goalBreakdownJSON was missing the len(cands)==0 guard).
+func TestGoalBreakdownJSONEmptyItems(t *testing.T) {
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-030", "active", 40)
+	// No tasks — goal has no workable items.
+	s = reloadStoreGoal(t, cfg)
+
+	var buf bytes.Buffer
+	code := goalBreakdownTo(&buf, s, cfg, GoalBreakdownOpts{Top: 3, JSON: true})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	var out []goalBreakdownGoalJSON
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 goal in JSON, got %d", len(out))
+	}
+	if out[0].GoalID != "G-030" {
+		t.Errorf("expected goal_id 'G-030', got %q", out[0].GoalID)
+	}
+	if out[0].Items == nil {
+		t.Error("expected Items to be a non-nil empty slice, got nil")
+	}
+	if len(out[0].Items) != 0 {
+		t.Errorf("expected 0 items in empty-goal JSON, got %d", len(out[0].Items))
+	}
+}
+
+// seedTaskWithAssignee writes a task file with an assigned_to field, so the
+// item appears in peerAssignedReady for a different agent.
+func seedTaskWithAssignee(t *testing.T, cfg *config.Config, id, assignee string) {
+	t.Helper()
+	content := fmt.Sprintf(`id: %s
+type: task
+status: queued
+assigned_to: %s
+created: 2026-05-24T10:00:00-06:00
+last_touched: 2026-05-24T10:00:00-06:00
+
+title: Task %s
+
+sbar:
+  situation: |-
+    Fixture task.
+  background: |-
+    Test.
+  assessment: |-
+    Test.
+  recommendation: |-
+    Test.
+`, id, assignee, id)
+	slug := strings.ToLower(strings.ReplaceAll(id, "-", "")) + "-task"
+	path := filepath.Join(cfg.ItemDir(), "tasks", id+"-"+slug+".md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("seedTaskWithAssignee: %v", err)
+	}
+}
+
+// TestGoalBreakdownEmptyWithPeerNote: when a goal has no workable items AND a
+// peer-assigned item exists, the text path surfaces the peer note (I-1657).
+func TestGoalBreakdownEmptyWithPeerNote(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-040", "active", 50)
+	// Seed a task assigned to a peer — excluded from candidates but visible in peer note.
+	seedTaskWithAssignee(t, cfg, "T-040", "agent-b")
+	s = reloadStoreGoal(t, cfg)
+
+	var buf bytes.Buffer
+	code := goalBreakdownTo(&buf, s, cfg, GoalBreakdownOpts{Top: 3})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "no workable items") {
+		t.Errorf("expected 'no workable items', got: %q", out)
+	}
+	if !strings.Contains(out, "T-040") {
+		t.Errorf("expected peer item T-040 in peer note, got: %q", out)
+	}
+	if !strings.Contains(out, "agent-b") {
+		t.Errorf("expected agent-b in peer note, got: %q", out)
+	}
+}
+
+// TestGoalBreakdownJSONEmptyWithPeerNote: JSON mode surfaces peer_note field
+// when goal has no workable items but peer-assigned items exist (I-1657).
+func TestGoalBreakdownJSONEmptyWithPeerNote(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "agent-a")
+	_, s, cfg := newGoalEnv(t)
+	seedGoalFile(t, cfg, "G-050", "active", 60)
+	seedTaskWithAssignee(t, cfg, "T-050", "agent-b")
+	s = reloadStoreGoal(t, cfg)
+
+	var buf bytes.Buffer
+	code := goalBreakdownTo(&buf, s, cfg, GoalBreakdownOpts{Top: 3, JSON: true})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	var out []goalBreakdownGoalJSON
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &out); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 goal, got %d", len(out))
+	}
+	if len(out[0].Items) != 0 {
+		t.Errorf("expected 0 items, got %d", len(out[0].Items))
+	}
+	if !strings.Contains(out[0].PeerNote, "T-050") {
+		t.Errorf("expected T-050 in peer_note, got: %q", out[0].PeerNote)
+	}
+	if !strings.Contains(out[0].PeerNote, "agent-b") {
+		t.Errorf("expected agent-b in peer_note, got: %q", out[0].PeerNote)
 	}
 }
