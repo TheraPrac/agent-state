@@ -34,11 +34,13 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int, op
 		return 2
 	}
 
-	now := time.Now()
-	nowStr := now.Format(time.RFC3339)
 	w := weight
+	var allocatedGoalID string
 
 	createdGoal, err := s.AllocateAndCreate("goal", func(id string) (*model.Item, error) {
+		allocatedGoalID = id
+		now := time.Now()
+		nowStr := now.Format(time.RFC3339)
 		doc := &model.ParsedDocument{}
 		lines := []model.Line{
 			{Raw: "id: " + id, Key: "id", Value: id},
@@ -98,7 +100,11 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int, op
 		}, nil
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "creating goal: %v\n", err)
+		if allocatedGoalID != "" {
+			fmt.Fprintf(os.Stderr, "creating %s: %v\n", allocatedGoalID, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "creating goal: %v\n", err)
+		}
 		return 1
 	}
 

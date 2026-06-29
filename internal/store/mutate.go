@@ -439,6 +439,9 @@ func (s *Store) AllocateAndCreate(itemType string, build func(id string) (*model
 	if err != nil {
 		return nil, err
 	}
+	if item == nil {
+		return nil, errors.New("build returned nil item without error")
+	}
 
 	if err := s.Create(item); err != nil {
 		return nil, err

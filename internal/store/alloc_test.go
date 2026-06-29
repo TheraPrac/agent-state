@@ -121,18 +121,21 @@ func TestAllocateAndCreate_BuildErrorWritesNothing(t *testing.T) {
 	s := newTestStore(t, root)
 
 	buildErr := errors.New("simulated build failure")
+	var attemptedID string
 	_, err := s.AllocateAndCreate("task", func(id string) (*model.Item, error) {
+		attemptedID = id
 		return nil, buildErr
 	})
 	if !errors.Is(err, buildErr) {
 		t.Fatalf("AllocateAndCreate err = %v, want %v", err, buildErr)
 	}
 
-	// No file should have been created for the attempted ID.
-	entries, _ := os.ReadDir(filepath.Join(root, "tasks"))
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".st-mutate") {
-			t.Errorf("tmp file left on disk: %s", e.Name())
+	// No item file should have been written for the attempted ID.
+	if attemptedID != "" {
+		pattern := filepath.Join(root, "tasks", attemptedID+"-*.md")
+		matches, _ := filepath.Glob(pattern)
+		if len(matches) > 0 {
+			t.Errorf("item file written despite build error: %v", matches)
 		}
 	}
 

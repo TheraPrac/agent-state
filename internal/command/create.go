@@ -214,9 +214,6 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		}
 	}
 
-	now := time.Now()
-	nowStr := now.Format(time.RFC3339)
-
 	var realSBAR model.SBAR
 	if (itemType == "task" || itemType == "issue") &&
 		(opts.Situation != "" || opts.Background != "" || opts.Assessment != "" || opts.Recommendation != "") {
@@ -228,10 +225,14 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		}
 	}
 
+	var allocatedID string
 	createdItem, err := s.AllocateAndCreate(itemType, func(id string) (*model.Item, error) {
+		allocatedID = id
 		if opts.IDOut != nil {
 			*opts.IDOut = id
 		}
+		now := time.Now()
+		nowStr := now.Format(time.RFC3339)
 
 		// Build the document
 		doc := &model.ParsedDocument{}
@@ -330,7 +331,7 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		doc.Lines = lines
 
 		// I-908: if real SBAR was supplied via flags, overwrite the scaffold block.
-		if realSBAR != (model.SBAR{}) {
+		if !realSBAR.IsEmpty() {
 			doc.SetSBARBlock(realSBAR)
 		}
 
@@ -373,7 +374,11 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		return item, nil
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "creating item: %v\n", err)
+		if allocatedID != "" {
+			fmt.Fprintf(os.Stderr, "creating %s: %v\n", allocatedID, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "creating item: %v\n", err)
+		}
 		return 1
 	}
 	id := createdItem.ID
