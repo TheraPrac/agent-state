@@ -596,11 +596,16 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	root.AddCommand(checkCmd)
 
 	tagCmd := &cobra.Command{
-		Use:   "tag <id> <add|rm> <tag>",
-		Short: "Add or remove a tag",
-		Args:  cobra.ExactArgs(3),
+		Use:   "tag <id> [<id2>...] <add|rm> <tag>",
+		Short: "Add or remove a tag (batch: pass multiple IDs before add|rm)",
+		Args:  cobra.MinimumNArgs(3),
 		Run: func(cmd *cobra.Command, args []string) {
-			exitCode = command.Tag(appStore, appCfg, args[0], args[1], args[2])
+			// New parse: last arg = tag, second-to-last = action, all preceding = IDs.
+			// This is backward compatible with the legacy 3-arg form.
+			tag := args[len(args)-1]
+			action := args[len(args)-2]
+			ids := args[:len(args)-2]
+			exitCode = command.TagMany(appStore, appCfg, ids, action, tag)
 		},
 	}
 	root.AddCommand(tagCmd)

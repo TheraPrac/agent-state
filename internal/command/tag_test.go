@@ -2,6 +2,8 @@ package command
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,6 +210,77 @@ func TestTag_GoalAdd_ChangelogRecordsGoalsField(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"goals"`) {
 		t.Errorf("changelog does not record field=goals:\n%s", string(data))
+	}
+}
+
+func TestTag_SingleIDBackwardCompat(t *testing.T) {
+	s, cfg := tagTestEnv(t)
+
+	rc := Tag(s, cfg, "T-001", "add", "post-alpha")
+	if rc != 0 {
+		t.Fatalf("single-ID Tag returned %d", rc)
+	}
+
+	s2, _ := store.New(cfg)
+	item, _ := s2.Get("T-001")
+	if !sliceHas(item.Tags, "post-alpha") {
+		t.Errorf("post-alpha not in Tags after single-ID Tag: %v", item.Tags)
+	}
+}
+
+func TestTagMany_BatchesMultipleIDsInOneSync(t *testing.T) {
+	// setupTestEnv seeds T-001, T-002, T-003 already.
+	s, cfg := setupTestEnv(t)
+
+	syncCount := 0
+	orig := autoSyncGitFn
+	defer func() { autoSyncGitFn = orig }()
+	autoSyncGitFn = func(_ *store.Store, _ string, _ ...string) error {
+		syncCount++
+		return nil
+	}
+
+	rc := TagMany(s, cfg, []string{"T-001", "T-002", "T-003"}, "add", "batch-tag")
+	if rc != 0 {
+		t.Fatalf("TagMany returned %d", rc)
+	}
+	if syncCount != 1 {
+		t.Errorf("expected exactly 1 autoSync call, got %d", syncCount)
+	}
+
+	s2, _ := store.New(cfg)
+	for _, id := range []string{"T-001", "T-002", "T-003"} {
+		item, _ := s2.Get(id)
+		if !sliceHas(item.Tags, "batch-tag") {
+			t.Errorf("%s missing batch-tag after TagMany, tags: %v", id, item.Tags)
+		}
+	}
+}
+
+func TestAutoSync_RetriesThenHardFailsOnGitLockTimeout(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	attempts := 0
+	orig := autoSyncGitFn
+	defer func() { autoSyncGitFn = orig }()
+	autoSyncGitFn = func(_ *store.Store, _ string, _ ...string) error {
+		attempts++
+		return fmt.Errorf("%w after 5s", store.ErrGitLockTimeout)
+	}
+
+	err = autoSync(s, "test-msg")
+	if err == nil {
+		t.Fatal("expected non-nil error after exhausted retries, got nil")
+	}
+	if !errors.Is(err, store.ErrGitLockTimeout) {
+		t.Errorf("expected errors.Is(err, ErrGitLockTimeout), got %v", err)
+	}
+	if attempts != autoSyncMaxRetries {
+		t.Errorf("expected %d attempts, got %d", autoSyncMaxRetries, attempts)
 	}
 }
 
