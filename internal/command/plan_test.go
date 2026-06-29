@@ -595,6 +595,100 @@ func TestPlanInvalidateNotFound(t *testing.T) {
 	}
 }
 
+// I-991: PlanApprove must replace an item's existing acceptance_criteria with
+// the canonical sidecar ACs, not skip the write because ACs are non-empty.
+// Regression: the old guard `if len(it.AcceptanceCriteria) == 0` meant a
+// re-approve after an auto-fix sub-agent wrote bad ACs left the stale ACs in
+// place permanently.
+func TestPlanApproveReplacesExistingACs(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// Pre-seed T-001 with stale ACs that differ from the sidecar.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"cmd: old-stale-command"}
+		it.Doc.ReplaceList("acceptance_criteria", it.AcceptanceCriteria)
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding stale ACs: %v", err)
+	}
+	item, _ := s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 1 || item.AcceptanceCriteria[0] != "cmd: old-stale-command" {
+		t.Fatalf("fixture AC seed failed: %v", item.AcceptanceCriteria)
+	}
+
+	// The fixture sidecar has ACs: ["cmd: go test ./..."]. After approve,
+	// the item must carry the sidecar ACs, not the pre-seeded stale ones.
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+
+	// Load sidecar ACs to use as the expected value — avoids hard-coding the
+	// fixture string so the test stays correct if setupTestEnv's sidecar changes.
+	fixturePlan, err := plan.Load(cfg.PlansDir(), "T-001")
+	if err != nil {
+		t.Fatalf("loading fixture sidecar: %v", err)
+	}
+	if len(fixturePlan.ACs) == 0 {
+		t.Fatal("fixture sidecar has no ACs to assert against")
+	}
+
+	item, _ = s.Get("T-001")
+	if len(item.AcceptanceCriteria) != len(fixturePlan.ACs) {
+		t.Fatalf("expected %d AC(s) after approve; got %d: %v", len(fixturePlan.ACs), len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] != fixturePlan.ACs[0] {
+		t.Errorf("AC should be the sidecar value %q; got %q", fixturePlan.ACs[0], item.AcceptanceCriteria[0])
+	}
+
+	// Reload from disk to verify the on-disk format is correct (not just in-memory).
+	// This catches the ReplaceList "- " prefix bug where in-memory looks right
+	// but the serialised YAML is malformed.
+	s2, _ := reloadStore(t, cfg)
+	item2, _ := s2.Get("T-001")
+	if len(item2.AcceptanceCriteria) != len(fixturePlan.ACs) {
+		t.Fatalf("disk reload: expected %d AC(s); got %d: %v", len(fixturePlan.ACs), len(item2.AcceptanceCriteria), item2.AcceptanceCriteria)
+	}
+	if item2.AcceptanceCriteria[0] != fixturePlan.ACs[0] {
+		t.Errorf("disk reload: AC should be %q; got %q", fixturePlan.ACs[0], item2.AcceptanceCriteria[0])
+	}
+}
+
+// I-991: PlanApprove deduplicates ACs from the sidecar so that N identical
+// lines from repeated writes (e.g. timeout-retry loops) collapse to one.
+func TestPlanApproveDeduplicatesACs(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// Override the fixture sidecar with duplicate AC entries.
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Fixture plan with duplicate ACs.",
+		ScopeRepos: []string{"as"},
+		ACs: []string{
+			"cmd: go test ./...",
+			"cmd: go test ./...",
+			"cmd: go build ./...",
+		},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+	}); err != nil {
+		t.Fatalf("seeding sidecar with duplicate ACs: %v", err)
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 2 {
+		t.Fatalf("expected 2 deduplicated ACs; got %d: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] != "cmd: go test ./..." || item.AcceptanceCriteria[1] != "cmd: go build ./..." {
+		t.Errorf("unexpected ACs after dedup: %v", item.AcceptanceCriteria)
+	}
+}
+
 // I-821: PlanApprove must exit non-zero when the I-807 gate fires, including
 // the I-832 idempotent re-run path (a retry must not silently succeed).
 func TestPlanApproveExitsNonZeroOnGateRefusal(t *testing.T) {
