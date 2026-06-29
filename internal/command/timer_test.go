@@ -311,6 +311,114 @@ func TestTimerScrubRatioFlagsContamination(t *testing.T) {
 	}
 }
 
+func TestCappedSessionElapsedSecs(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name          string
+		sessStart     string
+		itemStartedAt string
+		wantMin       int
+		wantMax       int
+	}{
+		{
+			name:      "normal 2 minutes ago",
+			sessStart: now.Add(-2 * time.Minute).Format(time.RFC3339),
+			wantMin:   110, wantMax: 130,
+		},
+		{
+			name:      "future start (clock skew) → 0",
+			sessStart: now.Add(60 * time.Second).Format(time.RFC3339),
+			wantMin:   0, wantMax: 0,
+		},
+		{
+			name:      "48h stale → capped at 12h",
+			sessStart: now.Add(-48 * time.Hour).Format(time.RFC3339),
+			wantMin:   maxSessionSecs, wantMax: maxSessionSecs,
+		},
+		{
+			name:          "sessStart before started_at (stale epoch) → 0",
+			sessStart:     now.Add(-10 * time.Minute).Format(time.RFC3339),
+			itemStartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339), // started_at is after sessStart
+			wantMin:       0, wantMax: 0,
+		},
+		{
+			name:      "unparseable sessStart → 0",
+			sessStart: "not-a-time",
+			wantMin:   0, wantMax: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cappedSessionElapsedSecs(tc.sessStart, tc.itemStartedAt, now)
+			if got < tc.wantMin || got > tc.wantMax {
+				t.Errorf("cappedSessionElapsedSecs = %d, want [%d, %d]", got, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestClampWorkToWallSpan(t *testing.T) {
+	cases := []struct {
+		name     string
+		work     int
+		span     int
+		wantWork int
+	}{
+		{"work under span", 100, 200, 100},
+		{"work equals span", 200, 200, 200},
+		{"work over span", 500, 200, 200},
+		{"zero span passes through", 500, 0, 500},
+		{"negative span passes through", 500, -1, 500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clampWorkToWallSpan(tc.work, tc.span)
+			if got != tc.wantWork {
+				t.Errorf("clampWorkToWallSpan(%d, %d) = %d, want %d", tc.work, tc.span, got, tc.wantWork)
+			}
+		})
+	}
+}
+
+func TestTimerScrubRatioFlagsShortSpanContamination(t *testing.T) {
+	env := testutil.NewEnv(t)
+	// I-891 shape: accumulated=828202s (230h), total_duration=840s (14min), wall=0.2h.
+	// wallH <= 24 so the old multi-day path skipped it; the new gross-factor path must catch it.
+	if err := env.S.Mutate("T-003", func(it *model.Item) error {
+		it.SetNested("time_tracking", "accumulated_seconds", "828202")
+		it.SetNested("time_tracking", "work_duration_seconds", "828202")
+		it.SetNested("time_tracking", "total_duration_seconds", "840")
+		it.SetNested("time_tracking", "wall_time_hours", "0.2")
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Warn-only: must flag but not modify.
+	n, err := TimerScrubRatio(env.S, false, false)
+	if err != nil {
+		t.Fatalf("TimerScrubRatio warn-only: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item flagged, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "accumulated_seconds"); v != "828202" {
+		t.Errorf("warn-only must not modify the item, got %q", v)
+	}
+
+	// Auto-null: must remove both fields.
+	n, err = TimerScrubRatio(env.S, false, true)
+	if err != nil {
+		t.Fatalf("TimerScrubRatio auto-null: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item flagged in auto-null run, got %d", n)
+	}
+	if v := readTTField(t, env, "T-003", "accumulated_seconds"); v != "" {
+		t.Errorf("auto-null should remove accumulated_seconds, got %q", v)
+	}
+}
+
 func TestTimerScrubRatioKeepsLegitimate(t *testing.T) {
 	env := testutil.NewEnv(t)
 	// I-1538 shape: 16170s (4.5h) out of 75.9h wall time — ratio=5.9%, legitimate.

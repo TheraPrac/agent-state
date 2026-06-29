@@ -11,6 +11,55 @@ import (
 	"github.com/theraprac/agent-state/internal/store"
 )
 
+// maxSessionSecs caps how many seconds a single session flush can contribute.
+// A real Claude Code session rarely exceeds a few hours; anything beyond 12h
+// almost certainly means session_started_at was never cleared (write race,
+// crash, or stale epoch from a previous deployment).
+const maxSessionSecs = 12 * 3600
+
+// cappedSessionElapsedSecs returns the number of elapsed seconds between
+// sessStart and now, applying three guards:
+//  1. Parse failure or future sessStart (clock skew) → 0
+//  2. sessStart predates itemStartedAt (stale epoch residue) → 0
+//  3. Elapsed > maxSessionSecs → capped at maxSessionSecs
+//
+// itemStartedAt is time_tracking.started_at (when the item was first started).
+// Pass "" to skip the stale-epoch guard (e.g., when started_at is unavailable).
+func cappedSessionElapsedSecs(sessStart, itemStartedAt string, now time.Time) int {
+	t0, err := time.Parse(time.RFC3339, sessStart)
+	if err != nil {
+		return 0
+	}
+	elapsed := int(now.Sub(t0).Seconds())
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if itemStartedAt != "" {
+		if t1, err2 := time.Parse(time.RFC3339, itemStartedAt); err2 == nil {
+			if t0.Before(t1) {
+				// session_started_at predates the item's own started_at — stale residue
+				// from a prior session; refuse to count it.
+				return 0
+			}
+		}
+	}
+	if elapsed > maxSessionSecs {
+		elapsed = maxSessionSecs
+	}
+	return elapsed
+}
+
+// clampWorkToWallSpan returns workSecs clamped to [0, spanSecs]. Active work
+// cannot exceed the in-session wall span (started_at…completed_at), so any
+// value above it is contamination from any source. When spanSecs ≤ 0 the span
+// is unknown and the value passes through unchanged.
+func clampWorkToWallSpan(workSecs, spanSecs int) int {
+	if spanSecs <= 0 || workSecs <= spanSecs {
+		return workSecs
+	}
+	return spanSecs
+}
+
 // TimerPauseAll flushes the elapsed session time for every active item owned
 // by agentID into time_tracking.accumulated_seconds and clears
 // session_started_at. Items with no live session_started_at are skipped (timer
@@ -29,28 +78,8 @@ func TimerPauseAll(s *store.Store, cfg *config.Config, agentID string) (int, err
 		if !ok || sessStart == "" {
 			continue
 		}
-		t0, err := time.Parse(time.RFC3339, sessStart)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "timer pause: %s: bad session_started_at %q: %v\n", id, sessStart, err)
-			continue
-		}
-		elapsed := int(now.Sub(t0).Seconds())
-		if elapsed < 0 {
-			elapsed = 0 // clock-skew guard
-		}
-		// Cap implausibly long sessions. A real Claude Code session rarely
-		// exceeds a few hours; anything beyond 12 h almost certainly means
-		// session_started_at was never cleared (write race, crash, or stale
-		// epoch from a previous deployment). Capping at 12 h bounds the
-		// damage while preserving legitimate long sessions.
-		const maxSessionSecs = 12 * 3600
-		if elapsed > maxSessionSecs {
-			fmt.Fprintf(os.Stderr,
-				"timer pause: %s: session_started_at %s is %dh ago — capping at 12h (stale epoch?)\n",
-				id, sessStart, elapsed/3600)
-			elapsed = maxSessionSecs
-		}
-		capturedElapsed := elapsed
+		itemStartedAt, _ := getNestedField(item, "time_tracking", "started_at")
+		capturedElapsed := cappedSessionElapsedSecs(sessStart, itemStartedAt, now)
 		mutErr := s.Mutate(id, func(it *model.Item) error {
 			// Re-read session_started_at under the lock: a concurrent st timer pause
 			// may have already cleared it. If so, skip to avoid double-counting.
@@ -172,23 +201,22 @@ func TimerScrub(s *store.Store, cfg *config.Config, dryRun bool) (int, error) {
 }
 
 // TimerScrubRatio flags (and optionally nulls) items whose
-// accumulated_seconds appears to be wall-clock contamination of the NEW
-// shape: both work_duration_seconds and accumulated_seconds are present
-// (so TimerScrub's original discriminator passes them), but the timer
-// ran for an implausibly large fraction of the item's total wall-clock
-// span — characteristic of session_started_at being left set across idle
-// days (e.g., by a write race that restored a stale epoch).
+// accumulated_seconds appears to be wall-clock contamination. Two independent
+// criteria can trigger a flag (either is sufficient):
 //
-// Criteria (all must hold):
-//   - wall_time_hours > 24 (item spanned multiple days)
-//   - accumulated_seconds > 4 h  (enough to matter)
-//   - accumulated_seconds / (wall_time_hours × 3600) > 0.5
-//     (timer ran more than half the calendar window)
+//  1. Multi-day ratio: wall_time_hours > 24, accumulated > 4h, and
+//     accumulated / wall > 50%. Catches long-span items where the timer
+//     ran for most of the calendar window.
 //
-// When dryRun is false and autoNull is true, the field is removed (same
-// treatment as TimerScrub). When autoNull is false, items are only
-// reported to stderr as warnings. Returns count flagged; err is non-nil
-// if any autoNull mutation fails.
+//  2. Short-span gross factor: accumulated_seconds > total_duration_seconds+300
+//     (300s margin for git-diff latency at close), regardless of wall_time_hours.
+//     Catches I-891/I-1550 class items (wall=14min, work=230h) that the
+//     multi-day path missed because wallH ≤ 24.
+//
+// When dryRun is false and autoNull is true, both work_duration_seconds and
+// accumulated_seconds are removed (same treatment as TimerScrub). When autoNull
+// is false, items are only reported to stderr as warnings. Returns count flagged;
+// err is non-nil if any autoNull mutation fails.
 func TimerScrubRatio(s *store.Store, dryRun, autoNull bool) (int, error) {
 	flagged, failed := 0, 0
 	for id, item := range s.All() {
@@ -196,28 +224,48 @@ func TimerScrubRatio(s *store.Store, dryRun, autoNull bool) (int, error) {
 		if !ok || accStr == "" {
 			continue
 		}
-		wallStr, ok2 := getNestedField(item, "time_tracking", "wall_time_hours")
-		if !ok2 || wallStr == "" {
-			continue
-		}
 		var accSecs int
-		var wallH float64
 		if _, err := fmt.Sscanf(accStr, "%d", &accSecs); err != nil {
 			continue
 		}
-		if _, err := fmt.Sscanf(wallStr, "%f", &wallH); err != nil {
+
+		contaminated := false
+		var reason string
+
+		// Criterion 1: multi-day ratio path (original).
+		wallStr, hasWall := getNestedField(item, "time_tracking", "wall_time_hours")
+		var wallH float64
+		if hasWall && wallStr != "" {
+			fmt.Sscanf(wallStr, "%f", &wallH) //nolint:errcheck
+		}
+		if wallH > 24 && accSecs > 4*3600 {
+			ratio := float64(accSecs) / (wallH * 3600)
+			if ratio > 0.5 {
+				contaminated = true
+				reason = fmt.Sprintf("accumulated=%ds (%.1fh) is %.0f%% of wall_time=%.1fh",
+					accSecs, float64(accSecs)/3600, ratio*100, wallH)
+			}
+		}
+
+		// Criterion 2: short-span gross factor — work > wall span (I-891/I-1550 class).
+		if !contaminated {
+			if totalStr, ok2 := getNestedField(item, "time_tracking", "total_duration_seconds"); ok2 && totalStr != "" {
+				var totalSecs int
+				if _, err := fmt.Sscanf(totalStr, "%d", &totalSecs); err == nil && totalSecs > 0 {
+					const scrubMargin = 300 // tolerate git-diff latency at close
+					if accSecs > totalSecs+scrubMargin {
+						contaminated = true
+						reason = fmt.Sprintf("accumulated=%ds (%.1fh) exceeds total_duration=%ds (%.1fh) — impossible active > wall span",
+							accSecs, float64(accSecs)/3600, totalSecs, float64(totalSecs)/3600)
+					}
+				}
+			}
+		}
+
+		if !contaminated {
 			continue
 		}
-		if wallH <= 24 || accSecs <= 4*3600 {
-			continue
-		}
-		ratio := float64(accSecs) / (wallH * 3600)
-		if ratio <= 0.5 {
-			continue
-		}
-		fmt.Fprintf(os.Stderr,
-			"timer scrub (ratio): %s: accumulated=%ds (%.1fh) is %.0f%% of wall_time=%.1fh — likely stale-epoch contamination\n",
-			id, accSecs, float64(accSecs)/3600, ratio*100, wallH)
+		fmt.Fprintf(os.Stderr, "timer scrub (ratio): %s: %s — likely stale-epoch contamination\n", id, reason)
 		flagged++
 		if dryRun || !autoNull {
 			continue

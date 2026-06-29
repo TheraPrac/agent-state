@@ -396,6 +396,23 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// Record completion time tracking
 		item.SetNested("time_tracking", "completed_at", nowStr)
 
+		// Pre-read started_at and compute the wall span so we can (a) guard against
+		// a stale session_started_at in cappedSessionElapsedSecs and (b) clamp the
+		// final work seconds to the span (active work cannot exceed wall span).
+		// Anchored on the same `now` that produced completed_at (I-514).
+		var itemStartedAt string
+		var wallSpanSecs int
+		startedAtParsed := false
+		if sA, ok2 := getNestedField(item, "time_tracking", "started_at"); ok2 && sA != "" {
+			if t0, err := time.Parse(time.RFC3339, sA); err == nil {
+				itemStartedAt = sA
+				startedAtParsed = true
+				if s := int(now.Sub(t0).Seconds()); s > 0 {
+					wallSpanSecs = s
+				}
+			}
+		}
+
 		// I-1318: compute work duration from session-scoped accumulated time.
 		// accumulated_seconds holds the sum of all completed work periods;
 		// session_started_at is the current period's start (if the timer is
@@ -405,7 +422,7 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 		// When no session timer data exists the field is omitted (null) —
 		// never the started_at wall-clock span, which previously made
 		// measured and garbage values indistinguishable downstream.
-		var workDur time.Duration
+		var workSecs int
 		haveSessionFields := false
 		{
 			accSecs := 0
@@ -415,46 +432,43 @@ func Close(s *store.Store, cfg *config.Config, id, resolution string, opts Close
 			}
 			if sessStart, ok := getNestedField(item, "time_tracking", "session_started_at"); ok && sessStart != "" {
 				haveSessionFields = true
-				if t0, err := time.Parse(time.RFC3339, sessStart); err == nil {
-					// Use time.Now() here (not the pre-LOC-snapshot `now`) so that
-					// git-diff latency in computeLOCSnapshot is included in work time.
-					if elapsed := time.Now().Sub(t0); elapsed > 0 {
-						workDur += elapsed
-					}
-				}
+				// Use time.Now() here (not the pre-LOC-snapshot `now`) so that
+				// git-diff latency in computeLOCSnapshot is included in work time.
+				// cappedSessionElapsedSecs applies the stale-epoch guard (refuses to
+				// count time before started_at) and the 12h session cap.
+				workSecs += cappedSessionElapsedSecs(sessStart, itemStartedAt, time.Now())
 			}
 			if haveSessionFields {
-				workDur += time.Duration(accSecs) * time.Second
+				workSecs += accSecs
 			}
 		}
 		item.SetNested("time_tracking", "session_started_at", "")
 		if haveSessionFields {
+			// Clamp to wall span: measured active work can never exceed the
+			// in-session wall span (started_at…completed_at). Any value above
+			// it is contamination from a stale epoch or a prior bug.
+			finalSecs := clampWorkToWallSpan(workSecs, wallSpanSecs)
 			item.SetNested("time_tracking", "work_duration_seconds",
-				fmt.Sprintf("%d", int(workDur.Seconds())))
+				fmt.Sprintf("%d", finalSecs))
 			// Persist the final measured total so closed items are
 			// self-consistent: work_duration_seconds == accumulated_seconds.
 			// `st timer scrub` relies on this invariant to tell measured
 			// values from legacy wall-clock fallbacks.
 			item.SetNested("time_tracking", "accumulated_seconds",
-				fmt.Sprintf("%d", int(workDur.Seconds())))
+				fmt.Sprintf("%d", finalSecs))
 		}
 		// total_duration_seconds and the wall_time fields carry the
 		// wall-clock span (completed_at − started_at), independent of the
-		// timer. Anchor on the same `now` that produced completed_at (I-514:
-		// one anchor for all span fields) and always write when started_at
-		// parses — clamp clock skew to 0 rather than omitting, so field
-		// presence keeps meaning "span recorded".
-		if startedAt, ok := getNestedField(item, "time_tracking", "started_at"); ok && startedAt != "" {
-			if t0, err := time.Parse(time.RFC3339, startedAt); err == nil {
-				span := now.Sub(t0)
-				if span < 0 {
-					span = 0
-				}
-				item.SetNested("time_tracking", "total_duration_seconds",
-					fmt.Sprintf("%d", int(span.Seconds())))
-				item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", span.Hours()))
-				item.SetNested("time_tracking", "total_wall_time", formatDuration(span))
-			}
+		// timer. Reuse the span computed above for the stale-epoch guard —
+		// same `now` anchor as completed_at (I-514). Always write when
+		// started_at parsed — clamp clock skew to 0 rather than omitting,
+		// so field presence keeps meaning "span recorded".
+		if startedAtParsed {
+			span := time.Duration(wallSpanSecs) * time.Second
+			item.SetNested("time_tracking", "total_duration_seconds",
+				fmt.Sprintf("%d", wallSpanSecs))
+			item.SetNested("time_tracking", "wall_time_hours", fmt.Sprintf("%.1f", span.Hours()))
+			item.SetNested("time_tracking", "total_wall_time", formatDuration(span))
 		}
 
 		// Apply the precomputed LOC snapshot. computed outside the lock
