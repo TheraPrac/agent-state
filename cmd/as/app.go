@@ -1775,6 +1775,22 @@ Example:
 	}
 	root.AddCommand(reviewTargetCmd)
 
+	reviewDepthCmd := &cobra.Command{
+		Use:   "review-depth <id>",
+		Short: "Recommend a /code-review depth (low/medium/high) based on diff size and blast-radius paths",
+		Long: "Computes the combined diff stat across all worktree repos for the item and " +
+			"applies the proportional routing policy: small diffs (≤50 lines, ≤3 files, no " +
+			"blast-radius path) output 'low'; large diffs (≥200 lines or ≥6 files) or any " +
+			"diff touching auth, migrations, hooks, workflows, or infra paths output 'high'; " +
+			"everything else outputs 'medium'. Use with st review-target: " +
+			"/code-review $(st review-depth <id>) $(st review-target <pr>)",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.ReviewDepth(appStore, appCfg, args[0], command.ReviewDepthOpts{})
+		},
+	}
+	root.AddCommand(reviewDepthCmd)
+
 	testRecordCmd := &cobra.Command{
 		Use:   "test <id> [<suite>]",
 		Short: "Record or execute a test suite for an item",
