@@ -612,3 +612,75 @@ func TestParseListBacktickPaths(t *testing.T) {
 		})
 	}
 }
+
+// I-895 + I-1052: PrepareACs is the exported sanitize pipeline for
+// item.AcceptanceCriteria values that bypass plan.Parse. It must strip
+// backtick wrapping and drop non-cmd: prose entries.
+func TestPrepareACs(t *testing.T) {
+	cases := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{
+			name:  "plain cmd: entries pass through unchanged",
+			input: []string{"cmd: go test ./...", "cmd: go build ./..."},
+			want:  []string{"cmd: go test ./...", "cmd: go build ./..."},
+		},
+		{
+			name: "backtick-wrapped cmd: entries are unwrapped (I-895)",
+			input: []string{
+				"`cmd: grep -q foo bar`",
+				"cmd: go test ./...",
+			},
+			want: []string{"cmd: grep -q foo bar", "cmd: go test ./..."},
+		},
+		{
+			name: "trailing prose is dropped (I-1052)",
+			input: []string{
+				"cmd: go test ./...",
+				"Notes for the operator: verify the staging env",
+				"Note: st update summary is deprecated",
+			},
+			want: []string{"cmd: go test ./..."},
+		},
+		{
+			name: "mixed: backtick + prose + plain",
+			input: []string{
+				"`cmd: go vet ./...`",
+				"Some narrative that leaked from the plan agent",
+				"cmd: go test ./...",
+			},
+			want: []string{"cmd: go vet ./...", "cmd: go test ./..."},
+		},
+		{
+			name:  "empty input returns nil (not empty slice)",
+			input: []string{},
+			want:  nil,
+		},
+		{
+			name:  "all non-cmd: entries dropped → nil result",
+			input: []string{"Notes for the operator", "See also: the docs"},
+			want:  nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrepareACs(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			// Enforce nil vs empty-slice distinction: callers that guard on
+			// p.ACs != nil (rather than len > 0) depend on nil meaning "never set".
+			if tc.want == nil && got != nil {
+				t.Errorf("expected nil, got empty slice %v", got)
+			}
+			for i, w := range tc.want {
+				if got[i] != w {
+					t.Errorf("[%d] got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}

@@ -554,9 +554,10 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 			}
 		}
 
-		// Fill in ACs from item if claude set them there
+		// Fill in ACs from item if claude set them there; sanitize to strip
+		// backtick wrapping and non-cmd: prose (I-895, I-1052).
 		if len(p.ACs) == 0 && len(item.AcceptanceCriteria) > 0 {
-			p.ACs = item.AcceptanceCriteria
+			p.ACs = plan.PrepareACs(item.AcceptanceCriteria)
 		}
 
 		// Infer scope repos from plan text if not explicitly set
@@ -861,9 +862,12 @@ func prepItem(s *store.Store, cfg *config.Config, itemID string, item *model.Ite
 		s, _ = store.New(cfg)
 		item, _ = s.Get(itemID)
 
-		// Update ACs from item if changed
-		if len(item.AcceptanceCriteria) > 0 {
-			p.ACs = item.AcceptanceCriteria
+		// Update ACs from item if changed; sanitize to strip backtick
+		// wrapping and non-cmd: prose (I-895, I-1052). Only replace if
+		// the cleaned result is non-empty — if all entries are prose,
+		// preserve the existing p.ACs loaded from the plan text.
+		if cleaned := plan.PrepareACs(item.AcceptanceCriteria); len(cleaned) > 0 {
+			p.ACs = cleaned
 		}
 		if item.Summary != "" && p.Approach == "" {
 			p.Approach = item.Summary
@@ -972,7 +976,7 @@ func prepItemWriteOnly(s *store.Store, cfg *config.Config, itemID string, item *
 		}
 
 		if len(p.ACs) == 0 && len(item.AcceptanceCriteria) > 0 {
-			p.ACs = item.AcceptanceCriteria
+			p.ACs = plan.PrepareACs(item.AcceptanceCriteria)
 		}
 		if len(p.ScopeRepos) == 0 {
 			p.ScopeRepos = inferRepos(cfg, p)

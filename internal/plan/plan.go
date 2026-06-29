@@ -524,6 +524,17 @@ func Now() string {
 	return time.Now().Format(time.RFC3339)
 }
 
+// PrepareACs sanitizes a slice of raw AC strings that came from
+// item.AcceptanceCriteria, applying the same pipeline that plan.Parse runs
+// on sidecar text: strip list markers and backtick wrapping (parseList),
+// then drop non-cmd: entries (sanitizeACs). Use this whenever
+// item.AcceptanceCriteria is copied into plan.Plan.ACs so that
+// backtick-wrapped entries (I-895) and trailing prose (I-1052) are cleaned
+// at the same point as sidecar-sourced ACs.
+func PrepareACs(items []string) []string {
+	return sanitizeACs(parseList(strings.Join(items, "\n")))
+}
+
 // sanitizeACs filters the parsed AC list, keeping only entries that begin
 // with "cmd:" (the required prefix for verifiable acceptance criteria).
 // Non-conforming entries are dropped and reported to stderr — they are

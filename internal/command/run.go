@@ -3118,7 +3118,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 		if !plan.Exists(cfg.PlansDir(), itemID) {
 			draftPlan := &plan.Plan{
 				Approach:   item.Summary,
-				ACs:        item.AcceptanceCriteria,
+				ACs:        plan.PrepareACs(item.AcceptanceCriteria),
 				ScopeRepos: inferReposFromItem(cfg, item),
 				RawText:    proposalResult.Text,
 				Revisions: []plan.Revision{{
@@ -3384,7 +3384,7 @@ func executePlanWithOpts(s *store.Store, cfg *config.Config, itemID string, engi
 			Approved:   true,
 			ApprovedAt: plan.Now(),
 			Approach:   latestItem.Summary,
-			ACs:        latestItem.AcceptanceCriteria,
+			ACs:        plan.PrepareACs(latestItem.AcceptanceCriteria),
 			ScopeRepos: inferReposFromItem(cfg, latestItem),
 			Revisions: []plan.Revision{
 				{Timestamp: plan.Now(), Summary: "Plan approved via st run"},
