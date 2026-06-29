@@ -15,6 +15,31 @@ import (
 	"github.com/theraprac/agent-state/internal/store"
 )
 
+// applyACs deduplicates rawACs and writes them onto the item's
+// AcceptanceCriteria field (unprefixed) and Doc list (with "- " prefix).
+// Shared by PlanApprove, the idempotent guard, and prep.go's accept path.
+func applyACs(it *model.Item, rawACs []string) {
+	if len(rawACs) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(rawACs))
+	deduped := make([]string, 0, len(rawACs))
+	for _, ac := range rawACs {
+		if _, exists := seen[ac]; !exists {
+			seen[ac] = struct{}{}
+			deduped = append(deduped, ac)
+		}
+	}
+	it.AcceptanceCriteria = deduped
+	// ReplaceList expects "- " prefixed raw strings; model layer (parseList)
+	// strips that prefix on read.
+	prefixed := make([]string, len(deduped))
+	for i, ac := range deduped {
+		prefixed[i] = "- " + ac
+	}
+	it.Doc.ReplaceList("acceptance_criteria", prefixed)
+}
+
 // loadPlanForValidation loads the per-item plan sidecar and returns
 // (a) the loaded plan (nil if missing), (b) ValidatePlan violations
 // against the loaded plan, and (c) whether the sidecar was found.
@@ -109,6 +134,17 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		// defensively (gives a stuck-uncommitted approval a second chance to
 		// land in git), and return 0. Audit fields are deliberately NOT
 		// re-written — the original approver/timestamp belong to the first call.
+		//
+		// I-1649: also run AC replacement so a follow-up `st plan approve`
+		// after an interactive-prep accept refreshes stale ACs. The Mutate
+		// error is ignored — an idempotent re-run must not fail closed when
+		// the only difference is AC freshness.
+		if p, _ := plan.Load(cfg.PlansDir(), id); p != nil && len(p.ACs) > 0 {
+			_ = s.Mutate(id, func(it *model.Item) error {
+				applyACs(it, p.ACs)
+				return nil
+			})
+		}
 		fmt.Fprintf(os.Stderr,
 			"%s plan is already approved (by %s at %s) — no-op (idempotent re-run)\n",
 			id, fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
@@ -268,24 +304,7 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		// than write-once (old guard: len==0). Auto-fix sub-agents or retried
 		// approvals may have left stale/duplicate ACs; the sidecar is the
 		// truth. Dedup so N identical lines from repeated writes collapse.
-		if len(draftACs) > 0 {
-			seen := make(map[string]struct{}, len(draftACs))
-			deduped := make([]string, 0, len(draftACs))
-			for _, ac := range draftACs {
-				if _, exists := seen[ac]; !exists {
-					seen[ac] = struct{}{}
-					deduped = append(deduped, ac)
-				}
-			}
-			it.AcceptanceCriteria = deduped
-			// ReplaceList expects "- " prefixed raw strings; model layer (parseList)
-			// strips that prefix on read. Mirrors the same pattern in uat.go.
-			prefixed := make([]string, len(deduped))
-			for i, ac := range deduped {
-				prefixed[i] = "- " + ac
-			}
-			it.Doc.ReplaceList("acceptance_criteria", prefixed)
-		}
+		applyACs(it, draftACs)
 		return nil
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)

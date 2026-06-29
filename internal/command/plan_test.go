@@ -723,3 +723,119 @@ func TestPlanApproveExitsNonZeroOnGateRefusal(t *testing.T) {
 		t.Errorf("PlanApprove idempotent re-run must also fail while gate is active; got 0")
 	}
 }
+
+// I-1649: idempotent guard in PlanApprove must refresh stale ACs from the sidecar.
+//
+// Scenario: an interactive `st plan prep` accept stamped plan_approved=true with the
+// old write-once guard (len==0), leaving stale ACs on the item. A subsequent
+// `st plan approve` must hit the idempotent guard AND still replace ACs from the
+// sidecar before returning 0.
+func TestPlanApproveIdempotentGuardRefreshesStaleACs(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// Simulate an old interactive-accept: stamp plan_approved=true with stale ACs
+	// (as if the len==0 guard ran when item already had ACs from a prior prep).
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.PlanApproved = true
+		it.PlanApprovedAt = "2026-01-01T00:00:00Z"
+		it.PlanApprovedBy = "agent-x"
+		it.Doc.SetField("plan_approved", "true")
+		it.Doc.SetField("plan_approved_at", "2026-01-01T00:00:00Z")
+		it.Doc.SetField("plan_approved_by", "agent-x")
+		it.AcceptanceCriteria = []string{"cmd: stale-old-command"}
+		it.Doc.ReplaceList("acceptance_criteria", []string{"- cmd: stale-old-command"})
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding pre-approved stale state: %v", err)
+	}
+
+	// Confirm stale ACs are on the item before the idempotent re-run.
+	item, _ := s.Get("T-001")
+	if !item.PlanApproved {
+		t.Fatal("fixture: expected plan_approved=true")
+	}
+	if len(item.AcceptanceCriteria) != 1 || item.AcceptanceCriteria[0] != "cmd: stale-old-command" {
+		t.Fatalf("fixture: expected stale AC; got %v", item.AcceptanceCriteria)
+	}
+
+	// The sidecar has the canonical ACs; load them to know what to assert.
+	fixturePlan, err := plan.Load(cfg.PlansDir(), "T-001")
+	if err != nil {
+		t.Fatalf("loading fixture sidecar: %v", err)
+	}
+	if len(fixturePlan.ACs) == 0 {
+		t.Fatal("fixture sidecar has no ACs to assert against")
+	}
+
+	// Idempotent re-run: PlanApprove must return 0 AND replace the stale ACs.
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("idempotent re-run: expected exit 0; got %d", code)
+	}
+
+	item, _ = s.Get("T-001")
+	if len(item.AcceptanceCriteria) != len(fixturePlan.ACs) {
+		t.Fatalf("idempotent guard: expected %d sidecar AC(s); got %d: %v",
+			len(fixturePlan.ACs), len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] == "cmd: stale-old-command" {
+		t.Errorf("idempotent guard: stale AC was not replaced; want %q got %q",
+			fixturePlan.ACs[0], item.AcceptanceCriteria[0])
+	}
+	if item.AcceptanceCriteria[0] != fixturePlan.ACs[0] {
+		t.Errorf("idempotent guard: AC should be sidecar value %q; got %q",
+			fixturePlan.ACs[0], item.AcceptanceCriteria[0])
+	}
+
+	// Reload from disk to verify on-disk serialisation is also correct.
+	s2, _ := reloadStore(t, cfg)
+	item2, _ := s2.Get("T-001")
+	if len(item2.AcceptanceCriteria) != len(fixturePlan.ACs) {
+		t.Fatalf("disk reload: expected %d AC(s); got %d: %v",
+			len(fixturePlan.ACs), len(item2.AcceptanceCriteria), item2.AcceptanceCriteria)
+	}
+	if item2.AcceptanceCriteria[0] != fixturePlan.ACs[0] {
+		t.Errorf("disk reload: AC should be %q; got %q", fixturePlan.ACs[0], item2.AcceptanceCriteria[0])
+	}
+}
+
+// applyACs is the shared dedup helper used by PlanApprove, the idempotent guard,
+// and prep.go's Accept path. These tests guard its contract so a format change in
+// one site doesn't silently diverge from the others.
+func TestApplyACs_DedupsAndPrefixes(t *testing.T) {
+	s, _ := setupTestEnv(t)
+	item, _ := s.Get("T-001")
+
+	applyACs(item, []string{"cmd: echo a", "cmd: echo b", "cmd: echo a"})
+
+	if len(item.AcceptanceCriteria) != 2 {
+		t.Fatalf("expected 2 deduped ACs; got %d: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] != "cmd: echo a" || item.AcceptanceCriteria[1] != "cmd: echo b" {
+		t.Errorf("unexpected ACs: %v", item.AcceptanceCriteria)
+	}
+}
+
+func TestApplyACs_EmptyInputIsNoop(t *testing.T) {
+	s, _ := setupTestEnv(t)
+	item, _ := s.Get("T-001")
+	before := append([]string(nil), item.AcceptanceCriteria...)
+
+	applyACs(item, nil)
+
+	if len(item.AcceptanceCriteria) != len(before) {
+		t.Errorf("applyACs(nil) must not modify AcceptanceCriteria; before=%v after=%v", before, item.AcceptanceCriteria)
+	}
+}
+
+func TestApplyACs_ReplacesExistingNonEmpty(t *testing.T) {
+	s, _ := setupTestEnv(t)
+	item, _ := s.Get("T-001")
+	item.AcceptanceCriteria = []string{"cmd: stale"}
+
+	applyACs(item, []string{"cmd: fresh"})
+
+	if len(item.AcceptanceCriteria) != 1 || item.AcceptanceCriteria[0] != "cmd: fresh" {
+		t.Errorf("applyACs must replace non-empty ACs; got %v", item.AcceptanceCriteria)
+	}
+}
