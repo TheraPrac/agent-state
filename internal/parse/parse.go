@@ -531,6 +531,8 @@ func storeScalar(item *model.Item, key, val string) {
 		item.SuccessCriterion = val
 	case "dropped_reason":
 		item.DroppedReason = val
+	case "model_tier":
+		// doc-only operator override; accessed via Doc.GetField("model_tier") in model_rec.go
 	}
 }
 
