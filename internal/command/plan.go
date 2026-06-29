@@ -264,8 +264,21 @@ func PlanApprove(s *store.Store, cfg *config.Config, id string, opts PlanApprove
 		if scopeRepos != "" {
 			it.Doc.SetField("scope_repos", scopeRepos)
 		}
-		if len(it.AcceptanceCriteria) == 0 && len(draftACs) > 0 {
-			it.Doc.ReplaceList("acceptance_criteria", draftACs)
+		// I-991: always replace ACs from the canonical sidecar source rather
+		// than write-once (old guard: len==0). Auto-fix sub-agents or retried
+		// approvals may have left stale/duplicate ACs; the sidecar is the
+		// truth. Dedup so N identical lines from repeated writes collapse.
+		if len(draftACs) > 0 {
+			seen := make(map[string]struct{}, len(draftACs))
+			deduped := draftACs[:0:len(draftACs)]
+			for _, ac := range draftACs {
+				if _, exists := seen[ac]; !exists {
+					seen[ac] = struct{}{}
+					deduped = append(deduped, ac)
+				}
+			}
+			it.AcceptanceCriteria = deduped
+			it.Doc.ReplaceList("acceptance_criteria", deduped)
 		}
 		return nil
 	}); err != nil {

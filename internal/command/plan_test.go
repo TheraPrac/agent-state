@@ -595,6 +595,78 @@ func TestPlanInvalidateNotFound(t *testing.T) {
 	}
 }
 
+// I-991: PlanApprove must replace an item's existing acceptance_criteria with
+// the canonical sidecar ACs, not skip the write because ACs are non-empty.
+// Regression: the old guard `if len(it.AcceptanceCriteria) == 0` meant a
+// re-approve after an auto-fix sub-agent wrote bad ACs left the stale ACs in
+// place permanently.
+func TestPlanApproveReplacesExistingACs(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// Pre-seed T-001 with stale ACs that differ from the sidecar.
+	if err := s.Mutate("T-001", func(it *model.Item) error {
+		it.AcceptanceCriteria = []string{"cmd: old-stale-command"}
+		it.Doc.ReplaceList("acceptance_criteria", it.AcceptanceCriteria)
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding stale ACs: %v", err)
+	}
+	item, _ := s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 1 || item.AcceptanceCriteria[0] != "cmd: old-stale-command" {
+		t.Fatalf("fixture AC seed failed: %v", item.AcceptanceCriteria)
+	}
+
+	// The fixture sidecar has ACs: ["cmd: go test ./..."]. After approve,
+	// the item must carry the sidecar ACs, not the pre-seeded stale ones.
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+
+	item, _ = s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 1 {
+		t.Fatalf("expected 1 AC after approve; got %d: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] != "cmd: go test ./..." {
+		t.Errorf("AC should be the sidecar value; got %q", item.AcceptanceCriteria[0])
+	}
+}
+
+// I-991: PlanApprove deduplicates ACs from the sidecar so that N identical
+// lines from repeated writes (e.g. timeout-retry loops) collapse to one.
+func TestPlanApproveDeduplicatesACs(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	// Override the fixture sidecar with duplicate AC entries.
+	if err := plan.Save(cfg.PlansDir(), "T-001", &plan.Plan{
+		Approach:   "Fixture plan with duplicate ACs.",
+		ScopeRepos: []string{"as"},
+		ACs: []string{
+			"cmd: go test ./...",
+			"cmd: go test ./...",
+			"cmd: go build ./...",
+		},
+		Tests:      "Covered by existing test suite.",
+		OutOfScope: "None",
+		Risks:      "Low risk.",
+	}); err != nil {
+		t.Fatalf("seeding sidecar with duplicate ACs: %v", err)
+	}
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("approve: %d", code)
+	}
+
+	item, _ := s.Get("T-001")
+	if len(item.AcceptanceCriteria) != 2 {
+		t.Fatalf("expected 2 deduplicated ACs; got %d: %v", len(item.AcceptanceCriteria), item.AcceptanceCriteria)
+	}
+	if item.AcceptanceCriteria[0] != "cmd: go test ./..." || item.AcceptanceCriteria[1] != "cmd: go build ./..." {
+		t.Errorf("unexpected ACs after dedup: %v", item.AcceptanceCriteria)
+	}
+}
+
 // I-821: PlanApprove must exit non-zero when the I-807 gate fires, including
 // the I-832 idempotent re-run path (a retry must not silently succeed).
 func TestPlanApproveExitsNonZeroOnGateRefusal(t *testing.T) {
