@@ -4836,6 +4836,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	// The stderr warning is loud so operators see the actual cap in
 	// effect instead of assuming the override stuck.
 	wallTimeout := maxWallTimeout
+	silent := false
 	for _, e := range env {
 		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
 			if parsed, perr := time.ParseDuration(v); perr == nil {
@@ -4843,6 +4844,9 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 			} else {
 				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — using global %s ceiling (callers should resolve invalid values upstream)\n", v, perr, maxWallTimeout)
 			}
+		}
+		if e == "AS_CLAUDE_SILENT=1" {
+			silent = true
 		}
 	}
 
@@ -4945,14 +4949,18 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 						blockType, _ := block["type"].(string)
 						switch blockType {
 						case "text":
-							if text, ok := block["text"].(string); ok && text != "" {
-								fmt.Fprint(os.Stderr, text)
+							if !silent {
+								if text, ok := block["text"].(string); ok && text != "" {
+									fmt.Fprint(os.Stderr, text)
+								}
 							}
 						case "tool_use":
-							name, _ := block["name"].(string)
-							input, _ := block["input"].(map[string]interface{})
-							summary := formatToolCall(name, input)
-							fmt.Fprintf(os.Stderr, "\n  -> %s\n", summary)
+							if !silent {
+								name, _ := block["name"].(string)
+								input, _ := block["input"].(map[string]interface{})
+								summary := formatToolCall(name, input)
+								fmt.Fprintf(os.Stderr, "\n  -> %s\n", summary)
+							}
 						}
 					}
 				}

@@ -298,6 +298,7 @@ func runOpusSecondOpinion(item *model.Item, cfg *config.Config, engine RunEngine
 	env := []string{
 		"AS_SESSION_ID=" + sessionID,
 		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", opusSecondOpinionTimeout),
+		"AS_CLAUDE_SILENT=1", // suppress text echo — caller reads bare tier:X|reason:Y line
 	}
 
 	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
@@ -412,6 +413,7 @@ func callRecommender(item *model.Item, cfg *config.Config, engine RunEngine) (Mo
 	env := []string{
 		"AS_SESSION_ID=" + sessionID,
 		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", recommenderTimeout),
+		"AS_CLAUDE_SILENT=1", // suppress text echo — caller reads bare tier:X|reason:Y line
 	}
 
 	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
