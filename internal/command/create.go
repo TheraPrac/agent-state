@@ -459,6 +459,11 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-442: pass the new item's path so it actually gets staged.
 	// GitSync's `git add -u` only catches tracked changes; new files
 	// require explicit paths.
+	//
+	// I-797: autoSync MUST remain after the "Created I-XXX" print above.
+	// Consumers that poll the output file for "Created" confirmation must
+	// see the line before git latency (~3-5s) starts.
+	// TestCreateFlushesCreatedLineBeforePush guards this ordering.
 	syncErr := autoSync(s, fmt.Sprintf("st create: %s — %s", id, title), newPath)
 
 	// I-588: spawn the Claude sub-agent self-review on task/issue creates.
