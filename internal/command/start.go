@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -741,14 +740,10 @@ func createWorktrees(cfg *config.Config, id, itemType string, opts StartOpts) (s
 	// workspace-side CODE edits (claude-config/, docs/) need a per-item PR
 	// branch like every other repo, or they pile onto one long-lived branch.
 	// Give them a dedicated worktree — provisionSingleRepoWorktree special-cases
-	// the workspace clone to leave the primary working tree untouched. Append
-	// only when the clone exists on disk and isn't already enumerated, so
-	// explicit --repos and setups lacking the clone are unaffected.
-	if !slices.Contains(repos, workspaceRepo) {
-		if _, err := os.Stat(filepath.Join(parentDir, workspaceRepo, ".git")); err == nil {
-			repos = append(append([]string{}, repos...), workspaceRepo)
-		}
-	}
+	// the workspace clone to leave the primary working tree untouched.
+	// I-1652: theraprac-workspace is now in worktree.repos explicitly, so no
+	// auto-add is needed. provisionSingleRepoWorktree:977 provides a clear error
+	// if the workspace clone is absent on disk.
 
 	// I-1477(f): if a prior `st start` was interrupted, the per-item dir exists
 	// with some repo subdirs but no .workinfo (written only on full success).
