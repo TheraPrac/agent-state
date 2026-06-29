@@ -126,7 +126,9 @@ func decideTier(s *store.Store, cfg *config.Config, opts ModelRecOpts) ModelRecR
 	// high-risk-domain item, confirm with Opus. On disagreement, escalate.
 	if res.Tier == "sonnet" && opts.Engine.RunClaude != nil &&
 		itemPriorityIsHighRisk(item) && isHighRiskDomain(item) {
-		if opusRes, opusErr := runOpusSecondOpinion(item, cfg, opts.Engine); opusErr == nil && opusRes.Tier == "opus" {
+		if opusRes, opusErr := runOpusSecondOpinion(item, cfg, opts.Engine); opusErr != nil {
+			fmt.Fprintf(os.Stderr, "model-rec: opus second-opinion: %v — keeping primary recommendation\n", opusErr)
+		} else if opusRes.Tier == "opus" {
 			res = ModelRecResult{
 				Tier:   "opus",
 				Reason: fmt.Sprintf("SECOND-OPINION: opus recommends opus — %s", opusRes.Reason),
@@ -295,11 +297,7 @@ func runOpusSecondOpinion(item *model.Item, cfg *config.Config, engine RunEngine
 	}, cfg.Root())
 
 	sessionID := generateSessionID()
-	env := []string{
-		"AS_SESSION_ID=" + sessionID,
-		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", opusSecondOpinionTimeout),
-		"AS_CLAUDE_SILENT=1", // suppress text echo — caller reads bare tier:X|reason:Y line
-	}
+	env := classifierEnv(sessionID, opusSecondOpinionTimeout)
 
 	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
 	if err != nil {
@@ -390,6 +388,18 @@ func ModelRecConfirmOpus(s *store.Store, cfg *config.Config, id string, engine R
 	return 0
 }
 
+// classifierEnv builds the env slice for one-shot classifier calls (Haiku
+// recommender and Opus second-opinion). All three variables are required by
+// every classifier call site; centralising them here prevents silent drift
+// when a fourth key is added.
+func classifierEnv(sessionID string, wallTimeoutSec int) []string {
+	return []string{
+		"AS_SESSION_ID=" + sessionID,
+		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", wallTimeoutSec),
+		asClaudeSilentEnv, // suppress text echo — caller reads bare tier:X|reason:Y line
+	}
+}
+
 // callRecommender builds the Haiku prompt, runs claude, parses the JSON
 // verdict. Single failure path: any error returned here triggers the
 // sonnet fallback in the caller.
@@ -410,11 +420,7 @@ func callRecommender(item *model.Item, cfg *config.Config, engine RunEngine) (Mo
 	// I-985: wire the recommenderTimeout constant that was defined but never
 	// used. Haiku one-shot responses arrive in <5s normally; 30s is generous
 	// headroom without risking a 2h hang on a network stall.
-	env := []string{
-		"AS_SESSION_ID=" + sessionID,
-		fmt.Sprintf("AS_CLAUDE_WALL_TIMEOUT=%ds", recommenderTimeout),
-		"AS_CLAUDE_SILENT=1", // suppress text echo — caller reads bare tier:X|reason:Y line
-	}
+	env := classifierEnv(sessionID, recommenderTimeout)
 
 	output, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
 	if err != nil {

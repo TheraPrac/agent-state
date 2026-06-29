@@ -179,6 +179,46 @@ sbar:
 	}
 }
 
+func TestModelRec_CallRecommenderPassesSilentEnv(t *testing.T) {
+	root := modelRecTestEnv(t)
+	body := `id: I-605
+type: issue
+title: Workspace config trim
+status: queued
+scope_class: workspace-config
+sbar:
+  situation: trim CLAUDE.md
+  assessment: low risk
+`
+	writeItemFile(t, root, "issues", "I-605", body)
+	s, cfg := loadStore(t, root)
+
+	envelope := `{"type":"result","subtype":"success","is_error":false,"result":"{\"tier\":\"haiku\",\"reason\":\"test\"}"}`
+	var capturedEnv []string
+	engine := RunEngine{
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			capturedEnv = env
+			return []byte(envelope), 0, nil
+		},
+	}
+
+	var out bytes.Buffer
+	exit := ModelRec(s, cfg, ModelRecOpts{ItemID: "I-605", Engine: engine, NoCache: true}, &out)
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	found := false
+	for _, e := range capturedEnv {
+		if e == asClaudeSilentEnv {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("%s not found in env passed to RunClaude; got: %v", asClaudeSilentEnv, capturedEnv)
+	}
+}
+
 func TestModelRec_EngineFailureFallsBackToSonnet(t *testing.T) {
 	root := modelRecTestEnv(t)
 	body := `id: I-601

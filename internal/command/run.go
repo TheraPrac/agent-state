@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -4823,6 +4824,12 @@ const defaultClaudeIdleTimeout = 15 * time.Minute
 const defaultCommandIdleTimeout = 3 * time.Minute
 const defaultCIIdleTimeout = 10 * time.Minute
 
+// asClaudeSilentEnv is set in env by one-shot classifier callers (model-rec,
+// opus second-opinion) to suppress the streaming text echo in defaultRunClaude.
+// It is filtered from the subprocess env before being passed to the child so
+// the claude binary never sees it.
+const asClaudeSilentEnv = "AS_CLAUDE_SILENT=1"
+
 // Hard safety cap — even active processes get killed after this.
 const maxWallTimeout = 2 * time.Hour
 
@@ -4837,6 +4844,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	// effect instead of assuming the override stuck.
 	wallTimeout := maxWallTimeout
 	silent := false
+	childEnv := make([]string, 0, len(env))
 	for _, e := range env {
 		if v := strings.TrimPrefix(e, "AS_CLAUDE_WALL_TIMEOUT="); v != e {
 			if parsed, perr := time.ParseDuration(v); perr == nil {
@@ -4845,9 +4853,11 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 				fmt.Fprintf(os.Stderr, "AS_CLAUDE_WALL_TIMEOUT=%q: %v — using global %s ceiling (callers should resolve invalid values upstream)\n", v, perr, maxWallTimeout)
 			}
 		}
-		if e == "AS_CLAUDE_SILENT=1" {
+		if e == asClaudeSilentEnv {
 			silent = true
+			continue // filter: internal-only flag, not forwarded to subprocess
 		}
+		childEnv = append(childEnv, e)
 	}
 
 	// Use the run context if available (Ctrl+C cancels it), with wall timeout as safety
@@ -4865,8 +4875,12 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 	}
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), env...)
-	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), childEnv...)
+	if silent {
+		cmd.Stderr = io.Discard
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	// I-752: put the child in its own process group so context cancel
 	// reaps tool-call grandchildren. With Setpgid:true on darwin/linux
@@ -4913,6 +4927,7 @@ func defaultRunClaude(cwd string, args []string, env []string) ([]byte, int, err
 		cancel:      cancel,
 		label:       label,
 		step:        stepName,
+		silent:      silent,
 	}
 	go activity.watch()
 
@@ -5097,6 +5112,7 @@ type activityTracker struct {
 	step        string // step name for display
 	mu          sync.Mutex
 	stopped     bool
+	silent      bool // suppress periodic status ticks (set for one-shot classifier calls)
 }
 
 func (a *activityTracker) ping() {
@@ -5133,7 +5149,7 @@ func (a *activityTracker) watch() {
 
 		// Status tick every 30s so user knows it's alive
 		statusCount++
-		if statusCount%3 == 0 {
+		if statusCount%3 == 0 && !a.silent {
 			if idle < 5*time.Second {
 				fmt.Fprintf(os.Stderr, "\r[%s] %s — processing (%s elapsed)   ", a.label, a.step, elapsed.Round(time.Second))
 			} else {
