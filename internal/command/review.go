@@ -199,9 +199,17 @@ func collectItemDiff(cfg *config.Config, id string, opts ReviewOpts) (diff, sha 
 			headSHA = headSHA[:7]
 		}
 
-		// Prefer diff vs origin/main; fall back to HEAD^ for orphan branches.
+		// Prefer diff vs origin/main; fall back to HEAD^ only for genuine orphan
+		// branches (branches with commits but no common ancestor with origin/main).
+		// If origin/main..HEAD is empty the repo has no item-specific commits —
+		// skip it rather than falling back to HEAD^...HEAD, which would review
+		// the last commit on main (a peer's unrelated work).
 		diffOut, gitErr := gitFn(dir, "diff", "origin/main...HEAD")
 		if gitErr != nil || strings.TrimSpace(diffOut) == "" {
+			commitsAhead, _ := gitFn(dir, "log", "--oneline", "origin/main..HEAD")
+			if strings.TrimSpace(commitsAhead) == "" {
+				continue
+			}
 			diffOut, gitErr = gitFn(dir, "diff", "HEAD^...HEAD")
 			if gitErr != nil {
 				continue
