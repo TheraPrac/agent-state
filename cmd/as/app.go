@@ -1722,6 +1722,36 @@ Example:
 	prCmd.Flags().Int("pr", 0, "PR number")
 	_ = prCmd.MarkFlagRequired("repo")
 	_ = prCmd.MarkFlagRequired("pr")
+
+	// I-1628 phase 2a: performing verb — open the PR via gh AND record it, so the
+	// PR-open step runs through st with its gates (live-acceptance + review-evidence
+	// on the non-draft path) and stage advancement intact.
+	prCreateCmd := &cobra.Command{
+		Use:   "create <id>",
+		Short: "Open a PR via gh (gate-checked) and record its manifest",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			repo, _ := cmd.Flags().GetString("repo")
+			base, _ := cmd.Flags().GetString("base")
+			title, _ := cmd.Flags().GetString("title")
+			body, _ := cmd.Flags().GetString("body")
+			bodyFile, _ := cmd.Flags().GetString("body-file")
+			draft, _ := cmd.Flags().GetBool("draft")
+			exitCode = command.PRCreate(appStore, appCfg, args[0], command.PRCreateOpts{
+				Repo: repo, Base: base, Title: title, Body: body, BodyFile: bodyFile, Draft: draft,
+			})
+		},
+	}
+	prCreateCmd.Flags().String("repo", "", "short repo name (e.g. api, web)")
+	prCreateCmd.Flags().String("base", "main", "base branch")
+	prCreateCmd.Flags().String("title", "", "PR title")
+	prCreateCmd.Flags().String("body", "", "PR body text")
+	prCreateCmd.Flags().String("body-file", "", "path to a file containing the PR body")
+	prCreateCmd.Flags().Bool("draft", false, "open as a draft (skips the live-acceptance + review-evidence gates)")
+	_ = prCreateCmd.MarkFlagRequired("repo")
+	_ = prCreateCmd.MarkFlagRequired("title")
+	prCmd.AddCommand(prCreateCmd)
+
 	root.AddCommand(prCmd)
 
 	reviewTargetCmd := &cobra.Command{
