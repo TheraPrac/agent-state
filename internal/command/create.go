@@ -172,6 +172,10 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-908 Layers 2+3: LLM semantic SBAR validation. Runs only when EnforceGate
 	// and --no-validate is not set. Errors and unresponsive engine degrade to
 	// non-blocking skip — a transient LLM hiccup must not block a Layer-1-clean item.
+	//
+	// I-1612: track whether Layer 2+3 returned a clean PASS so the post-create
+	// review can be skipped when there is nothing for it to fix.
+	sbarValidationPassed := false
 	if opts.EnforceGate && !opts.NoValidate && (itemType == "task" || itemType == "issue") {
 		sbar := model.SBAR{
 			Situation:      opts.Situation,
@@ -193,6 +197,9 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			for _, f := range findings {
 				fmt.Fprintf(os.Stderr, "  warning: %s\n", f)
 			}
+		} else {
+			// PASS with no findings — nothing for the post-create review to fix.
+			sbarValidationPassed = true
 		}
 	}
 
@@ -456,7 +463,11 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 	// I-588: spawn the Claude sub-agent self-review on task/issue creates.
 	// Always runs even when autoSync returns a gate error — the item is on
 	// disk and still needs review regardless of git-sync outcome (I-821).
-	runItemReview(s, cfg, id, item, opts.Engine)
+	// I-1612: skip when Layer 2+3 already returned a clean PASS — there is
+	// nothing for the review sub-agent to fix, saving the subprocess cost.
+	if !sbarValidationPassed {
+		runItemReview(s, cfg, id, item, opts.Engine)
+	}
 
 	if syncErr != nil {
 		return 1

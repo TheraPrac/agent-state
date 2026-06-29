@@ -87,6 +87,12 @@ type RunEngine struct {
 	// ConfirmPrompt overrides the y/N confirmation prompt (for testing).
 	// If nil, uses the real terminal-based confirmPrompt.
 	ConfirmPrompt func(prompt string) bool
+	// ValidateFunc calls the LLM for a tool-less one-shot validation (SBAR
+	// semantic check). Returns the raw text response. When non-nil, used by
+	// validateSBARSemantic instead of RunClaude to avoid the full CLI
+	// cold-start. DefaultRunEngine wires this to a direct Anthropic API call.
+	// Tests that inject RunClaude without ValidateFunc fall back to the CLI path.
+	ValidateFunc func(model, prompt string) ([]byte, error)
 }
 
 // ClaudeUsage represents token usage from claude -p --output-format json.
@@ -163,9 +169,10 @@ type ItemResult struct {
 // DefaultRunEngine returns a RunEngine with real implementations.
 func DefaultRunEngine() RunEngine {
 	return RunEngine{
-		RunClaude:  defaultRunClaude,
-		RunCodex:   defaultRunCodex,
-		PromptUser: defaultPromptUser,
+		RunClaude:    defaultRunClaude,
+		RunCodex:     defaultRunCodex,
+		PromptUser:   defaultPromptUser,
+		ValidateFunc: defaultCallAnthropicAPI,
 	}
 }
 

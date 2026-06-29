@@ -16,54 +16,67 @@ type sbarVerdict struct {
 	Findings []string `json:"findings"` // per-field explanations
 }
 
-// validateSBARSemantic runs the Layer-2+3 LLM-backed SBAR validation via a
-// Claude subprocess. Returns (blocked=true, findings) on FAIL;
-// (blocked=false, findings) on WARN; (blocked=false, nil) on PASS or skip.
+// validateSBARSemantic runs the Layer-2+3 LLM-backed SBAR validation.
+// Returns (blocked=true, findings) on FAIL; (blocked=false, findings) on WARN;
+// (blocked=false, nil) on PASS or skip.
 //
-// Degrades gracefully: engine not wired, subprocess error, or unparseable
-// output → skip with a stderr warning and return (false, nil). A transient
-// LLM failure must not block a Layer-1-clean item.
+// Execution path (in priority order):
+//  1. engine.ValidateFunc — direct Anthropic API call; no CLI cold-start or
+//     hook overhead. Wired by DefaultRunEngine() in production.
+//  2. engine.RunClaude — legacy Claude subprocess fallback; used by tests
+//     that inject RunClaude without setting ValidateFunc.
+//  3. Both nil — skip gracefully (in-process callers without an engine).
 //
-// I-908.
+// Degrades gracefully: any API/subprocess error → skip with a stderr warning
+// and return (false, nil). A transient LLM failure must not block a
+// Layer-1-clean item.
+//
+// I-908, I-1612.
 func validateSBARSemantic(cfg *config.Config, engine RunEngine, sbar model.SBAR) (blocked bool, findings []string) {
-	if engine.RunClaude == nil {
-		return false, nil // in-process caller without engine, skip
+	if engine.ValidateFunc == nil && engine.RunClaude == nil {
+		return false, nil
 	}
 
 	prompt := buildSBARValidationPrompt(sbar)
 
-	// Respect the operator-configured permission mode (same pattern as buildClaudeArgs
-	// in run.go lines 3631–3634). Hardcoding --dangerously-skip-permissions would
-	// override any `run.permission_mode` setting in .as/config.yaml.
-	permMode := cfg.RunPermissionMode()
-	var permArgs []string
-	if permMode == "dangerously-skip-permissions" || permMode == "" {
-		permArgs = []string{"--dangerously-skip-permissions"}
+	var out []byte
+	if engine.ValidateFunc != nil {
+		// Fast path: direct API call, no CLI subprocess.
+		apiModel := cfg.ValidationModel()
+		var apiErr error
+		out, apiErr = engine.ValidateFunc(apiModel, prompt)
+		if apiErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (API call failed: %v)\n", apiErr)
+			return false, nil
+		}
 	} else {
-		permArgs = []string{"--permission-mode", permMode}
+		// CLI fallback for tests that inject RunClaude without ValidateFunc.
+		// Respect the operator-configured permission mode (same pattern as
+		// buildClaudeArgs in run.go lines 3631–3634).
+		permMode := cfg.RunPermissionMode()
+		var permArgs []string
+		if permMode == "dangerously-skip-permissions" || permMode == "" {
+			permArgs = []string{"--dangerously-skip-permissions"}
+		} else {
+			permArgs = []string{"--permission-mode", permMode}
+		}
+		args := append([]string{"-p", prompt, "--output-format", "json"}, permArgs...)
+		// 2-minute wall timeout — without this the nil env would use the
+		// 2-hour maxWallTimeout in defaultRunClaude (I-985).
+		env := []string{"AS_CLAUDE_WALL_TIMEOUT=2m"}
+
+		var exitCode int
+		var err error
+		out, exitCode, err = engine.RunClaude(cfg.Root(), args, env)
+		if err != nil || exitCode != 0 {
+			fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (subprocess exit %d: %v)\n", exitCode, err)
+			return false, nil
+		}
 	}
 
-	args := append([]string{"-p", prompt, "--output-format", "json"}, permArgs...)
-
-	// 2-minute wall timeout — matches the pattern from I-985 (plan review uses
-	// AS_CLAUDE_WALL_TIMEOUT too). Without this the nil env would use the
-	// 2-hour maxWallTimeout in defaultRunClaude, blocking st create for up to
-	// 2 hours on a degraded LLM API.
-	env := []string{"AS_CLAUDE_WALL_TIMEOUT=2m"}
-
-	out, exitCode, err := engine.RunClaude(cfg.Root(), args, env)
-	if err != nil || exitCode != 0 {
-		// Any subprocess failure (crash, timeout, non-zero exit) degrades to skip.
-		// Previously only skipped when exitCode!=0 AND len(out)==0; partial output
-		// from a crashed process could have been misinterpreted as a verdict.
-		fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (subprocess exit %d: %v)\n", exitCode, err)
-		return false, nil
-	}
-
-	// Parse JSON. --output-format json produces a single object so the primary
-	// parse should always succeed. If it fails (unexpected wrapper or encoding),
-	// degrade to skip rather than attempting a brace-scan fallback that could
-	// mis-span nested JSON within findings strings.
+	// Parse JSON verdict. Both paths return raw JSON matching sbarVerdict.
+	// Degrade to skip on parse failure rather than attempting a brace-scan
+	// fallback that could mis-span nested JSON within findings strings.
 	var verdict sbarVerdict
 	if parseErr := json.Unmarshal(out, &verdict); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (could not parse response: %v)\n", parseErr)

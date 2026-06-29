@@ -394,6 +394,82 @@ func TestCreateIdeaPromotionSkipSBARGate(t *testing.T) {
 	}
 }
 
+// TestCreateValidateFuncPreferredOverRunClaude: when engine.ValidateFunc is set,
+// validateSBARSemantic must use it instead of engine.RunClaude.
+func TestCreateValidateFuncPreferredOverRunClaude(t *testing.T) {
+	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
+	s, cfg := setupTestEnv(t)
+
+	validateCalls := 0
+	runClaudeCalls := 0
+	data, _ := json.Marshal(sbarVerdict{Verdict: "PASS"})
+	engine := RunEngine{
+		ValidateFunc: func(model, prompt string) ([]byte, error) {
+			validateCalls++
+			return data, nil
+		},
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			runClaudeCalls++
+			return data, 0, nil
+		},
+	}
+
+	code := Create(s, cfg, "task", "Test ValidateFunc preferred", CreateOpts{
+		Priority:       2,
+		EnforceGate:    true,
+		Situation:      substantiveSBAR.situation,
+		Background:     substantiveSBAR.background,
+		Assessment:     substantiveSBAR.assessment,
+		Recommendation: substantiveSBAR.recommendation,
+		Engine:         engine,
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if validateCalls != 1 {
+		t.Errorf("expected ValidateFunc called once, got %d", validateCalls)
+	}
+	if runClaudeCalls != 0 {
+		t.Errorf("expected RunClaude not called when ValidateFunc present, got %d calls", runClaudeCalls)
+	}
+}
+
+// TestCreateSemanticPassSkipsPostReview: when Layer 2+3 returns PASS,
+// the post-create review subprocess must be skipped.
+func TestCreateSemanticPassSkipsPostReview(t *testing.T) {
+	// Don't set AS_INTERNAL_NO_REVIEW — we want to observe whether the review runs.
+	s, cfg := setupTestEnv(t)
+
+	passData, _ := json.Marshal(sbarVerdict{Verdict: "PASS"})
+	reviewCalled := false
+	engine := RunEngine{
+		ValidateFunc: func(model, prompt string) ([]byte, error) {
+			return passData, nil
+		},
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			// Any RunClaude call here means the review ran — it should not.
+			reviewCalled = true
+			return []byte(`{"type":"result","subtype":"success","result":"Accept"}`), 0, nil
+		},
+	}
+
+	code := Create(s, cfg, "task", "Test PASS skips review", CreateOpts{
+		Priority:       2,
+		EnforceGate:    true,
+		Situation:      substantiveSBAR.situation,
+		Background:     substantiveSBAR.background,
+		Assessment:     substantiveSBAR.assessment,
+		Recommendation: substantiveSBAR.recommendation,
+		Engine:         engine,
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0, got %d", code)
+	}
+	if reviewCalled {
+		t.Error("post-create review must be skipped when Layer 2+3 returns PASS")
+	}
+}
+
 // TestCreateEnforceGateRunsSemanticValidationOnce: with EnforceGate=true the
 // Layer-2+3 semantic validator is called exactly once per create invocation.
 func TestCreateEnforceGateRunsSemanticValidationOnce(t *testing.T) {

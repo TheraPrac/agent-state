@@ -67,6 +67,9 @@ type Config struct {
 	// Autonomy classifier configuration (optional)
 	Classify *ClassifyConfig
 
+	// Quality configuration (optional) — validation model for SBAR checks.
+	Quality *QualityConfig
+
 	// Session guidance text (optional, shown in prime output)
 	Guidance string
 
@@ -333,6 +336,25 @@ type RunConfig struct {
 	Steps            map[string]RunStepDef // step name → definition
 	Breakpoints      []string              // step names where the pipeline pauses for user input
 	AutoParallel     bool                  // auto-determine parallelism based on repo overlap
+}
+
+// QualityConfig holds settings for SBAR validation and post-create review.
+// Decoupled from RunConfig so the validation model can be lighter (haiku)
+// than the run model used for full autonomous execution.
+type QualityConfig struct {
+	// ValidationModel is the model used by create_validate.go and
+	// create_review.go. Accepts short names ("haiku", "sonnet") or full
+	// IDs ("claude-haiku-4-5"). Defaults to "claude-haiku-4-5".
+	ValidationModel string
+}
+
+// ValidationModel returns the configured validation model, or the haiku
+// default when the quality section is absent or unset.
+func (c *Config) ValidationModel() string {
+	if c.Quality != nil && c.Quality.ValidationModel != "" {
+		return c.Quality.ValidationModel
+	}
+	return "claude-haiku-4-5"
 }
 
 // RunStepDef defines a single pipeline step for st run.
@@ -1796,6 +1818,11 @@ func applyValue(cfg *Config, levels [4]string, key, val string) {
 				cfg.Run.Steps[stepName] = step
 			}
 		}
+	case "quality":
+		ensureQuality(cfg)
+		if key == "validation_model" {
+			cfg.Quality.ValidationModel = val
+		}
 	}
 }
 
@@ -1912,6 +1939,12 @@ func applyListItem(cfg *Config, levels [4]string, val string) {
 func ensureClassify(cfg *Config) {
 	if cfg.Classify == nil {
 		cfg.Classify = &ClassifyConfig{}
+	}
+}
+
+func ensureQuality(cfg *Config) {
+	if cfg.Quality == nil {
+		cfg.Quality = &QualityConfig{}
 	}
 }
 
