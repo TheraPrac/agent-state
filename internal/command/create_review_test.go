@@ -446,6 +446,99 @@ func TestCreateItemReview_AgentModeAmbiguousKeeps(t *testing.T) {
 	}
 }
 
+// TestScaffoldSBARFields: warnIfScaffoldSBAR emits a stderr warning when the
+// item's SBAR is still on the TODO scaffold, and stays silent when SBAR holds
+// real content. This is the single-source helper test — the integration path
+// is covered by TestCreateItemReview_AcceptWithScaffoldWarns.
+func TestScaffoldSBARFields(t *testing.T) {
+	// Create items via the command path so they land in the store correctly.
+	// AS_INTERNAL_NO_REVIEW prevents runItemReview from firing on Create,
+	// so we can call warnIfScaffoldSBAR in isolation below.
+	t.Setenv("AS_INTERNAL_NO_REVIEW", "1")
+	s, cfg := setupTestEnv(t)
+
+	// Item with scaffold SBAR (no SBAR opts → Create writes TODO placeholders).
+	var scaffoldID string
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "scaffold test", CreateOpts{Priority: 2, IDOut: &scaffoldID}); code != 0 {
+			t.Fatalf("Create (scaffold) returned %d", code)
+		}
+	})
+
+	got := captureStderr(t, func() int { warnIfScaffoldSBAR(cfg, scaffoldID); return 0 })
+	if !strings.Contains(got, "post-accept SBAR check") {
+		t.Errorf("expected post-accept SBAR check warning for scaffold item; got: %q", got)
+	}
+	if !strings.Contains(got, "st update "+scaffoldID+" sbar --stdin") {
+		t.Errorf("expected recovery path in warning; got: %q", got)
+	}
+
+	// Item with real SBAR content — helper must stay silent.
+	var realID string
+	suppressOutput(t, func() {
+		if code := Create(s, cfg, "task", "real test", CreateOpts{
+			Priority:       2,
+			IDOut:          &realID,
+			Situation:      "observable symptom",
+			Background:     "prior context",
+			Assessment:     "root cause identified",
+			Recommendation: "targeted fix described",
+		}); code != 0 {
+			t.Fatalf("Create (real) returned %d", code)
+		}
+	})
+
+	got2 := captureStderr(t, func() int { warnIfScaffoldSBAR(cfg, realID); return 0 })
+	if strings.Contains(got2, "post-accept SBAR check") {
+		t.Errorf("unexpected scaffold warning for item with real SBAR content: %q", got2)
+	}
+}
+
+// TestCreateItemReview_AcceptWithScaffoldWarns: when the review returns
+// Accept but the item's SBAR is still on the TODO scaffold, the post-accept
+// check must emit a warning to stderr naming the offending fields and the
+// recovery path. This validates fix #3 end-to-end through Create→runItemReview.
+func TestCreateItemReview_AcceptWithScaffoldWarns(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nAccept — content is fine"}}
+	engine := engineWithFake(f, "", "1")
+
+	// Capture stderr; suppress stdout (progress prints from runItemReview).
+	got := captureStderr(t, func() int {
+		return Create(s, cfg, "task", "scaffold warn test", CreateOpts{Priority: 2, Engine: engine})
+	})
+
+	if !strings.Contains(got, "post-accept SBAR check") {
+		t.Errorf("expected post-accept SBAR check warning after Accept with scaffold SBAR; stderr: %q", got)
+	}
+	if !strings.Contains(got, "sbar --stdin") {
+		t.Errorf("expected recovery path in post-accept warning; stderr: %q", got)
+	}
+}
+
+// TestCreateItemReview: Accept with real SBAR content must NOT emit a
+// post-accept scaffold warning (no false positives on healthy items).
+func TestCreateItemReview(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	f := &fakeClaude{stepResults: []string{"## RECOMMENDATION\nAccept — content is fine"}}
+	engine := engineWithFake(f, "", "1")
+
+	got := captureStderr(t, func() int {
+		return Create(s, cfg, "task", "healthy test", CreateOpts{
+			Priority:       2,
+			Engine:         engine,
+			Situation:      "observable symptom right now",
+			Background:     "prior context and history",
+			Assessment:     "root cause identified in code",
+			Recommendation: "targeted scoped fix described",
+		})
+	})
+
+	if strings.Contains(got, "post-accept SBAR check") {
+		t.Errorf("unexpected scaffold warning for item with real SBAR content: %q", got)
+	}
+}
+
 // TestCreateItemReview_NonAgentNonTTYStillSkips: the original
 // non-TTY skip is preserved for non-agent contexts (genuine
 // pipe-into-st-create from CI runners that don't set CLAUDECODE).

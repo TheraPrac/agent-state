@@ -8,6 +8,7 @@ import (
 
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/quality"
 	"github.com/theraprac/agent-state/internal/store"
 	"golang.org/x/term"
 )
@@ -95,11 +96,13 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 	for iteration := 1; ; iteration++ {
 		// Reload in case prior fixes changed the item.
 		s2, err := store.New(cfg)
-		if err == nil {
-			if reloaded, ok := s2.Get(itemID); ok {
-				item = reloaded
-				s = s2
-			}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: [%s] create_review: store reload failed (iteration %d) — using stale item: %v\n", itemID, iteration, err)
+		} else if reloaded, ok := s2.Get(itemID); !ok {
+			fmt.Fprintf(os.Stderr, "warning: [%s] create_review: item not found in reloaded store (iteration %d) — using stale item\n", itemID, iteration)
+		} else {
+			item = reloaded
+			s = s2
 		}
 
 		reviewPrompt := buildItemReviewPrompt(itemID, item)
@@ -133,10 +136,15 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 				itemID, autoFixCount, maxAutoFixIterations)
 			notes := extractNotesFromReview(reviewSR.FullOutput)
 			s3, err := store.New(cfg)
-			if err == nil {
-				if reloaded, ok := s3.Get(itemID); ok {
-					var sr StepResult
-					runAutoFixFromNotes(s3, cfg, itemID, "", reloaded, "item review", notes, RunOpts{}, engine, "", "", nil, &sr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: [%s] create_review: auto-fix store reload failed — SBAR update skipped: %v\n", itemID, err)
+			} else if reloaded, ok := s3.Get(itemID); !ok {
+				fmt.Fprintf(os.Stderr, "warning: [%s] create_review: auto-fix item not found in reloaded store — SBAR update skipped\n", itemID)
+			} else {
+				var sr StepResult
+				runAutoFixFromNotes(s3, cfg, itemID, "", reloaded, "item review", notes, RunOpts{}, engine, "", "", nil, &sr)
+				if sr.Error != "" {
+					fmt.Fprintf(os.Stderr, "warning: [%s] create_review: auto-fix subprocess failed — SBAR may not have been updated: %s\n", itemID, sr.Error)
 				}
 			}
 			continue
@@ -192,6 +200,7 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 			fmt.Fprintf(os.Stderr, "warning: SBAR review interrupted for %s — item retained as-is\n", itemID)
 			return
 		case "1":
+			warnIfScaffoldSBAR(cfg, itemID)
 			return // accepted, item stays
 		case "2":
 			archiveAbandonedItem(s, cfg, itemID, rec)
@@ -208,6 +217,32 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 			return
 		}
 	}
+}
+
+// warnIfScaffoldSBAR reloads the item and checks whether any SBAR sub-field
+// is still on the TODO scaffold (or empty). If so, it emits a prominent
+// warning to stderr so the operator knows the review accepted without filling
+// in real content, and names the manual recovery path.
+func warnIfScaffoldSBAR(cfg *config.Config, itemID string) {
+	s2, err := store.New(cfg)
+	if err != nil {
+		return
+	}
+	current, ok := s2.Get(itemID)
+	if !ok {
+		return
+	}
+	violations := quality.ValidateSBAR(current)
+	if len(violations) == 0 {
+		return
+	}
+	var fields []string
+	for _, v := range violations {
+		fields = append(fields, v.Field)
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: [%s] post-accept SBAR check: %s still on scaffold — run: st update %s sbar --stdin\n",
+		itemID, strings.Join(fields, ", "), itemID)
 }
 
 // archiveAbandonedItem closes a freshly-created item that the review judged
