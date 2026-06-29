@@ -42,9 +42,20 @@ func TagMany(s *store.Store, cfg *config.Config, ids []string, action, tag strin
 		return 2
 	}
 	if action != "add" && action != "rm" {
-		fmt.Fprintf(os.Stderr, "unknown action %q — use 'add' or 'rm'\n", action)
+		fmt.Fprintf(os.Stderr, "unknown action %q — expected 'add' or 'rm' (syntax: st tag <id> [<id2>...] add|rm <tag>)\n", action)
 		return 2
 	}
+
+	// Dedup ids to prevent duplicate changelog entries from repeated IDs.
+	seen := make(map[string]struct{}, len(ids))
+	var deduped []string
+	for _, id := range ids {
+		if _, dup := seen[id]; !dup {
+			seen[id] = struct{}{}
+			deduped = append(deduped, id)
+		}
+	}
+	ids = deduped
 
 	// Validate all IDs and snapshot their current state upfront.
 	items := make(map[string]*model.Item, len(ids))
@@ -67,145 +78,6 @@ func TagMany(s *store.Store, cfg *config.Config, ids []string, action, tag strin
 	return tagManyLabel(s, cfg, ids, action, tag, items)
 }
 
-// tagGoal handles 'st tag <id> add/rm G-NNN' by routing to the goals: field.
-func tagGoal(s *store.Store, cfg *config.Config, id, action, goalID string, item *model.Item) int {
-	// Validate the goal exists and is actually type="goal".
-	g, exists := s.Get(goalID)
-	if !exists {
-		fmt.Fprintf(os.Stderr, "tag %s goals: goal not found: %s\n", id, goalID)
-		return 2
-	}
-	if g.Type != "goal" {
-		fmt.Fprintf(os.Stderr, "tag %s goals: %s is not a goal (type=%s)\n", id, goalID, g.Type)
-		return 2
-	}
-
-	switch action {
-	case "add":
-		for _, gid := range item.Goals {
-			if gid == goalID {
-				fmt.Fprintf(os.Stderr, "%s already has goal %q\n", id, goalID)
-				return 1
-			}
-		}
-	case "rm":
-		inGoals := false
-		for _, gid := range item.Goals {
-			if gid == goalID {
-				inGoals = true
-				break
-			}
-		}
-		if !inGoals {
-			// Fall back: goal may live in tags: from before goal-routing was added.
-			for _, t := range item.Tags {
-				if t == goalID {
-					return tagLabel(s, cfg, id, action, goalID, item)
-				}
-			}
-			fmt.Fprintf(os.Stderr, "%s does not have goal %q\n", id, goalID)
-			return 1
-		}
-	}
-
-	if err := s.Mutate(id, func(it *model.Item) error {
-		switch action {
-		case "add":
-			it.Goals = append(it.Goals, goalID)
-		case "rm":
-			var kept []string
-			for _, gid := range it.Goals {
-				if gid != goalID {
-					kept = append(kept, gid)
-				}
-			}
-			it.Goals = kept
-		}
-		it.Doc.SetList("goals", it.Goals)
-		return nil
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
-		return 1
-	}
-
-	switch action {
-	case "add":
-		changelog.Append(cfg, id, changelog.Entry{Op: "tag_add", Field: "goals", NewValue: goalID})
-		fmt.Printf("Goal %s added to goals: on %s (not tags:)\n", goalID, id)
-	case "rm":
-		changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: "goals", OldValue: goalID})
-		fmt.Printf("Goal %s removed from goals: on %s\n", goalID, id)
-	}
-
-	if err := autoSync(s, fmt.Sprintf("st tag %s: %s goals %s", action, id, goalID)); err != nil {
-		return 1
-	}
-	return 0
-}
-
-// tagLabel handles the standard 'st tag <id> add/rm <label>' path (non-goal tags).
-func tagLabel(s *store.Store, cfg *config.Config, id, action, tag string, item *model.Item) int {
-	preflightErr := func() int {
-		switch action {
-		case "add":
-			for _, t := range item.Tags {
-				if t == tag {
-					fmt.Fprintf(os.Stderr, "%s already has tag %q\n", id, tag)
-					return 1
-				}
-			}
-		case "rm":
-			for _, t := range item.Tags {
-				if t == tag {
-					return 0
-				}
-			}
-			fmt.Fprintf(os.Stderr, "%s does not have tag %q\n", id, tag)
-			return 1
-		}
-		return 0
-	}()
-	if preflightErr != 0 {
-		return preflightErr
-	}
-
-	if err := s.Mutate(id, func(it *model.Item) error {
-		switch action {
-		case "add":
-			it.Tags = append(it.Tags, tag)
-		case "rm":
-			var kept []string
-			for _, t := range it.Tags {
-				if t != tag {
-					kept = append(kept, t)
-				}
-			}
-			it.Tags = kept
-		}
-		updateTagsInDoc(it)
-		return nil
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "writing %s: %v\n", id, err)
-		return 1
-	}
-
-	switch action {
-	case "add":
-		changelog.Append(cfg, id, changelog.Entry{Op: "tag_add", Field: "tags", NewValue: tag})
-	case "rm":
-		changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: "tags", OldValue: tag})
-	}
-
-	fmt.Printf("Tag %s %s on %s\n", action, tag, id)
-
-	// Commit + push immediately so the tag change can't be silently
-	// reverted by a subsequent command's pre-run GitPull. Best-effort.
-	if err := autoSync(s, fmt.Sprintf("st tag %s: %s %s", action, id, tag)); err != nil {
-		return 1
-	}
-	return 0
-}
-
 // tagManyGoal handles batch 'st tag <ids...> add/rm G-NNN'.
 func tagManyGoal(s *store.Store, cfg *config.Config, ids []string, action, goalID string, items map[string]*model.Item) int {
 	// Validate goal exists.
@@ -219,44 +91,41 @@ func tagManyGoal(s *store.Store, cfg *config.Config, ids []string, action, goalI
 		return 2
 	}
 
-	// Preflight: check no item is already tagged / not tagged.
+	// Preflight against snapshot (fast path — concurrent writes handled under lock).
 	for _, id := range ids {
 		item := items[id]
 		switch action {
 		case "add":
-			for _, gid := range item.Goals {
-				if gid == goalID {
-					fmt.Fprintf(os.Stderr, "%s already has goal %q\n", id, goalID)
-					return 1
-				}
+			if sliceContains(item.Goals, goalID) {
+				fmt.Fprintf(os.Stderr, "%s already has goal %q\n", id, goalID)
+				return 1
 			}
 		case "rm":
-			inGoals := false
-			for _, gid := range item.Goals {
-				if gid == goalID {
-					inGoals = true
-					break
-				}
-			}
-			inTags := false
-			for _, t := range item.Tags {
-				if t == goalID {
-					inTags = true
-					break
-				}
-			}
-			if !inGoals && !inTags {
+			if !sliceContains(item.Goals, goalID) && !sliceContains(item.Tags, goalID) {
 				fmt.Fprintf(os.Stderr, "%s does not have goal %q\n", id, goalID)
 				return 1
 			}
 		}
 	}
 
+	// Track which field held the goal per item (snapshot-based; used for accurate changelog).
+	goalInGoals := make(map[string]bool, len(ids))
+	if action == "rm" {
+		for _, id := range ids {
+			goalInGoals[id] = sliceContains(items[id].Goals, goalID)
+		}
+	}
+
 	if err := s.MutateMany(ids, func(batch map[string]*model.Item) error {
-		for _, it := range batch {
+		for id, it := range batch {
 			switch action {
 			case "add":
+				// Re-check under lock against fresh state to prevent TOCTOU duplicates.
+				if sliceContains(it.Goals, goalID) {
+					return fmt.Errorf("%s already has goal %q (concurrent write)", id, goalID)
+				}
 				it.Goals = append(it.Goals, goalID)
+				it.Doc.SetList("goals", it.Goals)
 			case "rm":
 				var keptGoals []string
 				for _, gid := range it.Goals {
@@ -275,9 +144,7 @@ func tagManyGoal(s *store.Store, cfg *config.Config, ids []string, action, goalI
 				}
 				it.Tags = keptTags
 				updateTagsInDoc(it)
-				continue
 			}
-			it.Doc.SetList("goals", it.Goals)
 		}
 		return nil
 	}); err != nil {
@@ -291,8 +158,12 @@ func tagManyGoal(s *store.Store, cfg *config.Config, ids []string, action, goalI
 			changelog.Append(cfg, id, changelog.Entry{Op: "tag_add", Field: "goals", NewValue: goalID})
 			fmt.Printf("Goal %s added to goals: on %s (not tags:)\n", goalID, id)
 		case "rm":
-			changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: "goals", OldValue: goalID})
-			fmt.Printf("Goal %s removed from goals: on %s\n", goalID, id)
+			field := "goals"
+			if !goalInGoals[id] {
+				field = "tags"
+			}
+			changelog.Append(cfg, id, changelog.Entry{Op: "tag_rm", Field: field, OldValue: goalID})
+			fmt.Printf("Goal %s removed from %s: on %s\n", goalID, field, id)
 		}
 	}
 
@@ -305,26 +176,17 @@ func tagManyGoal(s *store.Store, cfg *config.Config, ids []string, action, goalI
 
 // tagManyLabel handles batch 'st tag <ids...> add/rm <label>' (non-goal tags).
 func tagManyLabel(s *store.Store, cfg *config.Config, ids []string, action, tag string, items map[string]*model.Item) int {
-	// Preflight: check preconditions for all items.
+	// Preflight against snapshot (fast path — concurrent writes handled under lock).
 	for _, id := range ids {
 		item := items[id]
 		switch action {
 		case "add":
-			for _, t := range item.Tags {
-				if t == tag {
-					fmt.Fprintf(os.Stderr, "%s already has tag %q\n", id, tag)
-					return 1
-				}
+			if sliceContains(item.Tags, tag) {
+				fmt.Fprintf(os.Stderr, "%s already has tag %q\n", id, tag)
+				return 1
 			}
 		case "rm":
-			found := false
-			for _, t := range item.Tags {
-				if t == tag {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !sliceContains(item.Tags, tag) {
 				fmt.Fprintf(os.Stderr, "%s does not have tag %q\n", id, tag)
 				return 1
 			}
@@ -332,9 +194,13 @@ func tagManyLabel(s *store.Store, cfg *config.Config, ids []string, action, tag 
 	}
 
 	if err := s.MutateMany(ids, func(batch map[string]*model.Item) error {
-		for _, it := range batch {
+		for id, it := range batch {
 			switch action {
 			case "add":
+				// Re-check under lock against fresh state to prevent TOCTOU duplicates.
+				if sliceContains(it.Tags, tag) {
+					return fmt.Errorf("%s already has tag %q (concurrent write)", id, tag)
+				}
 				it.Tags = append(it.Tags, tag)
 			case "rm":
 				var kept []string
@@ -374,4 +240,3 @@ func tagManyLabel(s *store.Store, cfg *config.Config, ids []string, action, tag 
 func updateTagsInDoc(item *model.Item) {
 	item.Doc.SetList("tags", item.Tags)
 }
-
