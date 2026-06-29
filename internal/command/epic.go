@@ -458,6 +458,33 @@ func EpicArchive(s *store.Store, cfg *config.Config, epicID string) int {
 	return 0
 }
 
+// EpicUnarchive returns an archived/completed epic to "active" status (I-1641).
+// The explicit reverse of EpicArchive — the manual escape hatch for an epic
+// whose status no longer matches reality.
+func EpicUnarchive(s *store.Store, cfg *config.Config, epicID string) int {
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading registry: %v\n", err)
+		return 1
+	}
+
+	if err := r.UnarchiveEpic(epicID); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "saving registry: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Reactivated epic %s\n", epicID)
+	if err := autoSync(s, fmt.Sprintf("st epic unarchive: %s", epicID)); err != nil {
+		return 1
+	}
+	return 0
+}
+
 // EpicDelete removes an epic with no sprints.
 func EpicDelete(cfg *config.Config, epicID string) int {
 	r, err := registry.Load(cfg.EpicsPath())
