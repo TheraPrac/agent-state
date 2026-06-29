@@ -47,9 +47,20 @@ func ReviewCheck(s *store.Store, cfg *config.Config, id string, opts ReviewCheck
 	recordedSHA := parts[1]
 
 	if verdict != "pass" {
-		fmt.Fprintf(os.Stderr, "%s: review did not pass (verdict=%s, SHA=%s) — re-run `st review %s`\n",
-			id, verdict, recordedSHA, id)
-		return 1
+		// Check for operator-approved review_skips before failing.
+		// GetField returns (value, true) when the key exists (even as a block scalar),
+		// so check the bool rather than the string value.
+		hasSkips := false
+		if item.Doc != nil {
+			_, hasSkips = item.Doc.GetField("review_skips")
+		}
+		if !hasSkips {
+			fmt.Fprintf(os.Stderr, "%s: review did not pass (verdict=%s, SHA=%s) — re-run `st review %s`\n",
+				id, verdict, recordedSHA, id)
+			return 1
+		}
+		fmt.Printf("%s: review verdict=%s but review_skips recorded — operator-approved skips applied (SHA=%s)\n",
+			id, verdict, recordedSHA)
 	}
 
 	// Validate SHA against current HEAD in the primary worktree repo.

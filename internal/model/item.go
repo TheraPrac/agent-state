@@ -282,6 +282,7 @@ var CanonicalTopLevelKeys = map[string]bool{
 	// storeListOfMaps / storeNestedScalar top-level parents
 	"testing_evidence": true, "work_tracking": true, "delivery": true,
 	"time_tracking": true, "manifest": true, "sbar": true,
+	"review_skips": true,
 	// storeMultiline top-level
 	"summary": true, "context": true,
 }

@@ -216,7 +216,7 @@ func TestCanonicalTopLevelKeys_MatchesParser(t *testing.T) {
 		"testing_evidence": true, "work_tracking": true, "delivery": true,
 		"time_tracking": true, "manifest": true, "sbar": true,
 		// storeMultiline top-level
-		"summary": true, "context": true,
+		"summary": true, "context": true, "review_skips": true,
 	}
 	if !reflectDeepEqualStringSet(want, CanonicalTopLevelKeys) {
 		t.Errorf("CanonicalTopLevelKeys drifted from the parser-recognized set.\n got:  %v\n want: %v",

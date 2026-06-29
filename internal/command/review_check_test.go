@@ -110,3 +110,45 @@ func TestReviewCheckNonActive(t *testing.T) {
 		t.Errorf("ReviewCheck non-active item: got %d, want 1", code)
 	}
 }
+
+func seedReviewSkips(t *testing.T, s interface {
+	Mutate(string, func(*model.Item) error) error
+}, id, skips string) {
+	t.Helper()
+	if err := s.Mutate(id, func(it *model.Item) error {
+		it.Doc.SetField("review_skips", skips)
+		return nil
+	}); err != nil {
+		t.Fatalf("seeding review_skips on %s: %v", id, err)
+	}
+}
+
+func TestReviewCheckSkipsApplied(t *testing.T) {
+	// fail verdict + non-empty review_skips + SHA match → returns 0.
+	s, cfg := setupTestEnv(t)
+	seedReviewEvidence(t, s, "T-003", "fail abc1234 2026-06-14T10:00:00-06:00 evidence:")
+	seedReviewSkips(t, s, "T-003", "- finding: mockReconcileMutate not wrapped with vi.hoisted()\n  reason: false positive in workspace-only item; file not in this PR\n  operator: jfinlinson")
+
+	opts := ReviewCheckOpts{
+		GitHeadSHA: func(dir string) (string, error) { return "abc1234", nil },
+	}
+	code := ReviewCheck(s, cfg, "T-003", opts)
+	if code != 0 {
+		t.Errorf("ReviewCheck with review_skips: got %d, want 0", code)
+	}
+}
+
+func TestReviewCheckSkipsDoNotBypassSHAMismatch(t *testing.T) {
+	// fail verdict + review_skips present but SHA mismatch → returns 1.
+	s, cfg := setupTestEnv(t)
+	seedReviewEvidence(t, s, "T-003", "fail stale00 2026-06-14T10:00:00-06:00 evidence:")
+	seedReviewSkips(t, s, "T-003", "- finding: some violation\n  reason: pre-approved\n  operator: jfinlinson")
+
+	opts := ReviewCheckOpts{
+		GitHeadSHA: func(dir string) (string, error) { return "newsha1", nil },
+	}
+	code := ReviewCheck(s, cfg, "T-003", opts)
+	if code != 1 {
+		t.Errorf("ReviewCheck review_skips with SHA mismatch: got %d, want 1", code)
+	}
+}
