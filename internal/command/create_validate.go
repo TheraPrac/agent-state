@@ -39,18 +39,8 @@ func validateSBARSemantic(cfg *config.Config, engine RunEngine, sbar model.SBAR)
 
 	prompt := buildSBARValidationPrompt(sbar)
 
-	var out []byte
-	if engine.ValidateFunc != nil {
-		// Fast path: direct API call, no CLI subprocess.
-		apiModel := cfg.ValidationModel()
-		var apiErr error
-		out, apiErr = engine.ValidateFunc(apiModel, prompt)
-		if apiErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (API call failed: %v)\n", apiErr)
-			return false, nil
-		}
-	} else {
-		// CLI fallback for tests that inject RunClaude without ValidateFunc.
+	// buildCLIArgs constructs the subprocess arguments for the RunClaude fallback path.
+	buildCLIArgs := func() []string {
 		// Respect the operator-configured permission mode (same pattern as
 		// buildClaudeArgs in run.go lines 3631–3634).
 		permMode := cfg.RunPermissionMode()
@@ -60,14 +50,38 @@ func validateSBARSemantic(cfg *config.Config, engine RunEngine, sbar model.SBAR)
 		} else {
 			permArgs = []string{"--permission-mode", permMode}
 		}
-		args := append([]string{"-p", prompt, "--output-format", "json"}, permArgs...)
-		// 2-minute wall timeout — without this the nil env would use the
-		// 2-hour maxWallTimeout in defaultRunClaude (I-985).
-		env := []string{"AS_CLAUDE_WALL_TIMEOUT=2m"}
+		return append([]string{"-p", prompt, "--output-format", "json"}, permArgs...)
+	}
+	// 2-minute wall timeout — without this the nil env would use the
+	// 2-hour maxWallTimeout in defaultRunClaude (I-985).
+	cliEnv := []string{"AS_CLAUDE_WALL_TIMEOUT=2m"}
 
+	var out []byte
+	if engine.ValidateFunc != nil {
+		// Fast path: direct API call, no CLI subprocess.
+		apiModel := cfg.ValidationModel()
+		var apiErr error
+		out, apiErr = engine.ValidateFunc(apiModel, prompt)
+		if apiErr != nil {
+			// API failed — fall back to CLI subprocess before degrading.
+			if engine.RunClaude != nil {
+				var exitCode int
+				var clErr error
+				out, exitCode, clErr = engine.RunClaude(cfg.Root(), buildCLIArgs(), cliEnv)
+				if clErr != nil || exitCode != 0 {
+					fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (API: %v; CLI exit %d: %v)\n", apiErr, exitCode, clErr)
+					return false, nil
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (API call failed: %v)\n", apiErr)
+				return false, nil
+			}
+		}
+	} else {
+		// CLI-only path: tests that inject RunClaude without ValidateFunc.
 		var exitCode int
 		var err error
-		out, exitCode, err = engine.RunClaude(cfg.Root(), args, env)
+		out, exitCode, err = engine.RunClaude(cfg.Root(), buildCLIArgs(), cliEnv)
 		if err != nil || exitCode != 0 {
 			fmt.Fprintf(os.Stderr, "warning: SBAR semantic validation skipped (subprocess exit %d: %v)\n", exitCode, err)
 			return false, nil

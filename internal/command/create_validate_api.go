@@ -91,7 +91,9 @@ func defaultCallAnthropicAPI(model, prompt string) ([]byte, error) {
 }
 
 // resolveAPIModelID maps short tier names ("haiku", "sonnet", "opus") to
-// canonical model IDs for the Messages API. Full IDs pass through unchanged.
+// canonical model IDs for the Messages API and the claude CLI --model flag.
+// Full IDs (e.g. "claude-haiku-4-5") pass through unchanged.
+// Keep in sync with internal/pricing/table.go when adding new model IDs.
 func resolveAPIModelID(model string) string {
 	switch strings.ToLower(model) {
 	case "haiku":
@@ -99,7 +101,7 @@ func resolveAPIModelID(model string) string {
 	case "sonnet":
 		return "claude-sonnet-4-6"
 	case "opus":
-		return "claude-opus-4-8"
+		return "claude-opus-4-7"
 	default:
 		return model
 	}

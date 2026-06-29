@@ -110,9 +110,12 @@ func runItemReview(s *store.Store, cfg *config.Config, itemID string, item *mode
 		// create` runs from the working directory and doesn't carry a
 		// resume session. `isResume=false` mints a fresh subprocess each
 		// iteration so the prompt window stays small.
-		// I-1612: use the validation model (haiku by default) instead of
-		// the run model so the review subprocess is lighter.
-		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, RunOpts{Model: cfg.ValidationModel()}, engine, "", "", false)
+		// I-1612: use the validation model (haiku by default) instead of the
+		// run model so the review subprocess is lighter. resolveAPIModelID
+		// also normalises short names ("haiku" → "claude-haiku-4-5") so the
+		// claude CLI receives a full canonical ID regardless of what the
+		// operator wrote in quality.validation_model.
+		reviewSR := executeClaude(s, cfg, itemID, "", reviewStep, RunOpts{Model: resolveAPIModelID(cfg.ValidationModel())}, engine, "", "", false)
 		reviewDur := time.Since(reviewStart)
 
 		if reviewSR.Error != "" {

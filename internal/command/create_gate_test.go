@@ -434,12 +434,12 @@ func TestCreateValidateFuncPreferredOverRunClaude(t *testing.T) {
 	}
 }
 
-// TestCreateSemanticPassSkipsPostReview: when Layer 2+3 returns PASS,
-// the post-create review subprocess must be skipped.
-func TestCreateSemanticPassSkipsPostReview(t *testing.T) {
-	// Don't set AS_INTERNAL_NO_REVIEW — we want to observe whether the review runs.
-	s, cfg := setupTestEnv(t)
-
+// TestCreateReviewRunsAfterSemanticPass: the post-create review must still
+// fire even when Layer 2+3 returns PASS — the review also checks title quality
+// (a dimension not covered by SBAR semantic validation).
+func TestCreateReviewRunsAfterSemanticPass(t *testing.T) {
+	// Wire SelectMenu so runItemReview doesn't bail at the TTY guard and
+	// actually reaches executeClaude → RunClaude.
 	passData, _ := json.Marshal(sbarVerdict{Verdict: "PASS"})
 	reviewCalled := false
 	engine := RunEngine{
@@ -447,13 +447,18 @@ func TestCreateSemanticPassSkipsPostReview(t *testing.T) {
 			return passData, nil
 		},
 		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
-			// Any RunClaude call here means the review ran — it should not.
 			reviewCalled = true
-			return []byte(`{"type":"result","subtype":"success","result":"Accept"}`), 0, nil
+			result := ClaudeResult{Type: "result", Subtype: "success", Result: "Accept"}
+			data, _ := json.Marshal(result)
+			return data, 0, nil
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "1" // Accept
 		},
 	}
 
-	code := Create(s, cfg, "task", "Test PASS skips review", CreateOpts{
+	s, cfg := setupTestEnv(t)
+	code := Create(s, cfg, "task", "Test review still runs after PASS", CreateOpts{
 		Priority:       2,
 		EnforceGate:    true,
 		Situation:      substantiveSBAR.situation,
@@ -465,8 +470,56 @@ func TestCreateSemanticPassSkipsPostReview(t *testing.T) {
 	if code != 0 {
 		t.Errorf("expected exit 0, got %d", code)
 	}
-	if reviewCalled {
-		t.Error("post-create review must be skipped when Layer 2+3 returns PASS")
+	if !reviewCalled {
+		t.Error("post-create review must run even when Layer 2+3 returns PASS (review checks title quality too)")
+	}
+}
+
+// TestCreateReviewRunsWhenValidateFuncErrors: when the direct API call in
+// ValidateFunc fails, the review sub-agent must still fire (I-588 invariant).
+func TestCreateReviewRunsWhenValidateFuncErrors(t *testing.T) {
+	reviewCalled := false
+	engine := RunEngine{
+		ValidateFunc: func(model, prompt string) ([]byte, error) {
+			return nil, fmt.Errorf("simulated API outage")
+		},
+		RunClaude: func(cwd string, args []string, env []string) ([]byte, int, error) {
+			// Both the CLI fallback inside validateSBARSemantic AND the
+			// review sub-agent use RunClaude. Distinguish them by the
+			// --verbose flag: buildClaudeArgs (review path) always adds it;
+			// the validation fallback uses --output-format json without --verbose.
+			for _, a := range args {
+				if a == "--verbose" {
+					// Review call — record and accept.
+					reviewCalled = true
+					result := ClaudeResult{Type: "result", Subtype: "success", Result: "Accept"}
+					data, _ := json.Marshal(result)
+					return data, 0, nil
+				}
+			}
+			// Validation CLI fallback — also fail it so we test full degrade.
+			return nil, 1, fmt.Errorf("CLI also unavailable")
+		},
+		SelectMenu: func(prompt string, options []menuOption, defaultIdx int) string {
+			return "1" // Accept
+		},
+	}
+
+	s, cfg := setupTestEnv(t)
+	code := Create(s, cfg, "task", "Test review fires after API error", CreateOpts{
+		Priority:       2,
+		EnforceGate:    true,
+		Situation:      substantiveSBAR.situation,
+		Background:     substantiveSBAR.background,
+		Assessment:     substantiveSBAR.assessment,
+		Recommendation: substantiveSBAR.recommendation,
+		Engine:         engine,
+	})
+	if code != 0 {
+		t.Errorf("expected exit 0 (graceful degrade), got %d", code)
+	}
+	if !reviewCalled {
+		t.Error("post-create review must still fire even when ValidateFunc errors (I-588)")
 	}
 }
 
