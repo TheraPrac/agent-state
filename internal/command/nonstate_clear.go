@@ -3,7 +3,6 @@ package command
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/theraprac/agent-state/internal/store"
@@ -90,12 +89,7 @@ func ClearStagedNonState(workspaceRoot, itemsPrefix, agentID string) []string {
 		return nil
 	}
 	top := strings.TrimSpace(string(topOut))
-	if cTop, e1 := filepath.EvalSymlinks(top); e1 == nil {
-		if cWS, e2 := filepath.EvalSymlinks(workspaceRoot); e2 == nil {
-			top, workspaceRoot = cTop, cWS
-		}
-	}
-	if !strings.EqualFold(filepath.Clean(top), filepath.Clean(workspaceRoot)) {
+	if physicalPath(top) != physicalPath(workspaceRoot) {
 		return nil
 	}
 

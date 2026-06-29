@@ -302,7 +302,7 @@ func buildAgentWorkspacePlan(cfg *config.Config, agentArg, branch string) (agent
 	// (honoring worktree.parent_dir overrides) so the bootstrap doesn't
 	// clone from a peer agent's checkout under an ST_ROOT env leak
 	// (cfg.Root() can resolve to the peer's workspace).
-	repoParent := cfg.RepoParent()
+	repoParent := physicalPath(cfg.RepoParent())
 	for _, repo := range agentWorkspaceRepos {
 		source := filepath.Join(repoParent, repo)
 		remote := ""
@@ -691,27 +691,42 @@ func normalizeWorkspaceAgentID(agent string) string {
 	return "agent-" + a
 }
 
+// physicalPath resolves p to its canonical on-disk path: symlinks are followed
+// and the OS-reported case is used. Falls back to filepath.Abs+Clean when the
+// path does not yet exist (e.g. a dry-run target dir). Never errors.
+func physicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(p)
+}
+
 func resolveAgentsRoot(cfg *config.Config) (string, error) {
 	if root := os.Getenv("THERAPRAC_AGENTS_ROOT"); root != "" {
+		// Validate the basename before canonicalizing so the guard fires on
+		// the value as supplied, not the resolved path.
 		if filepath.Base(root) != "theraprac-agents" {
 			return "", fmt.Errorf("THERAPRAC_AGENTS_ROOT must end in theraprac-agents: %s", root)
 		}
-		return root, nil
+		return physicalPath(root), nil
 	}
 	if cfg == nil {
 		return "", fmt.Errorf("config is required")
 	}
-	root := cfg.Root()
+	root := physicalPath(cfg.Root())
 	parent := filepath.Dir(root)
 	if strings.HasPrefix(filepath.Base(parent), "theraprac-agent-") {
 		agentsRoot := filepath.Dir(parent)
 		if filepath.Base(agentsRoot) == "theraprac-agents" {
-			return agentsRoot, nil
+			return physicalPath(agentsRoot), nil
 		}
 	}
 	grandparent := filepath.Dir(parent)
 	if filepath.Base(grandparent) == "theraprac-agents" {
-		return grandparent, nil
+		return physicalPath(grandparent), nil
 	}
 	return "", fmt.Errorf("could not determine theraprac-agents root; set THERAPRAC_AGENTS_ROOT")
 }
@@ -853,7 +868,7 @@ func ensureSharedSymlink(repo agentWorkspaceRepoPlan, agentsRoot string, repair 
 			currentAbs = filepath.Join(filepath.Dir(repo.TargetPath), current)
 		}
 		currentAbs = filepath.Clean(currentAbs)
-		if currentAbs == filepath.Clean(canonical) {
+		if physicalPath(currentAbs) == physicalPath(canonical) {
 			return nil
 		}
 		if !repair {

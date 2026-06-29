@@ -137,12 +137,7 @@ func StashPullConflicts(workspaceRoot, agentID string) int {
 		return 0
 	}
 	top := strings.TrimSpace(string(topOut))
-	if cTop, e1 := filepath.EvalSymlinks(top); e1 == nil {
-		if cWS, e2 := filepath.EvalSymlinks(workspaceRoot); e2 == nil {
-			top, workspaceRoot = cTop, cWS
-		}
-	}
-	if !strings.EqualFold(filepath.Clean(top), filepath.Clean(workspaceRoot)) {
+	if physicalPath(top) != physicalPath(workspaceRoot) {
 		return 0
 	}
 
