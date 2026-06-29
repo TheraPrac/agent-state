@@ -426,6 +426,12 @@ func (r *Registry) AddSprint(epicID, title string) (Sprint, error) {
 	// Append to epic's SprintOrder
 	r.Epics[epicIdx].SprintOrder = append(r.Epics[epicIdx].SprintOrder, s.ID)
 
+	// I-1641: adding an active sprint means the epic now holds active work.
+	// Reactivate an archived/completed epic so its status can't silently lie.
+	if r.Epics[epicIdx].Status == "archived" || r.Epics[epicIdx].Status == "completed" {
+		r.Epics[epicIdx].Status = "active"
+	}
+
 	return s, nil
 }
 
@@ -703,6 +709,51 @@ func (r *Registry) ArchiveEpic(epicID string, isItemDone func(id string) bool) e
 	}
 	r.Epics[epicIdx].Status = "archived"
 	return nil
+}
+
+// UnarchiveEpic returns an archived/completed epic to "active" status (I-1641).
+// This is the explicit operator-facing reverse of ArchiveEpic — the manual
+// escape hatch for an epic that was archived but should be active again.
+// Errors if the epic does not exist or is already active.
+func (r *Registry) UnarchiveEpic(epicID string) error {
+	for i, e := range r.Epics {
+		if e.ID == epicID {
+			if e.Status == "active" {
+				return fmt.Errorf("epic %s is already active", epicID)
+			}
+			r.Epics[i].Status = "active"
+			return nil
+		}
+	}
+	return fmt.Errorf("epic not found: %s", epicID)
+}
+
+// ReconcileEpicStatuses heals epic-status drift (I-1641): any epic marked
+// "archived" or "completed" that still has at least one non-archived sprint is
+// reactivated to "active", because an epic with active work cannot honestly be
+// archived. Returns the IDs of the epics it healed (nil if none). Pure
+// in-memory mutation — the caller is responsible for saving the registry.
+func (r *Registry) ReconcileEpicStatuses() []string {
+	var healed []string
+	for i, e := range r.Epics {
+		if e.Status != "archived" && e.Status != "completed" {
+			continue
+		}
+		// Existence check only — iterate r.Sprints directly rather than
+		// SprintsForEpic, which would allocate a slice and sort it by sequence
+		// for a result we discard on the first match (I-1641 review). Note: a
+		// legitimately-archived epic always has all sprints archived/completed
+		// (ArchiveEpic enforces that invariant), so this only fires for the
+		// AddSprint-into-archived-epic path or manual data edits.
+		for _, sp := range r.Sprints {
+			if sp.Epic == e.ID && sp.Status != "archived" && sp.Status != "completed" {
+				r.Epics[i].Status = "active"
+				healed = append(healed, e.ID)
+				break
+			}
+		}
+	}
+	return healed
 }
 
 // MoveEpic sets `epicID`'s priority to `pos` (1-indexed; 1 = highest)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/model"
+	"github.com/theraprac/agent-state/internal/registry"
 	"github.com/theraprac/agent-state/internal/store"
 )
 
@@ -972,5 +973,42 @@ func TestReconcileLeavesCleanWorkingTree(t *testing.T) {
 
 	if trackedDirty(t, root) {
 		t.Error("tracked files dirty after Reconcile — GitSync must commit all modifications")
+	}
+}
+
+// I-1641: the reconcileEpicStatus phase heals an archived epic that still
+// holds an active sprint; DryRun observes the heal count without mutating disk.
+func TestReconcileEpicStatusHeals(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+
+	// Seed an archived epic with an active sprint — the drift scenario.
+	r := &registry.Registry{}
+	e := r.AddEpic("Archived Epic", "")
+	if _, err := r.AddSprint(e.ID, "Active Sprint"); err != nil {
+		t.Fatalf("AddSprint: %v", err)
+	}
+	// AddSprint reactivates the epic (the write-time fix), so force it back to
+	// archived to simulate pre-existing on-disk drift that reconcile must heal.
+	r.Epics[0].Status = "archived"
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// DryRun: reports the heal but must not write it back.
+	if n := reconcileEpicStatus(s, cfg, ReconcileOpts{DryRun: true}); n != 1 {
+		t.Fatalf("DryRun reconcileEpicStatus = %d, want 1", n)
+	}
+	rDry, _ := registry.Load(cfg.EpicsPath())
+	if got, _ := rDry.GetEpic(e.ID); got.Status != "archived" {
+		t.Errorf("DryRun mutated disk: epic status = %q, want archived", got.Status)
+	}
+
+	// Live: heals and persists.
+	if n := reconcileEpicStatus(s, cfg, ReconcileOpts{}); n != 1 {
+		t.Fatalf("live reconcileEpicStatus = %d, want 1", n)
+	}
+	rLive, _ := registry.Load(cfg.EpicsPath())
+	if got, _ := rLive.GetEpic(e.ID); got.Status != "active" {
+		t.Errorf("live heal: epic status = %q, want active", got.Status)
 	}
 }

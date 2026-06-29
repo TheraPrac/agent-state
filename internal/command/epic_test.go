@@ -120,6 +120,30 @@ func TestSprintCreateWithDescription(t *testing.T) {
 	t.Error("sprint with description not found after Load")
 }
 
+// I-1641: SprintCreate on an archived epic reactivates the epic (the AddSprint
+// write-time fix) and the change persists to disk.
+func TestSprintCreateReactivatesArchivedEpic(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+	r, _ := registry.Load(cfg.EpicsPath())
+	e := r.AddEpic("Archived Epic", "")
+	r.Epics[0].Status = "archived"
+	r.Save(cfg.EpicsPath())
+
+	code := SprintCreate(cfg, e.ID, "Revives It", SprintCreateOpts{})
+	if code != 0 {
+		t.Fatalf("SprintCreate returned %d, want 0", code)
+	}
+
+	r2, _ := registry.Load(cfg.EpicsPath())
+	got, ok := r2.GetEpic(e.ID)
+	if !ok {
+		t.Fatal("epic vanished")
+	}
+	if got.Status != "active" {
+		t.Errorf("epic status after SprintCreate = %q, want active", got.Status)
+	}
+}
+
 func TestSprintListEmpty(t *testing.T) {
 	_, cfg := setupTestEnv(t)
 	code := SprintList(cfg, "")
@@ -621,6 +645,41 @@ func TestCloseRecordsTimeTracking(t *testing.T) {
 }
 
 // --- Helpers for extended test env ---
+
+// I-1641: `st epic unarchive` reactivates an archived epic.
+func TestEpicUnarchiveCommand(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+
+	// Seed an archived epic on disk.
+	r := &registry.Registry{}
+	e := r.AddEpic("Archived Epic", "")
+	r.Epics[0].Status = "archived"
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Pass nil store so autoSync is a no-op (no git in this fixture).
+	if code := EpicUnarchive(nil, cfg, e.ID); code != 0 {
+		t.Fatalf("EpicUnarchive returned %d, want 0", code)
+	}
+
+	r2, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	got, ok := r2.GetEpic(e.ID)
+	if !ok {
+		t.Fatal("epic vanished after unarchive")
+	}
+	if got.Status != "active" {
+		t.Errorf("status after unarchive = %q, want active", got.Status)
+	}
+
+	// Nonexistent epic → exit 1.
+	if code := EpicUnarchive(nil, cfg, "nonexistent-epic-id"); code != 1 {
+		t.Errorf("EpicUnarchive(nonexistent) returned %d, want 1", code)
+	}
+}
 
 func setupTestEnvWithEpics(t *testing.T) (*store.Store, *config.Config) {
 	t.Helper()
