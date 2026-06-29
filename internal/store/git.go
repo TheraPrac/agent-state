@@ -847,6 +847,22 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		// workspaces where ItemDir is a subdirectory of the git repository root.
 		message = synthesizeBundleMessage(root, message, cached)
 
+		// I-1320: refuse to commit files that contain raw git conflict markers
+		// (a <<<<<<< line AND a >>>>>>> line). Bare ======= lines are NOT flagged —
+		// they appear in legitimate SBAR/markdown. Escape hatch:
+		// ST_SYNC_ALLOW_CONFLICT_MARKERS=1 to override when intentional.
+		if os.Getenv("ST_SYNC_ALLOW_CONFLICT_MARKERS") != "1" {
+			if offenders, err := stagedConflictMarkerFiles(root, cached); err != nil {
+				return fmt.Errorf("conflict-marker scan: %w", err)
+			} else if len(offenders) > 0 {
+				return fmt.Errorf(
+					"st sync: refusing to commit files with raw git conflict markers"+
+						" (set ST_SYNC_ALLOW_CONFLICT_MARKERS=1 to override): %s",
+					strings.Join(offenders, ", "),
+				)
+			}
+		}
+
 		// I-1313: commit the staged agent-state onto refs/heads/main via
 		// plumbing, NEVER `git commit` onto HEAD. When a code feature branch is
 		// checked out, `git commit` would strand the agent-state commit on that
@@ -1700,4 +1716,44 @@ func synthesizeBundleMessage(root, message, cached string) string {
 func matchesItemID(base, id string) bool {
 	name := strings.TrimSuffix(base, ".md")
 	return name == id || strings.HasPrefix(name, id+"-")
+}
+
+// containsConflictMarkers reports whether content contains at least one line
+// starting with 7+ '<' AND at least one line starting with 7+ '>'. Bare
+// '=======' separators are NOT flagged — they appear in legitimate SBAR/markdown.
+func containsConflictMarkers(content string) bool {
+	hasOpen, hasClose := false, false
+	for _, line := range strings.Split(content, "\n") {
+		if !hasOpen && strings.HasPrefix(line, "<<<<<<<") {
+			hasOpen = true
+		}
+		if !hasClose && strings.HasPrefix(line, ">>>>>>>") {
+			hasClose = true
+		}
+		if hasOpen && hasClose {
+			return true
+		}
+	}
+	return false
+}
+
+// stagedConflictMarkerFiles returns the subset of staged paths (newline-separated
+// in cached) whose staged blob content contains raw git conflict markers. Read
+// errors for individual files are skipped (non-blocking per-file).
+func stagedConflictMarkerFiles(root, cached string) ([]string, error) {
+	var offenders []string
+	for _, path := range strings.Split(strings.TrimSpace(cached), "\n") {
+		if path == "" {
+			continue
+		}
+		content, err := gitOutput(root, "show", ":"+path)
+		if err != nil {
+			// File may be a deletion or otherwise unreadable as a blob; skip.
+			continue
+		}
+		if containsConflictMarkers(content) {
+			offenders = append(offenders, path)
+		}
+	}
+	return offenders, nil
 }

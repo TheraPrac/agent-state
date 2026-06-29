@@ -2398,3 +2398,123 @@ func TestGitSync_FlatLayout_StagesUntrackedNewCanonical_I1622(t *testing.T) {
 		t.Errorf("origin/main:.as/queue.yaml missing %q — untracked-new canonical file dropped in flat layout (PR #300 finding 1). Got:\n%s", marker, out)
 	}
 }
+
+// TestContainsConflictMarkers verifies the helper that detects raw git conflict
+// marker pairs (<<<<<<< + >>>>>>>). Bare ======= lines must NOT trigger it.
+func TestContainsConflictMarkers(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "both markers present",
+			content: "<<<<<<< HEAD\nstatus: queued\n=======\nstatus: active\n>>>>>>> origin/main\n",
+			want:    true,
+		},
+		{
+			name:    "7-char markers with surrounding text",
+			content: "id: I-001\ntitle: foo\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> other\n",
+			want:    true,
+		},
+		{
+			name:    "open marker only",
+			content: "<<<<<<< HEAD\nstatus: queued\n",
+			want:    false,
+		},
+		{
+			name:    "close marker only",
+			content: ">>>>>>> origin/main\nstatus: active\n",
+			want:    false,
+		},
+		{
+			name:    "bare equals only (legitimate SBAR separator)",
+			content: "background: |\n  =======\n  some docs\n",
+			want:    false,
+		},
+		{
+			name:    "6-char prefix — not a conflict marker",
+			content: "<<<<<<\nstatus: queued\n>>>>>>\n",
+			want:    false,
+		},
+		{
+			name:    "clean YAML",
+			content: "id: T-001\nstatus: queued\ntitle: Normal task\n",
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsConflictMarkers(tc.content); got != tc.want {
+				t.Errorf("containsConflictMarkers(%q) = %v, want %v", tc.content, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGitSyncRejectsConflictMarkers is the I-1320 Bug B regression guard:
+// GitSync must refuse to commit a staged file that contains raw conflict markers.
+func TestGitSyncRejectsConflictMarkers(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	gitBareRemote(t, root)
+	s := gitSyncStore(t, root)
+
+	// Capture main ref before the attempted sync.
+	mainBefore, err := gitOutput(root, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatalf("rev-parse main: %v", err)
+	}
+	mainBefore = strings.TrimSpace(mainBefore)
+
+	// Overwrite a tracked file with raw conflict markers.
+	conflictContent := "id: T-001\ntype: task\nstatus: queued\ncreated: 2026-03-25T10:00:00-06:00\n" +
+		"last_touched: 2026-03-25T10:00:00-06:00\n\ntitle: First task\n\n" +
+		"<<<<<<< HEAD\ndepends_on:\n- []\n=======\ndepends_on:\n- [T-002]\n>>>>>>> origin/main\n"
+	itemPath := filepath.Join(root, "tasks", "T-001-first-task.md")
+	if err := os.WriteFile(itemPath, []byte(conflictContent), 0644); err != nil {
+		t.Fatalf("write conflict file: %v", err)
+	}
+
+	err = s.GitSync("conflict-marker test")
+	if err == nil {
+		t.Fatal("GitSync must return an error when staged content contains conflict markers")
+	}
+	if !strings.Contains(err.Error(), "conflict markers") {
+		t.Errorf("error must mention 'conflict markers', got: %v", err)
+	}
+
+	// No new commit must have landed on main.
+	mainAfter, _ := gitOutput(root, "rev-parse", "refs/heads/main")
+	if strings.TrimSpace(mainAfter) != mainBefore {
+		t.Errorf("main advanced despite conflict-marker rejection: %s -> %s", mainBefore, strings.TrimSpace(mainAfter))
+	}
+}
+
+// TestGitSyncAllowsCleanState confirms the happy path: GitSync succeeds and
+// commits when no conflict markers are present.
+func TestGitSyncAllowsCleanState(t *testing.T) {
+	root, _ := setupTestDir(t)
+	asDir := filepath.Join(root, ".as")
+	os.MkdirAll(asDir, 0755)
+	os.WriteFile(filepath.Join(asDir, "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+	initGitRepo(t, root)
+	gitBareRemote(t, root)
+	s := gitSyncStore(t, root)
+
+	mainBefore, _ := gitOutput(root, "rev-parse", "refs/heads/main")
+	mainBefore = strings.TrimSpace(mainBefore)
+
+	dirtyItem(t, s)
+	if err := s.GitSync("clean state test"); err != nil {
+		t.Fatalf("GitSync with clean content must succeed, got: %v", err)
+	}
+
+	mainAfter, _ := gitOutput(root, "rev-parse", "refs/heads/main")
+	if strings.TrimSpace(mainAfter) == mainBefore {
+		t.Error("main did not advance — commit was not made for clean content")
+	}
+}
