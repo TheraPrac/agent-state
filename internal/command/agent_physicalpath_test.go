@@ -3,7 +3,6 @@ package command
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -29,8 +28,8 @@ func TestPhysicalPathCanonicalizesCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks(real): %v", err)
 	}
-	if !strings.EqualFold(got, wantResolved) {
-		t.Errorf("physicalPath(%q) = %q, want path equivalent to %q", link, got, wantResolved)
+	if got != wantResolved {
+		t.Errorf("physicalPath(%q) = %q, want %q", link, got, wantResolved)
 	}
 
 	// Non-existent path falls back to Abs+Clean without error.

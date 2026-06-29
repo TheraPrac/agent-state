@@ -716,7 +716,7 @@ func resolveAgentsRoot(cfg *config.Config) (string, error) {
 	if cfg == nil {
 		return "", fmt.Errorf("config is required")
 	}
-	root := cfg.Root()
+	root := physicalPath(cfg.Root())
 	parent := filepath.Dir(root)
 	if strings.HasPrefix(filepath.Base(parent), "theraprac-agent-") {
 		agentsRoot := filepath.Dir(parent)
@@ -868,7 +868,7 @@ func ensureSharedSymlink(repo agentWorkspaceRepoPlan, agentsRoot string, repair 
 			currentAbs = filepath.Join(filepath.Dir(repo.TargetPath), current)
 		}
 		currentAbs = filepath.Clean(currentAbs)
-		if currentAbs == filepath.Clean(canonical) {
+		if physicalPath(currentAbs) == physicalPath(canonical) {
 			return nil
 		}
 		if !repair {
