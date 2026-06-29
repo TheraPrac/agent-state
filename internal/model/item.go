@@ -282,9 +282,8 @@ var CanonicalTopLevelKeys = map[string]bool{
 	// storeListOfMaps / storeNestedScalar top-level parents
 	"testing_evidence": true, "work_tracking": true, "delivery": true,
 	"time_tracking": true, "manifest": true, "sbar": true,
-	"review_skips": true,
 	// storeMultiline top-level
-	"summary": true, "context": true,
+	"summary": true, "context": true, "review_skips": true,
 }
 
 // SetField updates or inserts a scalar field value in the document.
@@ -602,6 +601,21 @@ func (d *ParsedDocument) GetField(key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// HasFieldContent reports whether a field exists and has non-empty content.
+// For block-scalar fields, content is present when block continuation lines follow
+// the header. An explicit empty scalar (key: "") returns false.
+func (d *ParsedDocument) HasFieldContent(key string) bool {
+	for i, line := range d.Lines {
+		if line.Key == key && line.Indent == 0 {
+			if line.Value != "" {
+				return true
+			}
+			return i+1 < len(d.Lines) && d.Lines[i+1].IsBlock && d.Lines[i+1].BlockKey == key
+		}
+	}
+	return false
 }
 
 // SetNestedField updates a nested field using dotted-path syntax (e.g. "work_tracking.branch").

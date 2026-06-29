@@ -41,9 +41,15 @@ type PRCreateOpts struct {
 // own subprocess exec of gh), the two existing raw-`gh pr create` guards
 // (pre-pr-live-acceptance-guard.sh, pre-pr-review-evidence-guard.sh) would NOT
 // fire for the gh invocation done here. To avoid silently weakening those gates,
-// the non-draft path re-checks the SAME conditions before creating the PR:
+// the non-draft path re-checks the review gate before creating the PR:
 //   - testing_evidence.live_acceptance is present (any value), and
-//   - review_evidence passes and its SHA matches HEAD (via ReviewCheck).
+//   - review_evidence passes (or a failing verdict is covered by review_skips)
+//     and its SHA matches HEAD (via ReviewCheck).
+//
+// Note: the raw-gh shell hooks (pre-pr-review-evidence-guard.sh) read
+// review_evidence directly and do not yet honor review_skips — an item with a
+// fail verdict and review_skips set will pass st pr create but be blocked by
+// the shell hook on raw `gh pr create`. Tracked for fix in I-1628 phase 2b.
 //
 // `--draft` skips both gates, matching both hooks' `--draft` bypass (the
 // iterate-without-bots flow; the gates re-apply at `gh pr ready`).
