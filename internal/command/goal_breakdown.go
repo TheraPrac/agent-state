@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/theraprac/agent-state/internal/config"
@@ -24,10 +25,11 @@ type GoalBreakdownOpts struct {
 // goalBreakdownGoalJSON is the stable machine contract for one goal's section.
 // Field names are part of the T-348 contract — additive changes only.
 type goalBreakdownGoalJSON struct {
-	GoalID    string          `json:"goal_id"`
-	Title     string          `json:"title"`
-	Weight    int             `json:"weight"`
-	Items     []recommendJSON `json:"items"`
+	GoalID   string          `json:"goal_id"`
+	Title    string          `json:"title"`
+	Weight   int             `json:"weight"`
+	Items    []recommendJSON `json:"items"`
+	PeerNote string          `json:"peer_note,omitempty"`
 }
 
 // GoalBreakdown prints the top-N workable items for each active goal,
@@ -96,6 +98,11 @@ func goalBreakdownText(w io.Writer, s *store.Store, cfg *config.Config,
 		cands := recommendCandidates(s, cfg, g, RecommendOpts{Goal: goal.ID}, sprints)
 		if len(cands) == 0 {
 			fmt.Fprintln(w, "  (no workable items)")
+			// I-1657: surface peer-assigned items so the operator knows why
+			// this goal has no candidates, matching the recommendTo pattern (I-1435).
+			if peers := peerAssignedReady(g, cfg.AgentID()); len(peers) > 0 {
+				printPeerNote(w, peers)
+			}
 			continue
 		}
 
@@ -130,6 +137,25 @@ func goalBreakdownJSON(w io.Writer, s *store.Store, cfg *config.Config,
 		}
 
 		cands := recommendCandidates(s, cfg, g, RecommendOpts{Goal: goal.ID}, sprints)
+		if len(cands) == 0 {
+			// I-1657: short-circuit — skip scoring pipeline and emit empty items,
+			// matching the goalBreakdownText guard. Surface peer note if applicable.
+			entry := goalBreakdownGoalJSON{
+				GoalID: goal.ID, Title: goal.Title, Weight: wt,
+				Items: []recommendJSON{},
+			}
+			if peers := peerAssignedReady(g, cfg.AgentID()); len(peers) > 0 {
+				parts := make([]string, 0, len(peers))
+				for _, p := range peers {
+					parts = append(parts, fmt.Sprintf("%s [%s]", p.ID, p.AssignedTo))
+				}
+				entry.PeerNote = fmt.Sprintf("(%d item(s) not shown — assigned to peers: %s)",
+					len(peers), strings.Join(parts, ", "))
+			}
+			out = append(out, entry)
+			continue
+		}
+
 		leverage, names := unblockLeverage(g, cands)
 		overrides := buildPriorityOverrides(g, cands, pins)
 		recs := coordinator.Recommend(cands, leverage, sprints, goalWeights, overrides, now, pins)
