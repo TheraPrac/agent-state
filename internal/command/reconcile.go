@@ -129,6 +129,13 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	n = reconcileArchive(s, cfg, opts)
 	updates += n
 
+	// Phase 5b: Heal epic-status drift (I-1641) — reactivate any epic marked
+	// archived/completed that still holds a non-archived sprint, so the epic
+	// status can't silently lie after a sprint was added to an archived epic.
+	fmt.Println("Phase 5b: Epic status heal")
+	n = reconcileEpicStatus(s, cfg, opts)
+	updates += n
+
 	// Phase 6: Drop terminal items from the work queue
 	fmt.Println("Phase 6: Queue cleanup (drop terminal items)")
 	n = reconcileQueueCleanup(s, cfg, opts)
@@ -195,6 +202,42 @@ func reconcileSprintDrift(s *store.Store, cfg *config.Config, opts ReconcileOpts
 	for _, e := range sprintinherit.Drift(s.All(), g, reg, cfg) {
 		fmt.Printf("  warning: %s\n", e)
 	}
+}
+
+// reconcileEpicStatus heals epic-status drift (I-1641): any epic marked
+// archived/completed that still holds at least one non-archived sprint is
+// reactivated to "active". Returns the number of epics healed. On registry
+// load failure it returns 0 (no-op), matching reconcileSprintDrift's
+// silent-skip; the registry is saved only when a heal occurred and not in
+// DryRun mode. The store arg `s` is unused but kept for signature parity with
+// every other reconcile phase helper.
+func reconcileEpicStatus(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+	_ = s
+	r, err := registry.Load(cfg.EpicsPath())
+	if err != nil {
+		// Surface the skip — a silent no-op would let epic-status drift persist
+		// across reconcile runs with no operator signal (I-1641 review).
+		fmt.Fprintf(os.Stderr, "  warning: epic-status heal skipped — cannot load registry: %v\n", err)
+		return 0
+	}
+	healed := r.ReconcileEpicStatuses()
+	if len(healed) == 0 {
+		return 0
+	}
+	for _, id := range healed {
+		fmt.Printf("  %s: reactivated (has active sprint)\n", id)
+	}
+	if opts.DryRun {
+		return len(healed)
+	}
+	// Persist BEFORE counting the heal as applied: if Save fails the on-disk
+	// status is unchanged, so reporting it as a healed update would itself be a
+	// lie — the exact failure mode this phase exists to prevent (I-1641 review).
+	if err := r.Save(cfg.EpicsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "  error: epic-status heal computed %d fix(es) but registry Save failed — NOT applied: %v\n", len(healed), err)
+		return 0
+	}
+	return len(healed)
 }
 
 // reconcileActiveStageDrift sweeps all active items with a recorded branch and

@@ -2291,6 +2291,14 @@ Resolve any listed item with ` + "`st decide <id> approve|reject|defer`" + `.`,
 		},
 	})
 	epicCmd.AddCommand(&cobra.Command{
+		Use:   "unarchive <epic-id>",
+		Short: "Reactivate an archived/completed epic (sets status back to active)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			exitCode = command.EpicUnarchive(appStore, appCfg, args[0])
+		},
+	})
+	epicCmd.AddCommand(&cobra.Command{
 		Use:   "delete <epic-id>",
 		Short: "Delete an epic with no sprints",
 		Args:  cobra.ExactArgs(1),

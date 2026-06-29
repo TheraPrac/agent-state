@@ -113,6 +113,98 @@ func TestAddSprintSuccess(t *testing.T) {
 	}
 }
 
+// I-1641: adding a sprint to an archived epic must reactivate the epic so its
+// status can't lie about holding active work.
+func TestAddSprintReactivatesArchivedEpic(t *testing.T) {
+	r := &Registry{}
+	e := r.AddEpic("Parent Epic", "")
+
+	// First sprint, then archive both sprint and epic to set up the lie scenario.
+	first, err := r.AddSprint(e.ID, "Sprint 1")
+	if err != nil {
+		t.Fatalf("AddSprint: %v", err)
+	}
+	sp, err := r.SprintByID(first.ID)
+	if err != nil {
+		t.Fatalf("SprintByID: %v", err)
+	}
+	sp.Status = "archived"
+	if err := r.ArchiveEpic(e.ID, func(string) bool { return true }); err != nil {
+		t.Fatalf("ArchiveEpic: %v", err)
+	}
+	if got, _ := r.GetEpic(e.ID); got.Status != "archived" {
+		t.Fatalf("precondition: epic status = %q, want archived", got.Status)
+	}
+
+	// Adding a new (active) sprint must reactivate the epic.
+	if _, err := r.AddSprint(e.ID, "Sprint 2"); err != nil {
+		t.Fatalf("AddSprint (second): %v", err)
+	}
+	got, ok := r.GetEpic(e.ID)
+	if !ok {
+		t.Fatal("epic vanished")
+	}
+	if got.Status != "active" {
+		t.Errorf("epic status after AddSprint = %q, want active", got.Status)
+	}
+}
+
+// I-1641: UnarchiveEpic is the explicit reverse of ArchiveEpic.
+func TestUnarchiveEpic(t *testing.T) {
+	r := &Registry{}
+	e := r.AddEpic("Epic", "")
+
+	// Already active → error.
+	if err := r.UnarchiveEpic(e.ID); err == nil {
+		t.Error("expected error unarchiving an already-active epic")
+	}
+
+	// Archived → active.
+	r.Epics[0].Status = "archived"
+	if err := r.UnarchiveEpic(e.ID); err != nil {
+		t.Fatalf("UnarchiveEpic: %v", err)
+	}
+	if got, _ := r.GetEpic(e.ID); got.Status != "active" {
+		t.Errorf("status after unarchive = %q, want active", got.Status)
+	}
+
+	// Nonexistent → error.
+	if err := r.UnarchiveEpic("nonexistent"); err == nil {
+		t.Error("expected error for nonexistent epic")
+	}
+}
+
+// I-1641: ReconcileEpicStatuses heals an archived epic that still holds a
+// non-archived sprint, and leaves a genuinely-archived epic alone.
+func TestReconcileEpicStatuses(t *testing.T) {
+	r := &Registry{}
+
+	// Epic A: archived but has an active sprint → should be healed.
+	a := r.AddEpic("Epic A", "")
+	spA, _ := r.AddSprint(a.ID, "Active Sprint")
+	_ = spA // status stays "active"
+	r.Epics[0].Status = "archived"
+
+	// Epic B: archived with all sprints archived → should NOT be healed.
+	b := r.AddEpic("Epic B", "")
+	spB, _ := r.AddSprint(b.ID, "Done Sprint")
+	sp, _ := r.SprintByID(spB.ID)
+	sp.Status = "archived"
+	r.Epics[1].Status = "archived"
+
+	healed := r.ReconcileEpicStatuses()
+
+	if len(healed) != 1 || healed[0] != a.ID {
+		t.Fatalf("healed = %v, want [%s]", healed, a.ID)
+	}
+	if got, _ := r.GetEpic(a.ID); got.Status != "active" {
+		t.Errorf("epic A status = %q, want active", got.Status)
+	}
+	if got, _ := r.GetEpic(b.ID); got.Status != "archived" {
+		t.Errorf("epic B status = %q, want archived (untouched)", got.Status)
+	}
+}
+
 func TestNoteOperations(t *testing.T) {
 	r := &Registry{}
 	n := r.AddNote("agent-a", "sess-1", "Original message")
