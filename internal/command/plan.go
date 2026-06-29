@@ -446,17 +446,21 @@ func PlanInvalidate(s *store.Store, cfg *config.Config, id string) int {
 	return 0
 }
 
-// PlanCheck prints the approval state for `id` and exits 0 if approved,
-// 1 if not. Designed for the `plan-before-code-guard.sh` hook to call as
-// `st plan check $ITEM_ID > /dev/null` so the hook can deny Edit/Write
-// when the gate is closed.
+// PlanCheck prints the approval state for `id` and exits with one of
+// three distinct codes so callers (the plan-before-code-guard.sh hook)
+// can emit targeted error messages:
 //
-// I-589: the check now re-validates the SBAR substance gate alongside
-// the PlanApproved flag, so a post-approval SBAR clear or direct-file
-// edit that knocks an SBAR sub-field back to the I-492 scaffold closes
-// the gate at the hook surface without requiring an explicit
-// `st plan reset`. Ideas/promotions skip the SBAR check (they don't
-// carry SBAR per the I-487 schema) and rely purely on PlanApproved.
+//	0 → approved and all substance gates pass — allow Edit/Write.
+//	1 → plan was never approved — "run st plan prep / st plan write".
+//	3 → plan was approved but a substance gate is now failing — "fix
+//	    the sidecar or run st plan reset" (I-897 distinguishes this
+//	    from the "never approved" case so the hook message is accurate).
+//
+// Designed for `st plan check $ITEM_ID > /dev/null` so the hook can
+// inspect only the exit code; stdout/stderr carry the human detail.
+//
+// I-589: re-validates the SBAR substance gate alongside PlanApproved.
+// I-710 / I-716: re-validates plan substance and sidecar existence.
 func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 	item, ok := s.Get(id)
 	if !ok {
@@ -467,13 +471,16 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Printf("not approved\n")
 		return 1
 	}
+	// I-897: all substance failures below return 3 (approved but failing)
+	// so the hook can distinguish them from exit 1 (never approved).
 	if item.Type == "task" || item.Type == "issue" {
 		if vios := quality.ValidateSBAR(item); quality.HasError(vios) {
-			fmt.Printf("approved but SBAR substance gate now failing — re-fill SBAR or run `st plan reset %s`\n", id)
+			fmt.Fprintf(os.Stderr,
+				"approved but SBAR substance gate now failing — re-fill SBAR or run `st plan reset %s`\n", id)
 			for _, v := range vios {
 				fmt.Fprintf(os.Stderr, "  %s\n", v)
 			}
-			return 1
+			return 3
 		}
 	}
 	// I-710: re-validate plan substance at the hook surface so a
@@ -491,7 +498,7 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 	if !sidecarFound && (item.Type == "task" || item.Type == "issue") {
 		fmt.Fprintf(os.Stderr,
 			"approved but .plans/%s.md is missing — restore the sidecar or run `st plan reset %s`\n", id, id)
-		return 1
+		return 3
 	}
 	if quality.HasError(vios) {
 		fmt.Fprintf(os.Stderr,
@@ -500,7 +507,7 @@ func PlanCheck(s *store.Store, cfg *config.Config, id string) int {
 		for _, v := range vios {
 			fmt.Fprintf(os.Stderr, "  %s\n", v)
 		}
-		return 1
+		return 3
 	}
 	fmt.Printf("approved by %s at %s\n", fallback(item.PlanApprovedBy, "?"), fallback(item.PlanApprovedAt, "?"))
 	return 0

@@ -99,8 +99,10 @@ func TestPlanCheckClosesGateOnSidecarDeletion(t *testing.T) {
 	deleteSidecar(t, cfg.PlansDir(), "T-001")
 
 	suppressOutput(t, func() {
-		if code := PlanCheck(s, cfg, "T-001"); code != 1 {
-			t.Errorf("PlanCheck should close the gate after sidecar deletion; got %d", code)
+		// I-897: sidecar deletion on an approved item returns 3 (approved but
+		// substance now failing), not 1 (never approved).
+		if code := PlanCheck(s, cfg, "T-001"); code != 3 {
+			t.Errorf("PlanCheck should exit 3 after sidecar deletion on approved item; got %d", code)
 		}
 	})
 }

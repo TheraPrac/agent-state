@@ -276,8 +276,35 @@ func TestPlanCheckBlocksOnIncompleteSBAR(t *testing.T) {
 	}
 	s, _ = reloadStore(t, cfg) // re-read from disk so PlanCheck sees the new SBAR
 
-	if code := PlanCheck(s, cfg, "T-001"); code != 1 {
-		t.Errorf("check after SBAR knocked back to scaffold should exit 1; got %d", code)
+	// I-897: distinct exit 3 (approved but failing) vs exit 1 (never approved)
+	if code := PlanCheck(s, cfg, "T-001"); code != 3 {
+		t.Errorf("check after SBAR knocked back to scaffold should exit 3; got %d", code)
+	}
+}
+
+// I-897: PlanCheck exits 3 (not 1) when plan_approved=true but plan
+// sidecar is missing — "approved but substance now failing".
+func TestPlanCheckExits3WhenSidecarMissingAfterApproval(t *testing.T) {
+	t.Setenv("AS_AGENT_ID", "")
+	s, cfg := setupTestEnv(t)
+
+	if code := PlanApprove(s, cfg, "T-001", PlanApproveOpts{}); code != 0 {
+		t.Fatalf("baseline approve: %d", code)
+	}
+	if code := PlanCheck(s, cfg, "T-001"); code != 0 {
+		t.Fatalf("check on approved+populated should exit 0; got %d", code)
+	}
+
+	// Delete the sidecar to trigger the missing-sidecar substance path.
+	sidecarPath := cfg.PlansDir() + "/T-001.md"
+	if err := os.Remove(sidecarPath); err != nil {
+		t.Fatalf("remove sidecar: %v", err)
+	}
+	s, _ = reloadStore(t, cfg)
+
+	// I-897: must be 3, not 1 — item is approved but gate now failing.
+	if code := PlanCheck(s, cfg, "T-001"); code != 3 {
+		t.Errorf("check after sidecar deletion should exit 3; got %d", code)
 	}
 }
 

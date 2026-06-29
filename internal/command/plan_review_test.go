@@ -167,8 +167,9 @@ func TestPlanCheckBlocksOnNonVerifiableACs(t *testing.T) {
 	}
 
 	suppressOutput(t, func() {
-		if code := PlanCheck(s, cfg, "T-001"); code != 1 {
-			t.Errorf("PlanCheck should fail when ACs degrade; got %d", code)
+		// I-897: substance failure on an approved item returns 3, not 1.
+		if code := PlanCheck(s, cfg, "T-001"); code != 3 {
+			t.Errorf("PlanCheck should exit 3 when ACs degrade on approved item; got %d", code)
 		}
 	})
 }
