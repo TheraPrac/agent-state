@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,9 +19,11 @@ import (
 )
 
 func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
-	// syncErr captures an I-807 gate refusal from the fix-path autoSync.
-	// Validation always runs to completion; the gate error propagates at
-	// the final return alongside any schema/duplicate findings (I-821).
+	// syncErr captures a hard gate refusal (e.g. ErrI807MainBranchGate) from
+	// the fix-path autoSync. Transient failures like ErrGitLockTimeout are
+	// treated as warnings — check's job is workspace health, not sync status.
+	// Validation always runs to completion; the gate error propagates at the
+	// final return alongside any schema/duplicate findings (I-821).
 	var syncErr error
 
 	// Auto-fix by default unless quiet mode (read-only for CI/hooks)
@@ -51,6 +54,11 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 		}
 		if fixed > 0 || dupFixed > 0 {
 			syncErr = autoSync(s, "st check --fix")
+			if errors.Is(syncErr, store.ErrGitLockTimeout) {
+				// Git lock contention is a transient sync warning, not a check failure.
+				// The workspace is structurally valid; run `st sync` to push the fixes.
+				syncErr = nil
+			}
 		}
 	}
 

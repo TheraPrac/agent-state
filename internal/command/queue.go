@@ -114,25 +114,57 @@ func IsGoalReachable(s *store.Store, cfg *config.Config, id string) bool {
 //   - Any other error: prints a "warning:" line and returns nil (best-effort for
 //     transient failures like network blips or git-lock contention that recover
 //     on the next sync).
+// autoSyncMaxRetries is the maximum number of GitSync attempts when
+// a transient git-lock timeout is the only failure mode.
+const autoSyncMaxRetries = 3
+
+// autoSyncGitFn is the GitSync implementation used by autoSync. Tests may
+// replace this to inject failures without a real git repository.
+var autoSyncGitFn func(s *store.Store, msg string, newPaths ...string) error
+
 func autoSync(s *store.Store, msg string, newPaths ...string) error {
 	if s == nil {
 		return nil
 	}
-	if err := s.GitSync(msg, newPaths...); err != nil {
-		if errors.Is(err, store.ErrI807MainBranchGate) {
-			fmt.Fprint(os.Stderr, err)
-			return err
+	gitSync := autoSyncGitFn
+	if gitSync == nil {
+		gitSync = func(s *store.Store, msg string, newPaths ...string) error {
+			return s.GitSync(msg, newPaths...)
 		}
-		if errors.Is(err, store.ErrPushDiverged) {
-			fmt.Fprintf(os.Stderr, "warning: auto-sync: push diverged — a peer changed the same file(s); resolve the conflict, then run `st sync` (%v)\n", err)
-			return nil
-		}
-		if errors.Is(err, store.ErrPushRejectedButOriginUnchanged) {
-			fmt.Fprintf(os.Stderr, "warning: auto-sync: push blocked by a server-side gate (branch protection or pre-receive hook) — retrying won't help; check remote settings (%v)\n", err)
-			return nil
-		}
-		fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", err)
 	}
+	var lastErr error
+	backoff := time.Second
+	for attempt := 1; attempt <= autoSyncMaxRetries; attempt++ {
+		lastErr = gitSync(s, msg, newPaths...)
+		if lastErr == nil {
+			return nil
+		}
+		if errors.Is(lastErr, store.ErrI807MainBranchGate) {
+			fmt.Fprint(os.Stderr, lastErr)
+			return lastErr
+		}
+		if errors.Is(lastErr, store.ErrPushDiverged) {
+			fmt.Fprintf(os.Stderr, "warning: auto-sync: push diverged — a peer changed the same file(s); resolve the conflict, then run `st sync` (%v)\n", lastErr)
+			return nil
+		}
+		if errors.Is(lastErr, store.ErrPushRejectedButOriginUnchanged) {
+			fmt.Fprintf(os.Stderr, "warning: auto-sync: push blocked by a server-side gate (branch protection or pre-receive hook) — retrying won't help; check remote settings (%v)\n", lastErr)
+			return nil
+		}
+		if errors.Is(lastErr, store.ErrGitLockTimeout) && attempt < autoSyncMaxRetries {
+			fmt.Fprintf(os.Stderr, "warning: auto-sync: git lock busy (attempt %d/%d) — retrying in %s\n", attempt, autoSyncMaxRetries, backoff)
+			time.Sleep(backoff)
+			backoff *= 2
+			continue
+		}
+		// Non-retryable failure or retries exhausted.
+		break
+	}
+	if errors.Is(lastErr, store.ErrGitLockTimeout) {
+		fmt.Fprintf(os.Stderr, "error: auto-sync: git lock timed out after %d attempts — local commit is NOT pushed; run `st sync` to recover\n", autoSyncMaxRetries)
+		return lastErr
+	}
+	fmt.Fprintf(os.Stderr, "warning: auto-sync failed: %v (run `st sync` manually)\n", lastErr)
 	return nil
 }
 

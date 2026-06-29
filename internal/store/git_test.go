@@ -103,6 +103,24 @@ func TestAcquireGitLockTimesOutWithHolderInfo(t *testing.T) {
 	}
 }
 
+func TestAcquireGitLock_TimeoutReturnsSentinel(t *testing.T) {
+	dir := t.TempDir()
+	// Hold the lock so a second acquire times out.
+	unlock, err := acquireGitLockTimeout(dir, time.Second)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer unlock()
+
+	_, err = acquireGitLockTimeout(dir, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, ErrGitLockTimeout) {
+		t.Errorf("expected errors.Is(err, ErrGitLockTimeout) = true, got err = %v", err)
+	}
+}
+
 func TestGitSyncDisabled(t *testing.T) {
 	root, _ := setupTestDir(t)
 	cfg := config.Defaults()

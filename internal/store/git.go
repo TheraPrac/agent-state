@@ -97,7 +97,7 @@ func acquireGitLockTimeout(dir string, timeout time.Duration) (func(), error) {
 				hint = " (holder: " + strings.TrimSpace(string(info)) + ")"
 			}
 			f.Close()
-			return nil, fmt.Errorf("git lock timeout after %s%s", time.Since(start).Round(time.Second), hint)
+			return nil, fmt.Errorf("%w after %s%s", ErrGitLockTimeout, time.Since(start).Round(time.Second), hint)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -253,6 +253,12 @@ func restoreLockedItems(snapshots map[string][]byte) {
 // the gate from main-only to all branches; the sentinel is kept for
 // back-compat with existing errors.Is call sites.
 var ErrI807MainBranchGate = errors.New("I-807: main-branch dirty-non-state gate")
+
+// ErrGitLockTimeout is returned by acquireGitLock when the exclusive file
+// lock cannot be acquired within gitLockWaiterTimeout. Callers that want
+// to retry on transient lock contention (rather than treat it as a
+// permanent failure) detect this via errors.Is.
+var ErrGitLockTimeout = errors.New("git lock timeout")
 
 // gateGitOutput runs `git <args>` in dir with `GIT_DIR`, `GIT_WORK_TREE`,
 // and `GIT_INDEX_FILE` scrubbed from the environment. The gate's git
