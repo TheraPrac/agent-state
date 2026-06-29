@@ -331,7 +331,12 @@ func TryAutoFinishWorktree(cfg *config.Config, id string) (cleaned bool, retaine
 			return false, true
 		}
 		if branch != "" && branch != "main" && branch != "master" {
-			_ = gitCmdDir(mainRepoDir, "branch", "-d", branch)
+			// Try safe delete first; fall back to force-delete for squash-merged
+			// branches where git doesn't record merge ancestry (I-1665).
+			// The pre-check loop already verified the work is on main.
+			if err := gitCmdDir(mainRepoDir, "branch", "-d", branch); err != nil {
+				_ = gitCmdDir(mainRepoDir, "branch", "-D", branch)
+			}
 		}
 	}
 

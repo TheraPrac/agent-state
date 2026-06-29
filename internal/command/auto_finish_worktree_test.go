@@ -3,6 +3,7 @@ package command
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/theraprac/agent-state/internal/config"
@@ -215,6 +216,12 @@ func TestTryAutoFinishWorktreeCleanAfterSquashMerge(t *testing.T) {
 	}
 	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
 		t.Errorf("squash-merge path: wtDir still exists after auto-finish; want removed")
+	}
+	// Verify the local feature branch was removed from the main repo.
+	// git branch -d fails for squash-merged branches (no merge ancestry);
+	// the -D fallback must clean it up (I-1665).
+	if out, err := runGit(mainRepoDir, "branch", "--list", "fix/T-001"); err != nil || strings.TrimSpace(out) != "" {
+		t.Errorf("squash-merge path: local branch fix/T-001 still exists in main repo after auto-finish (branch -D fallback failed); out=%q err=%v", strings.TrimSpace(out), err)
 	}
 }
 
