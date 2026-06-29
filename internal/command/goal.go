@@ -34,80 +34,81 @@ func GoalCreate(s *store.Store, cfg *config.Config, title string, weight int, op
 		return 2
 	}
 
-	id, err := s.NextID("goal")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "allocating ID: %v\n", err)
-		return 1
-	}
+	w := weight
+	var allocatedGoalID string
 
-	now := time.Now()
-	nowStr := now.Format(time.RFC3339)
+	createdGoal, err := s.AllocateAndCreate("goal", func(id string) (*model.Item, error) {
+		allocatedGoalID = id
+		now := time.Now()
+		nowStr := now.Format(time.RFC3339)
+		doc := &model.ParsedDocument{}
+		lines := []model.Line{
+			{Raw: "id: " + id, Key: "id", Value: id},
+			{Raw: "type: goal", Key: "type", Value: "goal"},
+			{Raw: "status: draft", Key: "status", Value: "draft"},
+			{Raw: "created: " + nowStr, Key: "created", Value: nowStr},
+			{Raw: "last_touched: " + nowStr, Key: "last_touched", Value: nowStr},
+			{Raw: ""},
+			{Raw: "completed: null", Key: "completed", Value: "null"},
+			{Raw: ""},
+		}
 
-	doc := &model.ParsedDocument{}
-	lines := []model.Line{
-		{Raw: "id: " + id, Key: "id", Value: id},
-		{Raw: "type: goal", Key: "type", Value: "goal"},
-		{Raw: "status: draft", Key: "status", Value: "draft"},
-		{Raw: "created: " + nowStr, Key: "created", Value: nowStr},
-		{Raw: "last_touched: " + nowStr, Key: "last_touched", Value: nowStr},
-		{Raw: ""},
-		{Raw: "completed: null", Key: "completed", Value: "null"},
-		{Raw: ""},
-	}
-
-	titleLine := "title: " + title
-	if strings.ContainsAny(title, ":`\"") {
-		titleLine = fmt.Sprintf("title: %q", title)
-	}
-	lines = append(lines,
-		model.Line{Raw: titleLine, Key: "title", Value: title},
-		model.Line{Raw: ""},
-		model.Line{Raw: fmt.Sprintf("weight: %d", weight), Key: "weight", Value: fmt.Sprintf("%d", weight)},
-		model.Line{Raw: ""},
-	)
-	if opts.SuccessCriterion != "" {
-		criterionLine := "success_criterion: " + opts.SuccessCriterion
-		if strings.ContainsAny(opts.SuccessCriterion, ":`\"#") {
-			criterionLine = fmt.Sprintf("success_criterion: %q", opts.SuccessCriterion)
+		titleLine := "title: " + title
+		if strings.ContainsAny(title, ":`\"") {
+			titleLine = fmt.Sprintf("title: %q", title)
 		}
 		lines = append(lines,
-			model.Line{Raw: criterionLine, Key: "success_criterion", Value: opts.SuccessCriterion},
+			model.Line{Raw: titleLine, Key: "title", Value: title},
+			model.Line{Raw: ""},
+			model.Line{Raw: fmt.Sprintf("weight: %d", weight), Key: "weight", Value: fmt.Sprintf("%d", weight)},
 			model.Line{Raw: ""},
 		)
-	}
-	lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
-	for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
-		lines = append(lines,
-			model.Line{Raw: "  " + key + ": |-", Key: key, Indent: 2, BlockKey: "sbar"},
-			model.Line{Raw: "    " + model.SBARPlaceholders[key], IsBlock: true, BlockKey: key, Indent: 4},
-		)
-	}
-	doc.Lines = lines
+		if opts.SuccessCriterion != "" {
+			criterionLine := "success_criterion: " + opts.SuccessCriterion
+			if strings.ContainsAny(opts.SuccessCriterion, ":`\"#") {
+				criterionLine = fmt.Sprintf("success_criterion: %q", opts.SuccessCriterion)
+			}
+			lines = append(lines,
+				model.Line{Raw: criterionLine, Key: "success_criterion", Value: opts.SuccessCriterion},
+				model.Line{Raw: ""},
+			)
+		}
+		lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
+		for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
+			lines = append(lines,
+				model.Line{Raw: "  " + key + ": |-", Key: key, Indent: 2, BlockKey: "sbar"},
+				model.Line{Raw: "    " + model.SBARPlaceholders[key], IsBlock: true, BlockKey: key, Indent: 4},
+			)
+		}
+		doc.Lines = lines
 
-	w := weight
-	item := &model.Item{
-		ID:               id,
-		Type:             "goal",
-		Status:           "draft",
-		Title:            title,
-		Created:          now,
-		LastTouched:      now,
-		Weight:           &w,
-		SuccessCriterion: opts.SuccessCriterion,
-		WorkTracking:     make(map[string]interface{}),
-		Delivery:         make(map[string]interface{}),
-		TestingEvidence:  make(map[string]interface{}),
-		TimeTracking:     make(map[string]interface{}),
-		Manifest:         make(map[string]interface{}),
-		Doc:              doc,
-	}
-
-	if err := s.Create(item); err != nil {
-		fmt.Fprintf(os.Stderr, "creating %s: %v\n", id, err)
+		return &model.Item{
+			ID:               id,
+			Type:             "goal",
+			Status:           "draft",
+			Title:            title,
+			Created:          now,
+			LastTouched:      now,
+			Weight:           &w,
+			SuccessCriterion: opts.SuccessCriterion,
+			WorkTracking:     make(map[string]interface{}),
+			Delivery:         make(map[string]interface{}),
+			TestingEvidence:  make(map[string]interface{}),
+			TimeTracking:     make(map[string]interface{}),
+			Manifest:         make(map[string]interface{}),
+			Doc:              doc,
+		}, nil
+	})
+	if err != nil {
+		if allocatedGoalID != "" {
+			fmt.Fprintf(os.Stderr, "creating %s: %v\n", allocatedGoalID, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "creating goal: %v\n", err)
+		}
 		return 1
 	}
 
-	fmt.Printf("Created goal %s — %s (weight %d, status draft)\n", id, title, weight)
+	fmt.Printf("Created goal %s — %s (weight %d, status draft)\n", createdGoal.ID, title, weight)
 	return 0
 }
 

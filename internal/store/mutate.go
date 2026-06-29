@@ -364,6 +364,91 @@ func acquireExclusive(itemDir, id, dataPath string) (func(), error) {
 	}
 }
 
+// ErrAllocLockTimeout is returned when the workspace-wide ID allocation
+// lock cannot be acquired within LockTimeout.
+var ErrAllocLockTimeout = errors.New("id-alloc flock acquire timed out")
+
+// acquireAllocLock acquires an exclusive flock on the workspace-wide
+// ID allocation lock file (<itemDir>/.locks/.id-alloc.lock). The file
+// starts with "." so LockedItems skips it (it's not a pipeline-active
+// marker). The ".lock" suffix also makes LockedItems skip it via the
+// existing suffix check. Returns a release function.
+func acquireAllocLock(itemDir string) (func(), error) {
+	lockDir := filepath.Join(itemDir, ".locks")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", lockDir, err)
+	}
+	lockPath := filepath.Join(lockDir, ".id-alloc.lock")
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open alloc lock %s: %w", lockPath, err)
+	}
+
+	deadline := time.Now().Add(LockTimeout)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			_ = f.Close()
+			return nil, fmt.Errorf("flock alloc lock %s: %w", lockPath, err)
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, ErrAllocLockTimeout
+		}
+		time.Sleep(lockPollInterval)
+	}
+}
+
+// AllocateAndCreate atomically allocates the next available ID for
+// itemType and creates the item returned by build. While holding the
+// workspace-wide allocation flock it refreshes the in-memory store
+// via a full disk rescan (capturing files written by concurrent peers),
+// computes the next ID via NextID, calls build(id), and persists the
+// result via Create. The alloc lock is released after Create returns.
+//
+// build must be a pure doc-construction closure — no network calls,
+// no other store operations. Sprint assignment, changelog, and autoSync
+// must happen outside this call, after it returns.
+func (s *Store) AllocateAndCreate(itemType string, build func(id string) (*model.Item, error)) (*model.Item, error) {
+	if err := PreFlightGitState(s.cfg.ItemDir()); err != nil {
+		return nil, err
+	}
+
+	release, err := acquireAllocLock(s.cfg.ItemDir())
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Refresh disk truth under the lock so NextID sees files written
+	// by concurrent peers since this process started.
+	if err := s.scan(); err != nil {
+		return nil, fmt.Errorf("rescan: %w", err)
+	}
+
+	id, err := s.NextID(itemType)
+	if err != nil {
+		return nil, fmt.Errorf("allocating ID: %w", err)
+	}
+
+	item, err := build(id)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, errors.New("build returned nil item without error")
+	}
+
+	if err := s.Create(item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 // writeAtomic serializes the item via Doc.String() and publishes it
 // to disk with a tmp + rename so a crash never leaves a partial file.
 // It also stamps last_touched and last_touched_by — the same auto-

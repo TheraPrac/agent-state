@@ -214,115 +214,6 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 		}
 	}
 
-	id, err := s.NextID(itemType)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "allocating ID: %v\n", err)
-		return 1
-	}
-	if opts.IDOut != nil {
-		*opts.IDOut = id
-	}
-
-	now := time.Now()
-	nowStr := now.Format(time.RFC3339)
-
-	// Build the document
-	doc := &model.ParsedDocument{}
-	lines := []model.Line{
-		{Raw: "id: " + id, Key: "id", Value: id},
-		{Raw: "type: " + itemType, Key: "type", Value: itemType},
-		{Raw: "status: " + tc.StartStatus, Key: "status", Value: tc.StartStatus},
-		{Raw: "created: " + nowStr, Key: "created", Value: nowStr},
-		{Raw: "last_touched: " + nowStr, Key: "last_touched", Value: nowStr},
-		{Raw: ""},
-		{Raw: "completed: null", Key: "completed", Value: "null"},
-		{Raw: ""},
-	}
-
-	// Title
-	titleLine := "title: " + title
-	if strings.ContainsAny(title, ":`\"") {
-		titleLine = fmt.Sprintf("title: %q", title)
-	}
-	lines = append(lines, model.Line{Raw: titleLine, Key: "title", Value: title})
-	lines = append(lines, model.Line{Raw: ""})
-
-	// Priority
-	lines = append(lines, model.Line{
-		Raw: fmt.Sprintf("priority: %d", opts.Priority), Key: "priority", Value: fmt.Sprintf("%d", opts.Priority),
-	})
-
-	// I-406: severity field is no longer written. Existing files were
-	// migrated by cmd/migrate-priority. Items now carry priority only.
-
-	// Tags
-	if opts.Tag != "" {
-		lines = append(lines, model.Line{Raw: fmt.Sprintf("tags: [%s]", opts.Tag)})
-	}
-
-	// Goals
-	if len(opts.Goals) > 0 {
-		lines = append(lines, model.Line{Raw: "goals:", Key: "goals"})
-		for _, gid := range opts.Goals {
-			lines = append(lines, model.Line{Raw: "- " + gid, IsList: true})
-		}
-	}
-
-	lines = append(lines, model.Line{Raw: ""})
-
-	// Dependencies
-	if opts.Depends != "" {
-		lines = append(lines, model.Line{Raw: "depends_on:", Key: "depends_on"})
-		lines = append(lines, model.Line{Raw: "- " + opts.Depends, IsList: true})
-	} else {
-		lines = append(lines, model.Line{Raw: "depends_on:", Key: "depends_on"})
-		lines = append(lines, model.Line{Raw: "- []", IsList: true})
-	}
-	lines = append(lines, model.Line{Raw: ""})
-
-	// I-508: emit `blocks:` when the type lists it as required so the
-	// write-time gate accepts the new file. Without this, every
-	// `st create` for task/issue types would reject. Other types (idea,
-	// promotion) don't list blocks as required and skip this entirely.
-	hasBlocksRequired := false
-	for _, rf := range tc.RequiredFields {
-		if rf == "blocks" {
-			hasBlocksRequired = true
-			break
-		}
-	}
-	if hasBlocksRequired {
-		lines = append(lines, model.Line{Raw: "blocks:", Key: "blocks"})
-		lines = append(lines, model.Line{Raw: "- []", IsList: true})
-		lines = append(lines, model.Line{Raw: ""})
-	}
-
-	// Next actions
-	lines = append(lines, model.Line{Raw: "next_actions:", Key: "next_actions"})
-	lines = append(lines, model.Line{Raw: "- []", IsList: true})
-
-	// I-492: SBAR scaffold. Every new task/issue ships with the four
-	// I-487 sections pre-stubbed so the author (or `st update <id>
-	// sbar`) can fill them in immediately without touching the file
-	// shape. Idea/promotion types are excluded — SBAR is structured
-	// for work tracking, not idea capture.
-	//
-	// I-149 centralised the placeholder strings on `model.SBARPlaceholders`
-	// so this scaffold, the migrate-sbar backfill, and the substance
-	// gate share a single source of truth — a copy-edit pass on any
-	// one wording would otherwise silently disable the gate.
-	if itemType == "task" || itemType == "issue" {
-		lines = append(lines, model.Line{Raw: ""})
-		lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
-		for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
-			lines = append(lines, model.Line{Raw: "  " + key + ": |-"})
-			lines = append(lines, model.Line{Raw: "    " + model.SBARPlaceholders[key]})
-		}
-	}
-
-	doc.Lines = lines
-
-	// I-908: if real SBAR was supplied via flags, overwrite the scaffold block.
 	var realSBAR model.SBAR
 	if (itemType == "task" || itemType == "issue") &&
 		(opts.Situation != "" || opts.Background != "" || opts.Assessment != "" || opts.Recommendation != "") {
@@ -332,49 +223,166 @@ func Create(s *store.Store, cfg *config.Config, itemType, title string, opts Cre
 			Assessment:     opts.Assessment,
 			Recommendation: opts.Recommendation,
 		}
-		doc.SetSBARBlock(realSBAR)
 	}
 
-	item := &model.Item{
-		ID:          id,
-		Type:        itemType,
-		Status:      tc.StartStatus,
-		Title:       title,
-		Created:     now,
-		LastTouched: now,
-		Priority:    &opts.Priority,
-		Doc:         doc,
-		SBAR:        realSBAR, // I-908: zero value if no flags supplied
-	}
-
-	if opts.Depends != "" {
-		item.DependsOn = []string{opts.Depends}
-	}
-	if opts.Tag != "" {
-		item.Tags = []string{opts.Tag}
-	}
-	if len(opts.Goals) > 0 {
-		item.Goals = opts.Goals
-	}
-
-	// I-830: auto-assign scope_class from goal tags/membership when not set.
-	if item.ScopeClass == "" {
-		if cls := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); cls != "" {
-			item.ScopeClass = cls
-			item.Doc.SetField("scope_class", cls)
+	var allocatedID string
+	createdItem, err := s.AllocateAndCreate(itemType, func(id string) (*model.Item, error) {
+		allocatedID = id
+		if opts.IDOut != nil {
+			*opts.IDOut = id
 		}
-	}
+		now := time.Now()
+		nowStr := now.Format(time.RFC3339)
 
-	item.WorkTracking = make(map[string]interface{})
-	item.Delivery = make(map[string]interface{})
-	item.TestingEvidence = make(map[string]interface{})
-	item.TimeTracking = make(map[string]interface{})
-	item.Manifest = make(map[string]interface{})
+		// Build the document
+		doc := &model.ParsedDocument{}
+		lines := []model.Line{
+			{Raw: "id: " + id, Key: "id", Value: id},
+			{Raw: "type: " + itemType, Key: "type", Value: itemType},
+			{Raw: "status: " + tc.StartStatus, Key: "status", Value: tc.StartStatus},
+			{Raw: "created: " + nowStr, Key: "created", Value: nowStr},
+			{Raw: "last_touched: " + nowStr, Key: "last_touched", Value: nowStr},
+			{Raw: ""},
+			{Raw: "completed: null", Key: "completed", Value: "null"},
+			{Raw: ""},
+		}
 
-	if err := s.Create(item); err != nil {
-		fmt.Fprintf(os.Stderr, "creating %s: %v\n", id, err)
+		// Title
+		titleLine := "title: " + title
+		if strings.ContainsAny(title, ":`\"") {
+			titleLine = fmt.Sprintf("title: %q", title)
+		}
+		lines = append(lines, model.Line{Raw: titleLine, Key: "title", Value: title})
+		lines = append(lines, model.Line{Raw: ""})
+
+		// Priority
+		lines = append(lines, model.Line{
+			Raw: fmt.Sprintf("priority: %d", opts.Priority), Key: "priority", Value: fmt.Sprintf("%d", opts.Priority),
+		})
+
+		// I-406: severity field is no longer written. Existing files were
+		// migrated by cmd/migrate-priority. Items now carry priority only.
+
+		// Tags
+		if opts.Tag != "" {
+			lines = append(lines, model.Line{Raw: fmt.Sprintf("tags: [%s]", opts.Tag)})
+		}
+
+		// Goals
+		if len(opts.Goals) > 0 {
+			lines = append(lines, model.Line{Raw: "goals:", Key: "goals"})
+			for _, gid := range opts.Goals {
+				lines = append(lines, model.Line{Raw: "- " + gid, IsList: true})
+			}
+		}
+
+		lines = append(lines, model.Line{Raw: ""})
+
+		// Dependencies
+		if opts.Depends != "" {
+			lines = append(lines, model.Line{Raw: "depends_on:", Key: "depends_on"})
+			lines = append(lines, model.Line{Raw: "- " + opts.Depends, IsList: true})
+		} else {
+			lines = append(lines, model.Line{Raw: "depends_on:", Key: "depends_on"})
+			lines = append(lines, model.Line{Raw: "- []", IsList: true})
+		}
+		lines = append(lines, model.Line{Raw: ""})
+
+		// I-508: emit `blocks:` when the type lists it as required so the
+		// write-time gate accepts the new file. Without this, every
+		// `st create` for task/issue types would reject. Other types (idea,
+		// promotion) don't list blocks as required and skip this entirely.
+		hasBlocksRequired := false
+		for _, rf := range tc.RequiredFields {
+			if rf == "blocks" {
+				hasBlocksRequired = true
+				break
+			}
+		}
+		if hasBlocksRequired {
+			lines = append(lines, model.Line{Raw: "blocks:", Key: "blocks"})
+			lines = append(lines, model.Line{Raw: "- []", IsList: true})
+			lines = append(lines, model.Line{Raw: ""})
+		}
+
+		// Next actions
+		lines = append(lines, model.Line{Raw: "next_actions:", Key: "next_actions"})
+		lines = append(lines, model.Line{Raw: "- []", IsList: true})
+
+		// I-492: SBAR scaffold. Every new task/issue ships with the four
+		// I-487 sections pre-stubbed so the author (or `st update <id>
+		// sbar`) can fill them in immediately without touching the file
+		// shape. Idea/promotion types are excluded — SBAR is structured
+		// for work tracking, not idea capture.
+		//
+		// I-149 centralised the placeholder strings on `model.SBARPlaceholders`
+		// so this scaffold, the migrate-sbar backfill, and the substance
+		// gate share a single source of truth — a copy-edit pass on any
+		// one wording would otherwise silently disable the gate.
+		if itemType == "task" || itemType == "issue" {
+			lines = append(lines, model.Line{Raw: ""})
+			lines = append(lines, model.Line{Raw: "sbar:", Key: "sbar"})
+			for _, key := range []string{"situation", "background", "assessment", "recommendation"} {
+				lines = append(lines, model.Line{Raw: "  " + key + ": |-"})
+				lines = append(lines, model.Line{Raw: "    " + model.SBARPlaceholders[key]})
+			}
+		}
+
+		doc.Lines = lines
+
+		// I-908: if real SBAR was supplied via flags, overwrite the scaffold block.
+		if !realSBAR.IsEmpty() {
+			doc.SetSBARBlock(realSBAR)
+		}
+
+		item := &model.Item{
+			ID:          id,
+			Type:        itemType,
+			Status:      tc.StartStatus,
+			Title:       title,
+			Created:     now,
+			LastTouched: now,
+			Priority:    &opts.Priority,
+			Doc:         doc,
+			SBAR:        realSBAR, // I-908: zero value if no flags supplied
+		}
+
+		if opts.Depends != "" {
+			item.DependsOn = []string{opts.Depends}
+		}
+		if opts.Tag != "" {
+			item.Tags = []string{opts.Tag}
+		}
+		if len(opts.Goals) > 0 {
+			item.Goals = opts.Goals
+		}
+
+		// I-830: auto-assign scope_class from goal tags/membership when not set.
+		if item.ScopeClass == "" {
+			if cls := cfg.Testing.ScopeClassForItem(item.Tags, item.Goals); cls != "" {
+				item.ScopeClass = cls
+				item.Doc.SetField("scope_class", cls)
+			}
+		}
+
+		item.WorkTracking = make(map[string]interface{})
+		item.Delivery = make(map[string]interface{})
+		item.TestingEvidence = make(map[string]interface{})
+		item.TimeTracking = make(map[string]interface{})
+		item.Manifest = make(map[string]interface{})
+
+		return item, nil
+	})
+	if err != nil {
+		if allocatedID != "" {
+			fmt.Fprintf(os.Stderr, "creating %s: %v\n", allocatedID, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "creating item: %v\n", err)
+		}
 		return 1
 	}
+	id := createdItem.ID
+	item := createdItem
 	// Print machine-parseable ID immediately — before autoSync and runItemReview
 	// (which can produce hundreds of lines), so it's the first capturable output.
 	fmt.Printf("new item: %s\n", id)
