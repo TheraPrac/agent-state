@@ -417,7 +417,9 @@ func heuristicPath(cfg *config.Config, agentID string) string {
 // if it does not exist.
 func HeuristicAppend(cfg *config.Config, entry Entry) error {
 	if entry.Timestamp == "" {
-		entry.Timestamp = time.Now().Format(time.RFC3339)
+		// Nanosecond precision for uniqueness: two adds in the same second must
+		// produce different timestamps so HeuristicActiveList can retire by exact match.
+		entry.Timestamp = time.Now().Format(time.RFC3339Nano)
 	}
 	agentID := cfg.AgentID()
 	if entry.Agent == "" {
@@ -479,6 +481,53 @@ func HeuristicList(cfg *config.Config, agentID string, filterTags []string) ([]E
 
 	var filtered []Entry
 	for _, e := range entries {
+		if len(e.RelevanceTags) == 0 {
+			filtered = append(filtered, e)
+			continue
+		}
+		for _, rt := range e.RelevanceTags {
+			if tagSet[rt] {
+				filtered = append(filtered, e)
+				break
+			}
+		}
+	}
+	return filtered, nil
+}
+
+// HeuristicActiveList returns only the active (non-retired) heuristic entries.
+// heuristic_retire tombstones and the entries they target are both excluded.
+// filterTags works identically to HeuristicList.
+func HeuristicActiveList(cfg *config.Config, agentID string, filterTags []string) ([]Entry, error) {
+	all, err := HeuristicList(cfg, agentID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	retiredTS := make(map[string]bool)
+	for _, e := range all {
+		if e.Op == "heuristic_retire" && e.Field != "" {
+			retiredTS[e.Field] = true
+		}
+	}
+
+	var active []Entry
+	for _, e := range all {
+		if e.Op == "heuristic_retire" || retiredTS[e.Timestamp] {
+			continue
+		}
+		active = append(active, e)
+	}
+
+	if len(filterTags) == 0 || len(active) == 0 {
+		return active, nil
+	}
+	tagSet := make(map[string]bool, len(filterTags))
+	for _, t := range filterTags {
+		tagSet[t] = true
+	}
+	var filtered []Entry
+	for _, e := range active {
 		if len(e.RelevanceTags) == 0 {
 			filtered = append(filtered, e)
 			continue

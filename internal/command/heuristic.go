@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/theraprac/agent-state/internal/changelog"
@@ -41,7 +42,7 @@ func Heuristic_List(cfg *config.Config, agentID string) int {
 	if agentID == "" {
 		agentID = cfg.AgentID()
 	}
-	entries, err := changelog.HeuristicList(cfg, agentID, nil)
+	entries, err := changelog.HeuristicActiveList(cfg, agentID, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "st heuristic list: %v\n", err)
 		return 1
@@ -118,6 +119,73 @@ func Heuristic_Migrate(cfg *config.Config) int {
 		n++
 	}
 	fmt.Printf("migrated %d heuristic(s) from agent-memory/\n", n)
+	return 0
+}
+
+// Heuristic_Retire marks a recorded heuristic as superseded. idOrIndex is
+// either a 1-based integer index into the active list or a timestamp prefix.
+// The retire is recorded as a changelog entry so HeuristicActiveList and
+// st resume can filter it out.
+func Heuristic_Retire(cfg *config.Config, idOrIndex, reason string) int {
+	if strings.TrimSpace(reason) == "" {
+		fmt.Fprintln(os.Stderr, "st heuristic retire: --reason is required")
+		return 1
+	}
+	if strings.TrimSpace(idOrIndex) == "" {
+		fmt.Fprintln(os.Stderr, "st heuristic retire: id or index is required")
+		return 1
+	}
+	// Select from active entries only: excludes retire tombstones and already-retired entries.
+	active, err := changelog.HeuristicActiveList(cfg, cfg.AgentID(), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "st heuristic retire: %v\n", err)
+		return 1
+	}
+
+	var target *changelog.Entry
+	if idx, err := strconv.Atoi(idOrIndex); err == nil {
+		// 1-based index into active list.
+		if idx < 1 || idx > len(active) {
+			fmt.Fprintf(os.Stderr, "st heuristic retire: index %d out of range (1-%d)\n", idx, len(active))
+			return 1
+		}
+		e := active[idx-1]
+		target = &e
+	} else {
+		// Timestamp prefix match — collect all matches to detect ambiguity.
+		var matches []changelog.Entry
+		for _, e := range active {
+			if strings.HasPrefix(e.Timestamp, idOrIndex) {
+				matches = append(matches, e)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			fmt.Fprintf(os.Stderr, "st heuristic retire: no active heuristic found matching %q\n", idOrIndex)
+			return 1
+		case 1:
+			e := matches[0]
+			target = &e
+		default:
+			fmt.Fprintf(os.Stderr, "st heuristic retire: ambiguous prefix %q matches %d entries — use a more specific prefix or an index\n", idOrIndex, len(matches))
+			return 1
+		}
+	}
+
+	retire := changelog.Entry{
+		Op:     "heuristic_retire",
+		Field:  target.Timestamp,
+		Reason: reason,
+	}
+	if err := changelog.HeuristicAppend(cfg, retire); err != nil {
+		fmt.Fprintf(os.Stderr, "st heuristic retire: %v\n", err)
+		return 1
+	}
+	ts := target.Timestamp
+	if len(ts) > 19 {
+		ts = ts[:19]
+	}
+	fmt.Printf("retired heuristic [%s]: %s\n", ts, target.Reason)
 	return 0
 }
 

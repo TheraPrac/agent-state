@@ -403,7 +403,7 @@ func renderResume(cfg *config.Config, item *model.Item, entries []changelog.Entr
 	// a loud audit warning if agent-memory/*.md files exist but no structured
 	// heuristics have been recorded yet (operator silent-failure principle).
 	agentID := cfg.AgentID()
-	heuristics, heuristicErr := changelog.HeuristicList(cfg, agentID, item.Tags)
+	heuristics, heuristicErr := changelog.HeuristicActiveList(cfg, agentID, item.Tags)
 	if heuristicErr != nil {
 		b.WriteString("## ⚠️  HEURISTICS UNREADABLE\n")
 		fmt.Fprintf(&b, "  Cannot read heuristic log: %v\n\n", heuristicErr)

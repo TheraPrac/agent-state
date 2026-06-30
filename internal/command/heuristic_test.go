@@ -93,6 +93,70 @@ When something happens, avoid doing it because it causes problems.
 	}
 }
 
+func TestHeuristicRetire(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+
+	// Seed two heuristics.
+	Heuristic_Add(cfg, "rule one: do X", "")
+	Heuristic_Add(cfg, "rule two: do Y", "")
+
+	before, _ := changelog.HeuristicActiveList(cfg, cfg.AgentID(), nil)
+	if len(before) != 2 {
+		t.Fatalf("expected 2 active entries, got %d", len(before))
+	}
+
+	// Retire by 1-based index: removes "rule one" from the active list.
+	code := Heuristic_Retire(cfg, "1", "rule one is obsolete")
+	if code != 0 {
+		t.Fatalf("Heuristic_Retire returned %d, want 0", code)
+	}
+
+	// Active list must shrink: only "rule two" remains.
+	afterFirst, _ := changelog.HeuristicActiveList(cfg, cfg.AgentID(), nil)
+	if len(afterFirst) != 1 {
+		t.Fatalf("expected 1 active entry after retire, got %d", len(afterFirst))
+	}
+	if afterFirst[0].Reason != "rule two: do Y" {
+		t.Errorf("expected rule two to remain active, got %q", afterFirst[0].Reason)
+	}
+
+	// Raw log grows: heuristic_retire tombstone was appended.
+	all, _ := changelog.HeuristicList(cfg, cfg.AgentID(), nil)
+	if len(all) != 3 {
+		t.Fatalf("expected 3 raw entries (2 add + 1 retire), got %d", len(all))
+	}
+	if all[2].Op != "heuristic_retire" {
+		t.Errorf("expected op heuristic_retire, got %q", all[2].Op)
+	}
+	if all[2].Field != before[0].Timestamp {
+		t.Errorf("retire.Field %q != original timestamp %q", all[2].Field, before[0].Timestamp)
+	}
+
+	// Cannot retire the same entry twice: it no longer appears in the active list.
+	if code := Heuristic_Retire(cfg, before[0].Timestamp, "re-retire"); code == 0 {
+		t.Error("retiring an already-retired entry should return non-zero")
+	}
+
+	// Out-of-range index (only 1 active entry remains).
+	if code := Heuristic_Retire(cfg, "2", "reason"); code == 0 {
+		t.Error("out-of-range index should return non-zero")
+	}
+
+	// Empty reason.
+	if code := Heuristic_Retire(cfg, "1", ""); code == 0 {
+		t.Error("empty reason should return non-zero")
+	}
+
+	// Retire remaining entry by its full unique timestamp.
+	if code := Heuristic_Retire(cfg, before[1].Timestamp, "retiring rule two by timestamp"); code != 0 {
+		t.Errorf("timestamp retire returned %d, want 0", code)
+	}
+	final, _ := changelog.HeuristicActiveList(cfg, cfg.AgentID(), nil)
+	if len(final) != 0 {
+		t.Errorf("expected 0 active entries after retiring all, got %d", len(final))
+	}
+}
+
 func TestResumeShowsHeuristics(t *testing.T) {
 	cfg := testResumeCfg(t)
 

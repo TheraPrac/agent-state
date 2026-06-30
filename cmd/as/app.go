@@ -2155,7 +2155,22 @@ Example:
 			exitCode = command.Heuristic_Migrate(appCfg)
 		},
 	}
-	heuristicCmd.AddCommand(heuristicAddCmd, heuristicListCmd, heuristicMigrateCmd)
+	heuristicRetireCmd := &cobra.Command{
+		Use:   "retire <id|index>",
+		Short: "Mark a heuristic as superseded (by 1-based index or timestamp prefix)",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			reason, err := cmd.Flags().GetString("reason")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "st heuristic retire: %v\n", err)
+				exitCode = 1
+				return
+			}
+			exitCode = command.Heuristic_Retire(appCfg, args[0], reason)
+		},
+	}
+	heuristicRetireCmd.Flags().String("reason", "", "why this heuristic no longer applies (required)")
+	heuristicCmd.AddCommand(heuristicAddCmd, heuristicListCmd, heuristicMigrateCmd, heuristicRetireCmd)
 	root.AddCommand(heuristicCmd)
 
 	// st capture-decision — I-679 Phase B native-structured decision
