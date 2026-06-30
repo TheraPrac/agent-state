@@ -215,3 +215,43 @@ stash@{2}: On main: st-orphan: agent-state/issues/I-002.md owned-by:agent-c drop
 		t.Errorf("non-orphan stash should be filtered out; got:\n%s", output)
 	}
 }
+
+// TestOrphanStashIncludesAgentMemory verifies that tracked modifications to
+// agent-memory/ files are stashed by OrphanStash even though they have no
+// assigned_to field (I-1683: those files are deprecated peer-state that blocks
+// git pull --rebase on the shared workspace clone).
+func TestOrphanStashIncludesAgentMemory(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// Commit a tracked agent-memory/MEMORY.md and then dirty it (simulating a
+	// peer session writing to the deprecated shared memory index).
+	addTrackedDirtyFile(t, dir, "agent-memory/MEMORY.md", "peer wrote this\n")
+
+	// Also add an untracked file in agent-memory/ — it must NOT be stashed
+	// (untracked files don't block pull --rebase; stashing them silently would lose work).
+	untrackedPath := filepath.Join(dir, "agent-memory", "feedback_new.md")
+	if err := os.WriteFile(untrackedPath, []byte("untracked\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stashed := OrphanStash(dir, "agent-state", "agent-a")
+
+	if len(stashed) == 0 {
+		t.Fatal("expected OrphanStash to stash agent-memory/MEMORY.md; got nothing stashed")
+	}
+	found := false
+	for _, s := range stashed {
+		if strings.Contains(s, "agent-memory/MEMORY.md") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("stash list %v does not mention agent-memory/MEMORY.md", stashed)
+	}
+
+	// The untracked file must still be present in the working tree.
+	if _, err := os.Stat(untrackedPath); os.IsNotExist(err) {
+		t.Error("untracked agent-memory/feedback_new.md should NOT have been stashed")
+	}
+}

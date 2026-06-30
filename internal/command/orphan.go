@@ -23,49 +23,82 @@ import (
 func OrphanStash(workspaceRoot, itemDir, agentID string) []string {
 	var stashed []string
 
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Scan itemDir for peer-owned tracked dirty files.
 	out, err := execGitOrphan(workspaceRoot, "status", "--porcelain", "--", itemDir+"/")
-	if err != nil || len(out) == 0 {
-		return nil
+	if err == nil && len(out) > 0 {
+		for _, line := range strings.Split(string(out), "\n") {
+			if len(line) < 4 {
+				continue
+			}
+			// Skip untracked files — git stash push exits 1 for untracked paths
+			// without --include-untracked. We only stash tracked dirty files.
+			if line[0:2] == "??" {
+				continue
+			}
+			relPath := strings.TrimSpace(line[3:])
+			if relPath == "" {
+				continue
+			}
+
+			owner := readAssignedTo(filepath.Join(workspaceRoot, relPath))
+
+			// Leave files with no owner or owned by the current agent.
+			if owner == "" || owner == agentID {
+				continue
+			}
+
+			label := fmt.Sprintf("st-orphan: %s owned-by:%s dropped-by:%s date:%s",
+				relPath, owner, agentID, today)
+			_, stashErr := execGitOrphanCapture(workspaceRoot, "stash", "push",
+				"-m", label, "--", relPath)
+			if stashErr != nil {
+				fmt.Fprintf(os.Stderr, "orphan: failed to stash %s: %v\n", relPath, stashErr)
+				continue
+			}
+			// git stash push output is a human message, not a ref. Retrieve the real ref.
+			ref := "stash@{?}"
+			if refOut, err := execGitOrphan(workspaceRoot, "stash", "list",
+				"--max-count=1", "--format=%gd"); err == nil {
+				ref = strings.TrimSpace(string(refOut))
+			}
+			stashed = append(stashed, fmt.Sprintf("  %s → %s (owned by %s)", relPath, ref, owner))
+		}
 	}
 
-	today := time.Now().UTC().Format("2006-01-02")
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
-		if len(line) < 4 {
-			continue
+	// I-1683: also stash tracked modifications in agent-memory/ — the directory is
+	// deprecated shared state (T-349/I-1413) with no per-file ownership. Any tracked
+	// modification there is from a peer session and will block `git pull --rebase`
+	// the same way an agent-state/ peer file does. Stash unconditionally (no
+	// assigned_to check); skip untracked files (those are new writes, not tracked mods).
+	memOut, memErr := execGitOrphan(workspaceRoot, "status", "--porcelain", "--", "agent-memory/")
+	if memErr == nil && len(memOut) > 0 {
+		for _, line := range strings.Split(string(memOut), "\n") {
+			if len(line) < 4 {
+				continue
+			}
+			if line[0:2] == "??" {
+				continue // untracked — not a pull blocker for tracked-file rebases
+			}
+			relPath := strings.TrimSpace(line[3:])
+			if relPath == "" {
+				continue
+			}
+			label := fmt.Sprintf("st-orphan: %s peer-state dropped-by:%s date:%s",
+				relPath, agentID, today)
+			if _, stashErr := execGitOrphanCapture(workspaceRoot, "stash", "push",
+				"-m", label, "--", relPath); stashErr != nil {
+				fmt.Fprintf(os.Stderr, "orphan: failed to stash %s: %v\n", relPath, stashErr)
+				continue
+			}
+			ref := "stash@{?}"
+			if refOut, err := execGitOrphan(workspaceRoot, "stash", "list",
+				"--max-count=1", "--format=%gd"); err == nil {
+				ref = strings.TrimSpace(string(refOut))
+			}
+			stashed = append(stashed, fmt.Sprintf("  %s → %s (deprecated peer-state)", relPath, ref))
 		}
-		// Skip untracked files — git stash push exits 1 for untracked paths
-		// without --include-untracked. We only stash tracked dirty files.
-		if line[0:2] == "??" {
-			continue
-		}
-		relPath := strings.TrimSpace(line[3:])
-		if relPath == "" {
-			continue
-		}
-
-		owner := readAssignedTo(filepath.Join(workspaceRoot, relPath))
-
-		// Leave files with no owner or owned by the current agent.
-		if owner == "" || owner == agentID {
-			continue
-		}
-
-		label := fmt.Sprintf("st-orphan: %s owned-by:%s dropped-by:%s date:%s",
-			relPath, owner, agentID, today)
-		_, stashErr := execGitOrphanCapture(workspaceRoot, "stash", "push",
-			"-m", label, "--", relPath)
-		if stashErr != nil {
-			fmt.Fprintf(os.Stderr, "orphan: failed to stash %s: %v\n", relPath, stashErr)
-			continue
-		}
-		// git stash push output is a human message, not a ref. Retrieve the real ref.
-		ref := "stash@{?}"
-		if refOut, err := execGitOrphan(workspaceRoot, "stash", "list",
-			"--max-count=1", "--format=%gd"); err == nil {
-			ref = strings.TrimSpace(string(refOut))
-		}
-		stashed = append(stashed, fmt.Sprintf("  %s → %s (owned by %s)", relPath, ref, owner))
 	}
 
 	if len(stashed) > 0 {
