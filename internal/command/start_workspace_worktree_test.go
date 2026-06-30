@@ -60,7 +60,7 @@ func TestStartWorkspaceWorktree_CreatedWhenCloneExists(t *testing.T) {
 	wsClone := seedWSClone(t, base, workspaceRepo)
 
 	cfg := wsTestConfig(t, base, []string{"repo"})
-	opts := StartOpts{Slug: "ws", Repos: []string{"repo"}, PRFetch: noPRFetch()}
+	opts := StartOpts{Slug: "ws", Repos: []string{"repo", workspaceRepo}, PRFetch: noPRFetch()}
 	if _, err := createWorktrees(cfg, "I-9001", "issue", opts); err != nil {
 		t.Fatalf("createWorktrees: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestStartWorkspaceWorktree_ProvisionsWithDirtyPrimary(t *testing.T) {
 	os.WriteFile(dirty, []byte("uncommitted\n"), 0644)
 
 	cfg := wsTestConfig(t, base, []string{"repo"})
-	opts := StartOpts{Slug: "dirty", Repos: []string{"repo"}, PRFetch: noPRFetch()}
+	opts := StartOpts{Slug: "dirty", Repos: []string{"repo", workspaceRepo}, PRFetch: noPRFetch()}
 	if _, err := createWorktrees(cfg, "I-9003", "issue", opts); err != nil {
 		t.Fatalf("createWorktrees with dirty primary: %v", err)
 	}
