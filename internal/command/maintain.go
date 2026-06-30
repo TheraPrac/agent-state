@@ -136,14 +136,65 @@ func pruneMergedBranches(root string, mergedPR map[string][]prHead, doneItems ma
 			continue
 		}
 		// -D is safe: branchMerged proved b is contained in origin/main. A branch
-		// checked out in another worktree makes git refuse (harmless).
+		// checked out in another worktree makes git refuse (harmless). When the
+		// worktree belongs to a closed item, prune it first so the branch delete
+		// can succeed (I-1682).
 		if err := gitCmdDirQuiet(root, "branch", "-D", b); err != nil {
+			if id := branchItemID(b); id != "" && doneItems[id] {
+				if pruneStaleWorktreesForBranch(root, b) {
+					if err2 := gitCmdDirQuiet(root, "branch", "-D", b); err2 == nil {
+						pruneRemoteBranch(root, b)
+						fmt.Printf("  branch: pruned %s (removed stale worktree)\n", b)
+						continue
+					}
+				}
+			}
 			fmt.Printf("  branch: kept %s (local delete refused: %v)\n", b, err)
 			continue
 		}
 		pruneRemoteBranch(root, b)
 		fmt.Printf("  branch: pruned %s\n", b)
 	}
+}
+
+// worktreesForBranch parses `git worktree list --porcelain` and returns every
+// worktree path that is checked out on branch b (matched by short ref name).
+func worktreesForBranch(root, b string) []string {
+	out, err := gitOutputDir(root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	var cur string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "worktree ") {
+			cur = strings.TrimPrefix(line, "worktree ")
+		} else if line == "branch refs/heads/"+b && cur != "" {
+			paths = append(paths, cur)
+		}
+	}
+	return paths
+}
+
+// pruneStaleWorktreesForBranch removes all worktrees checked out on branch b
+// when b is named for a closed item (confirmed via doneItems). Returns true
+// when every stale worktree was removed, allowing a retry of `git branch -D`.
+func pruneStaleWorktreesForBranch(root, b string) bool {
+	paths := worktreesForBranch(root, b)
+	if len(paths) == 0 {
+		return false
+	}
+	allRemoved := true
+	for _, p := range paths {
+		if err := gitCmdDirQuiet(root, "worktree", "remove", "--force", p); err != nil {
+			fmt.Printf("  branch: could not remove stale worktree %s: %v\n", p, err)
+			allRemoved = false
+		} else {
+			fmt.Printf("  branch: removed stale worktree %s\n", p)
+		}
+	}
+	return allRemoved
 }
 
 // pruneRemoteBranch removes origin/<b> best-effort, but does NOT stay silent on a

@@ -377,3 +377,63 @@ func TestRepoSlug(t *testing.T) {
 		t.Errorf("local origin should yield empty slug, got %q", slug)
 	}
 }
+
+func TestWorktreesForBranch(t *testing.T) {
+	root := setupMaintainRepo(t)
+	commitOn(t, root, "fix/I-999-example", "w.go", "worktree branch\n")
+
+	wt := t.TempDir()
+	runGitTest(t, root, "worktree", "add", wt, "fix/I-999-example")
+	t.Cleanup(func() { gitCmdDirQuiet(root, "worktree", "remove", "--force", wt) }) //nolint
+
+	paths := worktreesForBranch(root, "fix/I-999-example")
+	if len(paths) == 0 {
+		t.Fatal("expected worktreesForBranch to find the registered worktree")
+	}
+	// macOS resolves /var → /private/var; compare via EvalSymlinks for portability.
+	wtReal, _ := filepath.EvalSymlinks(wt)
+	found := false
+	for _, p := range paths {
+		pReal, _ := filepath.EvalSymlinks(p)
+		if pReal == wtReal {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("worktreesForBranch returned %v, expected to contain %s", paths, wt)
+	}
+	// A branch not checked out in any ADDITIONAL worktree returns empty.
+	// (main is the root worktree so it is excluded by callers, not by the helper.)
+	if got := worktreesForBranch(root, "nonexistent-branch-xyz"); len(got) != 0 {
+		t.Errorf("nonexistent branch should return empty; got %v", got)
+	}
+}
+
+// TestPruneMergedBranchesRemovesStaleWorktree verifies that pruneMergedBranches
+// removes a stale worktree for a closed item and then deletes the local branch.
+func TestPruneMergedBranchesRemovesStaleWorktree(t *testing.T) {
+	root := setupMaintainRepo(t)
+
+	// Create a branch that is an ancestor of origin/main (trivially merged).
+	runGitTest(t, root, "branch", "fix/I-777-done-item", "main")
+
+	// Register it as a worktree to simulate the stale worktree scenario.
+	wt := t.TempDir()
+	runGitTest(t, root, "worktree", "add", wt, "fix/I-777-done-item")
+
+	// Mark I-777 as done so pruneMergedBranches treats it as a closed item.
+	doneItems := map[string]bool{"I-777": true}
+
+	pruneMergedBranches(root, nil, doneItems, MaintainOpts{})
+
+	// The worktree directory must be gone (git worktree remove --force deleted it).
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		// Clean up if the test fails so the temp dir doesn't linger.
+		gitCmdDirQuiet(root, "worktree", "remove", "--force", wt) //nolint
+		t.Error("stale worktree directory should have been removed by pruneMergedBranches")
+	}
+	// The branch must be gone.
+	if strings.Contains(localBranches(t, root), "fix/I-777-done-item") {
+		t.Error("branch fix/I-777-done-item should have been deleted after worktree removal")
+	}
+}
