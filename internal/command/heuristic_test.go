@@ -93,6 +93,56 @@ When something happens, avoid doing it because it causes problems.
 	}
 }
 
+func TestHeuristicRetire(t *testing.T) {
+	_, cfg := setupTestEnv(t)
+
+	// Seed two heuristics.
+	Heuristic_Add(cfg, "rule one: do X", "")
+	Heuristic_Add(cfg, "rule two: do Y", "")
+
+	entries, _ := changelog.HeuristicList(cfg, cfg.AgentID(), nil)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	// Retire by 1-based index.
+	code := Heuristic_Retire(cfg, "1", "rule one is obsolete")
+	if code != 0 {
+		t.Fatalf("Heuristic_Retire returned %d, want 0", code)
+	}
+
+	all, _ := changelog.HeuristicList(cfg, cfg.AgentID(), nil)
+	if len(all) != 3 {
+		t.Fatalf("expected 3 entries after retire (2 add + 1 retire), got %d", len(all))
+	}
+	retire := all[2]
+	if retire.Op != "heuristic_retire" {
+		t.Errorf("expected op heuristic_retire, got %q", retire.Op)
+	}
+	if retire.Field != entries[0].Timestamp {
+		t.Errorf("retire.Field %q != original timestamp %q", retire.Field, entries[0].Timestamp)
+	}
+	if retire.Reason != "rule one is obsolete" {
+		t.Errorf("retire.Reason %q", retire.Reason)
+	}
+
+	// Out-of-range index.
+	if code := Heuristic_Retire(cfg, "99", "reason"); code == 0 {
+		t.Error("out-of-range index should return non-zero")
+	}
+
+	// Empty reason.
+	if code := Heuristic_Retire(cfg, "2", ""); code == 0 {
+		t.Error("empty reason should return non-zero")
+	}
+
+	// Timestamp prefix match.
+	prefix := entries[1].Timestamp[:10]
+	if code := Heuristic_Retire(cfg, prefix, "retiring by prefix"); code != 0 {
+		t.Errorf("timestamp prefix retire returned %d, want 0", code)
+	}
+}
+
 func TestResumeShowsHeuristics(t *testing.T) {
 	cfg := testResumeCfg(t)
 

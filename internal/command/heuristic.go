@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/theraprac/agent-state/internal/changelog"
@@ -118,6 +119,65 @@ func Heuristic_Migrate(cfg *config.Config) int {
 		n++
 	}
 	fmt.Printf("migrated %d heuristic(s) from agent-memory/\n", n)
+	return 0
+}
+
+// Heuristic_Retire marks a recorded heuristic as superseded. idOrIndex is
+// either a 1-based integer index into the list or a timestamp prefix. The
+// retire is recorded as a changelog entry so st resume can filter it out.
+func Heuristic_Retire(cfg *config.Config, idOrIndex, reason string) int {
+	if strings.TrimSpace(reason) == "" {
+		fmt.Fprintln(os.Stderr, "st heuristic retire: --reason is required")
+		return 1
+	}
+	if strings.TrimSpace(idOrIndex) == "" {
+		fmt.Fprintln(os.Stderr, "st heuristic retire: id or index is required")
+		return 1
+	}
+	entries, err := changelog.HeuristicList(cfg, cfg.AgentID(), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "st heuristic retire: %v\n", err)
+		return 1
+	}
+
+	var target *changelog.Entry
+	if idx, err := strconv.Atoi(idOrIndex); err == nil {
+		// 1-based index
+		if idx < 1 || idx > len(entries) {
+			fmt.Fprintf(os.Stderr, "st heuristic retire: index %d out of range (1-%d)\n", idx, len(entries))
+			return 1
+		}
+		e := entries[idx-1]
+		target = &e
+	} else {
+		// timestamp prefix match
+		for i := range entries {
+			if strings.HasPrefix(entries[i].Timestamp, idOrIndex) {
+				e := entries[i]
+				target = &e
+				break
+			}
+		}
+		if target == nil {
+			fmt.Fprintf(os.Stderr, "st heuristic retire: no heuristic found matching %q\n", idOrIndex)
+			return 1
+		}
+	}
+
+	retire := changelog.Entry{
+		Op:     "heuristic_retire",
+		Field:  target.Timestamp,
+		Reason: reason,
+	}
+	if err := changelog.HeuristicAppend(cfg, retire); err != nil {
+		fmt.Fprintf(os.Stderr, "st heuristic retire: %v\n", err)
+		return 1
+	}
+	ts := target.Timestamp
+	if len(ts) > 19 {
+		ts = ts[:19]
+	}
+	fmt.Printf("retired heuristic [%s]: %s\n", ts, target.Reason)
 	return 0
 }
 
