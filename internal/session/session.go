@@ -30,6 +30,22 @@ type Session struct {
 	Role             string
 	SpawnedBySession string
 	DelegatedItemID  string
+
+	Pairing *Pairing
+}
+
+// Pairing marks a session as mid-flight on the I-1700 `/pair` live-iteration
+// mode. It is session-local, ephemeral state — not git-shared item data — so
+// it is never changelog-logged or synced; it lives only in this session's
+// yaml. Hooks (plan-before-code-guard.sh, session-stop.sh,
+// model-check-on-start.sh, context-hygiene-nudge.sh, heuristic-nudge.sh) read
+// it via the shared pairing-mode.sh bash fragment to relax in-session
+// friction for the paired item.
+type Pairing struct {
+	Active      bool
+	Item        string
+	Worktree    string
+	ActivatedAt time.Time
 }
 
 // Manager provides session lifecycle operations.
@@ -60,6 +76,8 @@ func (m *Manager) Load(sessionID string) (*Session, error) {
 	s := &Session{}
 	scanner := bufio.NewScanner(f)
 	var inClaimed bool
+	var inPairing bool
+	var pairing *Pairing
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -85,6 +103,35 @@ func (m *Manager) Load(sessionID string) (*Session, error) {
 
 		if inClaimed && !strings.HasPrefix(trimmed, "- ") {
 			inClaimed = false
+		}
+
+		if trimmed == "pairing:" {
+			inPairing = true
+			continue
+		}
+
+		if inPairing {
+			if strings.HasPrefix(line, "  ") && !strings.HasPrefix(trimmed, "- ") {
+				if idx := strings.Index(trimmed, ":"); idx >= 0 {
+					pkey := strings.TrimSpace(trimmed[:idx])
+					pval := strings.Trim(strings.TrimSpace(trimmed[idx+1:]), `"'`)
+					if pairing == nil {
+						pairing = &Pairing{}
+					}
+					switch pkey {
+					case "active":
+						pairing.Active = pval == "true"
+					case "item":
+						pairing.Item = pval
+					case "worktree":
+						pairing.Worktree = pval
+					case "activated_at":
+						pairing.ActivatedAt = parseTime(pval)
+					}
+				}
+				continue
+			}
+			inPairing = false
 		}
 
 		if idx := strings.Index(trimmed, ":"); idx >= 0 {
@@ -120,6 +167,7 @@ func (m *Manager) Load(sessionID string) (*Session, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+	s.Pairing = pairing
 	return s, nil
 }
 
@@ -160,6 +208,23 @@ func (m *Manager) Save(s *Session) error {
 	} else {
 		for _, id := range s.ClaimedItems {
 			b.WriteString(fmt.Sprintf("  - %s\n", id))
+		}
+	}
+	if s.Pairing != nil {
+		b.WriteString("pairing:\n")
+		activeStr := "false"
+		if s.Pairing.Active {
+			activeStr = "true"
+		}
+		b.WriteString(fmt.Sprintf("  active: %s\n", activeStr))
+		if s.Pairing.Item != "" {
+			b.WriteString(fmt.Sprintf("  item: %s\n", s.Pairing.Item))
+		}
+		if s.Pairing.Worktree != "" {
+			b.WriteString(fmt.Sprintf("  worktree: %s\n", s.Pairing.Worktree))
+		}
+		if !s.Pairing.ActivatedAt.IsZero() {
+			b.WriteString(fmt.Sprintf("  activated_at: %s\n", s.Pairing.ActivatedAt.Format(time.RFC3339)))
 		}
 	}
 
@@ -264,6 +329,37 @@ func (m *Manager) RemoveClaim(sessionID, itemID string) error {
 		}
 	}
 	s.ClaimedItems = filtered
+	s.LastActive = time.Now()
+	return m.Save(s)
+}
+
+// SetPairing writes the pairing marker onto a session, activating the I-1700
+// `/pair` live-iteration mode for the given item/worktree (`st pair`).
+func (m *Manager) SetPairing(sessionID string, p *Pairing) error {
+	s, err := m.Load(sessionID)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	s.Pairing = p
+	s.LastActive = time.Now()
+	return m.Save(s)
+}
+
+// ClearPairing removes the pairing marker from a session (`st pair --off`).
+// A missing session or a session with no marker is a no-op — mirrors
+// RemoveClaim's tolerant-of-absence behavior.
+func (m *Manager) ClearPairing(sessionID string) error {
+	s, err := m.Load(sessionID)
+	if err != nil {
+		return err
+	}
+	if s == nil || s.Pairing == nil {
+		return nil
+	}
+	s.Pairing = nil
 	s.LastActive = time.Now()
 	return m.Save(s)
 }

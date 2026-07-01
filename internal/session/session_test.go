@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -412,6 +413,132 @@ func TestPruneStaleSessionsEmpty(t *testing.T) {
 	}
 	if pruned != 0 {
 		t.Errorf("pruned = %d, want 0", pruned)
+	}
+}
+
+func TestPairingRoundtrip(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 2*time.Hour)
+
+	activatedAt := time.Now().Truncate(time.Second)
+	s := &Session{
+		ID:           "sess-pairing",
+		StartedAt:    time.Now(),
+		AgentID:      "agent-a",
+		LastActive:   time.Now(),
+		ClaimedItems: []string{"I-1704"},
+		Pairing: &Pairing{
+			Active:      true,
+			Item:        "I-1704",
+			Worktree:    "I-1704",
+			ActivatedAt: activatedAt,
+		},
+	}
+	if err := mgr.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := mgr.Load("sess-pairing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Pairing == nil {
+		t.Fatal("Pairing is nil after round-trip")
+	}
+	if !loaded.Pairing.Active {
+		t.Error("Pairing.Active = false, want true")
+	}
+	if loaded.Pairing.Item != "I-1704" {
+		t.Errorf("Pairing.Item = %q", loaded.Pairing.Item)
+	}
+	if loaded.Pairing.Worktree != "I-1704" {
+		t.Errorf("Pairing.Worktree = %q", loaded.Pairing.Worktree)
+	}
+	if !loaded.Pairing.ActivatedAt.Equal(activatedAt) {
+		t.Errorf("Pairing.ActivatedAt = %v, want %v", loaded.Pairing.ActivatedAt, activatedAt)
+	}
+	// claimed_items must still parse correctly with a pairing block following it.
+	if len(loaded.ClaimedItems) != 1 || loaded.ClaimedItems[0] != "I-1704" {
+		t.Errorf("ClaimedItems = %v", loaded.ClaimedItems)
+	}
+}
+
+func TestNoPairingBlock(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 2*time.Hour)
+
+	s := &Session{ID: "sess-no-pairing", StartedAt: time.Now(), LastActive: time.Now()}
+	if err := mgr.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := mgr.Load("sess-no-pairing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Pairing != nil {
+		t.Errorf("Pairing = %+v, want nil", loaded.Pairing)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "sess-no-pairing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "pairing:") {
+		t.Error("Save emitted a pairing: block for a session with Pairing == nil")
+	}
+}
+
+func TestSetPairingAndClearPairing(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 2*time.Hour)
+
+	if _, err := mgr.EnsureSession("sess-set", "agent-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Pairing{Active: true, Item: "I-1704", Worktree: "I-1704", ActivatedAt: time.Now().Truncate(time.Second)}
+	if err := mgr.SetPairing("sess-set", p); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _ := mgr.Load("sess-set")
+	if loaded.Pairing == nil || !loaded.Pairing.Active || loaded.Pairing.Item != "I-1704" {
+		t.Fatalf("SetPairing did not persist: %+v", loaded.Pairing)
+	}
+
+	if err := mgr.ClearPairing("sess-set"); err != nil {
+		t.Fatal(err)
+	}
+	loaded2, _ := mgr.Load("sess-set")
+	if loaded2.Pairing != nil {
+		t.Errorf("ClearPairing left Pairing = %+v, want nil", loaded2.Pairing)
+	}
+}
+
+func TestSetPairing_SessionNotFound(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 2*time.Hour)
+
+	err := mgr.SetPairing("nonexistent", &Pairing{Active: true, Item: "I-1704"})
+	if err == nil {
+		t.Error("SetPairing should fail for a nonexistent session")
+	}
+}
+
+func TestClearPairing_SessionGoneOrUnset(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 2*time.Hour)
+
+	// Missing session — no-op, no error.
+	if err := mgr.ClearPairing("nonexistent"); err != nil {
+		t.Errorf("ClearPairing on missing session should be a no-op: %v", err)
+	}
+
+	// Existing session with no pairing set — no-op, no error.
+	mgr.EnsureSession("sess-unset", "agent-a")
+	if err := mgr.ClearPairing("sess-unset"); err != nil {
+		t.Errorf("ClearPairing on unset pairing should be a no-op: %v", err)
 	}
 }
 
