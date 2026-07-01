@@ -630,6 +630,27 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	hotfixCmd.Flags().Bool("off", false, "clear the hotfix flag on the given item")
 	root.AddCommand(hotfixCmd)
 
+	pairCmd := &cobra.Command{
+		Use:   "pair [<id-or-title>]",
+		Short: "Activate/deactivate I-1700 live-iteration mode on this session (relaxes plan-gate/worktree-dirty/nag friction)",
+		Long: "Marks the CURRENT session as paired so the workflow gates relax in-session\n" +
+			"friction for live iteration: plan-before-code, the worktree-dirty exit block,\n" +
+			"model-check on re-attach, and advisory nags. The merge gate (tier1/tier2,\n" +
+			"live-acceptance) is untouched and always runs fresh. Unlike `st hotfix`, this\n" +
+			"is session-local ephemeral state (not changelog-logged or synced).\n\n" +
+			"  st pair          attach: mark the current stack-top item as paired\n" +
+			"  st pair --off    detach: clear the marker on this session\n\n" +
+			"Attaching by id or title is not implemented yet (I-1706) — pass no argument.",
+		Args: cobra.ArbitraryArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			off, _ := cmd.Flags().GetBool("off")
+			sessMgr := session.NewManager(appCfg.SessionsDir(), time.Duration(appCfg.StaleClaimTTL())*time.Second)
+			exitCode = command.Pair(appStore, appCfg, sessMgr, appCfg.SessionID(), args, command.PairOpts{Off: off})
+		},
+	}
+	pairCmd.Flags().Bool("off", false, "clear the pairing marker on this session")
+	root.AddCommand(pairCmd)
+
 	coshipCmd := &cobra.Command{
 		Use:   "coship [<id>]",
 		Short: "Co-ship a paired api+web change: resolve the web OpenAPI check against a paired api ref",

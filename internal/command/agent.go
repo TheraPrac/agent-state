@@ -757,12 +757,13 @@ func portBlockForAgent(agentID string) agentWorkspacePorts {
 
 // linkClaudeContext wires the per-agent Claude Code context to the
 // committed claude-config and agent-memory inside the workspace repo.
-// Four idempotent symlinks are created so a fresh agent dir picks up the
-// shared CLAUDE.md, hooks, settings, and auto-memory:
+// Five idempotent symlinks are created so a fresh agent dir picks up the
+// shared CLAUDE.md, hooks, settings, slash commands, and auto-memory:
 //
 //	<target>/CLAUDE.md             -> theraprac-workspace/claude-config/CLAUDE.md
 //	<target>/.claude/hooks         -> theraprac-workspace/claude-config/hooks
 //	<target>/.claude/settings.json -> theraprac-workspace/claude-config/settings.json
+//	<target>/.claude/commands      -> theraprac-workspace/claude-config/commands
 //	~/.claude/projects/<encoded>/memory -> theraprac-workspace/agent-memory
 //
 // <encoded> is the absolute target dir with "/" replaced by "-", matching
@@ -777,6 +778,7 @@ func linkClaudeContext(plan agentWorkspacePlan, repair bool) error {
 		filepath.Join(claudeConfig, "CLAUDE.md"),
 		filepath.Join(claudeConfig, "hooks"),
 		filepath.Join(claudeConfig, "settings.json"),
+		filepath.Join(claudeConfig, "commands"),
 		agentMemory,
 	} {
 		if _, err := os.Stat(p); err != nil {
@@ -803,6 +805,7 @@ func linkClaudeContext(plan agentWorkspacePlan, repair bool) error {
 		{filepath.Join(plan.TargetDir, "CLAUDE.md"), filepath.Join(claudeConfig, "CLAUDE.md")},
 		{filepath.Join(dotClaude, "hooks"), filepath.Join(claudeConfig, "hooks")},
 		{filepath.Join(dotClaude, "settings.json"), filepath.Join(claudeConfig, "settings.json")},
+		{filepath.Join(dotClaude, "commands"), filepath.Join(claudeConfig, "commands")},
 		{filepath.Join(projectDir, "memory"), agentMemory},
 	}
 	for _, l := range links {

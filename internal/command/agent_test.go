@@ -611,6 +611,9 @@ func TestLinkClaudeContext(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(claudeConfig, "hooks"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(claudeConfig, "commands"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(workspace, "agent-memory"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -630,10 +633,11 @@ func TestLinkClaudeContext(t *testing.T) {
 	encoded := strings.ReplaceAll(target, "/", "-")
 	memoryLink := filepath.Join(home, ".claude", "projects", encoded, "memory")
 	expect := map[string]string{
-		filepath.Join(target, "CLAUDE.md"):              filepath.Join(claudeConfig, "CLAUDE.md"),
-		filepath.Join(target, ".claude", "hooks"):       filepath.Join(claudeConfig, "hooks"),
+		filepath.Join(target, "CLAUDE.md"):                filepath.Join(claudeConfig, "CLAUDE.md"),
+		filepath.Join(target, ".claude", "hooks"):         filepath.Join(claudeConfig, "hooks"),
 		filepath.Join(target, ".claude", "settings.json"): filepath.Join(claudeConfig, "settings.json"),
-		memoryLink: filepath.Join(workspace, "agent-memory"),
+		filepath.Join(target, ".claude", "commands"):      filepath.Join(claudeConfig, "commands"),
+		memoryLink:                                        filepath.Join(workspace, "agent-memory"),
 	}
 	for link, want := range expect {
 		got, err := os.Readlink(link)
