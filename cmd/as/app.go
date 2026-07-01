@@ -638,9 +638,16 @@ fields, and the SBAR composite stay on the single-field paths.`,
 			"model-check on re-attach, and advisory nags. The merge gate (tier1/tier2,\n" +
 			"live-acceptance) is untouched and always runs fresh. Unlike `st hotfix`, this\n" +
 			"is session-local ephemeral state (not changelog-logged or synced).\n\n" +
-			"  st pair          attach: mark the current stack-top item as paired\n" +
-			"  st pair --off    detach: clear the marker on this session\n\n" +
-			"Attaching by id or title is not implemented yet (I-1706) — pass no argument.",
+			"Also brings up (or reuses) the item's local dev stack via `tp` — pairing only\n" +
+			"activates once the stack is confirmed up.\n\n" +
+			"  st pair              attach: mark the current stack-top item as paired\n" +
+			"                       (must already be started)\n" +
+			"  st pair <id>         attach: start <id> if not already active, then pair\n" +
+			"  st pair \"<title>\"    fresh: create a new issue titled <title>, start it,\n" +
+			"                       then pair\n" +
+			"  st pair --off        detach: clear the marker on this session\n\n" +
+			"Any of the above reuses an already-live stack for the resolved item instead\n" +
+			"of re-provisioning it.",
 		Args: cobra.ArbitraryArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			off, _ := cmd.Flags().GetBool("off")
