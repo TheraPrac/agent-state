@@ -2,6 +2,9 @@ package command
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -377,5 +380,69 @@ func TestPairWithoutPreexistingSessionFile(t *testing.T) {
 	}
 	if loaded == nil || loaded.Pairing == nil || !loaded.Pairing.Active {
 		t.Fatalf("session/pairing not created: %+v", loaded)
+	}
+}
+
+// TestDefaultTPStatusAndUp exercises the REAL defaultTPStatus/defaultTPUp/
+// tpEnv subprocess-invocation code (not the test-fake seam other tests use)
+// against a stub `tp` script on PATH — the one thing the fake-based tests
+// above don't cover: that the actual exec.Command argv ("--worktree=<id>")
+// and env (AS_AGENT_ID, THERAPRAC_AGENTS_ROOT) are constructed correctly.
+// Real dep behavior once `tp` receives those args was proven live in I-1705.
+func TestDefaultTPStatusAndUp(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not on PATH")
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tp-invocations.log")
+	stubPath := filepath.Join(dir, "tp")
+	stub := `#!/usr/bin/env bash
+{
+  echo "ARGV:$*"
+  echo "AS_AGENT_ID=${AS_AGENT_ID:-<unset>}"
+  echo "THERAPRAC_AGENTS_ROOT=${THERAPRAC_AGENTS_ROOT:-<unset>}"
+} >> "` + logPath + `"
+if [ "$1" = "status" ]; then
+  exit "${TP_STUB_STATUS_EXIT:-1}"
+fi
+exit "${TP_STUB_UP_EXIT:-0}"
+`
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AS_AGENT_ID", "agent-zzz-should-be-overridden")
+
+	_, cfg := setupTestEnv(t)
+
+	// AgentRoot() resolution needs SOME root to derive THERAPRAC_AGENTS_ROOT
+	// from; setupTestEnv's minimal fixture may not resolve one, and that's
+	// fine — tpEnv skips the var when AgentRoot() is empty rather than
+	// writing a garbage path. Assert only what's guaranteed: AS_AGENT_ID is
+	// always injected as cfg.AgentID(), overriding the ambient env var above.
+	up := defaultTPStatus(cfg, "I-9999")
+	if up {
+		t.Error("defaultTPStatus with TP_STUB_STATUS_EXIT unset (defaults nonzero) should report down")
+	}
+	if err := defaultTPUp(cfg, "I-9999"); err != nil {
+		t.Errorf("defaultTPUp: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading stub log: %v", err)
+	}
+	log := string(logBytes)
+	if !strings.Contains(log, "ARGV:status --worktree=I-9999") {
+		t.Errorf("stub log missing expected `tp status --worktree=I-9999` invocation:\n%s", log)
+	}
+	if !strings.Contains(log, "ARGV:up --worktree=I-9999") {
+		t.Errorf("stub log missing expected `tp up --worktree=I-9999` invocation:\n%s", log)
+	}
+	wantAgentLine := "AS_AGENT_ID=" + cfg.AgentID()
+	if !strings.Contains(log, wantAgentLine) {
+		t.Errorf("stub log missing %q (AS_AGENT_ID must be injected as cfg.AgentID(), not left as the ambient env var):\n%s", wantAgentLine, log)
 	}
 }
