@@ -1,6 +1,7 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,11 +27,13 @@ type PairOpts struct {
 var pairIDPattern = regexp.MustCompile(`^[A-Z]-\d{3,}$`)
 
 // tpStatusFunc reports whether a live stack already exists for the given
-// worktree id (`tp status --worktree=<id>` exit 0 = up). Type of the
-// package-level tpStatus var, swappable in tests — mirrors the existing
-// nodeInstaller seam in start.go (I-526) so unit tests never shell out or
-// need Docker.
-type tpStatusFunc func(cfg *config.Config, worktreeID string) bool
+// worktree id (`tp status --worktree=<id>` exit 0 = up). The returned error
+// is non-nil ONLY when the check itself couldn't be completed (tp missing
+// from PATH, not executable, ...) — distinct from a confirmed "down", which
+// is (false, nil). Type of the package-level tpStatus var, swappable in
+// tests — mirrors the existing nodeInstaller seam in start.go (I-526) so
+// unit tests never shell out or need Docker.
+type tpStatusFunc func(cfg *config.Config, worktreeID string) (bool, error)
 
 // tpUpFunc brings up (or attaches to) the stack for the given worktree id
 // (`tp up --worktree=<id>`). Type of the package-level tpUp var.
@@ -63,10 +66,30 @@ func tpEnv(cfg *config.Config) []string {
 // defaultTPStatus shells out to `tp status --worktree=<id>`; output is
 // discarded — this is a machine up/down check, not a user-facing report
 // (I-1705's `tp status --worktree` exits 0 iff api+web are both running).
-func defaultTPStatus(cfg *config.Config, worktreeID string) bool {
+//
+// A non-zero exit is tp's documented, deliberate signal for "not up" — not
+// an error condition (tp_stack_status always exits 0/1 by design, never
+// crashes for the down case). But if the command couldn't even be started
+// (tp missing from PATH, not executable, ...), that's not a status
+// determination at all — code review (bugbot rule 3) correctly flagged the
+// original bare-bool version for collapsing these into the same "false" and
+// letting ensureTPStack silently reinterpret a genuine check failure as an
+// ordinary down-state. exec.Error (vs exec.ExitError) is Go's own signal for
+// "never ran" and is what we surface distinctly here.
+func defaultTPStatus(cfg *config.Config, worktreeID string) (bool, error) {
 	cmd := exec.Command("tp", "status", "--worktree="+worktreeID)
 	cmd.Env = tpEnv(cfg)
-	return cmd.Run() == nil
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return false, err
+	}
+	// *exec.ExitError (or any other post-start failure) — tp ran and
+	// reported "not up" per its contract.
+	return false, nil
 }
 
 // defaultTPUp shells out to `tp up --worktree=<id>`, streaming to the
@@ -87,7 +110,11 @@ func defaultTPUp(cfg *config.Config, worktreeID string) error {
 // reuse/no-reuse fork inside this one step, applying uniformly to whichever
 // mode resolved the item id.
 func ensureTPStack(cfg *config.Config, worktreeID string) error {
-	if tpStatus(cfg, worktreeID) {
+	up, err := tpStatus(cfg, worktreeID)
+	if err != nil {
+		return fmt.Errorf("checking stack status for %s (tp status --worktree=%s): %w", worktreeID, worktreeID, err)
+	}
+	if up {
 		fmt.Printf("st pair: stack for %s is already up — reusing (no re-provisioning).\n", worktreeID)
 		return nil
 	}

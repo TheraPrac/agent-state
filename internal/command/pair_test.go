@@ -14,6 +14,7 @@ import (
 )
 
 var errPairTestTPUpFailed = errors.New("tp up failed (test fake)")
+var errPairTestTPStatusCheckFailed = errors.New("tp status check failed (test fake)")
 
 func newTestSessionMgr(cfg *config.Config) *session.Manager {
 	return session.NewManager(cfg.SessionsDir(), 2*time.Hour)
@@ -22,9 +23,12 @@ func newTestSessionMgr(cfg *config.Config) *session.Manager {
 // tpCallRecorder captures calls made through the stubbed tpStatus/tpUp seam
 // and controls what they report back to Pair(). StatusUp/UpErr default to
 // the "cold start, up succeeds" case (matches a first attach in a fresh test
-// fixture); set StatusUp=true to simulate M4's already-live-stack path.
+// fixture); set StatusUp=true to simulate M4's already-live-stack path, or
+// StatusErr to simulate the status check itself failing (distinct from a
+// confirmed down-state — I-1706 code review).
 type tpCallRecorder struct {
 	StatusUp    bool
+	StatusErr   error
 	UpErr       error
 	statusCalls []string
 	upCalls     []string
@@ -38,9 +42,9 @@ func stubTP(t *testing.T) *tpCallRecorder {
 	t.Helper()
 	rec := &tpCallRecorder{}
 	origStatus, origUp := tpStatus, tpUp
-	tpStatus = func(cfg *config.Config, worktreeID string) bool {
+	tpStatus = func(cfg *config.Config, worktreeID string) (bool, error) {
 		rec.statusCalls = append(rec.statusCalls, worktreeID)
-		return rec.StatusUp
+		return rec.StatusUp, rec.StatusErr
 	}
 	tpUp = func(cfg *config.Config, worktreeID string) error {
 		rec.upCalls = append(rec.upCalls, worktreeID)
@@ -422,7 +426,10 @@ exit "${TP_STUB_UP_EXIT:-0}"
 	// fine — tpEnv skips the var when AgentRoot() is empty rather than
 	// writing a garbage path. Assert only what's guaranteed: AS_AGENT_ID is
 	// always injected as cfg.AgentID(), overriding the ambient env var above.
-	up := defaultTPStatus(cfg, "I-9999")
+	up, statusErr := defaultTPStatus(cfg, "I-9999")
+	if statusErr != nil {
+		t.Errorf("defaultTPStatus: unexpected error %v (stub's non-zero exit is a normal exec.ExitError, not an exec-start failure)", statusErr)
+	}
 	if up {
 		t.Error("defaultTPStatus with TP_STUB_STATUS_EXIT unset (defaults nonzero) should report down")
 	}
@@ -444,5 +451,55 @@ exit "${TP_STUB_UP_EXIT:-0}"
 	wantAgentLine := "AS_AGENT_ID=" + cfg.AgentID()
 	if !strings.Contains(log, wantAgentLine) {
 		t.Errorf("stub log missing %q (AS_AGENT_ID must be injected as cfg.AgentID(), not left as the ambient env var):\n%s", wantAgentLine, log)
+	}
+}
+
+// defaultTPStatus must distinguish "tp ran and reported not-up" (a normal
+// exec.ExitError, per tp's documented contract) from "tp could not even be
+// started" (exec.Error — binary missing/not executable) — I-1706 code
+// review (bugbot rule 3): a bare bool return collapsed these into the same
+// "false" and let ensureTPStack silently treat a genuine check failure as an
+// ordinary down-state.
+func TestDefaultTPStatusDistinguishesExecFailureFromDown(t *testing.T) {
+	// tp not on PATH at all.
+	t.Setenv("PATH", t.TempDir())
+	_, cfg := setupTestEnv(t)
+
+	up, err := defaultTPStatus(cfg, "I-9999")
+	if err == nil {
+		t.Fatal("defaultTPStatus with tp missing from PATH should return a non-nil error, got nil")
+	}
+	if up {
+		t.Error("defaultTPStatus should report down (not up) when the check itself failed")
+	}
+}
+
+// ensureTPStack must surface a status-check failure directly, WITHOUT
+// falling through to tp up as if the stack were merely down — that would
+// silently attempt to re-provision (or worse, per tp's kill-and-relaunch
+// idempotency, tear down and rebuild) a stack whose actual state couldn't be
+// determined. I-1706 code review.
+func TestPairStatusCheckFailureBlocksPairingWithoutCallingTPUp(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
+	rec.StatusErr = errPairTestTPStatusCheckFailed
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	code := 0
+	captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{})
+	})
+	if code != 1 {
+		t.Errorf("Pair returned %d, want 1 (status check failed)", code)
+	}
+	if len(rec.upCalls) != 0 {
+		t.Errorf("tpUp calls = %v, want none — a status-check failure must not fall through to tp up", rec.upCalls)
+	}
+
+	loaded, _ := mgr.Load("sess-1")
+	if loaded.Pairing != nil {
+		t.Error("pairing marker should not be set when the status check fails")
 	}
 }
