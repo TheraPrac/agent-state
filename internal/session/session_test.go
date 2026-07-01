@@ -507,8 +507,12 @@ func TestSetPairingAndClearPairing(t *testing.T) {
 		t.Fatalf("SetPairing did not persist: %+v", loaded.Pairing)
 	}
 
-	if err := mgr.ClearPairing("sess-set"); err != nil {
+	cleared, err := mgr.ClearPairing("sess-set")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !cleared {
+		t.Error("ClearPairing on an active pairing should report cleared=true")
 	}
 	loaded2, _ := mgr.Load("sess-set")
 	if loaded2.Pairing != nil {
@@ -530,15 +534,23 @@ func TestClearPairing_SessionGoneOrUnset(t *testing.T) {
 	dir := tempDir(t)
 	mgr := NewManager(dir, 2*time.Hour)
 
-	// Missing session — no-op, no error.
-	if err := mgr.ClearPairing("nonexistent"); err != nil {
+	// Missing session — no-op, no error, cleared=false.
+	cleared, err := mgr.ClearPairing("nonexistent")
+	if err != nil {
 		t.Errorf("ClearPairing on missing session should be a no-op: %v", err)
 	}
+	if cleared {
+		t.Error("ClearPairing on missing session should report cleared=false")
+	}
 
-	// Existing session with no pairing set — no-op, no error.
+	// Existing session with no pairing set — no-op, no error, cleared=false.
 	mgr.EnsureSession("sess-unset", "agent-a")
-	if err := mgr.ClearPairing("sess-unset"); err != nil {
+	cleared, err = mgr.ClearPairing("sess-unset")
+	if err != nil {
 		t.Errorf("ClearPairing on unset pairing should be a no-op: %v", err)
+	}
+	if cleared {
+		t.Error("ClearPairing on unset pairing should report cleared=false")
 	}
 }
 
@@ -553,7 +565,7 @@ func TestPruneStaleSessions_RespectsActivePairing(t *testing.T) {
 	mgr.EnsureSession("sess-paired-stale", "agent")
 	s, _ := mgr.Load("sess-paired-stale")
 	s.LastActive = time.Now().Add(-3 * time.Hour)
-	s.Pairing = &Pairing{Active: true, Item: "I-1704", Worktree: "I-1704"}
+	s.Pairing = &Pairing{Active: true, Item: "I-1704", Worktree: "I-1704", ActivatedAt: time.Now()}
 	mgr.Save(s)
 
 	pruned, err := mgr.PruneStaleSessions()
@@ -561,7 +573,7 @@ func TestPruneStaleSessions_RespectsActivePairing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if pruned != 0 {
-		t.Errorf("pruned = %d, want 0 (active pairing should block pruning)", pruned)
+		t.Errorf("pruned = %d, want 0 (recently-active pairing should block pruning)", pruned)
 	}
 
 	loaded, _ := mgr.Load("sess-paired-stale")
@@ -586,6 +598,37 @@ func TestPruneStaleSessions_RespectsActivePairing(t *testing.T) {
 	}
 	if pruned2 != 1 {
 		t.Errorf("pruned = %d, want 1 (inactive pairing should not block pruning)", pruned2)
+	}
+}
+
+// A pairing marker left by a crashed/killed session (never ran
+// `st pair --off`) must eventually be pruned too — otherwise .as/sessions/
+// accumulates permanent ghost files forever (I-1704 code review).
+func TestPruneStaleSessions_AbandonedPairingEventuallyPrunes(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 1*time.Hour)
+
+	mgr.EnsureSession("sess-abandoned", "agent")
+	s, _ := mgr.Load("sess-abandoned")
+	s.LastActive = time.Now().Add(-3 * time.Hour)
+	s.Pairing = &Pairing{
+		Active:      true,
+		Item:        "I-1704",
+		Worktree:    "I-1704",
+		ActivatedAt: time.Now().Add(-25 * time.Hour), // past pairingAbandonedAfter (24h)
+	}
+	mgr.Save(s)
+
+	pruned, err := mgr.PruneStaleSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1 (abandoned pairing should eventually prune)", pruned)
+	}
+	loaded, _ := mgr.Load("sess-abandoned")
+	if loaded != nil {
+		t.Error("abandoned-pairing session should have been pruned")
 	}
 }
 

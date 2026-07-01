@@ -42,11 +42,16 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 			fmt.Fprintln(os.Stderr, "st pair --off: takes no arguments")
 			return 2
 		}
-		if err := sessMgr.ClearPairing(sessionID); err != nil {
+		cleared, err := sessMgr.ClearPairing(sessionID)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "st pair --off: %v\n", err)
 			return 1
 		}
-		fmt.Println("Pairing OFF — gates re-enabled.")
+		if cleared {
+			fmt.Println("Pairing OFF — gates re-enabled.")
+		} else {
+			fmt.Println("st pair --off: no active pairing on this session — nothing to clear.")
+		}
 		return 0
 	}
 

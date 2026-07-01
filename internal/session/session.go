@@ -48,6 +48,16 @@ type Pairing struct {
 	ActivatedAt time.Time
 }
 
+// pairingAbandonedAfter bounds how long PruneStaleSessions protects an
+// active pairing marker from deletion. A session that crashes or is
+// force-killed while paired never runs `st pair --off`, so without this
+// ceiling its .as/sessions/<id>.yaml would be exempt from the TTL sweep
+// forever (Pairing.Active alone is not evidence the marker is still
+// meaningful — only that nothing ever cleared it). Deliberately much
+// longer than the stale-claim TTL (default 2h) so a genuinely active
+// paired session is never pruned mid-use.
+const pairingAbandonedAfter = 24 * time.Hour
+
 // Manager provides session lifecycle operations.
 type Manager struct {
 	dir string // .as/sessions/
@@ -349,19 +359,25 @@ func (m *Manager) SetPairing(sessionID string, p *Pairing) error {
 }
 
 // ClearPairing removes the pairing marker from a session (`st pair --off`).
-// A missing session or a session with no marker is a no-op — mirrors
-// RemoveClaim's tolerant-of-absence behavior.
-func (m *Manager) ClearPairing(sessionID string) error {
+// A missing session, a session with no marker, or an already-inactive
+// marker is a no-op — mirrors RemoveClaim's tolerant-of-absence behavior.
+// The returned bool distinguishes "an active pairing was actually cleared"
+// from "there was nothing to clear", so callers can report the true
+// outcome instead of a blanket success message either way.
+func (m *Manager) ClearPairing(sessionID string) (bool, error) {
 	s, err := m.Load(sessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if s == nil || s.Pairing == nil {
-		return nil
+	if s == nil || s.Pairing == nil || !s.Pairing.Active {
+		return false, nil
 	}
 	s.Pairing = nil
 	s.LastActive = time.Now()
-	return m.Save(s)
+	if err := m.Save(s); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // IsStale returns true if the session's last_active is older than the configured TTL.
@@ -430,9 +446,13 @@ func (m *Manager) PruneStaleSessions() (int, error) {
 		if len(s.ClaimedItems) > 0 {
 			continue // still has claims — needs recovery first
 		}
-		if s.Pairing != nil && s.Pairing.Active {
-			continue // I-1704: still paired — /pair --off releases it, not a TTL sweep
+		if s.Pairing != nil && s.Pairing.Active && time.Since(s.Pairing.ActivatedAt) < pairingAbandonedAfter {
+			continue // I-1704: still paired and recently active — /pair --off releases it, not a TTL sweep
 		}
+		// A pairing marker that outlived pairingAbandonedAfter belongs to a
+		// crashed/killed session that never ran `st pair --off` — fall
+		// through and prune it like any other stale session rather than
+		// retaining a ghost marker forever.
 		path := m.path(s.ID)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			continue

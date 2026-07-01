@@ -78,16 +78,43 @@ func TestPairOffClearsMarker(t *testing.T) {
 	captureStdout(t, func() { Pair(s, cfg, mgr, "sess-1", nil, PairOpts{}) })
 
 	code := 0
-	captureStdout(t, func() {
+	out := captureStdout(t, func() {
 		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
 	})
 	if code != 0 {
 		t.Fatalf("Pair --off returned %d, want 0", code)
 	}
+	if !strings.Contains(out, "Pairing OFF") {
+		t.Errorf("expected the actually-cleared message, got: %q", out)
+	}
 
 	loaded, _ := mgr.Load("sess-1")
 	if loaded.Pairing != nil {
 		t.Error("pairing marker still set after --off")
+	}
+}
+
+// `st pair --off` when there was nothing to clear must say so, not report
+// the same success message as an actual clear (I-1704 code review: a
+// session-id resolution bug upstream would otherwise go unnoticed since
+// both cases printed identical output).
+func TestPairOffNoopReportsNothingToClear(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
+	})
+	if code != 0 {
+		t.Fatalf("Pair --off (no-op) returned %d, want 0", code)
+	}
+	if strings.Contains(out, "Pairing OFF") {
+		t.Errorf("no-op --off should NOT report 'Pairing OFF'; got: %q", out)
+	}
+	if !strings.Contains(out, "nothing to clear") {
+		t.Errorf("no-op --off should say there was nothing to clear; got: %q", out)
 	}
 }
 
