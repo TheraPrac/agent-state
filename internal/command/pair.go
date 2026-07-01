@@ -68,9 +68,23 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 		return 1
 	}
 
+	// `st resume <id>` (the documented re-entry point for a continuing
+	// session) never creates the session yaml — only `st start`/`st sprint
+	// join` do, via EnsureSession(WithIdentity). Without this, a session
+	// that resumed existing work and then ran `st pair` (its exact intended
+	// use case) would fail with "session not found" on SetPairing below.
+	if _, err := sessMgr.EnsureSession(sessionID, cfg.AgentID()); err != nil {
+		fmt.Fprintf(os.Stderr, "st pair: %v\n", err)
+		return 1
+	}
+
 	p := &session.Pairing{
-		Active:      true,
-		Item:        id,
+		Active: true,
+		Item:   id,
+		// Worktree currently always equals Item (Slice 1 only supports
+		// attaching the stack-top item, whose worktree name is its own ID).
+		// It's kept as a distinct field because Slice 3 (I-1706) attach
+		// modes may resolve a worktree that differs from the item ID.
 		Worktree:    id,
 		ActivatedAt: time.Now(),
 	}

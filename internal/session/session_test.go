@@ -542,6 +542,53 @@ func TestClearPairing_SessionGoneOrUnset(t *testing.T) {
 	}
 }
 
+// A stale session with an active pairing marker but no claimed items (e.g.
+// RemoveClaim ran on `st pop` without a matching `st pair --off`) must NOT
+// be pruned — that would silently discard the still-active marker with no
+// operator-visible signal.
+func TestPruneStaleSessions_RespectsActivePairing(t *testing.T) {
+	dir := tempDir(t)
+	mgr := NewManager(dir, 1*time.Hour)
+
+	mgr.EnsureSession("sess-paired-stale", "agent")
+	s, _ := mgr.Load("sess-paired-stale")
+	s.LastActive = time.Now().Add(-3 * time.Hour)
+	s.Pairing = &Pairing{Active: true, Item: "I-1704", Worktree: "I-1704"}
+	mgr.Save(s)
+
+	pruned, err := mgr.PruneStaleSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 0 {
+		t.Errorf("pruned = %d, want 0 (active pairing should block pruning)", pruned)
+	}
+
+	loaded, _ := mgr.Load("sess-paired-stale")
+	if loaded == nil {
+		t.Fatal("session with active pairing was pruned — marker silently discarded")
+	}
+	if loaded.Pairing == nil || !loaded.Pairing.Active {
+		t.Error("Pairing should still be active after a no-op prune")
+	}
+
+	// A stale session with pairing.active == false (already detached) has no
+	// such protection and prunes normally.
+	mgr.EnsureSession("sess-unpaired-stale", "agent")
+	s2, _ := mgr.Load("sess-unpaired-stale")
+	s2.LastActive = time.Now().Add(-3 * time.Hour)
+	s2.Pairing = &Pairing{Active: false, Item: "I-1704", Worktree: "I-1704"}
+	mgr.Save(s2)
+
+	pruned2, err := mgr.PruneStaleSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned2 != 1 {
+		t.Errorf("pruned = %d, want 1 (inactive pairing should not block pruning)", pruned2)
+	}
+}
+
 func TestPruneStaleSessionsAllFresh(t *testing.T) {
 	dir := tempDir(t)
 	mgr := NewManager(dir, 1*time.Hour)

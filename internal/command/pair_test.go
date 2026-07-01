@@ -140,3 +140,29 @@ func TestPairNoSessionID(t *testing.T) {
 		t.Errorf("Pair with empty session id returned %d, want 1", code)
 	}
 }
+
+// A session that reached this point via `st resume` (which never calls
+// EnsureSession, unlike `st start`/`st sprint join`) has no session yaml yet.
+// Pair must create it rather than fail with "session not found".
+func TestPairWithoutPreexistingSessionFile(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
+	mgr := newTestSessionMgr(cfg)
+	// Deliberately no EnsureSession call — simulates `st resume`.
+
+	code := 0
+	captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-resumed", nil, PairOpts{})
+	})
+	if code != 0 {
+		t.Fatalf("Pair on a not-yet-created session returned %d, want 0", code)
+	}
+
+	loaded, err := mgr.Load("sess-resumed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.Pairing == nil || !loaded.Pairing.Active {
+		t.Fatalf("session/pairing not created: %+v", loaded)
+	}
+}

@@ -430,6 +430,9 @@ func (m *Manager) PruneStaleSessions() (int, error) {
 		if len(s.ClaimedItems) > 0 {
 			continue // still has claims — needs recovery first
 		}
+		if s.Pairing != nil && s.Pairing.Active {
+			continue // I-1704: still paired — /pair --off releases it, not a TTL sweep
+		}
 		path := m.path(s.ID)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			continue
