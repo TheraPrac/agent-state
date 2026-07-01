@@ -3,9 +3,14 @@ package command
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/session"
 	"github.com/theraprac/agent-state/internal/store"
 )
@@ -15,6 +20,84 @@ type PairOpts struct {
 	Off bool // deactivate pairing on this session instead of activating it
 }
 
+// pairIDPattern matches item ids (I-1706, T-042, G-014, ...). A local copy
+// of internal/validate's unexported idPattern — not worth a cross-package
+// export for one regex.
+var pairIDPattern = regexp.MustCompile(`^[A-Z]-\d{3,}$`)
+
+// tpStatusFunc reports whether a live stack already exists for the given
+// worktree id (`tp status --worktree=<id>` exit 0 = up). Type of the
+// package-level tpStatus var, swappable in tests — mirrors the existing
+// nodeInstaller seam in start.go (I-526) so unit tests never shell out or
+// need Docker.
+type tpStatusFunc func(cfg *config.Config, worktreeID string) bool
+
+// tpUpFunc brings up (or attaches to) the stack for the given worktree id
+// (`tp up --worktree=<id>`). Type of the package-level tpUp var.
+type tpUpFunc func(cfg *config.Config, worktreeID string) error
+
+// tpStatus/tpUp are package-level so tests can swap in fakes (t.Cleanup
+// restored), matching the nodeInstaller precedent.
+var (
+	tpStatus tpStatusFunc = defaultTPStatus
+	tpUp     tpUpFunc     = defaultTPUp
+)
+
+// tpEnv builds the environment for a `tp` subprocess. `tp`'s own agents-root
+// autodiscovery walks cwd looking for a directory theraprac-workspace/.git —
+// but a worktree's .git is a FILE (git worktree pointer), not a directory, so
+// autodiscovery fails when st's cwd is inside a per-item worktree (confirmed
+// during I-1705 live acceptance). Set THERAPRAC_AGENTS_ROOT explicitly rather
+// than relying on cwd inference. AS_AGENT_ID is also set explicitly since a
+// per-command exec.Command doesn't inherit whatever env st itself was
+// launched with beyond os.Environ() (which may or may not include it).
+func tpEnv(cfg *config.Config) []string {
+	env := os.Environ()
+	env = append(env, "AS_AGENT_ID="+cfg.AgentID())
+	if root := cfg.AgentRoot(); root != "" {
+		env = append(env, "THERAPRAC_AGENTS_ROOT="+filepath.Dir(root))
+	}
+	return env
+}
+
+// defaultTPStatus shells out to `tp status --worktree=<id>`; output is
+// discarded — this is a machine up/down check, not a user-facing report
+// (I-1705's `tp status --worktree` exits 0 iff api+web are both running).
+func defaultTPStatus(cfg *config.Config, worktreeID string) bool {
+	cmd := exec.Command("tp", "status", "--worktree="+worktreeID)
+	cmd.Env = tpEnv(cfg)
+	return cmd.Run() == nil
+}
+
+// defaultTPUp shells out to `tp up --worktree=<id>`, streaming to the
+// current stdout/stderr since a fresh-DB first-up can take several minutes
+// (I-1705's RxNorm-ingest health-timeout finding) and the operator should
+// see progress, not a silent hang.
+func defaultTPUp(cfg *config.Config, worktreeID string) error {
+	cmd := exec.Command("tp", "up", "--worktree="+worktreeID)
+	cmd.Env = tpEnv(cfg)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// ensureTPStack reuses a live stack for worktreeID if one is already up (M4
+// attach-stack), otherwise brings one up (`tp up --worktree=<id>`). Shared by
+// all three entry modes (M1/M2/M3) — M4 is not a separate branch, it's the
+// reuse/no-reuse fork inside this one step, applying uniformly to whichever
+// mode resolved the item id.
+func ensureTPStack(cfg *config.Config, worktreeID string) error {
+	if tpStatus(cfg, worktreeID) {
+		fmt.Printf("st pair: stack for %s is already up — reusing (no re-provisioning).\n", worktreeID)
+		return nil
+	}
+	fmt.Printf("st pair: bringing up stack for %s (tp up --worktree=%s)...\n", worktreeID, worktreeID)
+	if err := tpUp(cfg, worktreeID); err != nil {
+		return fmt.Errorf("tp up --worktree=%s: %w", worktreeID, err)
+	}
+	return nil
+}
+
 // Pair activates or deactivates the I-1700 `/pair` live-iteration mode on the
 // CURRENT session — a session-local, ephemeral marker written into this
 // session's yaml (.as/sessions/<id>.yaml), never changelog-logged or synced
@@ -22,15 +105,24 @@ type PairOpts struct {
 // pairing-mode.sh bash fragment to relax in-session friction (plan-before-code,
 // worktree-dirty exit, model-check, advisory nags) for the paired item.
 //
-// Slice 1 (I-1704) scope is deliberately narrow: only the bare "attach to the
-// current stack-top item" form and "--off" are implemented. Attaching by id
-// or title (M2/M3/M4 in the design) requires tp reuse-or-start semantics that
-// don't exist until I-1705/I-1706 — passing an argument here returns a clear,
-// honest error rather than silently no-op'ing.
+// Slice 3 (I-1706) implements the full M1-M4 entry-mode resolution from the
+// design (docs/design-pair-live-iteration.md §4):
 //
-//	st pair          -> attach: mark the current stack-top item as paired
-//	st pair --off    -> detach: clear the marker on this session
-//	st pair <arg>    -> not yet implemented (tracked: I-1706); exit 2
+//	st pair               -> M1 attach-current: mark the stack-top item as
+//	                         paired. Presupposes it's already started — no
+//	                         Start() call.
+//	st pair <id>          -> M2 attach-item: start it first if not already
+//	                         active. An id-shaped arg that doesn't resolve
+//	                         to an item is a hard error, never silently
+//	                         treated as a title.
+//	st pair "<title>"     -> M3 fresh: create a new issue with this title,
+//	                         then start it.
+//	st pair --off         -> detach: clear the marker on this session.
+//
+// After M1/M2/M3 resolve an item id, a shared step (ensureTPStack) reuses an
+// already-live stack for that worktree (M4 attach-stack) or brings one up via
+// `tp up --worktree=<id>` — so pairing only activates once the stack is
+// actually up.
 func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionID string, args []string, opts PairOpts) int {
 	if sessionID == "" {
 		fmt.Fprintln(os.Stderr, "st pair: no current session id resolved (.as/session missing or empty)")
@@ -55,21 +147,79 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 		return 0
 	}
 
-	if len(args) != 0 {
-		fmt.Fprintf(os.Stderr, "st pair: attach-by-id/title is not implemented yet (tracked: I-1706) — "+
-			"run bare `st pair` to attach the current stack-top item, or `st pair --off` to detach.\n")
-		return 2
+	argStr := strings.TrimSpace(strings.Join(args, " "))
+
+	var id string
+	switch {
+	case argStr == "":
+		// M1 attach-current: resolve the stack-top item. Unchanged from
+		// Slice 1 — its precondition is "session already has a started
+		// item", so no Start() call here.
+		entries := LoadStack(cfg)
+		if len(entries) == 0 {
+			fmt.Fprintln(os.Stderr, "st pair: no active item on stack — st start/resume one first")
+			return 1
+		}
+		id = entries[len(entries)-1].ID
+		if _, ok := s.Get(id); !ok {
+			fmt.Fprintf(os.Stderr, "st pair: stack-top item %s not found\n", id)
+			return 1
+		}
+
+	case pairIDPattern.MatchString(argStr):
+		// M2 attach-item: an id-shaped arg must resolve to an existing item.
+		// A typo'd/nonexistent id is a hard error — never silently
+		// reinterpreted as a fresh title.
+		item, ok := s.Get(argStr)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "st pair: %s looks like an item id but does not exist — "+
+				"create it explicitly, or pass a title to create one (e.g. `st pair \"<title>\"`).\n", argStr)
+			return 1
+		}
+		id = argStr
+		if code := startIfNotActive(s, cfg, item); code != 0 {
+			return code
+		}
+
+	default:
+		// M3 fresh: title matches no item (arg isn't id-shaped) — create it,
+		// then start it. Fast path mirroring createHotfix's ad hoc-item
+		// convention: no plan gate, no semantic validation/dedup — pairing
+		// is meant to be low-friction, and the scaffold SBAR/dedup gap is
+		// deliberately deferred to when the item leaves pairing mode.
+		var newID string
+		rc := Create(s, cfg, "issue", argStr, CreateOpts{
+			Priority:       2,
+			Situation:      "Started via `st pair \"" + argStr + "\"` (live-iteration mode).",
+			Background:     "Created ad hoc from a /pair session with no upstream design doc.",
+			Assessment:     "Not yet assessed — created to unblock immediate live-iteration work.",
+			Recommendation: "Refine the SBAR and add acceptance criteria before this item leaves pairing mode.",
+			EnforceGate:    false,
+			NoValidate:     true,
+			NoDedup:        true,
+			IDOut:          &newID,
+		})
+		if rc != 0 {
+			return rc
+		}
+		if newID == "" {
+			fmt.Fprintln(os.Stderr, "st pair: item created but ID was not captured")
+			return 1
+		}
+		id = newID
+
+		item, ok := s.Get(id)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "st pair: created %s but could not re-read it\n", id)
+			return 1
+		}
+		if code := startItem(s, cfg, item); code != 0 {
+			return code
+		}
 	}
 
-	entries := LoadStack(cfg)
-	if len(entries) == 0 {
-		fmt.Fprintln(os.Stderr, "st pair: no active item on stack — st start/resume one first")
-		return 1
-	}
-	id := entries[len(entries)-1].ID
-
-	if _, ok := s.Get(id); !ok {
-		fmt.Fprintf(os.Stderr, "st pair: stack-top item %s not found\n", id)
+	if err := ensureTPStack(cfg, id); err != nil {
+		fmt.Fprintf(os.Stderr, "st pair: %v\n", err)
 		return 1
 	}
 
@@ -86,10 +236,8 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 	p := &session.Pairing{
 		Active: true,
 		Item:   id,
-		// Worktree currently always equals Item (Slice 1 only supports
-		// attaching the stack-top item, whose worktree name is its own ID).
-		// It's kept as a distinct field because Slice 3 (I-1706) attach
-		// modes may resolve a worktree that differs from the item ID.
+		// Worktree always equals Item — a worktree is created (I-1705) and
+		// named after the item id it was started for.
 		Worktree:    id,
 		ActivatedAt: time.Now(),
 	}
@@ -101,5 +249,26 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 	fmt.Printf("Pairing ON for %s — in-session friction relaxed (plan gate, worktree-dirty exit, advisory nags).\n", id)
 	fmt.Printf("  The merge gate (tier1/tier2/live-acceptance) is untouched and runs fresh at merge.\n")
 	fmt.Printf("  Detach with:  st pair --off\n")
+	return 0
+}
+
+// startIfNotActive starts item only if it isn't already active — the M2
+// "start if not started" behavior. A no-op (exit 0) when already started.
+func startIfNotActive(s *store.Store, cfg *config.Config, item *model.Item) int {
+	if tc, ok := cfg.Types[item.Type]; ok && item.Status == tc.ActiveStatus {
+		return 0
+	}
+	return startItem(s, cfg, item)
+}
+
+// startItem runs Start() unconditionally with a slug derived from the item's
+// title (deriveSlug, shared with spawn.go), for M2 (not-yet-started) and M3
+// (always-fresh) callers.
+func startItem(s *store.Store, cfg *config.Config, item *model.Item) int {
+	slug := deriveSlug(item)
+	if code := Start(s, cfg, item.ID, StartOpts{Slug: slug}); code != 0 {
+		fmt.Fprintf(os.Stderr, "st pair: starting %s: exit %d\n", item.ID, code)
+		return code
+	}
 	return 0
 }

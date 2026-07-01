@@ -1,6 +1,7 @@
 package command
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,13 +10,47 @@ import (
 	"github.com/theraprac/agent-state/internal/session"
 )
 
+var errPairTestTPUpFailed = errors.New("tp up failed (test fake)")
+
 func newTestSessionMgr(cfg *config.Config) *session.Manager {
 	return session.NewManager(cfg.SessionsDir(), 2*time.Hour)
+}
+
+// tpCallRecorder captures calls made through the stubbed tpStatus/tpUp seam
+// and controls what they report back to Pair(). StatusUp/UpErr default to
+// the "cold start, up succeeds" case (matches a first attach in a fresh test
+// fixture); set StatusUp=true to simulate M4's already-live-stack path.
+type tpCallRecorder struct {
+	StatusUp    bool
+	UpErr       error
+	statusCalls []string
+	upCalls     []string
+}
+
+// stubTP swaps the package-level tpStatus/tpUp vars for in-process fakes
+// (t.Cleanup restored) so Pair() tests never shell out to `tp`/Docker —
+// mirrors the nodeInstaller test-injection precedent in start_test.go.
+// I-1706.
+func stubTP(t *testing.T) *tpCallRecorder {
+	t.Helper()
+	rec := &tpCallRecorder{}
+	origStatus, origUp := tpStatus, tpUp
+	tpStatus = func(cfg *config.Config, worktreeID string) bool {
+		rec.statusCalls = append(rec.statusCalls, worktreeID)
+		return rec.StatusUp
+	}
+	tpUp = func(cfg *config.Config, worktreeID string) error {
+		rec.upCalls = append(rec.upCalls, worktreeID)
+		return rec.UpErr
+	}
+	t.Cleanup(func() { tpStatus, tpUp = origStatus, origUp })
+	return rec
 }
 
 // Bare `st pair` attaches to the stack-top item and writes the marker.
 func TestPairAttachesStackTop(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
 	if code := StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""}); code != 0 {
 		t.Fatalf("StackPush returned %d", code)
 	}
@@ -32,6 +67,12 @@ func TestPairAttachesStackTop(t *testing.T) {
 	})
 	if !strings.Contains(out, "T-001") {
 		t.Errorf("output %q does not mention T-001", out)
+	}
+	// M1 attach-current must never call Start() — its precondition is
+	// "already started". We can't observe Start() directly here, but we can
+	// confirm the tp reuse-or-start step ran for the right worktree.
+	if len(rec.upCalls) != 1 || rec.upCalls[0] != "T-001" {
+		t.Errorf("tpUp calls = %v, want exactly one call for T-001", rec.upCalls)
 	}
 
 	loaded, err := mgr.Load("sess-1")
@@ -72,6 +113,7 @@ func TestPairNoActiveItem(t *testing.T) {
 // `st pair --off` clears a previously-set marker.
 func TestPairOffClearsMarker(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	stubTP(t)
 	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
 	mgr := newTestSessionMgr(cfg)
 	mgr.EnsureSession("sess-1", "agent-a")
@@ -133,24 +175,167 @@ func TestPairOffRejectsArgs(t *testing.T) {
 	}
 }
 
-// `st pair <id>` is not implemented in Slice 1 — a clear exit-2 error naming
-// the tracking issue, not a silent no-op.
-func TestPairWithArgNotImplemented(t *testing.T) {
+// M2 attach-item: `st pair <id>` on an existing but not-yet-started item
+// starts it (T-001 fixture is status=queued) before attaching.
+func TestPairAttachItemStartsIfNotActive(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", []string{"T-001"}, PairOpts{})
+	})
+	if code != 0 {
+		t.Fatalf("Pair(T-001) returned %d, want 0: %s", code, out)
+	}
+
+	item, ok := s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found after Pair")
+	}
+	if item.Status != "active" {
+		t.Errorf("T-001 status = %q after Pair, want active (Start() should have run)", item.Status)
+	}
+
+	loaded, _ := mgr.Load("sess-1")
+	if loaded.Pairing == nil || !loaded.Pairing.Active || loaded.Pairing.Item != "T-001" {
+		t.Fatalf("pairing marker not set correctly: %+v", loaded.Pairing)
+	}
+	if len(rec.upCalls) != 1 || rec.upCalls[0] != "T-001" {
+		t.Errorf("tpUp calls = %v, want exactly one call for T-001", rec.upCalls)
+	}
+}
+
+// M2 attach-item: an id-shaped arg that doesn't resolve to an existing item
+// is a hard error — never silently reinterpreted as a fresh title.
+func TestPairAttachItemNonexistentIDErrors(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	stubTP(t)
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	before := len(s.All())
+
+	code := 0
+	captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", []string{"I-9999"}, PairOpts{})
+	})
+	if code != 1 {
+		t.Errorf("Pair(I-9999) returned %d, want 1", code)
+	}
+	if _, ok := s.Get("I-9999"); ok {
+		t.Error("I-9999 should not have been created")
+	}
+	if len(s.All()) != before {
+		t.Errorf("item count changed (%d -> %d); a nonexistent id-shaped arg must not create anything", before, len(s.All()))
+	}
+
+	loaded, _ := mgr.Load("sess-1")
+	if loaded.Pairing != nil {
+		t.Error("pairing marker should not be set on the nonexistent-id error path")
+	}
+}
+
+// M3 fresh: an arg that isn't id-shaped is treated as a title — creates a
+// new issue, starts it, then attaches.
+func TestPairFreshTitleCreatesAndStarts(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	before := len(s.All())
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", []string{"add", "live", "pairing", "demo"}, PairOpts{})
+	})
+	if code != 0 {
+		t.Fatalf("Pair(fresh title) returned %d, want 0: %s", code, out)
+	}
+	if len(s.All()) != before+1 {
+		t.Fatalf("item count = %d, want %d (exactly one new item created)", len(s.All()), before+1)
+	}
+
+	loaded, _ := mgr.Load("sess-1")
+	if loaded.Pairing == nil || !loaded.Pairing.Active {
+		t.Fatal("pairing marker not active after M3 fresh")
+	}
+	newID := loaded.Pairing.Item
+	item, ok := s.Get(newID)
+	if !ok {
+		t.Fatalf("created item %s not found", newID)
+	}
+	if item.Title != "add live pairing demo" {
+		t.Errorf("created item title = %q, want %q", item.Title, "add live pairing demo")
+	}
+	if item.Type != "issue" {
+		t.Errorf("created item type = %q, want issue", item.Type)
+	}
+	if item.Status != "active" {
+		t.Errorf("created item status = %q, want active (Start() should have run)", item.Status)
+	}
+	if len(rec.upCalls) != 1 || rec.upCalls[0] != newID {
+		t.Errorf("tpUp calls = %v, want exactly one call for %s", rec.upCalls, newID)
+	}
+}
+
+// M4 attach-stack: when tp reports a live stack already up for the resolved
+// worktree, Pair() reuses it instead of calling tp up again.
+func TestPairReusesLiveStack(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
+	rec.StatusUp = true // simulate: a live stack already exists for T-001
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
+	mgr := newTestSessionMgr(cfg)
+	mgr.EnsureSession("sess-1", "agent-a")
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{})
+	})
+	if code != 0 {
+		t.Fatalf("Pair returned %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "reusing") {
+		t.Errorf("expected output to report reuse, got: %q", out)
+	}
+	if len(rec.statusCalls) != 1 || rec.statusCalls[0] != "T-001" {
+		t.Errorf("tpStatus calls = %v, want exactly one call for T-001", rec.statusCalls)
+	}
+	if len(rec.upCalls) != 0 {
+		t.Errorf("tpUp calls = %v, want none — a live stack must not be re-provisioned", rec.upCalls)
+	}
+
+	loaded, _ := mgr.Load("sess-1")
+	if loaded.Pairing == nil || !loaded.Pairing.Active {
+		t.Fatal("pairing marker not active after M4 reuse")
+	}
+}
+
+// A `tp up` failure must not activate pairing — the marker only gets set
+// once the stack is confirmed up.
+func TestPairTPUpFailureBlocksPairing(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	rec := stubTP(t)
+	rec.UpErr = errPairTestTPUpFailed
+	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
 	mgr := newTestSessionMgr(cfg)
 	mgr.EnsureSession("sess-1", "agent-a")
 
 	code := 0
 	captureStdout(t, func() {
-		code = Pair(s, cfg, mgr, "sess-1", []string{"T-001"}, PairOpts{})
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{})
 	})
-	if code != 2 {
-		t.Errorf("Pair with an arg returned %d, want 2", code)
+	if code != 1 {
+		t.Errorf("Pair returned %d, want 1 (tp up failed)", code)
 	}
 
 	loaded, _ := mgr.Load("sess-1")
 	if loaded.Pairing != nil {
-		t.Error("pairing marker should not be set by the unimplemented arg path")
+		t.Error("pairing marker should not be set when tp up fails")
 	}
 }
 
@@ -173,6 +358,7 @@ func TestPairNoSessionID(t *testing.T) {
 // Pair must create it rather than fail with "session not found".
 func TestPairWithoutPreexistingSessionFile(t *testing.T) {
 	s, cfg := setupTestEnv(t)
+	stubTP(t)
 	StackPush(s, cfg, "T-001", StackPushOpts{Reason: ""})
 	mgr := newTestSessionMgr(cfg)
 	// Deliberately no EnsureSession call — simulates `st resume`.
