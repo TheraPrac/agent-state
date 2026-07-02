@@ -100,7 +100,12 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 
 	fmt.Printf("Reopened %s — %s (%s → %s)\n", id, item.Title, oldStatus, activeStatus)
 
-	if err := autoSync(s, fmt.Sprintf("st reopen: %s (%s)", id, reason)); err != nil {
+	// I-1719: s.Move renames the file across status directories (archive/ ->
+	// the active dir), which git sees as delete-old + untracked-new — GitSync's
+	// `git add -u` only stages the deletion, never the new path (I-1715/I-442).
+	// Pass the post-Move path explicitly, same as GoalCreate/GoalMarkMet/GoalDrop.
+	path, _ := s.Path(id)
+	if err := autoSync(s, fmt.Sprintf("st reopen: %s (%s)", id, reason), path); err != nil {
 		return 1
 	}
 	return 0
