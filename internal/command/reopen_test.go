@@ -2,11 +2,14 @@ package command
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/store"
+	"github.com/theraprac/agent-state/internal/testutil"
 )
 
 // TestReopenTerminalItem reopens the done T-004 fixture: status flips to active,
@@ -165,5 +168,64 @@ func TestReopenWorksForIssue(t *testing.T) {
 	g, _ := s2.Get("I-001")
 	if g.Status != "active" {
 		t.Errorf("I-001 status = %q after reopen, want active", g.Status)
+	}
+}
+
+// TestReopenEndToEndGitSync guards I-1719: Reopen's s.Move renames the file
+// archive/ -> the active directory, which git sees as delete-old +
+// untracked-new — `git add -u` alone can't stage the new path. Uses
+// gitTracksPath (defined in reconcile_test.go, same package) because
+// trackedDirty alone can't catch this: it intentionally skips "??" untracked
+// lines, and a broken fix would leave the reopened file showing as exactly
+// that.
+func TestReopenEndToEndGitSync(t *testing.T) {
+	env := testutil.NewGitEnv(t)
+	root := env.Cfg.Root()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Close T-001 (queued -> done, tasks/ -> archive/) and commit that state
+	// so Reopen's own commit is the one under test.
+	if rc := Close(env.S, env.Cfg, "T-001", "done", CloseOpts{
+		AllowMissingCapture: "test: capture gate not under test",
+		SkipAC:              "test: AC gate not under test",
+		SkipACRequested:     true,
+		Force:               true,
+	}); rc != 0 {
+		t.Fatalf("Close rc=%d, want 0", rc)
+	}
+	run("add", "-A")
+	run("commit", "-m", "setup: close T-001")
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+	env.Reload(t)
+
+	if rc := Reopen(env.S, env.Cfg, "T-001", "regression found"); rc != 0 {
+		t.Fatalf("Reopen rc=%d, want 0", rc)
+	}
+
+	env.Reload(t)
+	newPath, ok := env.S.Path("T-001")
+	if !ok {
+		t.Fatal("no path for T-001 after Reopen")
+	}
+	if strings.Contains(newPath, "archive") {
+		t.Fatalf("T-001 should have moved out of archive/, got %s", newPath)
+	}
+	relPath, err := filepath.Rel(root, newPath)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if !gitTracksPath(t, root, relPath) {
+		t.Errorf("reopened path %q is not tracked by git — the Move'd file was never staged (I-1719 regression)", relPath)
+	}
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after Reopen")
 	}
 }
