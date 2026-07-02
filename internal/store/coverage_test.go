@@ -130,12 +130,15 @@ func TestMoveNoOp(t *testing.T) {
 
 	// T-001 is queued in tasks/ — move should be a no-op
 	oldPath, _ := s.Path("T-001")
-	if err := s.Move("T-001"); err != nil {
+	newPath, err := s.Move("T-001")
+	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	newPath, _ := s.Path("T-001")
 	if oldPath != newPath {
 		t.Errorf("path changed: %s -> %s", oldPath, newPath)
+	}
+	if statPath, _ := s.Path("T-001"); statPath != newPath {
+		t.Errorf("Move's returned path %q diverges from s.Path %q", newPath, statPath)
 	}
 }
 
@@ -143,7 +146,7 @@ func TestMoveNotFound(t *testing.T) {
 	root, _ := setupTestDir(t)
 	s := newTestStore(t, root)
 
-	if err := s.Move("T-999"); err == nil {
+	if _, err := s.Move("T-999"); err == nil {
 		t.Error("Move nonexistent should fail")
 	}
 }
@@ -217,7 +220,7 @@ func TestMoveNoPath(t *testing.T) {
 	s.items["T-999"] = &model.Item{ID: "T-999", Type: "task", Status: "queued"}
 	// Don't set a path — s.paths["T-999"] is empty
 
-	err := s.Move("T-999")
+	_, err := s.Move("T-999")
 	if err == nil {
 		t.Error("Move with no path should fail")
 	}

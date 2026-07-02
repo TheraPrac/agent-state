@@ -381,16 +381,15 @@ func fixDirectoryMismatch(s *store.Store, cfg *config.Config) (int, []string) {
 			continue
 		}
 		itemID := item.ID
-		if err := s.Move(itemID); err != nil {
+		newPath, err := s.Move(itemID)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "  move-failed: %s — %v\n", itemID, err)
 			continue
 		}
 		fixed++
 		fmt.Printf("  \033[33m⟳\033[0m %s: moved from %q to %q (status %q)\n",
 			itemID, actualDir, expectedDir, item.Status)
-		if newPath, ok := s.Path(itemID); ok {
-			movedPaths = append(movedPaths, newPath)
-		}
+		movedPaths = append(movedPaths, newPath)
 	}
 	return fixed, movedPaths
 }

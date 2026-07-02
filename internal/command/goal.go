@@ -193,7 +193,8 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 		fmt.Fprintf(os.Stderr, "goal activate: %s: %v\n", id, err)
 		return 1
 	}
-	if err := s.Move(id); err != nil {
+	path, err := s.Move(id)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
@@ -204,7 +205,6 @@ func GoalActivate(s *store.Store, cfg *config.Config, id string) int {
 	// config.go DirectoryMap), so this is a same-path modification that a later
 	// unrelated command's `git add -u` would eventually catch — but syncing
 	// immediately closes the window where the status flip sits unpersisted.
-	path, _ := s.Path(id)
 	if syncErr := autoSync(s, fmt.Sprintf("st goal activate: %s", id), path); syncErr != nil {
 		return 1
 	}
@@ -312,7 +312,8 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string, opts GoalMarkMet
 		fmt.Fprintf(os.Stderr, "marking %s met: %v\n", id, err)
 		return 1
 	}
-	if err := s.Move(id); err != nil {
+	path, err := s.Move(id)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
@@ -341,7 +342,6 @@ func GoalMarkMet(s *store.Store, cfg *config.Config, id string, opts GoalMarkMet
 	// this is a rename, not a same-path modification — `git add -u` stages the
 	// deletion of the old tracked path but never picks up the new untracked one.
 	// Pass the post-Move path explicitly, same as the create-path (I-442) fix.
-	path, _ := s.Path(id)
 	if syncErr := autoSync(s, fmt.Sprintf("st goal mark-met: %s", id), path); syncErr != nil {
 		return 1
 	}
@@ -386,7 +386,8 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 		fmt.Fprintf(os.Stderr, "dropping %s: %v\n", id, err)
 		return 1
 	}
-	if err := s.Move(id); err != nil {
+	path, err := s.Move(id)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
@@ -403,7 +404,6 @@ func GoalDrop(s *store.Store, cfg *config.Config, id, reason string) int {
 	// I-1715: dropped moves the file goals/ -> archive/ (config.go DirectoryMap),
 	// so this is a rename, not a same-path modification — same explicit-path
 	// requirement as GoalMarkMet above.
-	path, _ := s.Path(id)
 	if syncErr := autoSync(s, fmt.Sprintf("st goal drop: %s (%s)", id, reason), path); syncErr != nil {
 		return 1
 	}

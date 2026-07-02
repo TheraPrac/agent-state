@@ -230,11 +230,17 @@ func TestMove(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	if err := s.Move("T-001"); err != nil {
+	movedPath, err := s.Move("T-001")
+	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
 
+	// I-1721: Move's returned path must match s.Path(id) afterward — callers
+	// use the return value directly instead of a follow-up lookup.
 	newPath := s.paths["T-001"]
+	if movedPath != newPath {
+		t.Errorf("Move returned %q, but s.paths[id] is %q", movedPath, newPath)
+	}
 	if !contains(newPath, "archive") {
 		t.Errorf("moved path %q should be in archive/", newPath)
 	}

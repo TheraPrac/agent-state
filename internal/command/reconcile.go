@@ -479,9 +479,9 @@ func reconcileArchive(s *store.Store, cfg *config.Config, opts ReconcileOpts) (i
 					fmt.Fprintf(os.Stderr, "  error backfilling completed on %s: %v\n", itemID, err)
 				}
 			}
-			if err := s.Move(item.ID); err != nil {
+			if newPath, err := s.Move(item.ID); err != nil {
 				fmt.Fprintf(os.Stderr, "  error moving %s: %v\n", item.ID, err)
-			} else if newPath, ok := s.Path(item.ID); ok {
+			} else {
 				movedPaths = append(movedPaths, newPath)
 			}
 		}

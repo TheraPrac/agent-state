@@ -87,7 +87,8 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 	}
 
 	// Move the file back to the active directory for its new status.
-	if err := s.Move(id); err != nil {
+	newPath, err := s.Move(id)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "moving %s: %v\n", id, err)
 		return 1
 	}
@@ -104,8 +105,7 @@ func Reopen(s *store.Store, cfg *config.Config, id, reason string) int {
 	// the active dir), which git sees as delete-old + untracked-new — GitSync's
 	// `git add -u` only stages the deletion, never the new path (I-1715/I-442).
 	// Pass the post-Move path explicitly, same as GoalCreate/GoalMarkMet/GoalDrop.
-	path, _ := s.Path(id)
-	if err := autoSync(s, fmt.Sprintf("st reopen: %s (%s)", id, reason), path); err != nil {
+	if err := autoSync(s, fmt.Sprintf("st reopen: %s (%s)", id, reason), newPath); err != nil {
 		return 1
 	}
 	return 0

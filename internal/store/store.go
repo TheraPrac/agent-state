@@ -490,41 +490,45 @@ func (s *Store) write(item *model.Item) error {
 	return nil
 }
 
-// Move moves an item file to the correct directory for its current status.
-func (s *Store) Move(id string) error {
+// Move moves an item file to the correct directory for its current status,
+// returning the item's resulting path (whether or not a rename happened).
+// I-1721: returning the path lets callers that need it after a Move use
+// this return value directly instead of a follow-up s.Path(id) lookup that
+// re-derives the same string Move already had in hand.
+func (s *Store) Move(id string) (string, error) {
 	item, ok := s.items[id]
 	if !ok {
-		return fmt.Errorf("item %s not found", id)
+		return "", fmt.Errorf("item %s not found", id)
 	}
 
 	oldPath, ok := s.paths[id]
 	if !ok {
-		return fmt.Errorf("no path for item %s", id)
+		return "", fmt.Errorf("no path for item %s", id)
 	}
 
 	dir := s.cfg.DirectoryForStatus(item.Type, item.Status)
 	if dir == "" {
-		return fmt.Errorf("no directory for type=%s status=%s", item.Type, item.Status)
+		return "", fmt.Errorf("no directory for type=%s status=%s", item.Type, item.Status)
 	}
 
 	filename := filepath.Base(oldPath)
 	newPath := filepath.Join(s.cfg.ItemDir(), dir, filename)
 
 	if oldPath == newPath {
-		return nil // already in correct location
+		return oldPath, nil // already in correct location
 	}
 
 	// Ensure target directory exists
 	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
-		return err
+		return "", err
 	}
 
 	if err := os.Rename(oldPath, newPath); err != nil {
-		return fmt.Errorf("moving %s -> %s: %w", oldPath, newPath, err)
+		return "", fmt.Errorf("moving %s -> %s: %w", oldPath, newPath, err)
 	}
 
 	s.paths[id] = newPath
-	return nil
+	return newPath, nil
 }
 
 func (s *Store) filenameForItem(item *model.Item) string {
