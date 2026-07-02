@@ -10,19 +10,24 @@ import (
 	"github.com/theraprac/agent-state/internal/config"
 )
 
-// I-1722: restoreLockedItems previously reverted a locked item whenever its
-// current bytes differed from the pre-pull snapshot — for ANY reason,
-// including a concurrent legitimate Mutate by the item's owner. Observed
-// live 2026-07-02: plan_approved and testing_evidence.uat writes on I-1718
-// were silently destroyed by peer GitPull/GitSync straddles. These tests pin
-// the corrected contract: restore fires only for paths the pull itself
-// changed (per git's own diff between the pre- and post-pull HEADs), and
-// never touches the tree when HEAD did not move.
+// I-1728: the locked-item snapshot/restore mechanism around GitPull/GitSync/
+// RefreshWorkspace (I-1722's scoped version of it) has been removed
+// entirely. Its only surviving fire-path after I-1722 was harmful: a locked
+// item that was CLEAN locally (no in-flight uncommitted state to protect —
+// the dirty case is already covered by git pull --ff-only's own refusal)
+// had a legitimate upstream update silently reverted back to its pre-pull
+// content, and the owner's next GitSync then committed and pushed that
+// revert over the peer's write, with no conflict or error surfaced.
+//
+// These tests pin the corrected contract end to end: a peer's pushed change
+// to a clean locked item survives the owner's pull (and their next sync's
+// push), and a dirty locked item is left untouched because --ff-only
+// refuses to advance rather than merge.
 
 // setupLockedItemRepo builds a git repo with the standard layout, one task
-// item, and a pipeline lock (.locks/<id>) on it, returning the cfg, the
-// item's absolute path, and a git runner.
-func setupLockedItemRepo(t *testing.T) (*config.Config, string, func(...string)) {
+// item, and a pipeline lock (.locks/<id>) on it, returning the cfg and the
+// item's absolute path.
+func setupLockedItemRepo(t *testing.T) (*config.Config, string) {
 	t.Helper()
 	root, _ := setupTestDir(t)
 	asDir := filepath.Join(root, ".as")
@@ -46,125 +51,81 @@ func setupLockedItemRepo(t *testing.T) (*config.Config, string, func(...string))
 	if _, err := os.Stat(itemPath); err != nil {
 		t.Fatalf("fixture item missing: %v", err)
 	}
+	return cfg, itemPath
+}
 
-	run := func(args ...string) {
+// pushUpstreamChange clones bare into a scratch dir standing in for a peer
+// agent, rewrites the locked item's file there, and pushes the commit to
+// origin — simulating a peer's legitimate GitSync landing on main while the
+// owner still holds the item lock locally with a clean working tree.
+func pushUpstreamChange(t *testing.T, bare, content string) {
+	t.Helper()
+	peer := t.TempDir()
+	run := func(args ...string) string {
 		t.Helper()
-		gitRun(t, root, args...)
+		cmd := exec.Command("git", args...)
+		cmd.Dir = peer
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
 	}
-	return cfg, itemPath, run
+	cloneCmd := exec.Command("git", "clone", bare, ".")
+	cloneCmd.Dir = peer
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(peer, "tasks", "T-001-first-task.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("peer write: %v", err)
+	}
+	run("add", "tasks/T-001-first-task.md")
+	run("-c", "user.email=peer@t", "-c", "user.name=peer", "commit", "-m", "peer: upstream change to locked item")
+	run("push", "origin", "HEAD:main")
 }
 
-// TestRestoreSkipsConcurrentWriteOnNoopPull reproduces the exact I-1718
-// incident shape: a peer's snapshot→(no-op pull)→restore straddles the
-// owner's write. HEAD never moves, so restore must leave the concurrent
-// write intact. Under the pre-I-1722 code this test fails: the write is
-// reverted to the snapshot.
-func TestRestoreSkipsConcurrentWriteOnNoopPull(t *testing.T) {
-	cfg, itemPath, _ := setupLockedItemRepo(t)
+// TestGitPullTakesUpstreamChangeToCleanLockedItem is the core I-1728 fix:
+// a peer's legitimate upstream change to an item the owner has locked but
+// not touched must come through the pull intact, not get reverted back to
+// the pre-pull snapshot.
+func TestGitPullTakesUpstreamChangeToCleanLockedItem(t *testing.T) {
+	cfg, itemPath := setupLockedItemRepo(t)
 	root := cfg.ItemDir()
-
-	snap := snapshotLockedItems(cfg, root)
-	if len(snap) != 1 {
-		t.Fatalf("expected 1 snapshot, got %d", len(snap))
-	}
-	head := headSHA(root)
-	if head == "" {
-		t.Fatal("no HEAD sha")
-	}
-
-	// Concurrent legitimate write lands between snapshot and restore
-	// (in production: the owner's Store.Mutate, e.g. plan_approved: true).
-	concurrent := "id: T-001\ntype: task\nstatus: queued\ntitle: First task\nplan_approved: true\n"
-	if err := os.WriteFile(itemPath, []byte(concurrent), 0644); err != nil {
-		t.Fatalf("concurrent write: %v", err)
-	}
-
-	// The pull was a no-op: oldHead == newHead.
-	restoreLockedItems(root, snap, head)
-
-	got, _ := os.ReadFile(itemPath)
-	if string(got) != concurrent {
-		t.Errorf("restore reverted a concurrent write on a no-op pull (I-1722 regression):\ngot:\n%s", got)
-	}
-}
-
-// TestRestoreSkipsUntouchedPathWhenHeadMoves: the pull advances HEAD but
-// changes a DIFFERENT file; the locked item's concurrent write must survive.
-func TestRestoreSkipsUntouchedPathWhenHeadMoves(t *testing.T) {
-	cfg, itemPath, gitRun := setupLockedItemRepo(t)
-	root := cfg.ItemDir()
-
-	snap := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
-
-	// Concurrent write to the locked item.
-	concurrent := "id: T-001\ntype: task\nstatus: queued\ntitle: First task\nuat: pass\n"
-	os.WriteFile(itemPath, []byte(concurrent), 0644)
-
-	// Simulate the pull: a new commit that touches an unrelated file only.
-	other := filepath.Join(root, "tasks", "T-999-other.md")
-	os.WriteFile(other, []byte("id: T-999\ntype: task\nstatus: queued\ntitle: other\n"), 0644)
-	gitRun("add", "tasks/T-999-other.md")
-	gitRun("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "unrelated upstream change")
-	newHead := headSHA(root)
-	if newHead == oldHead {
-		t.Fatal("HEAD did not move")
-	}
-
-	restoreLockedItems(root, snap, oldHead)
-
-	got, _ := os.ReadFile(itemPath)
-	if string(got) != concurrent {
-		t.Errorf("restore reverted a concurrent write to a path the pull never touched (I-1722 regression):\ngot:\n%s", got)
-	}
-}
-
-// TestRestoreRestoresPullChangedFile pins the mechanism's original purpose:
-// when the pull DID rewrite a locked item, its pre-pull local state is put
-// back.
-func TestRestoreRestoresPullChangedFile(t *testing.T) {
-	cfg, itemPath, gitRun := setupLockedItemRepo(t)
-	root := cfg.ItemDir()
-
-	preData, _ := os.ReadFile(itemPath)
-	snap := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
-
-	// Simulate the pull rewriting the locked item: commit an upstream
-	// version of the same file (moves HEAD and changes the path in the
-	// old..new diff, and the working tree now holds upstream's content).
-	upstream := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\n"
-	os.WriteFile(itemPath, []byte(upstream), 0644)
-	gitRun("add", "tasks/T-001-first-task.md")
-	gitRun("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream change to locked item")
-	restoreLockedItems(root, snap, oldHead)
-
-	got, _ := os.ReadFile(itemPath)
-	if string(got) != string(preData) {
-		t.Errorf("pull-changed locked item was not restored to its pre-pull state:\ngot:\n%s\nwant:\n%s", got, preData)
-	}
-}
-
-// TestGitPullNoopLeavesDirtyLockedItemIntact drives the real GitPull entry
-// point end to end against a bare origin: with no upstream changes, a dirty
-// locked item must come through untouched.
-func TestGitPullNoopLeavesDirtyLockedItemIntact(t *testing.T) {
-	cfg, itemPath, gitRun := setupLockedItemRepo(t)
-
-	// Wire a bare origin so pull --ff-only has a remote to talk to.
-	bare := t.TempDir()
-	cmd := exec.Command("git", "init", "--bare", bare)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init --bare: %v\n%s", err, out)
-	}
-	gitRun("remote", "add", "origin", bare)
-	gitRun("push", "-u", "origin", "HEAD")
-
+	bare := gitBareRemote(t, root)
+	gitRun(t, root, "branch", "--set-upstream-to=origin/main", "main")
 	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
 
-	// The owner's in-flight write sits uncommitted in the shared tree.
+	upstream := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\n"
+	pushUpstreamChange(t, bare, upstream)
+
+	if err := GitPull(cfg); err != nil {
+		t.Fatalf("GitPull: %v", err)
+	}
+
+	got, _ := os.ReadFile(itemPath)
+	if string(got) != upstream {
+		t.Errorf("GitPull did not take the peer's upstream change to a clean locked item (I-1728 regression):\ngot:\n%s\nwant:\n%s", got, upstream)
+	}
+}
+
+// TestGitPullLeavesDirtyLockedItemIntactWhenUpstreamChanges confirms the
+// case the mechanism's removal still relies on: a locked item with genuine
+// uncommitted local state is protected by --ff-only's own refusal to
+// advance, not by any snapshot/restore step.
+func TestGitPullLeavesDirtyLockedItemIntactWhenUpstreamChanges(t *testing.T) {
+	cfg, itemPath := setupLockedItemRepo(t)
+	root := cfg.ItemDir()
+	bare := gitBareRemote(t, root)
+	gitRun(t, root, "branch", "--set-upstream-to=origin/main", "main")
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+
+	upstream := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\n"
+	pushUpstreamChange(t, bare, upstream)
+
 	dirty := "id: T-001\ntype: task\nstatus: queued\ntitle: First task\nplan_approved: true\n"
-	os.WriteFile(itemPath, []byte(dirty), 0644)
+	if err := os.WriteFile(itemPath, []byte(dirty), 0644); err != nil {
+		t.Fatalf("dirty write: %v", err)
+	}
 
 	if err := GitPull(cfg); err != nil {
 		t.Fatalf("GitPull: %v", err)
@@ -172,61 +133,59 @@ func TestGitPullNoopLeavesDirtyLockedItemIntact(t *testing.T) {
 
 	got, _ := os.ReadFile(itemPath)
 	if string(got) != dirty {
-		t.Errorf("GitPull with no upstream changes reverted a dirty locked item (I-1722 regression):\ngot:\n%s", got)
-	}
-	if !strings.Contains(string(got), "plan_approved: true") {
-		t.Error("plan_approved field lost")
+		t.Errorf("GitPull altered a dirty locked item instead of refusing the non-ff-only merge:\ngot:\n%s\nwant:\n%s", got, dirty)
 	}
 }
 
-// TestRestoreKeepsPostPullConcurrentWrite pins the residual-TOCTOU fix: a
-// write landing AFTER the pull (e.g. a Mutate that read the pulled content
-// and completed before restore ran) is newer than the snapshot and must win.
-func TestRestoreKeepsPostPullConcurrentWrite(t *testing.T) {
-	cfg, itemPath, gitRun2 := setupLockedItemRepo(t)
+// TestGitSyncDoesNotRevertPeersUpstreamChangeToLockedItem reproduces the
+// I-1728 incident shape end to end through the real GitSync entry point:
+// the owner has an unrelated change of their own to sync (so GitSync
+// actually commits and pushes), while a peer has already pushed a change to
+// the owner's locked-but-clean item. The owner's sync must not push a
+// revert of the peer's write.
+func TestGitSyncDoesNotRevertPeersUpstreamChangeToLockedItem(t *testing.T) {
+	cfg, itemPath := setupLockedItemRepo(t)
 	root := cfg.ItemDir()
+	bare := gitBareRemote(t, root)
+	gitRun(t, root, "branch", "--set-upstream-to=origin/main", "main")
+	cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: true}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
-	snap := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
-
-	// The pull rewrites the locked item (upstream commit changes it).
 	upstream := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\n"
-	os.WriteFile(itemPath, []byte(upstream), 0644)
-	gitRun2("add", "tasks/T-001-first-task.md")
-	gitRun2("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream change")
+	pushUpstreamChange(t, bare, upstream)
 
-	// A local write lands AFTER the pull, before restore.
-	postPull := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\nplan_approved: true\n"
-	os.WriteFile(itemPath, []byte(postPull), 0644)
+	// Owner's own unrelated change, so GitSync has something to commit and
+	// push (and therefore actually runs its pre-pull step).
+	other := filepath.Join(root, "tasks", "T-999-other.md")
+	if err := os.WriteFile(other, []byte("id: T-999\ntype: task\nstatus: queued\ntitle: other\n"), 0644); err != nil {
+		t.Fatalf("write other item: %v", err)
+	}
 
-	restoreLockedItems(root, snap, oldHead)
+	if err := s.GitSync("owner change", other); err != nil {
+		t.Fatalf("GitSync: %v", err)
+	}
 
 	got, _ := os.ReadFile(itemPath)
-	if string(got) != postPull {
-		t.Errorf("restore clobbered a post-pull concurrent write (residual TOCTOU):\ngot:\n%s", got)
+	if string(got) != upstream {
+		t.Errorf("GitSync reverted the peer's upstream change to a clean locked item (I-1728 regression):\ngot:\n%s\nwant:\n%s", got, upstream)
 	}
-}
 
-// TestRestoreRecreatesRenamedAwayLockedItem pins the --no-renames fix: an
-// upstream status-directory move of a locked item is a rename git would
-// otherwise collapse to just the destination path, hiding the old path from
-// the changed set. The snapshot is keyed by the old path; restore must still
-// re-create in-flight state there (pre-I-1722 behavior).
-func TestRestoreRecreatesRenamedAwayLockedItem(t *testing.T) {
-	cfg, itemPath, gitRun2 := setupLockedItemRepo(t)
-	root := cfg.ItemDir()
-
-	snap := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
-
-	// Upstream commits a status-directory move (tasks/ -> archive/) with the
-	// content unchanged — the strongest rename-similarity case.
-	gitRun2("mv", "tasks/T-001-first-task.md", "archive/T-001-first-task.md")
-	gitRun2("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream status move")
-
-	restoreLockedItems(root, snap, oldHead)
-
-	if _, err := os.Stat(itemPath); err != nil {
-		t.Errorf("locked item not re-created at its pre-pull path after an upstream rename (--no-renames regression): %v", err)
+	// Confirm the remote itself reflects the peer's content — proving the
+	// owner's sync didn't commit-and-push a revert on top of it.
+	clone := t.TempDir()
+	cloneCmd := exec.Command("git", "clone", bare, ".")
+	cloneCmd.Dir = clone
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+	remoteData, err := os.ReadFile(filepath.Join(clone, "tasks", "T-001-first-task.md"))
+	if err != nil {
+		t.Fatalf("read remote item: %v", err)
+	}
+	if string(remoteData) != upstream {
+		t.Errorf("remote T-001 content was reverted by the owner's sync push (I-1728 regression):\ngot:\n%s\nwant:\n%s", remoteData, upstream)
 	}
 }

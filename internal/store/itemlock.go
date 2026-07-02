@@ -1,10 +1,13 @@
-// Package store — item-level locks prevent GitPull from overwriting
-// active items during concurrent git operations.
+// Package store — item-level locks mark items as pipeline-active so
+// other st commands (status changes, etc.) can detect and guard against
+// concurrent mutation.
 //
 // When an item is started (st start), a lock file is created in
-// .locks/<item-id>. GitPull snapshots locked item files before pulling
-// and restores them after, so concurrent pulls can't revert status.
-// Locks are released on close, release, or finish.
+// .locks/<item-id>. Locks are released on close, release, or finish.
+//
+// I-1728: locks no longer gate a git-pull snapshot/restore mechanism —
+// GitPull's own --ff-only refusal is what protects a dirty locked item
+// from a concurrent pull; see git.go's GitPull doc comment.
 package store
 
 import (

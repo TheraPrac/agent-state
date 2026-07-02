@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +119,16 @@ func acquireGitLockTimeout(dir string, timeout time.Duration) (func(), error) {
 // GitPull then reverts it — the item pops back into issues/ and the
 // close is lost). --ff-only is the conservative middle: no rebase,
 // no destructive cleanup; just fetch and fast-forward when it's safe.
+//
+// I-1728: this used to also snapshot/restore locked item files around the
+// pull (I-1722's scoped version of that mechanism). That mechanism's only
+// remaining fire-path was harmful: a locked item that was CLEAN locally
+// (no uncommitted in-flight state — the dirty case is already covered by
+// --ff-only's own refusal below) had its legitimate upstream update
+// reverted back to the pre-pull content, and the owner's next GitSync
+// silently committed and pushed that revert over the peer's write. Removed
+// outright; --ff-only's refusal already protects any genuinely dirty
+// locked item, which is all the mechanism could safely protect anyway.
 func GitPull(cfg *config.Config) error {
 	if cfg.Git == nil || !cfg.Git.AutoPush {
 		return nil
@@ -133,16 +142,6 @@ func GitPull(cfg *config.Config) error {
 
 	root := cfg.ItemDir()
 
-	// Snapshot locked item files before any git operations.
-	// These are items currently being worked on by a pipeline —
-	// we must not let a pull overwrite their state even if ff-only
-	// would cleanly advance through them.
-	lockedSnapshots := snapshotLockedItems(cfg, root)
-	var oldHead string
-	if len(lockedSnapshots) > 0 {
-		oldHead = headSHA(root)
-	}
-
 	// Fast-forward-only pull. Git refuses the fast-forward if:
 	//   - history has diverged (local commits not on remote), or
 	//   - uncommitted working-tree changes conflict with files the
@@ -152,173 +151,7 @@ func GitPull(cfg *config.Config) error {
 	// network op cannot hold .st-git.lock indefinitely (I-1411).
 	_ = runNetGit(root, "pull", "--ff-only")
 
-	// Restore locked item files the pull changed (I-1722: scoped to
-	// git's own changed set — never touches concurrent local writes).
-	restoreLockedItems(root, lockedSnapshots, oldHead)
-
 	return nil
-}
-
-// lockedSnapshot pairs a locked item's pre-pull file content with its item
-// ID so restoreLockedItems can take the same per-item flock Store.Mutate
-// uses (I-1722).
-type lockedSnapshot struct {
-	id   string
-	data []byte
-}
-
-// snapshotLockedItems reads the content of all locked item files.
-// Returns a map of file path -> snapshot for restoration after pull.
-func snapshotLockedItems(cfg *config.Config, root string) map[string]lockedSnapshot {
-	locked := LockedItems(cfg)
-	if len(locked) == 0 {
-		return nil
-	}
-
-	// Build a set for fast lookup
-	lockedSet := make(map[string]bool, len(locked))
-	for _, id := range locked {
-		lockedSet[id] = true
-	}
-
-	snapshots := make(map[string]lockedSnapshot)
-	// Scan all type directories for files matching locked IDs.
-	// Filenames are like "T-103-title-slug.md" — match by ID prefix.
-	for _, tc := range cfg.Types {
-		for _, dir := range tc.DirectoryMap {
-			dirPath := filepath.Join(root, dir)
-			entries, err := os.ReadDir(dirPath)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-					continue
-				}
-				// Extract ID: everything before the second hyphen-delimited segment
-				// e.g., "T-103-title-slug.md" -> check if "T-103" is locked
-				name := strings.TrimSuffix(e.Name(), ".md")
-				for id := range lockedSet {
-					if name == id || strings.HasPrefix(name, id+"-") {
-						path := filepath.Join(dirPath, e.Name())
-						if data, err := os.ReadFile(path); err == nil {
-							snapshots[path] = lockedSnapshot{id: id, data: data}
-						}
-						break
-					}
-				}
-			}
-		}
-	}
-	return snapshots
-}
-
-// restoreLockedItems writes back snapshotted content for locked item files
-// that the pull between oldHead and newHead actually changed.
-//
-// I-1722: it must ONLY restore pull-induced changes. The previous
-// implementation restored whenever current bytes differed from the snapshot
-// — but bytes also differ when a CONCURRENT process legitimately Mutates the
-// item mid-window (snapshot → pull → restore), and blindly writing the stale
-// snapshot back silently destroyed such writes (observed live 2026-07-02:
-// plan_approved and testing_evidence.uat on I-1718 were reverted by peer
-// GitSync/GitPull straddles; the owner's subsequent `git add -u` then staged
-// nothing and the loss was invisible). Scoping the restore to git's own
-// changed-path set means a no-op pull never touches the working tree, and a
-// real pull only touches the files it rewrote.
-//
-// Each restore write additionally takes the per-item flock (the same
-// .locks/<id>.lock Store.Mutate holds across its read→write) so a restore
-// cannot interleave with an in-flight Mutate on the same item. Lock
-// acquisition failure degrades to the pre-I-1722 unlocked write rather than
-// dropping the restore: for a pull-changed file, restoring in-flight local
-// state is the whole point of the mechanism.
-func restoreLockedItems(root string, snapshots map[string]lockedSnapshot, oldHead string) {
-	if len(snapshots) == 0 {
-		return
-	}
-	// HEAD did not move: the pull was a no-op or refused. Nothing to
-	// restore — and touching the tree here is exactly the I-1722 bug.
-	newHead := headSHA(root)
-	if oldHead == "" || newHead == "" || oldHead == newHead {
-		return
-	}
-	// Paths (relative to root) that the pull actually rewrote. --relative
-	// both scopes the diff to root's subtree and emits root-relative paths,
-	// matching the filepath.Rel comparison below. --no-renames is load-
-	// bearing: st's own status-directory moves are detected as renames by
-	// default (only the destination path would be listed) while the snapshot
-	// is keyed by the pre-pull path — without it a pull applying an upstream
-	// status-move would evade the changed set entirely. -z avoids
-	// core.quotepath mangling of non-ASCII filenames.
-	out, err := gitOutput(root, "diff", "--name-only", "-z", "--no-renames", "--relative", oldHead, newHead)
-	if err != nil {
-		// Can't determine the changed set — fail safe by restoring nothing
-		// rather than risk reverting a concurrent legitimate write.
-		return
-	}
-	changed := make(map[string]bool)
-	for _, line := range strings.Split(out, "\x00") {
-		if line != "" {
-			changed[filepath.FromSlash(line)] = true
-		}
-	}
-
-	// Sorted iteration + per-iteration flock release: matches MutateMany's
-	// sorted acquisition order (no AB/BA stall between two restorers or a
-	// restorer and a MutateMany), never holds more than one item flock at a
-	// time, and cannot self-block on duplicate paths sharing an item ID.
-	paths := make([]string, 0, len(snapshots))
-	for p := range snapshots {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-
-	for _, path := range paths {
-		snap := snapshots[path]
-		rel, err := filepath.Rel(root, path)
-		if err != nil || !changed[rel] {
-			// The pull did not modify this file; any byte difference is a
-			// concurrent local write that must be left intact.
-			continue
-		}
-		func() {
-			release, lockErr := acquireExclusive(root, snap.id, path)
-			if lockErr == nil {
-				defer release()
-			}
-			currentData, readErr := os.ReadFile(path)
-			if readErr == nil {
-				if string(currentData) == string(snap.data) {
-					return
-				}
-				// Restore only when the bytes are still exactly what the
-				// pull wrote. Anything else means a local write landed
-				// AFTER the pull (e.g. a Mutate that completed between the
-				// pull and this restore) — newer than the snapshot, so it
-				// wins. gitOutput returns the raw blob, byte-exact.
-				pulled, showErr := gitOutput(root, "show", newHead+":./"+filepath.ToSlash(rel))
-				if showErr != nil || string(currentData) != pulled {
-					return
-				}
-			}
-			// readErr != nil: the pull deleted/moved the file — re-create
-			// in-flight state at its old path (pre-I-1722 behavior).
-			// Otherwise: bytes match the pulled blob; put local state back.
-			os.WriteFile(path, snap.data, 0644)
-		}()
-	}
-}
-
-// headSHA returns the current HEAD commit SHA of the repo containing dir,
-// or "" if it cannot be resolved (restoreLockedItems treats "" as
-// nothing-to-restore, the safe direction).
-func headSHA(dir string) string {
-	out, err := gitOutput(dir, "rev-parse", "HEAD")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
 }
 
 // GitSync stages, commits, and pushes changes in the item root directory.
@@ -796,17 +629,11 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	}
 
 	// Pre-pull: fetch and integrate remote changes before committing.
-	// Snapshot locked items so the pull can't overwrite active work.
+	// --ff-only refuses to advance over a dirty locked item; a clean one
+	// legitimately takes the upstream update (I-1728 — see GitPull).
 	// runNetGit applies a 60s deadline + SSH keepalive (I-1411).
 	if s.cfg.Git.AutoPush {
-		snap := snapshotLockedItems(s.cfg, root)
-		var oldHead string
-		if len(snap) > 0 {
-			oldHead = headSHA(root)
-		}
 		_ = runNetGit(root, "pull", "--ff-only")
-		// I-1722: restore only what the pull changed, never concurrent writes.
-		restoreLockedItems(root, snap, oldHead)
 	}
 
 	// Stage tracked-modified files within agent-state/ only. The `-- .`
@@ -1596,20 +1423,11 @@ func RefreshWorkspace(cfg *config.Config) RefreshResult {
 	// runNetGit adds the 60s deadline + SSH keepalive so a stalled network
 	// op here cannot hold .st-git.lock indefinitely (I-1411).
 	//
-	// I-1722: snapshot locked items immediately before the pull (the only
-	// step in this function that touches the working tree), and restore
-	// only what the pull changed. The previous shape — snapshot at function
-	// entry, restore in a defer — held a stale snapshot across the whole
-	// fetch window and blindly reverted any concurrent write.
-	lockedSnapshots := snapshotLockedItems(cfg, root)
-	var oldHead string
-	if len(lockedSnapshots) > 0 {
-		oldHead = headSHA(root)
-	}
+	// I-1728: no longer snapshots/restores locked items around the pull —
+	// see GitPull's doc comment for why that mechanism was removed.
 	if err := runNetGit(root, "pull", "--ff-only"); err != nil {
 		return RefreshResult{Outcome: RefreshBlocked, Err: err}
 	}
-	restoreLockedItems(root, lockedSnapshots, oldHead)
 
 	return RefreshResult{Outcome: RefreshPulled, PulledCount: behind}
 }
