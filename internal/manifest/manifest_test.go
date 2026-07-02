@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -140,5 +141,43 @@ func TestSaveCreatesDir(t *testing.T) {
 	}
 	if len(loaded.PRs) != 1 {
 		t.Error("expected 1 PR")
+	}
+}
+
+// TestAppendPRConcurrent guards I-1723: AppendPR's load->mutate->save cycle
+// runs under an exclusive flock, so concurrent appends to the same manifest
+// must all survive. Pre-flock, interleaved goroutines silently dropped each
+// other's records (observed live 2026-07-02 on I-1719's PR manifest).
+func TestAppendPRConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	const n = 20
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- AppendPR(dir, "T-900", PRRecord{
+				Repo:     "as",
+				PRNumber: 100 + i,
+				HeadSHA:  "abc",
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("AppendPR: %v", err)
+		}
+	}
+
+	m, err := Load(dir, "T-900")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(m.PRs) != n {
+		t.Errorf("lost update: %d/%d PR records survived concurrent AppendPR", len(m.PRs), n)
 	}
 }
