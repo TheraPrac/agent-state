@@ -646,7 +646,7 @@ func TestWriteNoDirectory(t *testing.T) {
 	item.Doc.SetField("status", "archived")
 
 	// Should handle the directory lookup gracefully
-	_ = s.Move("T-001")
+	_, _ = s.Move("T-001")
 }
 
 func TestScanSkipsSubdirs(t *testing.T) {
