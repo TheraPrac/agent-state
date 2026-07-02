@@ -64,6 +64,66 @@ func TestCheckFixGitSyncsAfterMutate(t *testing.T) {
 	}
 }
 
+// TestCheckFixDirectoryMismatchEndToEndGitSync guards the actual wiring this
+// PR (I-1718) adds — fixDirectoryMismatch's movedPaths flowing through Fix's
+// return value into Check's trailing autoSync call — end to end. The leaf
+// TestFixDirectoryMismatchReturnsMovedPaths test only asserts
+// fixDirectoryMismatch's own return value; TestFixFull discards Fix's second
+// return value entirely (`fixed, _ := Fix(s, cfg)`), so neither would catch a
+// regression that drops movedPaths before it reaches autoSync in Check.
+func TestCheckFixDirectoryMismatchEndToEndGitSync(t *testing.T) {
+	env := testutil.NewGitEnv(t)
+	root := env.Cfg.Root()
+
+	// T-998 has status "done" (archive/) but its file sits in tasks/ — a
+	// directory mismatch fixDirectoryMismatch's Move repairs. Git sees the
+	// repair as delete-old + untracked-new, exactly the case `git add -u`
+	// alone can't stage.
+	testutil.WriteItem(t, filepath.Join(root, "tasks", "T-998-mismatched.md"), `id: T-998
+type: task
+status: done
+created: 2026-01-01T00:00:00Z
+last_touched: 2026-01-01T00:00:00Z
+title: Mismatched directory task
+`)
+	env.Reload(t)
+
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	cmd = exec.Command("git", "commit", "-m", "add T-998 (wrong dir)")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	env.Cfg.Git = &config.GitConfig{AutoCommit: true, AutoPush: false}
+
+	if rc := Check(env.S, env.Cfg, false, true); rc > 1 {
+		t.Fatalf("Check rc=%d", rc)
+	}
+
+	env.Reload(t)
+	newPath, ok := env.S.Path("T-998")
+	if !ok {
+		t.Fatal("no path for T-998 after Check")
+	}
+	if !strings.Contains(newPath, "archive") {
+		t.Fatalf("T-998 should be in archive/, got %s", newPath)
+	}
+	relPath, err := filepath.Rel(root, newPath)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if !gitTracksPath(t, root, relPath) {
+		t.Errorf("moved path %q is not tracked by git — the Move'd file was never staged (I-1718 regression)", relPath)
+	}
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after Check")
+	}
+}
+
 func TestCheckQuietDoesNotSync(t *testing.T) {
 	env, _ := setupCheckGitEnv(t)
 	root := env.Cfg.Root()

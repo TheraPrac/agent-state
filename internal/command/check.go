@@ -29,7 +29,7 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 	// Auto-fix by default unless quiet mode (read-only for CI/hooks)
 	// --fix flag is now redundant but kept for explicitness
 	if !quiet {
-		fixed := Fix(s, cfg)
+		fixed, movedPaths := Fix(s, cfg)
 		if fixed > 0 {
 			fmt.Printf("\n\033[32m%d fix(es) applied\033[0m\n\n", fixed)
 		}
@@ -53,7 +53,10 @@ func Check(s *store.Store, cfg *config.Config, quiet bool, fix bool) int {
 			}
 		}
 		if fixed > 0 || dupFixed > 0 {
-			syncErr = autoSync(s, "st check --fix")
+			// I-1718: pass fixDirectoryMismatch's post-Move paths explicitly —
+			// git add -u can't stage a file renamed to an untracked directory
+			// (see fixDirectoryMismatch's doc comment, mirrors I-1715/I-442).
+			syncErr = autoSync(s, "st check --fix", movedPaths...)
 			if errors.Is(syncErr, store.ErrGitLockTimeout) {
 				// Git lock contention is a transient sync warning, not a check failure.
 				// The workspace is structurally valid; run `st sync` to push the fixes.

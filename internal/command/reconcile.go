@@ -78,6 +78,7 @@ func (o *ReconcileOpts) worktreeUnsaved() func(*config.Config, string) bool {
 // 11: orphan worktree cleanup — prune worktree dirs for terminal items
 func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 	var updates int
+	var movedPaths []string
 
 	// Check tool availability
 	hasGH := opts.toolCheck()("gh")
@@ -126,8 +127,10 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 
 	// Phase 5: Move completed items to archive
 	fmt.Println("Phase 5: Archive completed items")
-	n = reconcileArchive(s, cfg, opts)
+	var archivedPaths []string
+	n, archivedPaths = reconcileArchive(s, cfg, opts)
 	updates += n
+	movedPaths = append(movedPaths, archivedPaths...)
 
 	// Phase 5b: Heal epic-status drift (I-1641) — reactivate any epic marked
 	// archived/completed that still holds a non-archived sprint, so the epic
@@ -175,7 +178,9 @@ func Reconcile(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
 		fmt.Printf("\nreconcile dry run: %d updates detected\n", updates)
 	} else {
 		fmt.Printf("\nreconcile: %d updates applied\n", updates)
-		if err := autoSync(s, fmt.Sprintf("st reconcile: %d updates", updates)); err != nil {
+		// I-1718: pass every archived item's post-Move path explicitly — see
+		// reconcileArchive's doc comment for why git add -u can't stage it alone.
+		if err := autoSync(s, fmt.Sprintf("st reconcile: %d updates", updates), movedPaths...); err != nil {
 			return 1
 		}
 	}
@@ -425,8 +430,14 @@ func reconcileMergeState(s *store.Store, cfg *config.Config, opts ReconcileOpts)
 }
 
 // reconcileArchive moves completed/resolved items from tasks/issues to archive.
-func reconcileArchive(s *store.Store, cfg *config.Config, opts ReconcileOpts) int {
+// reconcileArchive returns the update count and the post-Move paths of every
+// item it archived. I-1718: s.Move renames the file across status
+// directories, which git sees as delete-old + untracked-new — GitSync's
+// `git add -u` only stages the deletion, never the new path (I-1715/I-442).
+// Callers must pass the returned paths explicitly into autoSync.
+func reconcileArchive(s *store.Store, cfg *config.Config, opts ReconcileOpts) (int, []string) {
 	updates := 0
+	var movedPaths []string
 	for _, item := range s.List() {
 		tc, ok := cfg.Types[item.Type]
 		if !ok {
@@ -470,10 +481,12 @@ func reconcileArchive(s *store.Store, cfg *config.Config, opts ReconcileOpts) in
 			}
 			if err := s.Move(item.ID); err != nil {
 				fmt.Fprintf(os.Stderr, "  error moving %s: %v\n", item.ID, err)
+			} else if newPath, ok := s.Path(item.ID); ok {
+				movedPaths = append(movedPaths, newPath)
 			}
 		}
 	}
-	return updates
+	return updates, movedPaths
 }
 
 // reconcileDeployState checks if merged items have been deployed via the orchestrator.
