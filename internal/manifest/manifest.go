@@ -4,8 +4,10 @@ package manifest
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Manifest holds the full PR + file analysis data for an item.
@@ -71,7 +73,28 @@ func Save(dir, id string, m *Manifest) error {
 }
 
 // AppendPR loads the manifest, appends a PR record, and saves.
+//
+// I-1723: the load→mutate→save cycle runs under an exclusive flock on
+// .manifest/<id>.json.lock so concurrent st processes (multiple agents share
+// one canonical working tree) cannot interleave and silently drop each
+// other's PR records — the classic lost update observed live 2026-07-02 on
+// I-1719's manifest. The flock blocks (no timeout): holders span a single
+// JSON read+write (microseconds) and the kernel releases on process death.
 func AppendPR(dir, id string, pr PRRecord) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	lockPath := filepath.Join(dir, id+".json.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("open manifest lock %s: %w", lockPath, err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("flock %s: %w", lockPath, err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+
 	m, err := Load(dir, id)
 	if err != nil {
 		return err
