@@ -38,6 +38,14 @@ const gitNetworkTimeout = 60 * time.Second
 // .st-git.lock indefinitely and stalling all agent syncs (I-1411).
 const gitSSHCommand = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
 
+// newPathsBatchSize caps how many paths GitSync's explicit-newPaths staging
+// (I-1720) passes to a single `git add` subprocess. Item-file paths are
+// short (tens of bytes), so even the largest realistic reconcile batch
+// stays well under any platform's argv length limit at this size — the cap
+// exists purely so a pathological caller can't hand a single `git add` an
+// unbounded argv, not because normal batches are expected to need chunking.
+const newPathsBatchSize = 500
+
 // autoStageSubdirs is the I-575 list of agent-state subdirectories whose
 // untracked files SHOULD be picked up automatically by GitSync. This is
 // deliberately narrow — `.plans/<id>.md` files dropped by `st prep` /
@@ -685,6 +693,16 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	// canonical-clone bleed. A bugged caller passing a sibling agent's
 	// path would otherwise produce a `../..` rel and git would happily
 	// stage it. `--` defangs pathspecs that begin with `-`.
+	//
+	// I-1720: validate every path first, then stage the whole batch in as
+	// few `git add` subprocesses as possible instead of one per path.
+	// reconcileArchive (st reconcile Phase 5) can pass dozens-to-hundreds
+	// of paths in a single GitSync call on a workspace with a long
+	// terminal-item backlog; each subprocess pays fork/exec + git
+	// repo-open overhead, so one-per-path plausibly added seconds to the
+	// reconcile critical path. Chunked at newPathsBatchSize so a very
+	// large batch can't risk exceeding a practical argv length.
+	rels := make([]string, 0, len(newPaths))
 	for _, p := range newPaths {
 		if p == "" {
 			continue
@@ -700,8 +718,16 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 		if rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") {
 			return fmt.Errorf("git add: path %q is outside item root %q", p, root)
 		}
-		if err := gitCmd(root, "add", "--", rel); err != nil {
-			return fmt.Errorf("git add %q: %w", rel, err)
+		rels = append(rels, rel)
+	}
+	for start := 0; start < len(rels); start += newPathsBatchSize {
+		end := start + newPathsBatchSize
+		if end > len(rels) {
+			end = len(rels)
+		}
+		chunk := rels[start:end]
+		if err := gitCmd(root, append([]string{"add", "--"}, chunk...)...); err != nil {
+			return fmt.Errorf("git add %v: %w", chunk, err)
 		}
 	}
 
