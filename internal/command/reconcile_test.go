@@ -925,6 +925,72 @@ func TestReconcileGitSyncsAfterUpdates(t *testing.T) {
 	}
 }
 
+// gitTracksPath returns whether git considers relPath tracked (committed or
+// staged) inside dir. Unlike trackedDirty, which intentionally SKIPS "??"
+// (untracked) lines, this catches the exact failure mode I-1718 fixes: a
+// Move'd file that git sees as delete-old + untracked-new would pass
+// trackedDirty's check (its new path shows as "??", which trackedDirty
+// ignores) while still being completely unpersisted.
+func gitTracksPath(t *testing.T, dir, relPath string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "ls-files", "--error-unmatch", relPath)
+	return cmd.Run() == nil
+}
+
+// TestReconcileArchiveEndToEndGitSync guards the actual wiring this PR (I-1718)
+// adds — reconcileArchive's movedPaths flowing through Reconcile's
+// accumulation into the trailing autoSync call — end to end. The existing
+// leaf-function tests (TestReconcileArchive, TestReconcileArchiveDryRun) only
+// assert reconcileArchive's own return value; they don't exercise Reconcile's
+// propagation, so a regression there (a dropped append, a lost `...` spread)
+// would go undetected by trackedDirty alone, since a Move'd-but-unstaged file
+// shows as "??" and trackedDirty intentionally skips those lines.
+func TestReconcileArchiveEndToEndGitSync(t *testing.T) {
+	s, cfg, gitRun := setupGitEnvForReconcile(t)
+	root := cfg.Root()
+
+	// T-002 -> done makes it archive-eligible; reconcileArchive's Move
+	// renames its file tasks/ -> archive/, which git sees as delete-old +
+	// untracked-new — exactly the case `git add -u` alone can't stage.
+	if err := s.Mutate("T-002", func(it *model.Item) error {
+		it.Doc.SetField("status", "done")
+		it.Status = "done"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutate T-002: %v", err)
+	}
+	gitRun("add", "-A")
+	gitRun("commit", "-m", "setup T-002 done")
+	s, _ = store.New(cfg)
+
+	opts := ReconcileOpts{
+		BranchCheck: func(_ *config.Config, _ string) bool { return true },
+		ToolCheck:   func(name string) bool { return false },
+	}
+	if rc := Reconcile(s, cfg, opts); rc != 0 {
+		t.Fatalf("Reconcile rc=%d", rc)
+	}
+
+	s2, _ := store.New(cfg)
+	newPath, ok := s2.Path("T-002")
+	if !ok {
+		t.Fatal("no path for T-002 after Reconcile")
+	}
+	if !strings.Contains(newPath, "archive") {
+		t.Fatalf("T-002 should be in archive/, got %s", newPath)
+	}
+	relPath, err := filepath.Rel(root, newPath)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if !gitTracksPath(t, root, relPath) {
+		t.Errorf("archived path %q is not tracked by git — the Move'd file was never staged (I-1718 regression)", relPath)
+	}
+	if trackedDirty(t, root) {
+		t.Error("tracked files dirty after Reconcile")
+	}
+}
+
 func TestReconcileDryRunDoesNotSync(t *testing.T) {
 	s, cfg, gitRun := setupGitEnvForReconcile(t)
 	root := cfg.Root()
