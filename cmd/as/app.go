@@ -658,6 +658,45 @@ fields, and the SBAR composite stay on the single-field paths.`,
 	pairCmd.Flags().Bool("off", false, "clear the pairing marker on this session")
 	root.AddCommand(pairCmd)
 
+	// st pair-log — I-1707 in-session audit log. Hidden: hook-invoked
+	// machine glue (the pairing-audit-log.sh PostToolUse hook), not a human
+	// verb — mirrors capture-decision's Hidden precedent. No-ops silently
+	// when the current session isn't paired.
+	pairLogCmd := &cobra.Command{
+		Use:    "pair-log",
+		Short:  "Append one event to the current session's pairing audit log (I-1707)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			typ, _ := cmd.Flags().GetString("type")
+			file, _ := cmd.Flags().GetString("file")
+			repo, _ := cmd.Flags().GetString("repo")
+			cmdStr, _ := cmd.Flags().GetString("cmd")
+			action, _ := cmd.Flags().GetString("action")
+			worktree, _ := cmd.Flags().GetString("worktree")
+			text, _ := cmd.Flags().GetString("text")
+			opts := command.PairLogOpts{
+				Type: typ, File: file, Repo: repo, Command: cmdStr,
+				Action: action, Worktree: worktree, Text: text,
+			}
+			if cmd.Flags().Changed("exit") {
+				exitVal, _ := cmd.Flags().GetInt("exit")
+				opts.ExitCode = &exitVal
+			}
+			sessMgr := session.NewManager(appCfg.SessionsDir(), time.Duration(appCfg.StaleClaimTTL())*time.Second)
+			exitCode = command.PairLog(appCfg, sessMgr, appCfg.SessionID(), opts)
+		},
+	}
+	pairLogCmd.Flags().String("type", "", "event type: edit | command | server | observation (required)")
+	pairLogCmd.Flags().String("file", "", "edit: file path")
+	pairLogCmd.Flags().String("repo", "", "edit: repo name")
+	pairLogCmd.Flags().String("cmd", "", "command/server: the bash command")
+	pairLogCmd.Flags().Int("exit", 0, "command: exit code")
+	pairLogCmd.Flags().String("action", "", "server: tp subcommand (up|down|restart|status)")
+	pairLogCmd.Flags().String("worktree", "", "server: --worktree value, if present")
+	pairLogCmd.Flags().String("text", "", "observation: the marked text")
+	root.AddCommand(pairLogCmd)
+
 	coshipCmd := &cobra.Command{
 		Use:   "coship [<id>]",
 		Short: "Co-ship a paired api+web change: resolve the web OpenAPI check against a paired api ref",

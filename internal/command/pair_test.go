@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/theraprac/agent-state/internal/changelog"
 	"github.com/theraprac/agent-state/internal/config"
+	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/session"
 )
 
@@ -343,6 +345,173 @@ func TestPairTPUpFailureBlocksPairing(t *testing.T) {
 	loaded, _ := mgr.Load("sess-1")
 	if loaded.Pairing != nil {
 		t.Error("pairing marker should not be set when tp up fails")
+	}
+}
+
+// I-1707: /pair --off promotion — seeds a plan draft when the item has none
+// approved yet, reflecting the recorded edit/command events.
+func TestPairOffPromotesUnapprovedItemToPlanSeed(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	mgr := newTestSessionMgr(cfg)
+	setPairingActive(t, mgr, "sess-1", "T-001")
+	exitVal := 0
+	PairLog(cfg, mgr, "sess-1", PairLogOpts{Type: "edit", File: "src/foo.go", Repo: "theraprac-api"})
+	PairLog(cfg, mgr, "sess-1", PairLogOpts{Type: "command", Command: "go build ./...", ExitCode: &exitVal})
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
+	})
+	if code != 0 {
+		t.Fatalf("Pair --off returned %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "Seeded a plan draft") {
+		t.Errorf("expected output to report a seeded plan, got: %q", out)
+	}
+
+	item, ok := s.Get("T-001")
+	if !ok {
+		t.Fatal("T-001 not found")
+	}
+	if len(item.LinkedPlans) == 0 {
+		t.Fatal("T-001 has no linked plan after promotion")
+	}
+	if item.PlanApproved {
+		t.Error("promoted plan must NOT be self-approved — approval is a separate gate")
+	}
+
+	planBody, err := os.ReadFile(filepath.Join(cfg.PlansDir(), "T-001.md"))
+	if err != nil {
+		t.Fatalf("reading seeded plan: %v", err)
+	}
+	if !strings.Contains(string(planBody), "src/foo.go") {
+		t.Errorf("seeded plan does not mention the edited file:\n%s", planBody)
+	}
+	if !strings.Contains(string(planBody), "## Approach") || !strings.Contains(string(planBody), "## Tests") {
+		t.Errorf("seeded plan missing expected sections:\n%s", planBody)
+	}
+}
+
+// I-1707: an item that already has an approved plan must NOT have it
+// overwritten by promotion — the recorded evidence is preserved via a
+// changelog entry instead.
+func TestPairOffSkipsSeedingWhenAlreadyApproved(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	// setupTestEnv (I-716) pre-seeds every fixture item with a plan sidecar
+	// for OTHER tests' convenience — capture its content here so this test
+	// can assert promotion leaves it byte-for-byte untouched, not that no
+	// file exists at all.
+	planPath := filepath.Join(cfg.PlansDir(), "T-001.md")
+	before, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("reading pre-seeded fixture plan: %v", err)
+	}
+	if err := s.Mutate("T-001", func(m *model.Item) error {
+		m.PlanApproved = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := newTestSessionMgr(cfg)
+	setPairingActive(t, mgr, "sess-1", "T-001")
+	PairLog(cfg, mgr, "sess-1", PairLogOpts{Type: "edit", File: "src/foo.go", Repo: "theraprac-api"})
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
+	})
+	if code != 0 {
+		t.Fatalf("Pair --off returned %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "already has an approved plan") {
+		t.Errorf("expected output to report the skip, got: %q", out)
+	}
+
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("reading plan after promotion: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("approved plan was modified by promotion:\nbefore: %s\nafter:  %s", before, after)
+	}
+
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Op == "pairing_evidence" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a pairing_evidence changelog entry, got: %+v", entries)
+	}
+}
+
+// I-1707: an observation event durably credits browser verification via the
+// changelog, independent of whether a plan was seeded.
+func TestPairOffCreditsBrowserVerification(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	mgr := newTestSessionMgr(cfg)
+	setPairingActive(t, mgr, "sess-1", "T-001")
+	PairLog(cfg, mgr, "sess-1", PairLogOpts{Type: "observation", Text: "login flow renders correctly"})
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
+	})
+	if code != 0 {
+		t.Fatalf("Pair --off returned %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "Credited 1 browser-verification") {
+		t.Errorf("expected output to report the credit, got: %q", out)
+	}
+
+	entries, err := changelog.Read(cfg, "T-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Op == "pairing_browser_verified" && e.Reason == "login flow renders correctly" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a pairing_browser_verified changelog entry with the observation text, got: %+v", entries)
+	}
+}
+
+// I-1707: a paired session with no recorded events promotes nothing — the
+// pre-seeded fixture plan (I-716) is left untouched, just an informative note.
+func TestPairOffNoPromotionWhenNoEventsRecorded(t *testing.T) {
+	s, cfg := setupTestEnv(t)
+	planPath := filepath.Join(cfg.PlansDir(), "T-001.md")
+	before, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("reading pre-seeded fixture plan: %v", err)
+	}
+	mgr := newTestSessionMgr(cfg)
+	setPairingActive(t, mgr, "sess-1", "T-001")
+
+	code := 0
+	out := captureStdout(t, func() {
+		code = Pair(s, cfg, mgr, "sess-1", nil, PairOpts{Off: true})
+	})
+	if code != 0 {
+		t.Fatalf("Pair --off returned %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "nothing to promote") {
+		t.Errorf("expected output to note there was nothing to promote, got: %q", out)
+	}
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("reading plan after --off: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("fixture plan was modified despite no recorded events:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 

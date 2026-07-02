@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/theraprac/agent-state/internal/changelog"
 	"github.com/theraprac/agent-state/internal/config"
 	"github.com/theraprac/agent-state/internal/model"
 	"github.com/theraprac/agent-state/internal/session"
@@ -161,15 +162,29 @@ func Pair(s *store.Store, cfg *config.Config, sessMgr *session.Manager, sessionI
 			fmt.Fprintln(os.Stderr, "st pair --off: takes no arguments")
 			return 2
 		}
+
+		// I-1707: capture the paired item BEFORE clearing, so the promotion
+		// step below (run only when there was something to clear) knows
+		// which item's audit log to read. A pure read — ClearPairing's own
+		// signature is untouched.
+		var pairedItem string
+		if sess, err := sessMgr.Load(sessionID); err == nil && sess != nil && sess.Pairing != nil && sess.Pairing.Active {
+			pairedItem = sess.Pairing.Item
+		}
+
 		cleared, err := sessMgr.ClearPairing(sessionID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "st pair --off: %v\n", err)
 			return 1
 		}
-		if cleared {
-			fmt.Println("Pairing OFF — gates re-enabled.")
-		} else {
+		if !cleared {
 			fmt.Println("st pair --off: no active pairing on this session — nothing to clear.")
+			return 0
+		}
+		fmt.Println("Pairing OFF — gates re-enabled.")
+
+		if pairedItem != "" {
+			promotePairingEvidence(s, cfg, sessionID, pairedItem)
 		}
 		return 0
 	}
@@ -298,4 +313,109 @@ func startItem(s *store.Store, cfg *config.Config, item *model.Item) int {
 		return code
 	}
 	return 0
+}
+
+// promotePairingEvidence implements /pair --off's promotion step (I-1707,
+// design §4 exit flow + §6): the session's audit log seeds a plan draft when
+// the item has none approved yet, and any browser-verification observation
+// is durably credited via the changelog — regardless of whether a plan was
+// seeded. Best-effort by design: a failure here is reported loudly but never
+// changes --off's own exit code — the marker is already cleared, and losing
+// the promotion is strictly worse than losing --off itself.
+func promotePairingEvidence(s *store.Store, cfg *config.Config, sessionID, itemID string) {
+	events, err := readPairLogEvents(cfg, sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "st pair --off: reading pairing audit log: %v\n", err)
+		return
+	}
+	if len(events) == 0 {
+		fmt.Println("  (no audit-log events recorded this session — nothing to promote)")
+		return
+	}
+
+	item, ok := s.Get(itemID)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "st pair --off: %s not found — cannot promote pairing evidence\n", itemID)
+		return
+	}
+
+	var edits, commands, observations []PairLogEvent
+	for _, ev := range events {
+		switch ev.Type {
+		case "edit":
+			edits = append(edits, ev)
+		case "command", "server":
+			commands = append(commands, ev)
+		case "observation":
+			observations = append(observations, ev)
+		}
+	}
+
+	if item.PlanApproved {
+		fmt.Printf("  %s already has an approved plan — not overwriting; recording pairing evidence instead.\n", itemID)
+		_ = changelog.Append(cfg, itemID, changelog.Entry{
+			Op:     "pairing_evidence",
+			Reason: fmt.Sprintf("session %s: %d edit(s), %d command(s) recorded during pairing (not seeded into a plan — plan already approved)", sessionID, len(edits), len(commands)),
+		})
+	} else {
+		body := buildPlanSeed(item, edits, commands, observations)
+		if code := PlanWrite(s, cfg, itemID, body, false); code != 0 {
+			fmt.Fprintf(os.Stderr, "st pair --off: seeding plan for %s failed (exit %d) — audit log preserved at %s\n", itemID, code, pairingLogPath(cfg, sessionID))
+		} else {
+			fmt.Printf("  Seeded a plan draft for %s from %d edit(s), %d command(s) — review and approve with `st plan approve %s` (or `st plan write %s --self-approve` after refining).\n", itemID, len(edits), len(commands), itemID, itemID)
+		}
+	}
+
+	for _, obs := range observations {
+		_ = changelog.Append(cfg, itemID, changelog.Entry{
+			Op:     "pairing_browser_verified",
+			Reason: obs.Text,
+		})
+	}
+	if len(observations) > 0 {
+		fmt.Printf("  Credited %d browser-verification observation(s).\n", len(observations))
+	}
+}
+
+// buildPlanSeed renders a plan draft body (the same section format
+// internal/plan.Parse expects: `## Approach`, `## Tests`, etc.) from a
+// pairing session's recorded events. This is a SEED for the operator to
+// refine, not a finished plan — Out-of-scope/Risks are left as explicit
+// placeholders since the audit log has no way to know either.
+func buildPlanSeed(item *model.Item, edits, commands, observations []PairLogEvent) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s Plan — %s (seeded from a paired session)\n\n", item.ID, item.Title)
+
+	b.WriteString("## Approach\n\n")
+	fmt.Fprintf(&b, "Seeded from a `/pair` live-iteration session: %d file edit(s) and %d command(s) were recorded while working on this item. Files touched:\n", len(edits), len(commands))
+	seenFiles := map[string]bool{}
+	for _, e := range edits {
+		key := e.Repo + ":" + e.File
+		if e.File == "" || seenFiles[key] {
+			continue
+		}
+		seenFiles[key] = true
+		if e.Repo != "" {
+			fmt.Fprintf(&b, "- %s (%s)\n", e.File, e.Repo)
+		} else {
+			fmt.Fprintf(&b, "- %s\n", e.File)
+		}
+	}
+	b.WriteString("\nRefine this into a real approach description before approval — this section is a session-evidence summary, not yet a plan.\n\n")
+
+	b.WriteString("## Tests\n\n")
+	if len(observations) > 0 {
+		b.WriteString("Browser-verification observed during pairing:\n")
+		for _, o := range observations {
+			fmt.Fprintf(&b, "- %s\n", o.Text)
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("TBD — describe what tests cover this work before approval.\n\n")
+	}
+
+	b.WriteString("## Out-of-scope\n\nTBD — refine before approval.\n\n")
+	b.WriteString("## Risks\n\nTBD — refine before approval.\n")
+
+	return b.String()
 }
