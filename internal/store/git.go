@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,7 +138,10 @@ func GitPull(cfg *config.Config) error {
 	// we must not let a pull overwrite their state even if ff-only
 	// would cleanly advance through them.
 	lockedSnapshots := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
+	var oldHead string
+	if len(lockedSnapshots) > 0 {
+		oldHead = headSHA(root)
+	}
 
 	// Fast-forward-only pull. Git refuses the fast-forward if:
 	//   - history has diverged (local commits not on remote), or
@@ -150,7 +154,7 @@ func GitPull(cfg *config.Config) error {
 
 	// Restore locked item files the pull changed (I-1722: scoped to
 	// git's own changed set — never touches concurrent local writes).
-	restoreLockedItems(root, lockedSnapshots, oldHead, headSHA(root))
+	restoreLockedItems(root, lockedSnapshots, oldHead)
 
 	return nil
 }
@@ -229,47 +233,80 @@ func snapshotLockedItems(cfg *config.Config, root string) map[string]lockedSnaps
 // acquisition failure degrades to the pre-I-1722 unlocked write rather than
 // dropping the restore: for a pull-changed file, restoring in-flight local
 // state is the whole point of the mechanism.
-func restoreLockedItems(root string, snapshots map[string]lockedSnapshot, oldHead, newHead string) {
+func restoreLockedItems(root string, snapshots map[string]lockedSnapshot, oldHead string) {
 	if len(snapshots) == 0 {
 		return
 	}
 	// HEAD did not move: the pull was a no-op or refused. Nothing to
 	// restore — and touching the tree here is exactly the I-1722 bug.
+	newHead := headSHA(root)
 	if oldHead == "" || newHead == "" || oldHead == newHead {
 		return
 	}
 	// Paths (relative to root) that the pull actually rewrote. --relative
 	// both scopes the diff to root's subtree and emits root-relative paths,
-	// matching the filepath.Rel comparison below.
-	out, err := gitOutput(root, "diff", "--name-only", "--relative", oldHead, newHead)
+	// matching the filepath.Rel comparison below. --no-renames is load-
+	// bearing: st's own status-directory moves are detected as renames by
+	// default (only the destination path would be listed) while the snapshot
+	// is keyed by the pre-pull path — without it a pull applying an upstream
+	// status-move would evade the changed set entirely. -z avoids
+	// core.quotepath mangling of non-ASCII filenames.
+	out, err := gitOutput(root, "diff", "--name-only", "-z", "--no-renames", "--relative", oldHead, newHead)
 	if err != nil {
 		// Can't determine the changed set — fail safe by restoring nothing
 		// rather than risk reverting a concurrent legitimate write.
 		return
 	}
 	changed := make(map[string]bool)
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
+	for _, line := range strings.Split(out, "\x00") {
+		if line != "" {
 			changed[filepath.FromSlash(line)] = true
 		}
 	}
 
-	for path, snap := range snapshots {
+	// Sorted iteration + per-iteration flock release: matches MutateMany's
+	// sorted acquisition order (no AB/BA stall between two restorers or a
+	// restorer and a MutateMany), never holds more than one item flock at a
+	// time, and cannot self-block on duplicate paths sharing an item ID.
+	paths := make([]string, 0, len(snapshots))
+	for p := range snapshots {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		snap := snapshots[path]
 		rel, err := filepath.Rel(root, path)
 		if err != nil || !changed[rel] {
 			// The pull did not modify this file; any byte difference is a
 			// concurrent local write that must be left intact.
 			continue
 		}
-		release, lockErr := acquireExclusive(root, snap.id, path)
-		if lockErr == nil {
-			defer release()
-		}
-		currentData, err := os.ReadFile(path)
-		if err == nil && string(currentData) == string(snap.data) {
-			continue
-		}
-		os.WriteFile(path, snap.data, 0644)
+		func() {
+			release, lockErr := acquireExclusive(root, snap.id, path)
+			if lockErr == nil {
+				defer release()
+			}
+			currentData, readErr := os.ReadFile(path)
+			if readErr == nil {
+				if string(currentData) == string(snap.data) {
+					return
+				}
+				// Restore only when the bytes are still exactly what the
+				// pull wrote. Anything else means a local write landed
+				// AFTER the pull (e.g. a Mutate that completed between the
+				// pull and this restore) — newer than the snapshot, so it
+				// wins. gitOutput returns the raw blob, byte-exact.
+				pulled, showErr := gitOutput(root, "show", newHead+":./"+filepath.ToSlash(rel))
+				if showErr != nil || string(currentData) != pulled {
+					return
+				}
+			}
+			// readErr != nil: the pull deleted/moved the file — re-create
+			// in-flight state at its old path (pre-I-1722 behavior).
+			// Otherwise: bytes match the pulled blob; put local state back.
+			os.WriteFile(path, snap.data, 0644)
+		}()
 	}
 }
 
@@ -763,10 +800,13 @@ func (s *Store) GitSync(message string, newPaths ...string) error {
 	// runNetGit applies a 60s deadline + SSH keepalive (I-1411).
 	if s.cfg.Git.AutoPush {
 		snap := snapshotLockedItems(s.cfg, root)
-		oldHead := headSHA(root)
+		var oldHead string
+		if len(snap) > 0 {
+			oldHead = headSHA(root)
+		}
 		_ = runNetGit(root, "pull", "--ff-only")
 		// I-1722: restore only what the pull changed, never concurrent writes.
-		restoreLockedItems(root, snap, oldHead, headSHA(root))
+		restoreLockedItems(root, snap, oldHead)
 	}
 
 	// Stage tracked-modified files within agent-state/ only. The `-- .`
@@ -1562,11 +1602,14 @@ func RefreshWorkspace(cfg *config.Config) RefreshResult {
 	// entry, restore in a defer — held a stale snapshot across the whole
 	// fetch window and blindly reverted any concurrent write.
 	lockedSnapshots := snapshotLockedItems(cfg, root)
-	oldHead := headSHA(root)
+	var oldHead string
+	if len(lockedSnapshots) > 0 {
+		oldHead = headSHA(root)
+	}
 	if err := runNetGit(root, "pull", "--ff-only"); err != nil {
 		return RefreshResult{Outcome: RefreshBlocked, Err: err}
 	}
-	restoreLockedItems(root, lockedSnapshots, oldHead, headSHA(root))
+	restoreLockedItems(root, lockedSnapshots, oldHead)
 
 	return RefreshResult{Outcome: RefreshPulled, PulledCount: behind}
 }

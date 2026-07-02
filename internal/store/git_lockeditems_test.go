@@ -49,11 +49,7 @@ func setupLockedItemRepo(t *testing.T) (*config.Config, string, func(...string))
 
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		gitRun(t, root, args...)
 	}
 	return cfg, itemPath, run
 }
@@ -84,7 +80,7 @@ func TestRestoreSkipsConcurrentWriteOnNoopPull(t *testing.T) {
 	}
 
 	// The pull was a no-op: oldHead == newHead.
-	restoreLockedItems(root, snap, head, head)
+	restoreLockedItems(root, snap, head)
 
 	got, _ := os.ReadFile(itemPath)
 	if string(got) != concurrent {
@@ -115,7 +111,7 @@ func TestRestoreSkipsUntouchedPathWhenHeadMoves(t *testing.T) {
 		t.Fatal("HEAD did not move")
 	}
 
-	restoreLockedItems(root, snap, oldHead, newHead)
+	restoreLockedItems(root, snap, oldHead)
 
 	got, _ := os.ReadFile(itemPath)
 	if string(got) != concurrent {
@@ -141,9 +137,7 @@ func TestRestoreRestoresPullChangedFile(t *testing.T) {
 	os.WriteFile(itemPath, []byte(upstream), 0644)
 	gitRun("add", "tasks/T-001-first-task.md")
 	gitRun("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream change to locked item")
-	newHead := headSHA(root)
-
-	restoreLockedItems(root, snap, oldHead, newHead)
+	restoreLockedItems(root, snap, oldHead)
 
 	got, _ := os.ReadFile(itemPath)
 	if string(got) != string(preData) {
@@ -182,5 +176,57 @@ func TestGitPullNoopLeavesDirtyLockedItemIntact(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "plan_approved: true") {
 		t.Error("plan_approved field lost")
+	}
+}
+
+// TestRestoreKeepsPostPullConcurrentWrite pins the residual-TOCTOU fix: a
+// write landing AFTER the pull (e.g. a Mutate that read the pulled content
+// and completed before restore ran) is newer than the snapshot and must win.
+func TestRestoreKeepsPostPullConcurrentWrite(t *testing.T) {
+	cfg, itemPath, gitRun2 := setupLockedItemRepo(t)
+	root := cfg.ItemDir()
+
+	snap := snapshotLockedItems(cfg, root)
+	oldHead := headSHA(root)
+
+	// The pull rewrites the locked item (upstream commit changes it).
+	upstream := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\n"
+	os.WriteFile(itemPath, []byte(upstream), 0644)
+	gitRun2("add", "tasks/T-001-first-task.md")
+	gitRun2("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream change")
+
+	// A local write lands AFTER the pull, before restore.
+	postPull := "id: T-001\ntype: task\nstatus: active\ntitle: First task\nupstream: edit\nplan_approved: true\n"
+	os.WriteFile(itemPath, []byte(postPull), 0644)
+
+	restoreLockedItems(root, snap, oldHead)
+
+	got, _ := os.ReadFile(itemPath)
+	if string(got) != postPull {
+		t.Errorf("restore clobbered a post-pull concurrent write (residual TOCTOU):\ngot:\n%s", got)
+	}
+}
+
+// TestRestoreRecreatesRenamedAwayLockedItem pins the --no-renames fix: an
+// upstream status-directory move of a locked item is a rename git would
+// otherwise collapse to just the destination path, hiding the old path from
+// the changed set. The snapshot is keyed by the old path; restore must still
+// re-create in-flight state there (pre-I-1722 behavior).
+func TestRestoreRecreatesRenamedAwayLockedItem(t *testing.T) {
+	cfg, itemPath, gitRun2 := setupLockedItemRepo(t)
+	root := cfg.ItemDir()
+
+	snap := snapshotLockedItems(cfg, root)
+	oldHead := headSHA(root)
+
+	// Upstream commits a status-directory move (tasks/ -> archive/) with the
+	// content unchanged — the strongest rename-similarity case.
+	gitRun2("mv", "tasks/T-001-first-task.md", "archive/T-001-first-task.md")
+	gitRun2("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "upstream status move")
+
+	restoreLockedItems(root, snap, oldHead)
+
+	if _, err := os.Stat(itemPath); err != nil {
+		t.Errorf("locked item not re-created at its pre-pull path after an upstream rename (--no-renames regression): %v", err)
 	}
 }
