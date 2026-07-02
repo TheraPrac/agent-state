@@ -14,8 +14,11 @@ import (
 
 var slugPattern = regexp.MustCompile(`^([A-Z]-\d{3,})-\S+`)
 
-// Fix applies auto-repairs for deterministic issues. Returns the number of fixes applied.
-func Fix(s *store.Store, cfg *config.Config) int {
+// Fix applies auto-repairs for deterministic issues. Returns the number of
+// fixes applied and the post-Move paths of every item fixDirectoryMismatch
+// relocated (I-1718) — callers must pass those paths explicitly into
+// autoSync, since a Move is invisible to git add -u (I-1715/I-442).
+func Fix(s *store.Store, cfg *config.Config) (int, []string) {
 	var fixed int
 
 	// Legacy-alias rewrite must run first: downstream fixes (and the validator
@@ -28,11 +31,12 @@ func Fix(s *store.Store, cfg *config.Config) int {
 	fixed += fixDanglingDeps(s, cfg)
 	fixed += fixDuplicateBlocks(s, cfg)
 	fixed += fixDeliveryGate(s, cfg)
-	fixed += fixDirectoryMismatch(s, cfg)
+	n, movedPaths := fixDirectoryMismatch(s, cfg)
+	fixed += n
 	fixed += fixOrphanDeliveryStage(s, cfg)
 	fixed += fixIndex(s, cfg)
 
-	return fixed
+	return fixed, movedPaths
 }
 
 // fixLegacyAliases rewrites items whose status field matches a known
@@ -357,8 +361,9 @@ func fixDuplicateBlocks(s *store.Store, _ *config.Config) int {
 // their current status. This repairs the gap left by `st update status <X>`
 // which writes the status field but does not call Store.Move — so items can
 // end up in archive/ with status queued, or in issues/ with status archived.
-func fixDirectoryMismatch(s *store.Store, cfg *config.Config) int {
+func fixDirectoryMismatch(s *store.Store, cfg *config.Config) (int, []string) {
 	var fixed int
+	var movedPaths []string
 	for _, item := range s.All() {
 		if item.Doc == nil || item.Type == "" {
 			continue
@@ -383,8 +388,11 @@ func fixDirectoryMismatch(s *store.Store, cfg *config.Config) int {
 		fixed++
 		fmt.Printf("  \033[33m⟳\033[0m %s: moved from %q to %q (status %q)\n",
 			itemID, actualDir, expectedDir, item.Status)
+		if newPath, ok := s.Path(itemID); ok {
+			movedPaths = append(movedPaths, newPath)
+		}
 	}
-	return fixed
+	return fixed, movedPaths
 }
 
 // fixOrphanDeliveryStage clears delivery.stage when it is "closed" on an item

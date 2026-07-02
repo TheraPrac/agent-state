@@ -139,9 +139,59 @@ func TestFixIndex(t *testing.T) {
 func TestFixFull(t *testing.T) {
 	s, cfg, _ := setupFixEnv(t)
 
-	fixed := Fix(s, cfg)
+	fixed, _ := Fix(s, cfg)
 	if fixed == 0 {
 		t.Error("expected some fixes")
+	}
+}
+
+// TestFixDirectoryMismatchReturnsMovedPaths guards I-1718: a directory-repair
+// Move is invisible to `git add -u` (the file becomes untracked at its new
+// path), so callers must receive the moved path explicitly to pass into
+// autoSync — exactly the gap I-1715 closed for goal.go's lifecycle commands.
+func TestFixDirectoryMismatchReturnsMovedPaths(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"tasks", "issues", "archive", ".as"} {
+		os.MkdirAll(filepath.Join(root, dir), 0755)
+	}
+	os.WriteFile(filepath.Join(root, ".as", "config.yaml"), []byte("paths:\n  root: .\n"), 0644)
+
+	// T-001 has status "done" (archive/) but its file sits in tasks/ —
+	// a directory mismatch fixDirectoryMismatch exists to repair.
+	writeFile(t, filepath.Join(root, "tasks", "T-001-mismatched.md"), `id: T-001
+type: task
+status: done
+created: 2026-03-25T10:00:00-06:00
+last_touched: 2026-03-25T10:00:00-06:00
+title: Mismatched directory task
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+
+	fixed, movedPaths := fixDirectoryMismatch(s, cfg)
+	if fixed != 1 {
+		t.Fatalf("expected 1 fix, got %d", fixed)
+	}
+	if len(movedPaths) != 1 {
+		t.Fatalf("expected 1 moved path, got %d: %v", len(movedPaths), movedPaths)
+	}
+
+	newPath, ok := s.Path("T-001")
+	if !ok {
+		t.Fatal("no path for T-001 after move")
+	}
+	if !strings.Contains(newPath, "archive") {
+		t.Errorf("T-001 should be in archive/, got %s", newPath)
+	}
+	if movedPaths[0] != newPath {
+		t.Errorf("movedPaths[0] = %q, want %q (the item's post-Move path)", movedPaths[0], newPath)
 	}
 }
 

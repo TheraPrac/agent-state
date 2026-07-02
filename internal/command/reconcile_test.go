@@ -225,7 +225,7 @@ func TestReconcileArchive(t *testing.T) {
 	// Reload store to pick up the status change
 	s, _ = store.New(cfg)
 
-	n := reconcileArchive(s, cfg, ReconcileOpts{DryRun: false})
+	n, movedPaths := reconcileArchive(s, cfg, ReconcileOpts{DryRun: false})
 	if n != 1 {
 		t.Errorf("expected 1 archive move, got %d", n)
 	}
@@ -234,6 +234,15 @@ func TestReconcileArchive(t *testing.T) {
 	path, ok := s.Path("T-002")
 	if ok && !strings.Contains(path, "archive") {
 		t.Errorf("T-002 should be in archive/, got %s", path)
+	}
+
+	// I-1718: the moved path must be returned explicitly so Reconcile can pass
+	// it to autoSync — git add -u alone cannot stage a renamed-to-untracked file.
+	if len(movedPaths) != 1 {
+		t.Fatalf("expected 1 moved path, got %d: %v", len(movedPaths), movedPaths)
+	}
+	if movedPaths[0] != path {
+		t.Errorf("movedPaths[0] = %q, want %q (the item's post-Move path)", movedPaths[0], path)
 	}
 }
 
@@ -249,9 +258,12 @@ func TestReconcileArchiveDryRun(t *testing.T) {
 	}
 	s, _ = store.New(cfg)
 
-	n := reconcileArchive(s, cfg, ReconcileOpts{DryRun: true})
+	n, movedPaths := reconcileArchive(s, cfg, ReconcileOpts{DryRun: true})
 	if n != 1 {
 		t.Errorf("expected 1 detected, got %d", n)
+	}
+	if len(movedPaths) != 0 {
+		t.Errorf("dry-run should report zero moved paths, got %v", movedPaths)
 	}
 
 	// File should NOT have moved
